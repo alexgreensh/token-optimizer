@@ -155,7 +155,8 @@ def test_inventory_assigns_every_definition_and_statement():
     assert len(manifest['symbols']) > 1200
     assert len({s['name'] for s in manifest['symbols']}) == len(manifest['symbols'])
     assert all(s['module'] in m.DOMAINS for s in manifest['symbols'])
-    assert manifest['provisional'] is True
+    assert manifest['provisional'] is False
+    assert manifest['base'] == '55da0b1179afa98455fa1b1c6e3dd372afa8ec3f'
     assert manifest['statements']
 
 

@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "provisional": true,
-  "base": "e946a89a68c93b908dd17adcdfd328cb6928d77f",
+  "provisional": false,
+  "base": "55da0b1179afa98455fa1b1c6e3dd372afa8ec3f",
   "spellings": [
     "--version",
     "-v",
@@ -152,7 +152,7 @@
   ],
   "dispatch_branches": [
     {
-      "line": 61951,
+      "line": 63856,
       "expression": "__name__ == '__main__'",
       "lhs": "__name__",
       "values": [
@@ -160,7 +160,7 @@
       ]
     },
     {
-      "line": 61981,
+      "line": 63886,
       "expression": "sys.platform == 'win32'",
       "lhs": "sys.platform",
       "values": [
@@ -168,7 +168,7 @@
       ]
     },
     {
-      "line": 61981,
+      "line": 63886,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -176,7 +176,7 @@
       ]
     },
     {
-      "line": 62015,
+      "line": 63920,
       "expression": "args[0] == 'report'",
       "lhs": "args[0]",
       "values": [
@@ -184,7 +184,7 @@
       ]
     },
     {
-      "line": 62017,
+      "line": 63922,
       "expression": "args[0] == 'quick'",
       "lhs": "args[0]",
       "values": [
@@ -192,7 +192,7 @@
       ]
     },
     {
-      "line": 61965,
+      "line": 63870,
       "expression": "args[i] == '--context-size'",
       "lhs": "args[i]",
       "values": [
@@ -200,7 +200,7 @@
       ]
     },
     {
-      "line": 62020,
+      "line": 63925,
       "expression": "args[0] == 'route'",
       "lhs": "args[0]",
       "values": [
@@ -208,7 +208,7 @@
       ]
     },
     {
-      "line": 62022,
+      "line": 63927,
       "expression": "args[0] == 'cloud-setup-script'",
       "lhs": "args[0]",
       "values": [
@@ -216,7 +216,7 @@
       ]
     },
     {
-      "line": 62025,
+      "line": 63930,
       "expression": "args[0] == 'cloud-doctor'",
       "lhs": "args[0]",
       "values": [
@@ -224,7 +224,7 @@
       ]
     },
     {
-      "line": 62028,
+      "line": 63933,
       "expression": "args[0] == 'doctor'",
       "lhs": "args[0]",
       "values": [
@@ -232,7 +232,7 @@
       ]
     },
     {
-      "line": 62030,
+      "line": 63935,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -240,7 +240,7 @@
       ]
     },
     {
-      "line": 62034,
+      "line": 63939,
       "expression": "args[0] == 'codex-doctor'",
       "lhs": "args[0]",
       "values": [
@@ -248,7 +248,7 @@
       ]
     },
     {
-      "line": 62037,
+      "line": 63942,
       "expression": "args[0] == 'codex-compact-prompt'",
       "lhs": "args[0]",
       "values": [
@@ -256,7 +256,7 @@
       ]
     },
     {
-      "line": 62040,
+      "line": 63945,
       "expression": "args[0] == 'codex-status-line'",
       "lhs": "args[0]",
       "values": [
@@ -264,7 +264,7 @@
       ]
     },
     {
-      "line": 62043,
+      "line": 63948,
       "expression": "args[0] == 'codex-install'",
       "lhs": "args[0]",
       "values": [
@@ -272,7 +272,7 @@
       ]
     },
     {
-      "line": 62046,
+      "line": 63951,
       "expression": "args[0] == 'copilot-doctor'",
       "lhs": "args[0]",
       "values": [
@@ -280,7 +280,7 @@
       ]
     },
     {
-      "line": 62049,
+      "line": 63954,
       "expression": "args[0] == 'antigravity-doctor'",
       "lhs": "args[0]",
       "values": [
@@ -288,7 +288,7 @@
       ]
     },
     {
-      "line": 62052,
+      "line": 63957,
       "expression": "args[0] == 'antigravity-install'",
       "lhs": "args[0]",
       "values": [
@@ -296,7 +296,7 @@
       ]
     },
     {
-      "line": 62055,
+      "line": 63960,
       "expression": "args[0] == 'antigravity-uninstall'",
       "lhs": "args[0]",
       "values": [
@@ -304,7 +304,7 @@
       ]
     },
     {
-      "line": 62058,
+      "line": 63963,
       "expression": "args[0] == 'antigravity-home'",
       "lhs": "args[0]",
       "values": [
@@ -312,7 +312,7 @@
       ]
     },
     {
-      "line": 62062,
+      "line": 63967,
       "expression": "args[0] == 'antigravity-rollup'",
       "lhs": "args[0]",
       "values": [
@@ -320,7 +320,7 @@
       ]
     },
     {
-      "line": 62079,
+      "line": 63984,
       "expression": "args[0] == 'antigravity-summary'",
       "lhs": "args[0]",
       "values": [
@@ -328,7 +328,7 @@
       ]
     },
     {
-      "line": 62082,
+      "line": 63987,
       "expression": "args[0] == 'copilot-install'",
       "lhs": "args[0]",
       "values": [
@@ -336,7 +336,7 @@
       ]
     },
     {
-      "line": 62123,
+      "line": 64028,
       "expression": "args[0] == 'copilot-uninstall'",
       "lhs": "args[0]",
       "values": [
@@ -344,7 +344,7 @@
       ]
     },
     {
-      "line": 62106,
+      "line": 64011,
       "expression": "tok == '--dry-run'",
       "lhs": "tok",
       "values": [
@@ -352,7 +352,7 @@
       ]
     },
     {
-      "line": 62126,
+      "line": 64031,
       "expression": "args[0] == 'copilot-home'",
       "lhs": "args[0]",
       "values": [
@@ -360,7 +360,7 @@
       ]
     },
     {
-      "line": 62102,
+      "line": 64007,
       "expression": "tok == '--home'",
       "lhs": "tok",
       "values": [
@@ -368,7 +368,7 @@
       ]
     },
     {
-      "line": 62149,
+      "line": 64054,
       "expression": "args[0] == 'copilot-rollup'",
       "lhs": "args[0]",
       "values": [
@@ -376,7 +376,7 @@
       ]
     },
     {
-      "line": 62172,
+      "line": 64077,
       "expression": "args[0] == 'copilot-summary'",
       "lhs": "args[0]",
       "values": [
@@ -384,7 +384,7 @@
       ]
     },
     {
-      "line": 62175,
+      "line": 64080,
       "expression": "args[0] == 'devin-install'",
       "lhs": "args[0]",
       "values": [
@@ -392,7 +392,7 @@
       ]
     },
     {
-      "line": 62178,
+      "line": 64083,
       "expression": "args[0] == 'devin-uninstall'",
       "lhs": "args[0]",
       "values": [
@@ -400,7 +400,7 @@
       ]
     },
     {
-      "line": 62181,
+      "line": 64086,
       "expression": "args[0] == 'devin-doctor'",
       "lhs": "args[0]",
       "values": [
@@ -408,7 +408,7 @@
       ]
     },
     {
-      "line": 62184,
+      "line": 64089,
       "expression": "args[0] == 'devin-summary'",
       "lhs": "args[0]",
       "values": [
@@ -416,7 +416,7 @@
       ]
     },
     {
-      "line": 62192,
+      "line": 64097,
       "expression": "args[0] == 'devin-filter'",
       "lhs": "args[0]",
       "values": [
@@ -424,7 +424,7 @@
       ]
     },
     {
-      "line": 62195,
+      "line": 64100,
       "expression": "args[0] == 'cursor-doctor'",
       "lhs": "args[0]",
       "values": [
@@ -432,7 +432,7 @@
       ]
     },
     {
-      "line": 62198,
+      "line": 64103,
       "expression": "args[0] == 'cursor-install'",
       "lhs": "args[0]",
       "values": [
@@ -440,7 +440,7 @@
       ]
     },
     {
-      "line": 62201,
+      "line": 64106,
       "expression": "args[0] == 'cursor-uninstall'",
       "lhs": "args[0]",
       "values": [
@@ -448,7 +448,7 @@
       ]
     },
     {
-      "line": 62204,
+      "line": 64109,
       "expression": "args[0] == 'cursor-rollup'",
       "lhs": "args[0]",
       "values": [
@@ -456,7 +456,7 @@
       ]
     },
     {
-      "line": 62207,
+      "line": 64112,
       "expression": "detect_runtime() != 'cursor'",
       "lhs": "detect_runtime()",
       "values": [
@@ -464,7 +464,7 @@
       ]
     },
     {
-      "line": 62225,
+      "line": 64130,
       "expression": "args[0] == 'grok-doctor'",
       "lhs": "args[0]",
       "values": [
@@ -472,7 +472,7 @@
       ]
     },
     {
-      "line": 62228,
+      "line": 64133,
       "expression": "args[0] == 'grok-install'",
       "lhs": "args[0]",
       "values": [
@@ -480,7 +480,7 @@
       ]
     },
     {
-      "line": 62231,
+      "line": 64136,
       "expression": "args[0] == 'grok-uninstall'",
       "lhs": "args[0]",
       "values": [
@@ -488,7 +488,7 @@
       ]
     },
     {
-      "line": 62234,
+      "line": 64139,
       "expression": "args[0] == 'grok-home'",
       "lhs": "args[0]",
       "values": [
@@ -496,7 +496,7 @@
       ]
     },
     {
-      "line": 62242,
+      "line": 64147,
       "expression": "args[0] == 'grok-rollup'",
       "lhs": "args[0]",
       "values": [
@@ -504,7 +504,7 @@
       ]
     },
     {
-      "line": 62257,
+      "line": 64162,
       "expression": "args[0] == 'cursor-summary'",
       "lhs": "args[0]",
       "values": [
@@ -512,7 +512,7 @@
       ]
     },
     {
-      "line": 62258,
+      "line": 64163,
       "expression": "detect_runtime() != 'cursor'",
       "lhs": "detect_runtime()",
       "values": [
@@ -520,7 +520,7 @@
       ]
     },
     {
-      "line": 62267,
+      "line": 64172,
       "expression": "args[0] == 'grok-summary'",
       "lhs": "args[0]",
       "values": [
@@ -528,7 +528,7 @@
       ]
     },
     {
-      "line": 62270,
+      "line": 64175,
       "expression": "args[0] == 'hermes-doctor'",
       "lhs": "args[0]",
       "values": [
@@ -536,7 +536,7 @@
       ]
     },
     {
-      "line": 62273,
+      "line": 64178,
       "expression": "args[0] == 'hermes-install'",
       "lhs": "args[0]",
       "values": [
@@ -544,7 +544,7 @@
       ]
     },
     {
-      "line": 62280,
+      "line": 64185,
       "expression": "args[0] == 'hermes-rollup'",
       "lhs": "args[0]",
       "values": [
@@ -552,7 +552,7 @@
       ]
     },
     {
-      "line": 62305,
+      "line": 64210,
       "expression": "args[0] == 'hermes-checkpoint'",
       "lhs": "args[0]",
       "values": [
@@ -560,7 +560,7 @@
       ]
     },
     {
-      "line": 62321,
+      "line": 64226,
       "expression": "args[0] == 'hermes-turn-context'",
       "lhs": "args[0]",
       "values": [
@@ -568,7 +568,7 @@
       ]
     },
     {
-      "line": 62335,
+      "line": 64240,
       "expression": "args[0] == 'hermes-summary'",
       "lhs": "args[0]",
       "values": [
@@ -576,7 +576,7 @@
       ]
     },
     {
-      "line": 62362,
+      "line": 64267,
       "expression": "args[0] == 'codex-state'",
       "lhs": "args[0]",
       "values": [
@@ -584,7 +584,7 @@
       ]
     },
     {
-      "line": 62364,
+      "line": 64269,
       "expression": "args[0] == 'drift'",
       "lhs": "args[0]",
       "values": [
@@ -592,7 +592,7 @@
       ]
     },
     {
-      "line": 62344,
+      "line": 64249,
       "expression": "args[i] == '--session'",
       "lhs": "args[i]",
       "values": [
@@ -600,7 +600,7 @@
       ]
     },
     {
-      "line": 62346,
+      "line": 64251,
       "expression": "args[i] in ('--quiet', '-q')",
       "lhs": "args[i]",
       "values": [
@@ -609,7 +609,7 @@
       ]
     },
     {
-      "line": 62367,
+      "line": 64272,
       "expression": "args[0] == 'git-context'",
       "lhs": "args[0]",
       "values": [
@@ -617,7 +617,7 @@
       ]
     },
     {
-      "line": 62349,
+      "line": 64254,
       "expression": "args[i] == '--days'",
       "lhs": "args[i]",
       "values": [
@@ -625,7 +625,7 @@
       ]
     },
     {
-      "line": 62370,
+      "line": 64275,
       "expression": "args[0] == 'snapshot'",
       "lhs": "args[0]",
       "values": [
@@ -633,7 +633,7 @@
       ]
     },
     {
-      "line": 62372,
+      "line": 64277,
       "expression": "args[0] == 'set-baseline'",
       "lhs": "args[0]",
       "values": [
@@ -641,7 +641,7 @@
       ]
     },
     {
-      "line": 62374,
+      "line": 64279,
       "expression": "args[0] == 'compare'",
       "lhs": "args[0]",
       "values": [
@@ -649,7 +649,7 @@
       ]
     },
     {
-      "line": 62376,
+      "line": 64281,
       "expression": "args[0] == 'dashboard'",
       "lhs": "args[0]",
       "values": [
@@ -657,7 +657,7 @@
       ]
     },
     {
-      "line": 62378,
+      "line": 64283,
       "expression": "args[0] == 'status-bar'",
       "lhs": "args[0]",
       "values": [
@@ -665,7 +665,7 @@
       ]
     },
     {
-      "line": 62381,
+      "line": 64286,
       "expression": "args[0] == 'compact-advice'",
       "lhs": "args[0]",
       "values": [
@@ -673,7 +673,7 @@
       ]
     },
     {
-      "line": 62384,
+      "line": 64289,
       "expression": "args[0] == 'runway-json'",
       "lhs": "args[0]",
       "values": [
@@ -681,7 +681,7 @@
       ]
     },
     {
-      "line": 62395,
+      "line": 64300,
       "expression": "args[0] == 'conversation'",
       "lhs": "args[0]",
       "values": [
@@ -689,7 +689,7 @@
       ]
     },
     {
-      "line": 62434,
+      "line": 64339,
       "expression": "args[0] == 'pricing-tier'",
       "lhs": "args[0]",
       "values": [
@@ -697,7 +697,7 @@
       ]
     },
     {
-      "line": 62450,
+      "line": 64355,
       "expression": "args[0] == 'collect'",
       "lhs": "args[0]",
       "values": [
@@ -705,7 +705,7 @@
       ]
     },
     {
-      "line": 62452,
+      "line": 64357,
       "expression": "args[0] == 'health'",
       "lhs": "args[0]",
       "values": [
@@ -713,7 +713,7 @@
       ]
     },
     {
-      "line": 62454,
+      "line": 64359,
       "expression": "args[0] == 'health-selfcheck'",
       "lhs": "args[0]",
       "values": [
@@ -721,7 +721,7 @@
       ]
     },
     {
-      "line": 62456,
+      "line": 64361,
       "expression": "args[0] == 'dashboard-diagnose'",
       "lhs": "args[0]",
       "values": [
@@ -729,7 +729,7 @@
       ]
     },
     {
-      "line": 62552,
+      "line": 64457,
       "expression": "args[0] in ('version', '--version', '-v')",
       "lhs": "args[0]",
       "values": [
@@ -739,7 +739,7 @@
       ]
     },
     {
-      "line": 62557,
+      "line": 64462,
       "expression": "args[0] == 'daemon-consent'",
       "lhs": "args[0]",
       "values": [
@@ -747,7 +747,7 @@
       ]
     },
     {
-      "line": 62635,
+      "line": 64540,
       "expression": "args[0] == 'consent'",
       "lhs": "args[0]",
       "values": [
@@ -755,7 +755,7 @@
       ]
     },
     {
-      "line": 62514,
+      "line": 64419,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -763,7 +763,7 @@
       ]
     },
     {
-      "line": 62598,
+      "line": 64503,
       "expression": "value in ('yes', 'y', 'true', '1')",
       "lhs": "value",
       "values": [
@@ -774,7 +774,7 @@
       ]
     },
     {
-      "line": 62638,
+      "line": 64543,
       "expression": "sub == '--show'",
       "lhs": "sub",
       "values": [
@@ -782,7 +782,7 @@
       ]
     },
     {
-      "line": 62660,
+      "line": 64565,
       "expression": "args[0] == 'security-report'",
       "lhs": "args[0]",
       "values": [
@@ -790,7 +790,7 @@
       ]
     },
     {
-      "line": 62600,
+      "line": 64505,
       "expression": "value in ('no', 'n', 'false', '0')",
       "lhs": "value",
       "values": [
@@ -801,7 +801,7 @@
       ]
     },
     {
-      "line": 62645,
+      "line": 64550,
       "expression": "sub == '--reset'",
       "lhs": "sub",
       "values": [
@@ -809,7 +809,7 @@
       ]
     },
     {
-      "line": 62663,
+      "line": 64568,
       "expression": "args[0] == 'session-end-flush'",
       "lhs": "args[0]",
       "values": [
@@ -817,7 +817,7 @@
       ]
     },
     {
-      "line": 62602,
+      "line": 64507,
       "expression": "value == 'unset'",
       "lhs": "value",
       "values": [
@@ -825,7 +825,7 @@
       ]
     },
     {
-      "line": 62654,
+      "line": 64559,
       "expression": "sub == '--grant'",
       "lhs": "sub",
       "values": [
@@ -833,7 +833,7 @@
       ]
     },
     {
-      "line": 62680,
+      "line": 64585,
       "expression": "args[0] == 'session-end-flush-worker'",
       "lhs": "args[0]",
       "values": [
@@ -841,7 +841,7 @@
       ]
     },
     {
-      "line": 62683,
+      "line": 64588,
       "expression": "args[0] == 'daemon-status'",
       "lhs": "args[0]",
       "values": [
@@ -849,7 +849,7 @@
       ]
     },
     {
-      "line": 62719,
+      "line": 64624,
       "expression": "args[0] == 'kill-stale'",
       "lhs": "args[0]",
       "values": [
@@ -857,7 +857,7 @@
       ]
     },
     {
-      "line": 62725,
+      "line": 64630,
       "expression": "args[0] == 'check-hook'",
       "lhs": "args[0]",
       "values": [
@@ -865,7 +865,7 @@
       ]
     },
     {
-      "line": 62718,
+      "line": 64623,
       "expression": "status == 'DAEMON_RUNNING'",
       "lhs": "status",
       "values": [
@@ -873,7 +873,7 @@
       ]
     },
     {
-      "line": 62727,
+      "line": 64632,
       "expression": "args[0] == 'setup-hook'",
       "lhs": "args[0]",
       "values": [
@@ -881,7 +881,7 @@
       ]
     },
     {
-      "line": 62731,
+      "line": 64636,
       "expression": "args[0] == 'setup-all-hooks'",
       "lhs": "args[0]",
       "values": [
@@ -889,7 +889,7 @@
       ]
     },
     {
-      "line": 62753,
+      "line": 64658,
       "expression": "args[0] == 'cleanup-duplicate-hooks'",
       "lhs": "args[0]",
       "values": [
@@ -897,7 +897,7 @@
       ]
     },
     {
-      "line": 62782,
+      "line": 64687,
       "expression": "args[0] == 'setup-daemon'",
       "lhs": "args[0]",
       "values": [
@@ -905,7 +905,7 @@
       ]
     },
     {
-      "line": 62764,
+      "line": 64669,
       "expression": "reason == 'plugin_not_installed'",
       "lhs": "reason",
       "values": [
@@ -913,7 +913,7 @@
       ]
     },
     {
-      "line": 62784,
+      "line": 64689,
       "expression": "args[0] == 'cleanup'",
       "lhs": "args[0]",
       "values": [
@@ -921,7 +921,7 @@
       ]
     },
     {
-      "line": 62767,
+      "line": 64672,
       "expression": "reason == 'plugin_hooks_json_not_found'",
       "lhs": "reason",
       "values": [
@@ -929,7 +929,7 @@
       ]
     },
     {
-      "line": 62809,
+      "line": 64714,
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "lhs": "args[0]",
       "values": [
@@ -939,7 +939,7 @@
       ]
     },
     {
-      "line": 62770,
+      "line": 64675,
       "expression": "reason == 'no_duplicates_found'",
       "lhs": "reason",
       "values": [
@@ -947,7 +947,7 @@
       ]
     },
     {
-      "line": 62858,
+      "line": 64763,
       "expression": "args[0] == 'check-staleness'",
       "lhs": "args[0]",
       "values": [
@@ -955,7 +955,7 @@
       ]
     },
     {
-      "line": 62814,
+      "line": 64719,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -963,7 +963,7 @@
       ]
     },
     {
-      "line": 62825,
+      "line": 64730,
       "expression": "args[0] == 'setup-coach-injection'",
       "lhs": "args[0]",
       "values": [
@@ -971,7 +971,7 @@
       ]
     },
     {
-      "line": 62834,
+      "line": 64739,
       "expression": "args[0] == 'inject-routing'",
       "lhs": "args[0]",
       "values": [
@@ -979,7 +979,7 @@
       ]
     },
     {
-      "line": 62862,
+      "line": 64767,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -987,7 +987,7 @@
       ]
     },
     {
-      "line": 62873,
+      "line": 64778,
       "expression": "args[0] == 'coach'",
       "lhs": "args[0]",
       "values": [
@@ -995,7 +995,7 @@
       ]
     },
     {
-      "line": 62775,
+      "line": 64680,
       "expression": "reason == 'success'",
       "lhs": "reason",
       "values": [
@@ -1003,7 +1003,7 @@
       ]
     },
     {
-      "line": 62845,
+      "line": 64750,
       "expression": "args[0] != 'setup-coach-injection'",
       "lhs": "args[0]",
       "values": [
@@ -1011,7 +1011,7 @@
       ]
     },
     {
-      "line": 62853,
+      "line": 64758,
       "expression": "result['action'] != 'unchanged'",
       "lhs": "result['action']",
       "values": [
@@ -1019,7 +1019,7 @@
       ]
     },
     {
-      "line": 62855,
+      "line": 64760,
       "expression": "args[0] == 'setup-coach-injection'",
       "lhs": "args[0]",
       "values": [
@@ -1027,7 +1027,7 @@
       ]
     },
     {
-      "line": 62875,
+      "line": 64780,
       "expression": "args[0] == 'deterministic-candidates'",
       "lhs": "args[0]",
       "values": [
@@ -1035,7 +1035,7 @@
       ]
     },
     {
-      "line": 62820,
+      "line": 64725,
       "expression": "a == '--file'",
       "lhs": "a",
       "values": [
@@ -1043,7 +1043,7 @@
       ]
     },
     {
-      "line": 62829,
+      "line": 64734,
       "expression": "r['action'] == 'removed'",
       "lhs": "r['action']",
       "values": [
@@ -1051,7 +1051,7 @@
       ]
     },
     {
-      "line": 62877,
+      "line": 64782,
       "expression": "args[0] == 'validate-impact'",
       "lhs": "args[0]",
       "values": [
@@ -1059,7 +1059,7 @@
       ]
     },
     {
-      "line": 62889,
+      "line": 64794,
       "expression": "strat not in ('auto', 'halves')",
       "lhs": "strat",
       "values": [
@@ -1068,7 +1068,7 @@
       ]
     },
     {
-      "line": 62893,
+      "line": 64798,
       "expression": "args[0] == 'quality'",
       "lhs": "args[0]",
       "values": [
@@ -1076,7 +1076,7 @@
       ]
     },
     {
-      "line": 62901,
+      "line": 64806,
       "expression": "args[0] == 'compact-capture'",
       "lhs": "args[0]",
       "values": [
@@ -1084,7 +1084,7 @@
       ]
     },
     {
-      "line": 62882,
+      "line": 64787,
       "expression": "a == '--strategy'",
       "lhs": "a",
       "values": [
@@ -1092,7 +1092,7 @@
       ]
     },
     {
-      "line": 62897,
+      "line": 64802,
       "expression": "a not in ('--json',)",
       "lhs": "a",
       "values": [
@@ -1100,7 +1100,7 @@
       ]
     },
     {
-      "line": 62940,
+      "line": 64845,
       "expression": "args[0] == 'keepwarm-arm'",
       "lhs": "args[0]",
       "values": [
@@ -1108,7 +1108,7 @@
       ]
     },
     {
-      "line": 62884,
+      "line": 64789,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1116,7 +1116,7 @@
       ]
     },
     {
-      "line": 62963,
+      "line": 64868,
       "expression": "args[0] == 'keepwarm-enable'",
       "lhs": "args[0]",
       "values": [
@@ -1124,7 +1124,7 @@
       ]
     },
     {
-      "line": 62908,
+      "line": 64813,
       "expression": "a == '--trigger'",
       "lhs": "a",
       "values": [
@@ -1132,7 +1132,7 @@
       ]
     },
     {
-      "line": 62972,
+      "line": 64877,
       "expression": "args[0] == 'keepwarm-disable'",
       "lhs": "args[0]",
       "values": [
@@ -1140,7 +1140,7 @@
       ]
     },
     {
-      "line": 62977,
+      "line": 64882,
       "expression": "args[0] == 'keepwarm-consent-status'",
       "lhs": "args[0]",
       "values": [
@@ -1148,7 +1148,7 @@
       ]
     },
     {
-      "line": 62983,
+      "line": 64888,
       "expression": "args[0] == 'keepwarm-consent-asked'",
       "lhs": "args[0]",
       "values": [
@@ -1156,7 +1156,7 @@
       ]
     },
     {
-      "line": 62990,
+      "line": 64895,
       "expression": "args[0] == 'keepwarm-tick'",
       "lhs": "args[0]",
       "values": [
@@ -1164,7 +1164,7 @@
       ]
     },
     {
-      "line": 63021,
+      "line": 64926,
       "expression": "args[0] == 'keepwarm-scheduler'",
       "lhs": "args[0]",
       "values": [
@@ -1172,7 +1172,7 @@
       ]
     },
     {
-      "line": 63028,
+      "line": 64933,
       "expression": "sub == 'install'",
       "lhs": "sub",
       "values": [
@@ -1180,7 +1180,7 @@
       ]
     },
     {
-      "line": 63042,
+      "line": 64947,
       "expression": "args[0] == 'keepwarm-backfill'",
       "lhs": "args[0]",
       "values": [
@@ -1188,7 +1188,7 @@
       ]
     },
     {
-      "line": 63032,
+      "line": 64937,
       "expression": "sub == 'uninstall'",
       "lhs": "sub",
       "values": [
@@ -1196,7 +1196,7 @@
       ]
     },
     {
-      "line": 63086,
+      "line": 64991,
       "expression": "args[0] == 'keepwarm-report'",
       "lhs": "args[0]",
       "values": [
@@ -1204,7 +1204,7 @@
       ]
     },
     {
-      "line": 63036,
+      "line": 64941,
       "expression": "sub == 'status'",
       "lhs": "sub",
       "values": [
@@ -1212,7 +1212,7 @@
       ]
     },
     {
-      "line": 63156,
+      "line": 65061,
       "expression": "args[0] == 'keepwarm-quota-value'",
       "lhs": "args[0]",
       "values": [
@@ -1220,7 +1220,7 @@
       ]
     },
     {
-      "line": 63054,
+      "line": 64959,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1228,7 +1228,7 @@
       ]
     },
     {
-      "line": 63145,
+      "line": 65050,
       "expression": "rep.get('billing') != 'api'",
       "lhs": "rep.get('billing')",
       "values": [
@@ -1236,7 +1236,7 @@
       ]
     },
     {
-      "line": 63196,
+      "line": 65101,
       "expression": "args[0] == 'keepwarm-forecast'",
       "lhs": "args[0]",
       "values": [
@@ -1244,7 +1244,7 @@
       ]
     },
     {
-      "line": 63247,
+      "line": 65152,
       "expression": "args[0] == 'resume-lean'",
       "lhs": "args[0]",
       "values": [
@@ -1252,7 +1252,7 @@
       ]
     },
     {
-      "line": 63329,
+      "line": 65234,
       "expression": "args[0] == 'checkpoint-trigger'",
       "lhs": "args[0]",
       "values": [
@@ -1260,7 +1260,7 @@
       ]
     },
     {
-      "line": 63203,
+      "line": 65108,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1268,7 +1268,7 @@
       ]
     },
     {
-      "line": 63336,
+      "line": 65241,
       "expression": "args[0] == 'compact-restore'",
       "lhs": "args[0]",
       "values": [
@@ -1276,7 +1276,7 @@
       ]
     },
     {
-      "line": 63261,
+      "line": 65166,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1284,7 +1284,7 @@
       ]
     },
     {
-      "line": 63397,
+      "line": 65304,
       "expression": "args[0] in ('continue-last', 'codex-continue-last')",
       "lhs": "args[0]",
       "values": [
@@ -1293,7 +1293,7 @@
       ]
     },
     {
-      "line": 63333,
+      "line": 65238,
       "expression": "a == '--milestone'",
       "lhs": "a",
       "values": [
@@ -1301,7 +1301,7 @@
       ]
     },
     {
-      "line": 63342,
+      "line": 65247,
       "expression": "source == 'compact'",
       "lhs": "source",
       "values": [
@@ -1309,7 +1309,15 @@
       ]
     },
     {
-      "line": 63410,
+      "line": 65256,
+      "expression": "source == 'clear'",
+      "lhs": "source",
+      "values": [
+        "clear"
+      ]
+    },
+    {
+      "line": 65317,
       "expression": "args[0] == 'prompt-continuity'",
       "lhs": "args[0]",
       "values": [
@@ -1317,7 +1325,7 @@
       ]
     },
     {
-      "line": 63450,
+      "line": 65357,
       "expression": "args[0] == 'verbosity-steer'",
       "lhs": "args[0]",
       "values": [
@@ -1325,7 +1333,7 @@
       ]
     },
     {
-      "line": 63400,
+      "line": 65307,
       "expression": "a == '--topic'",
       "lhs": "a",
       "values": [
@@ -1333,7 +1341,7 @@
       ]
     },
     {
-      "line": 63470,
+      "line": 65377,
       "expression": "args[0] == 'compact-instructions'",
       "lhs": "args[0]",
       "values": [
@@ -1341,7 +1349,7 @@
       ]
     },
     {
-      "line": 63476,
+      "line": 65383,
       "expression": "args[0] == 'dynamic-compact-instructions'",
       "lhs": "args[0]",
       "values": [
@@ -1349,7 +1357,7 @@
       ]
     },
     {
-      "line": 63480,
+      "line": 65387,
       "expression": "args[0] == 'setup-smart-compact'",
       "lhs": "args[0]",
       "values": [
@@ -1357,7 +1365,7 @@
       ]
     },
     {
-      "line": 63486,
+      "line": 65393,
       "expression": "args[0] == 'daemon-revive'",
       "lhs": "args[0]",
       "values": [
@@ -1365,7 +1373,7 @@
       ]
     },
     {
-      "line": 63506,
+      "line": 65413,
       "expression": "args[0] == 'quality-cache'",
       "lhs": "args[0]",
       "values": [
@@ -1373,7 +1381,7 @@
       ]
     },
     {
-      "line": 63635,
+      "line": 65542,
       "expression": "args[0] == 'v5'",
       "lhs": "args[0]",
       "values": [
@@ -1381,7 +1389,7 @@
       ]
     },
     {
-      "line": 63640,
+      "line": 65547,
       "expression": "sub == 'status'",
       "lhs": "sub",
       "values": [
@@ -1389,7 +1397,7 @@
       ]
     },
     {
-      "line": 63719,
+      "line": 65626,
       "expression": "args[0] == 'upgrade-drain'",
       "lhs": "args[0]",
       "values": [
@@ -1397,7 +1405,7 @@
       ]
     },
     {
-      "line": 63517,
+      "line": 65424,
       "expression": "a == '--throttle'",
       "lhs": "a",
       "values": [
@@ -1405,7 +1413,7 @@
       ]
     },
     {
-      "line": 63522,
+      "line": 65429,
       "expression": "a == '--warn-threshold'",
       "lhs": "a",
       "values": [
@@ -1413,7 +1421,7 @@
       ]
     },
     {
-      "line": 63612,
+      "line": 65519,
       "expression": "_qc_event == 'SessionStart'",
       "lhs": "_qc_event",
       "values": [
@@ -1421,7 +1429,7 @@
       ]
     },
     {
-      "line": 63660,
+      "line": 65567,
       "expression": "sub in ('enable', 'disable')",
       "lhs": "sub",
       "values": [
@@ -1430,7 +1438,7 @@
       ]
     },
     {
-      "line": 63723,
+      "line": 65630,
       "expression": "args[0] == 'counted-backfill'",
       "lhs": "args[0]",
       "values": [
@@ -1438,7 +1446,7 @@
       ]
     },
     {
-      "line": 63670,
+      "line": 65577,
       "expression": "sub == 'enable'",
       "lhs": "sub",
       "values": [
@@ -1446,7 +1454,7 @@
       ]
     },
     {
-      "line": 63692,
+      "line": 65599,
       "expression": "sub == 'welcome'",
       "lhs": "sub",
       "values": [
@@ -1454,7 +1462,7 @@
       ]
     },
     {
-      "line": 63734,
+      "line": 65641,
       "expression": "args[0] == 'cohorts'",
       "lhs": "args[0]",
       "values": [
@@ -1462,7 +1470,7 @@
       ]
     },
     {
-      "line": 63653,
+      "line": 65560,
       "expression": "info['risk'] != 'None.'",
       "lhs": "info['risk']",
       "values": [
@@ -1470,7 +1478,7 @@
       ]
     },
     {
-      "line": 63695,
+      "line": 65602,
       "expression": "sub == 'info'",
       "lhs": "sub",
       "values": [
@@ -1478,7 +1486,7 @@
       ]
     },
     {
-      "line": 63740,
+      "line": 65647,
       "expression": "sub == 'promote'",
       "lhs": "sub",
       "values": [
@@ -1486,7 +1494,7 @@
       ]
     },
     {
-      "line": 63767,
+      "line": 65674,
       "expression": "args[0] == 'compression-stats'",
       "lhs": "args[0]",
       "values": [
@@ -1494,7 +1502,7 @@
       ]
     },
     {
-      "line": 63603,
+      "line": 65510,
       "expression": "payload.get('hook_event_name') == 'PostCompact'",
       "lhs": "payload.get('hook_event_name')",
       "values": [
@@ -1502,7 +1510,7 @@
       ]
     },
     {
-      "line": 63649,
+      "line": 65556,
       "expression": "info['source'] != 'default'",
       "lhs": "info['source']",
       "values": [
@@ -1510,7 +1518,7 @@
       ]
     },
     {
-      "line": 63744,
+      "line": 65651,
       "expression": "sub == 'evaluate'",
       "lhs": "sub",
       "values": [
@@ -1518,7 +1526,7 @@
       ]
     },
     {
-      "line": 63829,
+      "line": 65736,
       "expression": "args[0] == 'cache-report'",
       "lhs": "args[0]",
       "values": [
@@ -1526,7 +1534,7 @@
       ]
     },
     {
-      "line": 63683,
+      "line": 65590,
       "expression": "feat['risk'] != 'None.'",
       "lhs": "feat['risk']",
       "values": [
@@ -1534,7 +1542,7 @@
       ]
     },
     {
-      "line": 63917,
+      "line": 65824,
       "expression": "args[0] == 'benchmark'",
       "lhs": "args[0]",
       "values": [
@@ -1542,7 +1550,7 @@
       ]
     },
     {
-      "line": 63771,
+      "line": 65678,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1550,7 +1558,7 @@
       ]
     },
     {
-      "line": 63942,
+      "line": 65849,
       "expression": "args[0] == 'structure-map'",
       "lhs": "args[0]",
       "values": [
@@ -1558,7 +1566,7 @@
       ]
     },
     {
-      "line": 63837,
+      "line": 65744,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1566,7 +1574,7 @@
       ]
     },
     {
-      "line": 63857,
+      "line": 65764,
       "expression": "k != '_cached_ts'",
       "lhs": "k",
       "values": [
@@ -1574,7 +1582,7 @@
       ]
     },
     {
-      "line": 63976,
+      "line": 65883,
       "expression": "args[0] == 'plugin-cleanup'",
       "lhs": "args[0]",
       "values": [
@@ -1582,7 +1590,7 @@
       ]
     },
     {
-      "line": 63805,
+      "line": 65712,
       "expression": "e['ratio_kind'] == 'realized'",
       "lhs": "e['ratio_kind']",
       "values": [
@@ -1590,7 +1598,7 @@
       ]
     },
     {
-      "line": 63979,
+      "line": 65886,
       "expression": "args[0] == 'subagent-cache'",
       "lhs": "args[0]",
       "values": [
@@ -1598,7 +1606,7 @@
       ]
     },
     {
-      "line": 63981,
+      "line": 65888,
       "expression": "args[0] == 'recommendations'",
       "lhs": "args[0]",
       "values": [
@@ -1606,7 +1614,7 @@
       ]
     },
     {
-      "line": 63983,
+      "line": 65890,
       "expression": "args[0] == 'ensure-health'",
       "lhs": "args[0]",
       "values": [
@@ -1614,7 +1622,7 @@
       ]
     },
     {
-      "line": 64057,
+      "line": 65964,
       "expression": "args[0] == 'setup-quality-bar'",
       "lhs": "args[0]",
       "values": [
@@ -1622,7 +1630,7 @@
       ]
     },
     {
-      "line": 64063,
+      "line": 65970,
       "expression": "args[0] == 'setup-vscode-extension'",
       "lhs": "args[0]",
       "values": [
@@ -1630,7 +1638,7 @@
       ]
     },
     {
-      "line": 64112,
+      "line": 66019,
       "expression": "args[0] == 'list-checkpoints'",
       "lhs": "args[0]",
       "values": [
@@ -1638,7 +1646,7 @@
       ]
     },
     {
-      "line": 64124,
+      "line": 66031,
       "expression": "args[0] == 'checkpoint-stats'",
       "lhs": "args[0]",
       "values": [
@@ -1646,7 +1654,7 @@
       ]
     },
     {
-      "line": 64138,
+      "line": 66045,
       "expression": "args[0] in ('trends', 'savings')",
       "lhs": "args[0]",
       "values": [
@@ -1655,7 +1663,7 @@
       ]
     },
     {
-      "line": 64160,
+      "line": 66067,
       "expression": "args[0] == 'trends'",
       "lhs": "args[0]",
       "values": [
@@ -1663,7 +1671,7 @@
       ]
     },
     {
-      "line": 64164,
+      "line": 66071,
       "expression": "args[0] == 'pin-baseline'",
       "lhs": "args[0]",
       "values": [
@@ -1671,7 +1679,7 @@
       ]
     },
     {
-      "line": 64129,
+      "line": 66036,
       "expression": "args[i] == '--days'",
       "lhs": "args[i]",
       "values": [
@@ -1679,7 +1687,7 @@
       ]
     },
     {
-      "line": 64166,
+      "line": 66073,
       "expression": "status == 'building'",
       "lhs": "status",
       "values": [
@@ -1687,7 +1695,7 @@
       ]
     },
     {
-      "line": 64144,
+      "line": 66051,
       "expression": "args[i] == '--days'",
       "lhs": "args[i]",
       "values": [
@@ -1695,7 +1703,7 @@
       ]
     },
     {
-      "line": 64154,
+      "line": 66061,
       "expression": "args[i] == '--json'",
       "lhs": "args[i]",
       "values": [
@@ -1703,7 +1711,7 @@
       ]
     },
     {
-      "line": 64169,
+      "line": 66076,
       "expression": "args[0] == 'skill'",
       "lhs": "args[0]",
       "values": [
@@ -1711,7 +1719,7 @@
       ]
     },
     {
-      "line": 64172,
+      "line": 66079,
       "expression": "action in ('archive', 'restore')",
       "lhs": "action",
       "values": [
@@ -1720,7 +1728,7 @@
       ]
     },
     {
-      "line": 64178,
+      "line": 66085,
       "expression": "args[0] == 'mcp'",
       "lhs": "args[0]",
       "values": [
@@ -1728,7 +1736,7 @@
       ]
     },
     {
-      "line": 64181,
+      "line": 66088,
       "expression": "action in ('disable', 'enable')",
       "lhs": "action",
       "values": [
@@ -1737,7 +1745,7 @@
       ]
     },
     {
-      "line": 64187,
+      "line": 66094,
       "expression": "args[0] == 'codex-skill'",
       "lhs": "args[0]",
       "values": [
@@ -1745,7 +1753,7 @@
       ]
     },
     {
-      "line": 64197,
+      "line": 66104,
       "expression": "action in ('disable', 'enable')",
       "lhs": "action",
       "values": [
@@ -1754,7 +1762,7 @@
       ]
     },
     {
-      "line": 64202,
+      "line": 66109,
       "expression": "args[0] == 'codex-mcp'",
       "lhs": "args[0]",
       "values": [
@@ -1762,7 +1770,7 @@
       ]
     },
     {
-      "line": 64205,
+      "line": 66112,
       "expression": "action in ('disable', 'enable')",
       "lhs": "action",
       "values": [
@@ -1771,7 +1779,7 @@
       ]
     },
     {
-      "line": 64210,
+      "line": 66117,
       "expression": "args[0] == 'api-manage'",
       "lhs": "args[0]",
       "values": [
@@ -1779,7 +1787,7 @@
       ]
     },
     {
-      "line": 64222,
+      "line": 66129,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -1787,7 +1795,7 @@
       ]
     },
     {
-      "line": 64272,
+      "line": 66179,
       "expression": "args[0] == 'jsonl-inspect'",
       "lhs": "args[0]",
       "values": [
@@ -1795,7 +1803,7 @@
       ]
     },
     {
-      "line": 64281,
+      "line": 66188,
       "expression": "args[0] == 'jsonl-trim'",
       "lhs": "args[0]",
       "values": [
@@ -1803,7 +1811,7 @@
       ]
     },
     {
-      "line": 64243,
+      "line": 66150,
       "expression": "endpoint == 'skill/archive'",
       "lhs": "endpoint",
       "values": [
@@ -1811,7 +1819,7 @@
       ]
     },
     {
-      "line": 64297,
+      "line": 66204,
       "expression": "args[0] == 'jsonl-dedup'",
       "lhs": "args[0]",
       "values": [
@@ -1819,7 +1827,7 @@
       ]
     },
     {
-      "line": 64247,
+      "line": 66154,
       "expression": "endpoint == 'skill/restore'",
       "lhs": "endpoint",
       "values": [
@@ -1827,7 +1835,7 @@
       ]
     },
     {
-      "line": 64306,
+      "line": 66213,
       "expression": "args[0] == 'attention-score'",
       "lhs": "args[0]",
       "values": [
@@ -1835,7 +1843,7 @@
       ]
     },
     {
-      "line": 64251,
+      "line": 66158,
       "expression": "endpoint == 'mcp/disable'",
       "lhs": "endpoint",
       "values": [
@@ -1843,7 +1851,7 @@
       ]
     },
     {
-      "line": 64286,
+      "line": 66193,
       "expression": "a == '--threshold'",
       "lhs": "a",
       "values": [
@@ -1851,7 +1859,7 @@
       ]
     },
     {
-      "line": 64315,
+      "line": 66222,
       "expression": "args[0] == 'attention-optimize'",
       "lhs": "args[0]",
       "values": [
@@ -1859,7 +1867,7 @@
       ]
     },
     {
-      "line": 64254,
+      "line": 66161,
       "expression": "endpoint == 'mcp/enable'",
       "lhs": "endpoint",
       "values": [
@@ -1867,7 +1875,7 @@
       ]
     },
     {
-      "line": 64325,
+      "line": 66232,
       "expression": "args[0] == 'memory-review'",
       "lhs": "args[0]",
       "values": [
@@ -1875,7 +1883,7 @@
       ]
     },
     {
-      "line": 64342,
+      "line": 66249,
       "expression": "args[0] == 'archive-result'",
       "lhs": "args[0]",
       "values": [
@@ -1883,7 +1891,7 @@
       ]
     },
     {
-      "line": 64346,
+      "line": 66253,
       "expression": "args[0] == 'session-cost'",
       "lhs": "args[0]",
       "values": [
@@ -1891,7 +1899,7 @@
       ]
     },
     {
-      "line": 64331,
+      "line": 66238,
       "expression": "a == '--stale-days'",
       "lhs": "a",
       "values": [
@@ -1899,7 +1907,7 @@
       ]
     },
     {
-      "line": 64349,
+      "line": 66256,
       "expression": "args[0] == 'expand'",
       "lhs": "args[0]",
       "values": [
@@ -1907,7 +1915,7 @@
       ]
     },
     {
-      "line": 64336,
+      "line": 66243,
       "expression": "a == '--project-dir'",
       "lhs": "a",
       "values": [
@@ -1915,7 +1923,7 @@
       ]
     },
     {
-      "line": 64370,
+      "line": 66300,
       "expression": "args[0] == 'archive-cleanup'",
       "lhs": "args[0]",
       "values": [
@@ -1923,7 +1931,7 @@
       ]
     },
     {
-      "line": 64379,
+      "line": 66309,
       "expression": "args[0] == 'purge'",
       "lhs": "args[0]",
       "values": [
@@ -1931,7 +1939,7 @@
       ]
     },
     {
-      "line": 64356,
+      "line": 66275,
       "expression": "a == '--session'",
       "lhs": "a",
       "values": [
@@ -1939,7 +1947,15 @@
       ]
     },
     {
-      "line": 64384,
+      "line": 66281,
+      "expression": "a == '--list'",
+      "lhs": "a",
+      "values": [
+        "--list"
+      ]
+    },
+    {
+      "line": 66314,
       "expression": "args[0] == 'read-cache-clear'",
       "lhs": "args[0]",
       "values": [
@@ -1947,15 +1963,16 @@
       ]
     },
     {
-      "line": 64358,
-      "expression": "a == '--search'",
+      "line": 66277,
+      "expression": "a in ('--search', '--grep')",
       "lhs": "a",
       "values": [
-        "--search"
+        "--search",
+        "--grep"
       ]
     },
     {
-      "line": 64398,
+      "line": 66328,
       "expression": "args[0] == 'read-cache-stats'",
       "lhs": "args[0]",
       "values": [
@@ -1963,15 +1980,7 @@
       ]
     },
     {
-      "line": 64360,
-      "expression": "a == '--grep'",
-      "lhs": "a",
-      "values": [
-        "--grep"
-      ]
-    },
-    {
-      "line": 64408,
+      "line": 66338,
       "expression": "args[0] == 'structure-proof'",
       "lhs": "args[0]",
       "values": [
@@ -1979,7 +1988,7 @@
       ]
     },
     {
-      "line": 64388,
+      "line": 66318,
       "expression": "a == '--session'",
       "lhs": "a",
       "values": [
@@ -1987,7 +1996,7 @@
       ]
     },
     {
-      "line": 64402,
+      "line": 66332,
       "expression": "a == '--session'",
       "lhs": "a",
       "values": [
@@ -2001,14 +2010,14 @@
       "argv": [
         "report"
       ],
-      "line": 62015
+      "line": 63920
     },
     {
       "expression": "args[0] == 'quick'",
       "argv": [
         "quick"
       ],
-      "line": 62017
+      "line": 63922
     },
     {
       "expression": "'--json' in args",
@@ -2016,35 +2025,35 @@
         "quick",
         "--json"
       ],
-      "line": 62018
+      "line": 63923
     },
     {
       "expression": "args[0] == 'route'",
       "argv": [
         "route"
       ],
-      "line": 62020
+      "line": 63925
     },
     {
       "expression": "args[0] == 'cloud-setup-script'",
       "argv": [
         "cloud-setup-script"
       ],
-      "line": 62022
+      "line": 63927
     },
     {
       "expression": "args[0] == 'cloud-doctor'",
       "argv": [
         "cloud-doctor"
       ],
-      "line": 62025
+      "line": 63930
     },
     {
       "expression": "args[0] == 'doctor'",
       "argv": [
         "doctor"
       ],
-      "line": 62028
+      "line": 63933
     },
     {
       "expression": "'--json' in args",
@@ -2052,84 +2061,84 @@
         "doctor",
         "--json"
       ],
-      "line": 62029
+      "line": 63934
     },
     {
       "expression": "args[0] == 'codex-doctor'",
       "argv": [
         "codex-doctor"
       ],
-      "line": 62034
+      "line": 63939
     },
     {
       "expression": "args[0] == 'codex-compact-prompt'",
       "argv": [
         "codex-compact-prompt"
       ],
-      "line": 62037
+      "line": 63942
     },
     {
       "expression": "args[0] == 'codex-status-line'",
       "argv": [
         "codex-status-line"
       ],
-      "line": 62040
+      "line": 63945
     },
     {
       "expression": "args[0] == 'codex-install'",
       "argv": [
         "codex-install"
       ],
-      "line": 62043
+      "line": 63948
     },
     {
       "expression": "args[0] == 'copilot-doctor'",
       "argv": [
         "copilot-doctor"
       ],
-      "line": 62046
+      "line": 63951
     },
     {
       "expression": "args[0] == 'antigravity-doctor'",
       "argv": [
         "antigravity-doctor"
       ],
-      "line": 62049
+      "line": 63954
     },
     {
       "expression": "args[0] == 'antigravity-install'",
       "argv": [
         "antigravity-install"
       ],
-      "line": 62052
+      "line": 63957
     },
     {
       "expression": "args[0] == 'antigravity-uninstall'",
       "argv": [
         "antigravity-uninstall"
       ],
-      "line": 62055
+      "line": 63960
     },
     {
       "expression": "args[0] == 'antigravity-home'",
       "argv": [
         "antigravity-home"
       ],
-      "line": 62058
+      "line": 63963
     },
     {
       "expression": "args[0] == 'antigravity-rollup'",
       "argv": [
         "antigravity-rollup"
       ],
-      "line": 62062
+      "line": 63967
     },
     {
       "expression": "args[0] == 'antigravity-summary'",
       "argv": [
         "antigravity-summary"
       ],
-      "line": 62079
+      "line": 63984
     },
     {
       "expression": "'--quiet' in args",
@@ -2137,42 +2146,42 @@
         "antigravity-rollup",
         "--quiet"
       ],
-      "line": 62068
+      "line": 63973
     },
     {
       "expression": "args[0] == 'copilot-install'",
       "argv": [
         "copilot-install"
       ],
-      "line": 62082
+      "line": 63987
     },
     {
       "expression": "args[0] == 'copilot-uninstall'",
       "argv": [
         "copilot-uninstall"
       ],
-      "line": 62123
+      "line": 64028
     },
     {
       "expression": "args[0] == 'copilot-home'",
       "argv": [
         "copilot-home"
       ],
-      "line": 62126
+      "line": 64031
     },
     {
       "expression": "args[0] == 'copilot-rollup'",
       "argv": [
         "copilot-rollup"
       ],
-      "line": 62149
+      "line": 64054
     },
     {
       "expression": "args[0] == 'copilot-summary'",
       "argv": [
         "copilot-summary"
       ],
-      "line": 62172
+      "line": 64077
     },
     {
       "expression": "'--quiet' in args",
@@ -2180,77 +2189,77 @@
         "copilot-rollup",
         "--quiet"
       ],
-      "line": 62161
+      "line": 64066
     },
     {
       "expression": "args[0] == 'devin-install'",
       "argv": [
         "devin-install"
       ],
-      "line": 62175
+      "line": 64080
     },
     {
       "expression": "args[0] == 'devin-uninstall'",
       "argv": [
         "devin-uninstall"
       ],
-      "line": 62178
+      "line": 64083
     },
     {
       "expression": "args[0] == 'devin-doctor'",
       "argv": [
         "devin-doctor"
       ],
-      "line": 62181
+      "line": 64086
     },
     {
       "expression": "args[0] == 'devin-summary'",
       "argv": [
         "devin-summary"
       ],
-      "line": 62184
+      "line": 64089
     },
     {
       "expression": "args[0] == 'devin-filter'",
       "argv": [
         "devin-filter"
       ],
-      "line": 62192
+      "line": 64097
     },
     {
       "expression": "args[0] == 'cursor-doctor'",
       "argv": [
         "cursor-doctor"
       ],
-      "line": 62195
+      "line": 64100
     },
     {
       "expression": "args[0] == 'cursor-install'",
       "argv": [
         "cursor-install"
       ],
-      "line": 62198
+      "line": 64103
     },
     {
       "expression": "args[0] == 'cursor-uninstall'",
       "argv": [
         "cursor-uninstall"
       ],
-      "line": 62201
+      "line": 64106
     },
     {
       "expression": "args[0] == 'cursor-rollup'",
       "argv": [
         "cursor-rollup"
       ],
-      "line": 62204
+      "line": 64109
     },
     {
       "expression": "args[0] == 'grok-doctor'",
       "argv": [
         "grok-doctor"
       ],
-      "line": 62225
+      "line": 64130
     },
     {
       "expression": "'--quiet' in args",
@@ -2258,42 +2267,42 @@
         "cursor-rollup",
         "--quiet"
       ],
-      "line": 62214
+      "line": 64119
     },
     {
       "expression": "args[0] == 'grok-install'",
       "argv": [
         "grok-install"
       ],
-      "line": 62228
+      "line": 64133
     },
     {
       "expression": "args[0] == 'grok-uninstall'",
       "argv": [
         "grok-uninstall"
       ],
-      "line": 62231
+      "line": 64136
     },
     {
       "expression": "args[0] == 'grok-home'",
       "argv": [
         "grok-home"
       ],
-      "line": 62234
+      "line": 64139
     },
     {
       "expression": "args[0] == 'grok-rollup'",
       "argv": [
         "grok-rollup"
       ],
-      "line": 62242
+      "line": 64147
     },
     {
       "expression": "args[0] == 'cursor-summary'",
       "argv": [
         "cursor-summary"
       ],
-      "line": 62257
+      "line": 64162
     },
     {
       "expression": "'--quiet' in args",
@@ -2301,42 +2310,42 @@
         "grok-rollup",
         "--quiet"
       ],
-      "line": 62246
+      "line": 64151
     },
     {
       "expression": "args[0] == 'grok-summary'",
       "argv": [
         "grok-summary"
       ],
-      "line": 62267
+      "line": 64172
     },
     {
       "expression": "args[0] == 'hermes-doctor'",
       "argv": [
         "hermes-doctor"
       ],
-      "line": 62270
+      "line": 64175
     },
     {
       "expression": "args[0] == 'hermes-install'",
       "argv": [
         "hermes-install"
       ],
-      "line": 62273
+      "line": 64178
     },
     {
       "expression": "args[0] == 'hermes-rollup'",
       "argv": [
         "hermes-rollup"
       ],
-      "line": 62280
+      "line": 64185
     },
     {
       "expression": "args[0] == 'hermes-checkpoint'",
       "argv": [
         "hermes-checkpoint"
       ],
-      "line": 62305
+      "line": 64210
     },
     {
       "expression": "'--quiet' in args",
@@ -2344,35 +2353,35 @@
         "hermes-rollup",
         "--quiet"
       ],
-      "line": 62292
+      "line": 64197
     },
     {
       "expression": "args[0] == 'hermes-turn-context'",
       "argv": [
         "hermes-turn-context"
       ],
-      "line": 62321
+      "line": 64226
     },
     {
       "expression": "args[0] == 'hermes-summary'",
       "argv": [
         "hermes-summary"
       ],
-      "line": 62335
+      "line": 64240
     },
     {
       "expression": "args[0] == 'codex-state'",
       "argv": [
         "codex-state"
       ],
-      "line": 62362
+      "line": 64267
     },
     {
       "expression": "args[0] == 'drift'",
       "argv": [
         "drift"
       ],
-      "line": 62364
+      "line": 64269
     },
     {
       "expression": "'--json' in args",
@@ -2380,14 +2389,14 @@
         "drift",
         "--json"
       ],
-      "line": 62365
+      "line": 64270
     },
     {
       "expression": "args[0] == 'git-context'",
       "argv": [
         "git-context"
       ],
-      "line": 62367
+      "line": 64272
     },
     {
       "expression": "'--json' in args",
@@ -2395,7 +2404,7 @@
         "codex-state",
         "--json"
       ],
-      "line": 62363
+      "line": 64268
     },
     {
       "expression": "'--json' in args",
@@ -2403,63 +2412,63 @@
         "git-context",
         "--json"
       ],
-      "line": 62368
+      "line": 64273
     },
     {
       "expression": "args[0] == 'snapshot'",
       "argv": [
         "snapshot"
       ],
-      "line": 62370
+      "line": 64275
     },
     {
       "expression": "args[0] == 'set-baseline'",
       "argv": [
         "set-baseline"
       ],
-      "line": 62372
+      "line": 64277
     },
     {
       "expression": "args[0] == 'compare'",
       "argv": [
         "compare"
       ],
-      "line": 62374
+      "line": 64279
     },
     {
       "expression": "args[0] == 'dashboard'",
       "argv": [
         "dashboard"
       ],
-      "line": 62376
+      "line": 64281
     },
     {
       "expression": "args[0] == 'status-bar'",
       "argv": [
         "status-bar"
       ],
-      "line": 62378
+      "line": 64283
     },
     {
       "expression": "args[0] == 'compact-advice'",
       "argv": [
         "compact-advice"
       ],
-      "line": 62381
+      "line": 64286
     },
     {
       "expression": "args[0] == 'runway-json'",
       "argv": [
         "runway-json"
       ],
-      "line": 62384
+      "line": 64289
     },
     {
       "expression": "args[0] == 'conversation'",
       "argv": [
         "conversation"
       ],
-      "line": 62395
+      "line": 64300
     },
     {
       "expression": "'--json' in args",
@@ -2467,112 +2476,112 @@
         "conversation",
         "--json"
       ],
-      "line": 62397
+      "line": 64302
     },
     {
       "expression": "args[0] == 'pricing-tier'",
       "argv": [
         "pricing-tier"
       ],
-      "line": 62434
+      "line": 64339
     },
     {
       "expression": "args[0] == 'collect'",
       "argv": [
         "collect"
       ],
-      "line": 62450
+      "line": 64355
     },
     {
       "expression": "args[0] == 'health'",
       "argv": [
         "health"
       ],
-      "line": 62452
+      "line": 64357
     },
     {
       "expression": "args[0] == 'health-selfcheck'",
       "argv": [
         "health-selfcheck"
       ],
-      "line": 62454
+      "line": 64359
     },
     {
       "expression": "args[0] == 'dashboard-diagnose'",
       "argv": [
         "dashboard-diagnose"
       ],
-      "line": 62456
+      "line": 64361
     },
     {
       "expression": "args[0] in ('version', '--version', '-v')",
       "argv": [
         "version"
       ],
-      "line": 62552
+      "line": 64457
     },
     {
       "expression": "args[0] in ('version', '--version', '-v')",
       "argv": [
         "--version"
       ],
-      "line": 62552
+      "line": 64457
     },
     {
       "expression": "args[0] in ('version', '--version', '-v')",
       "argv": [
         "-v"
       ],
-      "line": 62552
+      "line": 64457
     },
     {
       "expression": "args[0] in ('version', '--version', '-v')",
       "argv": [
         "version"
       ],
-      "line": 62552
+      "line": 64457
     },
     {
       "expression": "args[0] in ('version', '--version', '-v')",
       "argv": [
         "--version"
       ],
-      "line": 62552
+      "line": 64457
     },
     {
       "expression": "args[0] in ('version', '--version', '-v')",
       "argv": [
         "-v"
       ],
-      "line": 62552
+      "line": 64457
     },
     {
       "expression": "args[0] in ('version', '--version', '-v')",
       "argv": [
         "version"
       ],
-      "line": 62552
+      "line": 64457
     },
     {
       "expression": "args[0] in ('version', '--version', '-v')",
       "argv": [
         "--version"
       ],
-      "line": 62552
+      "line": 64457
     },
     {
       "expression": "args[0] in ('version', '--version', '-v')",
       "argv": [
         "-v"
       ],
-      "line": 62552
+      "line": 64457
     },
     {
       "expression": "args[0] == 'daemon-consent'",
       "argv": [
         "daemon-consent"
       ],
-      "line": 62557
+      "line": 64462
     },
     {
       "expression": "'--get' in args",
@@ -2580,7 +2589,7 @@
         "daemon-consent",
         "--get"
       ],
-      "line": 62564
+      "line": 64469
     },
     {
       "expression": "'--set' in args",
@@ -2589,14 +2598,14 @@
         "--set",
         "yes"
       ],
-      "line": 62592
+      "line": 64497
     },
     {
       "expression": "args[0] == 'consent'",
       "argv": [
         "consent"
       ],
-      "line": 62635
+      "line": 64540
     },
     {
       "expression": "sub == '--show'",
@@ -2604,14 +2613,14 @@
         "consent",
         "--show"
       ],
-      "line": 62638
+      "line": 64543
     },
     {
       "expression": "args[0] == 'security-report'",
       "argv": [
         "security-report"
       ],
-      "line": 62660
+      "line": 64565
     },
     {
       "expression": "sub == '--reset'",
@@ -2619,7 +2628,7 @@
         "consent",
         "--reset"
       ],
-      "line": 62645
+      "line": 64550
     },
     {
       "expression": "'--json' in args",
@@ -2627,14 +2636,14 @@
         "security-report",
         "--json"
       ],
-      "line": 62661
+      "line": 64566
     },
     {
       "expression": "args[0] == 'session-end-flush'",
       "argv": [
         "session-end-flush"
       ],
-      "line": 62663
+      "line": 64568
     },
     {
       "expression": "sub == '--grant'",
@@ -2642,42 +2651,42 @@
         "consent",
         "--grant"
       ],
-      "line": 62654
+      "line": 64559
     },
     {
       "expression": "args[0] == 'session-end-flush-worker'",
       "argv": [
         "session-end-flush-worker"
       ],
-      "line": 62680
+      "line": 64585
     },
     {
       "expression": "args[0] == 'daemon-status'",
       "argv": [
         "daemon-status"
       ],
-      "line": 62683
+      "line": 64588
     },
     {
       "expression": "args[0] == 'kill-stale'",
       "argv": [
         "kill-stale"
       ],
-      "line": 62719
+      "line": 64624
     },
     {
       "expression": "args[0] == 'check-hook'",
       "argv": [
         "check-hook"
       ],
-      "line": 62725
+      "line": 64630
     },
     {
       "expression": "args[0] == 'setup-hook'",
       "argv": [
         "setup-hook"
       ],
-      "line": 62727
+      "line": 64632
     },
     {
       "expression": "'--dry-run' in args",
@@ -2685,7 +2694,7 @@
         "setup-hook",
         "--dry-run"
       ],
-      "line": 62728
+      "line": 64633
     },
     {
       "expression": "'--uninstall' in args",
@@ -2693,14 +2702,14 @@
         "setup-hook",
         "--uninstall"
       ],
-      "line": 62729
+      "line": 64634
     },
     {
       "expression": "args[0] == 'setup-all-hooks'",
       "argv": [
         "setup-all-hooks"
       ],
-      "line": 62731
+      "line": 64636
     },
     {
       "expression": "'--dry-run' in args",
@@ -2708,7 +2717,7 @@
         "setup-all-hooks",
         "--dry-run"
       ],
-      "line": 62732
+      "line": 64637
     },
     {
       "expression": "'--json' in args",
@@ -2716,14 +2725,14 @@
         "setup-all-hooks",
         "--json"
       ],
-      "line": 62734
+      "line": 64639
     },
     {
       "expression": "args[0] == 'cleanup-duplicate-hooks'",
       "argv": [
         "cleanup-duplicate-hooks"
       ],
-      "line": 62753
+      "line": 64658
     },
     {
       "expression": "'--verbose' in args",
@@ -2731,7 +2740,7 @@
         "setup-all-hooks",
         "--verbose"
       ],
-      "line": 62733
+      "line": 64638
     },
     {
       "expression": "'--dry-run' in args",
@@ -2739,7 +2748,7 @@
         "cleanup-duplicate-hooks",
         "--dry-run"
       ],
-      "line": 62756
+      "line": 64661
     },
     {
       "expression": "'--json' in args",
@@ -2747,21 +2756,21 @@
         "cleanup-duplicate-hooks",
         "--json"
       ],
-      "line": 62757
+      "line": 64662
     },
     {
       "expression": "args[0] == 'setup-daemon'",
       "argv": [
         "setup-daemon"
       ],
-      "line": 62782
+      "line": 64687
     },
     {
       "expression": "args[0] == 'cleanup'",
       "argv": [
         "cleanup"
       ],
-      "line": 62784
+      "line": 64689
     },
     {
       "expression": "'--dry-run' in args",
@@ -2769,7 +2778,7 @@
         "cleanup",
         "--dry-run"
       ],
-      "line": 62798
+      "line": 64703
     },
     {
       "expression": "'--this-install-only' in args",
@@ -2777,70 +2786,70 @@
         "cleanup",
         "--this-install-only"
       ],
-      "line": 62799
+      "line": 64704
     },
     {
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "argv": [
         "inject-routing"
       ],
-      "line": 62809
+      "line": 64714
     },
     {
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "argv": [
         "inject-coach"
       ],
-      "line": 62809
+      "line": 64714
     },
     {
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "argv": [
         "setup-coach-injection"
       ],
-      "line": 62809
+      "line": 64714
     },
     {
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "argv": [
         "inject-routing"
       ],
-      "line": 62809
+      "line": 64714
     },
     {
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "argv": [
         "inject-coach"
       ],
-      "line": 62809
+      "line": 64714
     },
     {
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "argv": [
         "setup-coach-injection"
       ],
-      "line": 62809
+      "line": 64714
     },
     {
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "argv": [
         "inject-routing"
       ],
-      "line": 62809
+      "line": 64714
     },
     {
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "argv": [
         "inject-coach"
       ],
-      "line": 62809
+      "line": 64714
     },
     {
       "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
       "argv": [
         "setup-coach-injection"
       ],
-      "line": 62809
+      "line": 64714
     },
     {
       "expression": "'--confirm' not in args",
@@ -2848,21 +2857,21 @@
         "cleanup",
         "--confirm"
       ],
-      "line": 62800
+      "line": 64705
     },
     {
       "expression": "args[0] == 'check-staleness'",
       "argv": [
         "check-staleness"
       ],
-      "line": 62858
+      "line": 64763
     },
     {
       "expression": "args[0] == 'setup-coach-injection'",
       "argv": [
         "setup-coach-injection"
       ],
-      "line": 62825
+      "line": 64730
     },
     {
       "expression": "'--uninstall' in args",
@@ -2870,21 +2879,21 @@
         "setup-coach-injection",
         "--uninstall"
       ],
-      "line": 62825
+      "line": 64730
     },
     {
       "expression": "args[0] == 'inject-routing'",
       "argv": [
         "inject-routing"
       ],
-      "line": 62834
+      "line": 64739
     },
     {
       "expression": "args[0] == 'coach'",
       "argv": [
         "coach"
       ],
-      "line": 62873
+      "line": 64778
     },
     {
       "expression": "'--dry-run' in args",
@@ -2892,35 +2901,35 @@
         "setup-coach-injection",
         "--dry-run"
       ],
-      "line": 62845
+      "line": 64750
     },
     {
       "expression": "args[0] != 'setup-coach-injection'",
       "argv": [
         "setup-coach-injection"
       ],
-      "line": 62845
+      "line": 64750
     },
     {
       "expression": "args[0] == 'setup-coach-injection'",
       "argv": [
         "setup-coach-injection"
       ],
-      "line": 62855
+      "line": 64760
     },
     {
       "expression": "args[0] == 'deterministic-candidates'",
       "argv": [
         "deterministic-candidates"
       ],
-      "line": 62875
+      "line": 64780
     },
     {
       "expression": "args[0] == 'validate-impact'",
       "argv": [
         "validate-impact"
       ],
-      "line": 62877
+      "line": 64782
     },
     {
       "expression": "'--json' in args",
@@ -2928,14 +2937,14 @@
         "validate-impact",
         "--json"
       ],
-      "line": 62878
+      "line": 64783
     },
     {
       "expression": "args[0] == 'quality'",
       "argv": [
         "quality"
       ],
-      "line": 62893
+      "line": 64798
     },
     {
       "expression": "'--json' in args",
@@ -2943,28 +2952,28 @@
         "quality",
         "--json"
       ],
-      "line": 62895
+      "line": 64800
     },
     {
       "expression": "args[0] == 'compact-capture'",
       "argv": [
         "compact-capture"
       ],
-      "line": 62901
+      "line": 64806
     },
     {
       "expression": "args[0] == 'keepwarm-arm'",
       "argv": [
         "keepwarm-arm"
       ],
-      "line": 62940
+      "line": 64845
     },
     {
       "expression": "args[0] == 'keepwarm-enable'",
       "argv": [
         "keepwarm-enable"
       ],
-      "line": 62963
+      "line": 64868
     },
     {
       "expression": "'--quiet' not in args",
@@ -2972,14 +2981,14 @@
         "compact-capture",
         "--quiet"
       ],
-      "line": 62926
+      "line": 64831
     },
     {
       "expression": "args[0] == 'keepwarm-disable'",
       "argv": [
         "keepwarm-disable"
       ],
-      "line": 62972
+      "line": 64877
     },
     {
       "expression": "'--quiet' not in args",
@@ -2987,14 +2996,14 @@
         "keepwarm-arm",
         "--quiet"
       ],
-      "line": 62955
+      "line": 64860
     },
     {
       "expression": "args[0] == 'keepwarm-consent-status'",
       "argv": [
         "keepwarm-consent-status"
       ],
-      "line": 62977
+      "line": 64882
     },
     {
       "expression": "'--limits-lab' in args",
@@ -3002,14 +3011,14 @@
         "keepwarm-enable",
         "--limits-lab"
       ],
-      "line": 62969
+      "line": 64874
     },
     {
       "expression": "args[0] == 'keepwarm-consent-asked'",
       "argv": [
         "keepwarm-consent-asked"
       ],
-      "line": 62983
+      "line": 64888
     },
     {
       "expression": "'--quiet' not in args",
@@ -3017,14 +3026,14 @@
         "keepwarm-consent-asked",
         "--quiet"
       ],
-      "line": 62988
+      "line": 64893
     },
     {
       "expression": "args[0] == 'keepwarm-tick'",
       "argv": [
         "keepwarm-tick"
       ],
-      "line": 62990
+      "line": 64895
     },
     {
       "expression": "'--dry-run' in args",
@@ -3032,14 +3041,14 @@
         "keepwarm-tick",
         "--dry-run"
       ],
-      "line": 62996
+      "line": 64901
     },
     {
       "expression": "args[0] == 'keepwarm-scheduler'",
       "argv": [
         "keepwarm-scheduler"
       ],
-      "line": 63021
+      "line": 64926
     },
     {
       "expression": "'--quiet' not in args",
@@ -3047,7 +3056,7 @@
         "keepwarm-tick",
         "--quiet"
       ],
-      "line": 63012
+      "line": 64917
     },
     {
       "expression": "sub == 'install'",
@@ -3055,14 +3064,14 @@
         "keepwarm-scheduler",
         "install"
       ],
-      "line": 63028
+      "line": 64933
     },
     {
       "expression": "args[0] == 'keepwarm-backfill'",
       "argv": [
         "keepwarm-backfill"
       ],
-      "line": 63042
+      "line": 64947
     },
     {
       "expression": "sub == 'uninstall'",
@@ -3070,7 +3079,7 @@
         "keepwarm-scheduler",
         "uninstall"
       ],
-      "line": 63032
+      "line": 64937
     },
     {
       "expression": "'--json' in args",
@@ -3078,7 +3087,7 @@
         "keepwarm-backfill",
         "--json"
       ],
-      "line": 63050
+      "line": 64955
     },
     {
       "expression": "'--no-fence' not in args",
@@ -3086,14 +3095,14 @@
         "keepwarm-backfill",
         "--no-fence"
       ],
-      "line": 63051
+      "line": 64956
     },
     {
       "expression": "args[0] == 'keepwarm-report'",
       "argv": [
         "keepwarm-report"
       ],
-      "line": 63086
+      "line": 64991
     },
     {
       "expression": "sub == 'status'",
@@ -3101,7 +3110,7 @@
         "keepwarm-scheduler",
         "status"
       ],
-      "line": 63036
+      "line": 64941
     },
     {
       "expression": "'--json' in args",
@@ -3109,14 +3118,14 @@
         "keepwarm-report",
         "--json"
       ],
-      "line": 63091
+      "line": 64996
     },
     {
       "expression": "args[0] == 'keepwarm-quota-value'",
       "argv": [
         "keepwarm-quota-value"
       ],
-      "line": 63156
+      "line": 65061
     },
     {
       "expression": "'--quiet' in args",
@@ -3124,7 +3133,7 @@
         "keepwarm-scheduler",
         "--quiet"
       ],
-      "line": 63029
+      "line": 64934
     },
     {
       "expression": "'--json' in args",
@@ -3132,14 +3141,14 @@
         "keepwarm-quota-value",
         "--json"
       ],
-      "line": 63160
+      "line": 65065
     },
     {
       "expression": "args[0] == 'keepwarm-forecast'",
       "argv": [
         "keepwarm-forecast"
       ],
-      "line": 63196
+      "line": 65101
     },
     {
       "expression": "'--quiet' in args",
@@ -3147,7 +3156,7 @@
         "keepwarm-scheduler",
         "--quiet"
       ],
-      "line": 63033
+      "line": 64938
     },
     {
       "expression": "'--json' in args",
@@ -3155,14 +3164,14 @@
         "keepwarm-forecast",
         "--json"
       ],
-      "line": 63200
+      "line": 65105
     },
     {
       "expression": "args[0] == 'resume-lean'",
       "argv": [
         "resume-lean"
       ],
-      "line": 63247
+      "line": 65152
     },
     {
       "expression": "'--json' in args",
@@ -3170,7 +3179,7 @@
         "resume-lean",
         "--json"
       ],
-      "line": 63253
+      "line": 65158
     },
     {
       "expression": "'--print' in args",
@@ -3178,21 +3187,21 @@
         "resume-lean",
         "--print"
       ],
-      "line": 63254
+      "line": 65159
     },
     {
       "expression": "args[0] == 'checkpoint-trigger'",
       "argv": [
         "checkpoint-trigger"
       ],
-      "line": 63329
+      "line": 65234
     },
     {
       "expression": "args[0] == 'compact-restore'",
       "argv": [
         "compact-restore"
       ],
-      "line": 63336
+      "line": 65241
     },
     {
       "expression": "'--quiet' in args",
@@ -3200,7 +3209,7 @@
         "checkpoint-trigger",
         "--quiet"
       ],
-      "line": 63330
+      "line": 65235
     },
     {
       "expression": "'--new-session-only' in args",
@@ -3208,35 +3217,35 @@
         "compact-restore",
         "--new-session-only"
       ],
-      "line": 63340
+      "line": 65245
     },
     {
       "expression": "args[0] in ('continue-last', 'codex-continue-last')",
       "argv": [
         "continue-last"
       ],
-      "line": 63397
+      "line": 65304
     },
     {
       "expression": "args[0] in ('continue-last', 'codex-continue-last')",
       "argv": [
         "codex-continue-last"
       ],
-      "line": 63397
+      "line": 65304
     },
     {
       "expression": "args[0] in ('continue-last', 'codex-continue-last')",
       "argv": [
         "continue-last"
       ],
-      "line": 63397
+      "line": 65304
     },
     {
       "expression": "args[0] in ('continue-last', 'codex-continue-last')",
       "argv": [
         "codex-continue-last"
       ],
-      "line": 63397
+      "line": 65304
     },
     {
       "expression": "'--compact' in args",
@@ -3244,7 +3253,7 @@
         "compact-restore",
         "--compact"
       ],
-      "line": 63342
+      "line": 65247
     },
     {
       "expression": "'--once-mark' in args",
@@ -3252,14 +3261,14 @@
         "compact-restore",
         "--once-mark"
       ],
-      "line": 63351
+      "line": 65258
     },
     {
       "expression": "args[0] == 'prompt-continuity'",
       "argv": [
         "prompt-continuity"
       ],
-      "line": 63410
+      "line": 65317
     },
     {
       "expression": "'--once-per-session' in args",
@@ -3267,21 +3276,21 @@
         "compact-restore",
         "--once-per-session"
       ],
-      "line": 63353
+      "line": 65260
     },
     {
       "expression": "args[0] == 'verbosity-steer'",
       "argv": [
         "verbosity-steer"
       ],
-      "line": 63450
+      "line": 65357
     },
     {
       "expression": "args[0] == 'compact-instructions'",
       "argv": [
         "compact-instructions"
       ],
-      "line": 63470
+      "line": 65377
     },
     {
       "expression": "'--json' in args",
@@ -3289,7 +3298,7 @@
         "compact-instructions",
         "--json"
       ],
-      "line": 63471
+      "line": 65378
     },
     {
       "expression": "'--install' in args",
@@ -3297,7 +3306,7 @@
         "compact-instructions",
         "--install"
       ],
-      "line": 63472
+      "line": 65379
     },
     {
       "expression": "'--dry-run' in args",
@@ -3305,21 +3314,21 @@
         "compact-instructions",
         "--dry-run"
       ],
-      "line": 63473
+      "line": 65380
     },
     {
       "expression": "args[0] == 'dynamic-compact-instructions'",
       "argv": [
         "dynamic-compact-instructions"
       ],
-      "line": 63476
+      "line": 65383
     },
     {
       "expression": "args[0] == 'setup-smart-compact'",
       "argv": [
         "setup-smart-compact"
       ],
-      "line": 63480
+      "line": 65387
     },
     {
       "expression": "'--dry-run' in args",
@@ -3327,7 +3336,7 @@
         "setup-smart-compact",
         "--dry-run"
       ],
-      "line": 63481
+      "line": 65388
     },
     {
       "expression": "'--uninstall' in args",
@@ -3335,7 +3344,7 @@
         "setup-smart-compact",
         "--uninstall"
       ],
-      "line": 63482
+      "line": 65389
     },
     {
       "expression": "'--status' in args",
@@ -3343,21 +3352,21 @@
         "setup-smart-compact",
         "--status"
       ],
-      "line": 63483
+      "line": 65390
     },
     {
       "expression": "args[0] == 'daemon-revive'",
       "argv": [
         "daemon-revive"
       ],
-      "line": 63486
+      "line": 65393
     },
     {
       "expression": "args[0] == 'quality-cache'",
       "argv": [
         "quality-cache"
       ],
-      "line": 63506
+      "line": 65413
     },
     {
       "expression": "'--warn' in args",
@@ -3365,7 +3374,7 @@
         "quality-cache",
         "--warn"
       ],
-      "line": 63511
+      "line": 65418
     },
     {
       "expression": "'--force' in args",
@@ -3373,7 +3382,7 @@
         "quality-cache",
         "--force"
       ],
-      "line": 63512
+      "line": 65419
     },
     {
       "expression": "'--throttle-only' in args",
@@ -3381,14 +3390,14 @@
         "quality-cache",
         "--throttle-only"
       ],
-      "line": 63513
+      "line": 65420
     },
     {
       "expression": "args[0] == 'v5'",
       "argv": [
         "v5"
       ],
-      "line": 63635
+      "line": 65542
     },
     {
       "expression": "'--quiet' in args",
@@ -3396,7 +3405,7 @@
         "quality-cache",
         "--quiet"
       ],
-      "line": 63510
+      "line": 65417
     },
     {
       "expression": "'--once-mark' in args",
@@ -3404,7 +3413,7 @@
         "quality-cache",
         "--once-mark"
       ],
-      "line": 63588
+      "line": 65495
     },
     {
       "expression": "'--json' in args",
@@ -3412,7 +3421,7 @@
         "v5",
         "--json"
       ],
-      "line": 63637
+      "line": 65544
     },
     {
       "expression": "sub == 'status'",
@@ -3420,14 +3429,14 @@
         "v5",
         "status"
       ],
-      "line": 63640
+      "line": 65547
     },
     {
       "expression": "args[0] == 'upgrade-drain'",
       "argv": [
         "upgrade-drain"
       ],
-      "line": 63719
+      "line": 65626
     },
     {
       "expression": "sub in ('enable', 'disable')",
@@ -3435,7 +3444,7 @@
         "v5",
         "enable"
       ],
-      "line": 63660
+      "line": 65567
     },
     {
       "expression": "sub in ('enable', 'disable')",
@@ -3443,14 +3452,14 @@
         "v5",
         "disable"
       ],
-      "line": 63660
+      "line": 65567
     },
     {
       "expression": "args[0] == 'counted-backfill'",
       "argv": [
         "counted-backfill"
       ],
-      "line": 63723
+      "line": 65630
     },
     {
       "expression": "'--once-per-session' in args",
@@ -3458,7 +3467,7 @@
         "quality-cache",
         "--once-per-session"
       ],
-      "line": 63590
+      "line": 65497
     },
     {
       "expression": "'--once-mark' in args",
@@ -3466,7 +3475,7 @@
         "quality-cache",
         "--once-mark"
       ],
-      "line": 63612
+      "line": 65519
     },
     {
       "expression": "sub == 'enable'",
@@ -3474,7 +3483,7 @@
         "v5",
         "enable"
       ],
-      "line": 63670
+      "line": 65577
     },
     {
       "expression": "sub == 'welcome'",
@@ -3482,7 +3491,7 @@
         "v5",
         "welcome"
       ],
-      "line": 63692
+      "line": 65599
     },
     {
       "expression": "'--quiet' in args",
@@ -3490,14 +3499,14 @@
         "counted-backfill",
         "--quiet"
       ],
-      "line": 63727
+      "line": 65634
     },
     {
       "expression": "args[0] == 'cohorts'",
       "argv": [
         "cohorts"
       ],
-      "line": 63734
+      "line": 65641
     },
     {
       "expression": "sub == 'info'",
@@ -3505,7 +3514,7 @@
         "v5",
         "info"
       ],
-      "line": 63695
+      "line": 65602
     },
     {
       "expression": "'--quiet' in args",
@@ -3513,7 +3522,7 @@
         "upgrade-drain",
         "--quiet"
       ],
-      "line": 63722
+      "line": 65629
     },
     {
       "expression": "sub == 'promote'",
@@ -3521,14 +3530,14 @@
         "cohorts",
         "promote"
       ],
-      "line": 63740
+      "line": 65647
     },
     {
       "expression": "args[0] == 'compression-stats'",
       "argv": [
         "compression-stats"
       ],
-      "line": 63767
+      "line": 65674
     },
     {
       "expression": "sub == 'evaluate'",
@@ -3536,7 +3545,7 @@
         "cohorts",
         "evaluate"
       ],
-      "line": 63744
+      "line": 65651
     },
     {
       "expression": "'--json' in args",
@@ -3544,14 +3553,14 @@
         "compression-stats",
         "--json"
       ],
-      "line": 63768
+      "line": 65675
     },
     {
       "expression": "args[0] == 'cache-report'",
       "argv": [
         "cache-report"
       ],
-      "line": 63829
+      "line": 65736
     },
     {
       "expression": "'--json' in args",
@@ -3559,7 +3568,7 @@
         "cohorts",
         "--json"
       ],
-      "line": 63750
+      "line": 65657
     },
     {
       "expression": "'--json' in args",
@@ -3567,7 +3576,7 @@
         "cache-report",
         "--json"
       ],
-      "line": 63832
+      "line": 65739
     },
     {
       "expression": "'--fresh' in args",
@@ -3575,7 +3584,7 @@
         "cache-report",
         "--fresh"
       ],
-      "line": 63833
+      "line": 65740
     },
     {
       "expression": "'--verbose' in args",
@@ -3583,14 +3592,14 @@
         "cache-report",
         "--verbose"
       ],
-      "line": 63834
+      "line": 65741
     },
     {
       "expression": "args[0] == 'benchmark'",
       "argv": [
         "benchmark"
       ],
-      "line": 63917
+      "line": 65824
     },
     {
       "expression": "'--json' in args",
@@ -3598,14 +3607,14 @@
         "benchmark",
         "--json"
       ],
-      "line": 63928
+      "line": 65835
     },
     {
       "expression": "args[0] == 'structure-map'",
       "argv": [
         "structure-map"
       ],
-      "line": 63942
+      "line": 65849
     },
     {
       "expression": "'--force' in args",
@@ -3613,14 +3622,14 @@
         "cohorts",
         "--force"
       ],
-      "line": 63745
+      "line": 65652
     },
     {
       "expression": "args[0] == 'plugin-cleanup'",
       "argv": [
         "plugin-cleanup"
       ],
-      "line": 63976
+      "line": 65883
     },
     {
       "expression": "'--dry-run' in args",
@@ -3628,28 +3637,28 @@
         "plugin-cleanup",
         "--dry-run"
       ],
-      "line": 63977
+      "line": 65884
     },
     {
       "expression": "args[0] == 'subagent-cache'",
       "argv": [
         "subagent-cache"
       ],
-      "line": 63979
+      "line": 65886
     },
     {
       "expression": "args[0] == 'recommendations'",
       "argv": [
         "recommendations"
       ],
-      "line": 63981
+      "line": 65888
     },
     {
       "expression": "args[0] == 'ensure-health'",
       "argv": [
         "ensure-health"
       ],
-      "line": 63983
+      "line": 65890
     },
     {
       "expression": "'--once-mark' in args",
@@ -3657,14 +3666,14 @@
         "ensure-health",
         "--once-mark"
       ],
-      "line": 64012
+      "line": 65919
     },
     {
       "expression": "args[0] == 'setup-quality-bar'",
       "argv": [
         "setup-quality-bar"
       ],
-      "line": 64057
+      "line": 65964
     },
     {
       "expression": "'--once-per-session' in args",
@@ -3672,7 +3681,7 @@
         "ensure-health",
         "--once-per-session"
       ],
-      "line": 64014
+      "line": 65921
     },
     {
       "expression": "'--once-per-session' in args",
@@ -3680,7 +3689,7 @@
         "ensure-health",
         "--once-per-session"
       ],
-      "line": 64025
+      "line": 65932
     },
     {
       "expression": "'--dry-run' in args",
@@ -3688,7 +3697,7 @@
         "setup-quality-bar",
         "--dry-run"
       ],
-      "line": 64058
+      "line": 65965
     },
     {
       "expression": "'--uninstall' in args",
@@ -3696,7 +3705,7 @@
         "setup-quality-bar",
         "--uninstall"
       ],
-      "line": 64059
+      "line": 65966
     },
     {
       "expression": "'--status' in args",
@@ -3704,14 +3713,14 @@
         "setup-quality-bar",
         "--status"
       ],
-      "line": 64060
+      "line": 65967
     },
     {
       "expression": "args[0] == 'setup-vscode-extension'",
       "argv": [
         "setup-vscode-extension"
       ],
-      "line": 64063
+      "line": 65970
     },
     {
       "expression": "'--once-mark' in args",
@@ -3719,7 +3728,7 @@
         "ensure-health",
         "--once-mark"
       ],
-      "line": 64027
+      "line": 65934
     },
     {
       "expression": "'--uninstall' in args",
@@ -3727,21 +3736,21 @@
         "setup-vscode-extension",
         "--uninstall"
       ],
-      "line": 64068
+      "line": 65975
     },
     {
       "expression": "args[0] == 'list-checkpoints'",
       "argv": [
         "list-checkpoints"
       ],
-      "line": 64112
+      "line": 66019
     },
     {
       "expression": "args[0] == 'checkpoint-stats'",
       "argv": [
         "checkpoint-stats"
       ],
-      "line": 64124
+      "line": 66031
     },
     {
       "expression": "'--install' in args",
@@ -3749,7 +3758,7 @@
         "setup-vscode-extension",
         "--install"
       ],
-      "line": 64083
+      "line": 65990
     },
     {
       "expression": "'--enable' in args",
@@ -3757,7 +3766,7 @@
         "setup-vscode-extension",
         "--enable"
       ],
-      "line": 64083
+      "line": 65990
     },
     {
       "expression": "'--json' in args",
@@ -3765,49 +3774,49 @@
         "checkpoint-stats",
         "--json"
       ],
-      "line": 64126
+      "line": 66033
     },
     {
       "expression": "args[0] in ('trends', 'savings')",
       "argv": [
         "trends"
       ],
-      "line": 64138
+      "line": 66045
     },
     {
       "expression": "args[0] in ('trends', 'savings')",
       "argv": [
         "savings"
       ],
-      "line": 64138
+      "line": 66045
     },
     {
       "expression": "args[0] in ('trends', 'savings')",
       "argv": [
         "trends"
       ],
-      "line": 64138
+      "line": 66045
     },
     {
       "expression": "args[0] in ('trends', 'savings')",
       "argv": [
         "savings"
       ],
-      "line": 64138
+      "line": 66045
     },
     {
       "expression": "args[0] == 'trends'",
       "argv": [
         "trends"
       ],
-      "line": 64160
+      "line": 66067
     },
     {
       "expression": "args[0] == 'pin-baseline'",
       "argv": [
         "pin-baseline"
       ],
-      "line": 64164
+      "line": 66071
     },
     {
       "expression": "args[0] == 'skill'",
@@ -3815,7 +3824,7 @@
         "skill",
         "fixture"
       ],
-      "line": 64169
+      "line": 66076
     },
     {
       "expression": "action in ('archive', 'restore')",
@@ -3824,7 +3833,7 @@
         "archive",
         "fixture"
       ],
-      "line": 64172
+      "line": 66079
     },
     {
       "expression": "action in ('archive', 'restore')",
@@ -3833,7 +3842,7 @@
         "restore",
         "fixture"
       ],
-      "line": 64172
+      "line": 66079
     },
     {
       "expression": "args[0] == 'mcp'",
@@ -3841,7 +3850,7 @@
         "mcp",
         "fixture"
       ],
-      "line": 64178
+      "line": 66085
     },
     {
       "expression": "action in ('disable', 'enable')",
@@ -3850,7 +3859,7 @@
         "disable",
         "fixture"
       ],
-      "line": 64181
+      "line": 66088
     },
     {
       "expression": "action in ('disable', 'enable')",
@@ -3859,7 +3868,7 @@
         "enable",
         "fixture"
       ],
-      "line": 64181
+      "line": 66088
     },
     {
       "expression": "args[0] == 'codex-skill'",
@@ -3867,7 +3876,7 @@
         "codex-skill",
         "fixture"
       ],
-      "line": 64187
+      "line": 66094
     },
     {
       "expression": "'--path' in args",
@@ -3875,7 +3884,7 @@
         "codex-skill",
         "--path"
       ],
-      "line": 64191
+      "line": 66098
     },
     {
       "expression": "action in ('disable', 'enable')",
@@ -3884,7 +3893,7 @@
         "disable",
         "fixture"
       ],
-      "line": 64197
+      "line": 66104
     },
     {
       "expression": "action in ('disable', 'enable')",
@@ -3893,7 +3902,7 @@
         "enable",
         "fixture"
       ],
-      "line": 64197
+      "line": 66104
     },
     {
       "expression": "args[0] == 'codex-mcp'",
@@ -3901,7 +3910,7 @@
         "codex-mcp",
         "fixture"
       ],
-      "line": 64202
+      "line": 66109
     },
     {
       "expression": "action in ('disable', 'enable')",
@@ -3910,7 +3919,7 @@
         "disable",
         "fixture"
       ],
-      "line": 64205
+      "line": 66112
     },
     {
       "expression": "action in ('disable', 'enable')",
@@ -3919,7 +3928,7 @@
         "enable",
         "fixture"
       ],
-      "line": 64205
+      "line": 66112
     },
     {
       "expression": "args[0] == 'api-manage'",
@@ -3927,14 +3936,14 @@
         "api-manage",
         "fixture"
       ],
-      "line": 64210
+      "line": 66117
     },
     {
       "expression": "args[0] == 'jsonl-inspect'",
       "argv": [
         "jsonl-inspect"
       ],
-      "line": 64272
+      "line": 66179
     },
     {
       "expression": "'--json' in args",
@@ -3942,14 +3951,14 @@
         "jsonl-inspect",
         "--json"
       ],
-      "line": 64273
+      "line": 66180
     },
     {
       "expression": "args[0] == 'jsonl-trim'",
       "argv": [
         "jsonl-trim"
       ],
-      "line": 64281
+      "line": 66188
     },
     {
       "expression": "endpoint == 'skill/archive'",
@@ -3958,7 +3967,7 @@
         "skill/archive",
         "fixture"
       ],
-      "line": 64243
+      "line": 66150
     },
     {
       "expression": "'--apply' in args",
@@ -3966,14 +3975,14 @@
         "jsonl-trim",
         "--apply"
       ],
-      "line": 64282
+      "line": 66189
     },
     {
       "expression": "args[0] == 'jsonl-dedup'",
       "argv": [
         "jsonl-dedup"
       ],
-      "line": 64297
+      "line": 66204
     },
     {
       "expression": "endpoint == 'skill/restore'",
@@ -3982,7 +3991,7 @@
         "skill/restore",
         "fixture"
       ],
-      "line": 64247
+      "line": 66154
     },
     {
       "expression": "'--apply' in args",
@@ -3990,14 +3999,14 @@
         "jsonl-dedup",
         "--apply"
       ],
-      "line": 64298
+      "line": 66205
     },
     {
       "expression": "args[0] == 'attention-score'",
       "argv": [
         "attention-score"
       ],
-      "line": 64306
+      "line": 66213
     },
     {
       "expression": "endpoint == 'mcp/disable'",
@@ -4006,7 +4015,7 @@
         "mcp/disable",
         "fixture"
       ],
-      "line": 64251
+      "line": 66158
     },
     {
       "expression": "'--json' in args",
@@ -4014,14 +4023,14 @@
         "attention-score",
         "--json"
       ],
-      "line": 64307
+      "line": 66214
     },
     {
       "expression": "args[0] == 'attention-optimize'",
       "argv": [
         "attention-optimize"
       ],
-      "line": 64315
+      "line": 66222
     },
     {
       "expression": "endpoint == 'mcp/enable'",
@@ -4030,7 +4039,7 @@
         "mcp/enable",
         "fixture"
       ],
-      "line": 64254
+      "line": 66161
     },
     {
       "expression": "'--apply' in args",
@@ -4038,14 +4047,14 @@
         "attention-optimize",
         "--apply"
       ],
-      "line": 64316
+      "line": 66223
     },
     {
       "expression": "args[0] == 'memory-review'",
       "argv": [
         "memory-review"
       ],
-      "line": 64325
+      "line": 66232
     },
     {
       "expression": "'--dry-run' in args",
@@ -4053,7 +4062,7 @@
         "attention-optimize",
         "--dry-run"
       ],
-      "line": 64317
+      "line": 66224
     },
     {
       "expression": "'--json' in args",
@@ -4061,7 +4070,7 @@
         "memory-review",
         "--json"
       ],
-      "line": 64326
+      "line": 66233
     },
     {
       "expression": "'--apply' in args",
@@ -4069,21 +4078,21 @@
         "memory-review",
         "--apply"
       ],
-      "line": 64327
+      "line": 66234
     },
     {
       "expression": "args[0] == 'archive-result'",
       "argv": [
         "archive-result"
       ],
-      "line": 64342
+      "line": 66249
     },
     {
       "expression": "args[0] == 'session-cost'",
       "argv": [
         "session-cost"
       ],
-      "line": 64346
+      "line": 66253
     },
     {
       "expression": "'--quiet' in args",
@@ -4091,14 +4100,14 @@
         "archive-result",
         "--quiet"
       ],
-      "line": 64344
+      "line": 66251
     },
     {
       "expression": "args[0] == 'expand'",
       "argv": [
         "expand"
       ],
-      "line": 64349
+      "line": 66256
     },
     {
       "expression": "'--list' in args",
@@ -4106,21 +4115,21 @@
         "expand",
         "--list"
       ],
-      "line": 64351
+      "line": 66258
     },
     {
       "expression": "args[0] == 'archive-cleanup'",
       "argv": [
         "archive-cleanup"
       ],
-      "line": 64370
+      "line": 66300
     },
     {
       "expression": "args[0] == 'purge'",
       "argv": [
         "purge"
       ],
-      "line": 64379
+      "line": 66309
     },
     {
       "expression": "'--confirm' in args",
@@ -4128,7 +4137,7 @@
         "purge",
         "--confirm"
       ],
-      "line": 64381
+      "line": 66311
     },
     {
       "expression": "'--force' in args",
@@ -4136,21 +4145,21 @@
         "purge",
         "--force"
       ],
-      "line": 64382
+      "line": 66312
     },
     {
       "expression": "args[0] == 'read-cache-clear'",
       "argv": [
         "read-cache-clear"
       ],
-      "line": 64384
+      "line": 66314
     },
     {
       "expression": "args[0] == 'read-cache-stats'",
       "argv": [
         "read-cache-stats"
       ],
-      "line": 64398
+      "line": 66328
     },
     {
       "expression": "'--quiet' in args",
@@ -4158,14 +4167,14 @@
         "read-cache-clear",
         "--quiet"
       ],
-      "line": 64390
+      "line": 66320
     },
     {
       "expression": "args[0] == 'structure-proof'",
       "argv": [
         "structure-proof"
       ],
-      "line": 64408
+      "line": 66338
     },
     {
       "expression": "subagent-cache delegated subcommand: status",

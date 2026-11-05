@@ -145,7 +145,7 @@ def required_dispatch_cases(source):
     return required
 
 
-def cases(source_root, base):
+def cases(source_root, base, *, provisional=True):
     commands, branches = dispatch_inventory((source_root / 'skills/token-optimizer/scripts/measure.py').read_text())
     rows = []
     def add(argv, entry='cli', runtime='claude', **extra):
@@ -235,7 +235,7 @@ def cases(source_root, base):
                             add(argv, entry='hook', runtime='codex' if host == 'codex' else 'claude',
                                 hook_event=event, input_variant=variant, host_variant=host,
                                 stdin_base64=base64.b64encode(b'{broken' if variant == 'malformed' else b'').decode())
-    return {'schema': 1, 'provisional': True, 'base': base, 'spellings': commands,
+    return {'schema': 1, 'provisional': provisional, 'base': base, 'spellings': commands,
             'dispatch_branches': branches,
             'required_dispatch_cases': required_dispatch_cases((source_root / 'skills/token-optimizer/scripts/measure.py').read_text()),
             'hooks': hook_inventory, 'cases': rows}
@@ -299,7 +299,8 @@ def main():
     manifest = freeze(args.source, json.loads(args.owners.read_text()), args.base, provisional=not args.final)
     write_json(split.MANIFEST, manifest)
     write_json(split.REPO / 'scripts/measure_split_ownership.json', ownership(manifest, split.REPO))
-    write_json(split.REPO / 'tests/fixtures/measure_split/cases.json', cases(args.source, args.base))
+    write_json(split.REPO / 'tests/fixtures/measure_split/cases.json',
+               cases(args.source, args.base, provisional=manifest['provisional']))
     print(f"froze {len(manifest['symbols'])} definitions at {args.base}, provisional={manifest['provisional']}")
 
 

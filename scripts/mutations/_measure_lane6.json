@@ -59,7 +59,7 @@
     "mutation": "post-compact restore picks a checkpoint saved after the compaction",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "                session_checkpoints = [(r, cp) for r, cp in session_checkpoints if cp[\"created\"] <= anchor]\n",
+    "old": "                session_checkpoints = [cp for cp in session_checkpoints if cp[\"created\"] <= anchor]\n",
     "new": "                pass\n",
     "symbol": "compact_restore"
   },
@@ -75,9 +75,9 @@
     "mutation": "post-compact restore always prefers the PreCompact capture",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "            session_checkpoints.sort(key=lambda x: (x[0], -x[1][\"created\"].timestamp()))\n            best_cp = session_checkpoints[0][1]\n",
-    "new": "            session_checkpoints.sort(key=lambda x: (x[1].get(\"trigger\", \"auto\") != \"auto\", x[0], -x[1][\"created\"].timestamp()))\n            best_cp = session_checkpoints[0][1]\n",
-    "symbol": "compact_restore"
+    "old": "    ordered = sorted(checkpoint_dicts or [], key=_key)\n",
+    "new": "    ordered = sorted(checkpoint_dicts or [], key=lambda cp: (cp.get(\"trigger\", \"auto\") != \"auto\", _key(cp)))\n",
+    "symbol": "_order_checkpoints_for_restore"
   },
   {
     "mutation": "#246 module-level threshold call raises a NameError the fallback swallows",

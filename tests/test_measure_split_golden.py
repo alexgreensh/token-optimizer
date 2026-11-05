@@ -117,9 +117,28 @@ def test_unapproved_posix_spawn_remains_blocked(tmp_path):
         golden.capture(source, work / 'fixed-path', work / 'capture', [row])
 
 
-def test_capture_environment_pins_home_and_config_dir_to_the_fixture(monkeypatch):
-    """Every child capture spawns (seed, hook runner, CLI) resolves HOME and
-    CLAUDE_CONFIG_DIR inside the per-case fixture home, never the real host."""
+_FIXTURE_ROOTS = ('LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME',
+                  'CODEX_HOME', 'TOKEN_OPTIMIZER_SNAPSHOT_DIR')
+
+
+def _isolation_violations(env, case):
+    """Why this child env could reach the real host instead of the fixture."""
+    home = env.get('HOME')
+    if not home or not Path(home).resolve().is_relative_to(case):
+        return ['HOME outside the fixture']
+    violations = []
+    if env.get('USERPROFILE') != home:
+        violations.append('USERPROFILE differs from HOME')
+    if env.get('CLAUDE_CONFIG_DIR') != str(Path(home) / '.claude'):
+        violations.append('CLAUDE_CONFIG_DIR not the fixture .claude')
+    violations += [key + ' outside the fixture' for key in _FIXTURE_ROOTS
+                   if not env.get(key) or not Path(env[key]).resolve().is_relative_to(Path(home).resolve())]
+    if 'CLAUDE_PLUGIN_DATA' in env:
+        violations.append('CLAUDE_PLUGIN_DATA inherited')
+    return violations
+
+
+def _spawned_capture_envs(monkeypatch):
     import subprocess
     import types
     import uuid
@@ -135,18 +154,36 @@ def test_capture_environment_pins_home_and_config_dir_to_the_fixture(monkeypatch
             cases['api-_get_savings_summary-seeded-current']]
     work = REPO / '.scratch-u0' / ('pinned-env-test-' + uuid.uuid4().hex)
     golden.capture(REPO, work / 'fixed-path', work / 'capture', rows)
+    return spawned, (work / 'fixed-path' / 'case').resolve()
+
+
+def test_capture_environment_pins_home_and_config_dir_to_the_fixture(monkeypatch):
+    """Every child capture spawns (seed, hook runner, CLI) resolves HOME and
+    CLAUDE_CONFIG_DIR inside the per-case fixture home, never the real host."""
+    spawned, case = _spawned_capture_envs(monkeypatch)
     assert len(spawned) >= 3
-    case = (work / 'fixed-path' / 'case').resolve()
-    real_home = Path.home().resolve()
-    for env in spawned:
-        home = Path(env['HOME']).resolve()
-        assert home.is_relative_to(case) and not case.is_relative_to(real_home / '.claude')
-        assert env['USERPROFILE'] == env['HOME']
-        assert env['CLAUDE_CONFIG_DIR'] == str(Path(env['HOME']) / '.claude')
-        for key in ('LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME',
-                    'CODEX_HOME', 'TOKEN_OPTIMIZER_SNAPSHOT_DIR'):
-            assert Path(env[key]).resolve().is_relative_to(home), key
-        assert 'CLAUDE_PLUGIN_DATA' not in env
+    assert all(_isolation_violations(env, case) == [] for env in spawned), \
+        [_isolation_violations(env, case) for env in spawned]
+
+
+@pytest.mark.parametrize('leak', ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'LOCALAPPDATA', 'CLAUDE_PLUGIN_DATA'])
+def test_isolation_proof_catches_a_capture_env_that_reaches_the_host(leak):
+    """Negative control: drop or redirect any one pin and the proof above fails.
+    Nothing is spawned with the leaky env."""
+    import uuid
+    work = REPO / '.scratch-u0' / ('pinned-env-negative-' + uuid.uuid4().hex)
+    (work / 'case').mkdir(parents=True)
+    home, _ = golden.fixture(work / 'case', 'synthetic-current')
+    env = golden.environment(home, REPO, work / 'case')
+    case = (work / 'case').resolve()
+    assert _isolation_violations(env, case) == []
+    if leak == 'CLAUDE_CONFIG_DIR':
+        env.pop(leak)
+    elif leak == 'CLAUDE_PLUGIN_DATA':
+        env[leak] = str(home / 'plugin-data')
+    else:
+        env[leak] = str(Path.home())
+    assert _isolation_violations(env, case)
 
 
 @pytest.mark.parametrize('kind', ['json', 'dollar', 'node', 'hook', 'exit'])

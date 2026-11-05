@@ -72,7 +72,7 @@ def test_runway_denominator_excludes_cache_read_and_cache_write(measure, tmp_pat
             date TEXT, input_tokens INTEGER, output_tokens INTEGER,
             cache_create_5m_tokens INTEGER, cache_create_1h_tokens INTEGER,
             cache_hit_rate REAL, reported_input_tokens INTEGER,
-            reported_output_tokens INTEGER
+            reported_output_tokens INTEGER, daily_usage_json TEXT
         );
         CREATE TABLE savings_events (timestamp TEXT, event_type TEXT, tokens_saved INTEGER);
         CREATE TABLE compression_events (
@@ -82,8 +82,8 @@ def test_runway_denominator_excludes_cache_read_and_cache_write(measure, tmp_pat
     )
     now = datetime.now().isoformat()
     conn.execute(
-        "INSERT INTO session_log VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (datetime.now().date().isoformat(), 10_000, 100, 100, 0, 0.8, 1_900, 100),
+        "INSERT INTO session_log VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (datetime.now().date().isoformat(), 10_000, 100, 100, 0, 0.8, 1_900, 100, json.dumps({datetime.now().date().isoformat(): {"claude-opus-5-5": {"fresh_input": 1900, "output": 100}}})),
     )
     conn.execute("INSERT INTO savings_events VALUES (?, ?, ?)", (now, "archive", 1_000))
     conn.commit()
@@ -103,8 +103,8 @@ def test_runway_denominator_excludes_cache_read_and_cache_write(measure, tmp_pat
     assert result["context_multiplier"] == pytest.approx(1.5)
 
 
-def test_spent_basis_uses_official_compatible_streaming_usage(measure, tmp_path):
-    """Spent tokens exclude cache classes and retain streamed assistant records."""
+def test_spent_basis_uses_deduplicated_activity_usage(measure, tmp_path):
+    """Spent tokens exclude cache classes and repeated streaming observations."""
     db = tmp_path / "spent.db"
     conn = sqlite3.connect(db)
     conn.executescript(
@@ -113,19 +113,19 @@ def test_spent_basis_uses_official_compatible_streaming_usage(measure, tmp_path)
             date TEXT, input_tokens INTEGER, output_tokens INTEGER,
             cache_create_5m_tokens INTEGER, cache_create_1h_tokens INTEGER,
             cache_hit_rate REAL, reported_input_tokens INTEGER,
-            reported_output_tokens INTEGER
+            reported_output_tokens INTEGER, daily_usage_json TEXT
         );
         """
     )
     conn.execute(
-        "INSERT INTO session_log VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (datetime.now().date().isoformat(), 405_000_000, 65_000_000, 334_000_000, 0, 0.999, 5_000_000, 157_200_000),
+        "INSERT INTO session_log VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (datetime.now().date().isoformat(), 405_000_000, 65_000_000, 334_000_000, 0, 0.999, 5_000_000, 157_200_000, json.dumps({datetime.now().date().isoformat(): {"claude-opus-5-5": {"fresh_input": 5_000_000, "output": 52_400_000}}})),
     )
     conn.commit()
 
     result = measure._dashboard_spent_token_basis(conn, days=30)
-    assert result["tokens"] == 162_200_000
-    assert result["basis"] == "fresh_input + streamed assistant output (top-level, no streaming dedup)"
+    assert result["tokens"] == 57_400_000
+    assert result["basis"] == "deduplicated fresh_input + output by activity day (top-level)"
     assert result["complete"] is True
 
 

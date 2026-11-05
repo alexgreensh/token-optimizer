@@ -105,3 +105,18 @@ def test_every_test_the_methodology_cites_exists():
     assert cited
     missing = sorted(name for name in cited if not (ROOT / "tests" / name).exists())
     assert not missing, missing
+
+
+def test_dated_consumption_windows_are_monotone_without_ingestion_fallback(m):
+    conn = m._init_trends_db()
+    for ago, tokens in ((1, 100), (45, 200), (75, 300)):
+        day = (datetime.now() - timedelta(days=ago)).date().isoformat()
+        usage = {day: {"claude-opus-5-5": {"fresh_input": tokens, "output": 10}}}
+        conn.execute("INSERT INTO session_log(jsonl_path,date,daily_usage_json) VALUES (?,?,?)",
+                     (f"missing-{ago}.jsonl", datetime.now().date().isoformat(), json.dumps(usage)))
+    conn.execute("INSERT INTO session_log(jsonl_path,date,input_tokens,output_tokens) VALUES ('undated.jsonl',?,999999,100)",
+                 (datetime.now().date().isoformat(),))
+    conn.commit()
+    assert [m._dashboard_spent_token_basis(conn, days)["tokens"] for days in (30, 60, 90)] == [110, 320, 630]
+    assert m._dashboard_spent_token_basis(conn, 30)["complete"] is False
+    conn.close()

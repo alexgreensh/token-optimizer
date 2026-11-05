@@ -2,7 +2,7 @@ import type { Plugin, Hooks, PluginInput, PluginOptions } from "@opencode-ai/plu
 import type { Event } from "@opencode-ai/sdk";
 import { SessionStore } from "./storage/session-store.js";
 import { TrendsStore } from "./storage/trends.js";
-import { aggregateModelUsage, type ModelUsage } from "./usage.js";
+import { aggregateDailyUsage, aggregateModelUsage, type ModelUsage } from "./usage.js";
 import { resolveConfig, resolveDataDir, hashProjectDir } from "./util/env.js";
 import { migrateLegacyDataDir } from "./util/migrate.js";
 import { contextWindowForModel } from "./util/context-window.js";
@@ -42,7 +42,7 @@ type SessionIdleEvent = Extract<Event, { type: "session.idle" }>;
 type MessageUpdatedEvent = Extract<Event, { type: "message.updated" }>;
 
 /** Token usage + cost captured from a single assistant API response. */
-type MsgUsage = ModelUsage;
+type MsgUsage = ModelUsage & { activityAt?: number };
 
 /**
  * All mutable per-session state. Held in a Map keyed by sessionID so that
@@ -187,6 +187,7 @@ export const TokenOptimizerPlugin: Plugin = async (
         project: ctx.project.id ?? null,
         model: state.currentModel ?? null,
         modelTokenBuckets: aggregateModelUsage(state.usageByMessage.values()),
+        dailyUsage: aggregateDailyUsage(state.usageByMessage.values()),
         tokensInput: usage.input,
         tokensOutput: usage.output,
         tokensCacheRead: usage.cacheRead,
@@ -695,6 +696,7 @@ export const TokenOptimizerPlugin: Plugin = async (
               const t = info.tokens;
               state.usageByMessage.set(info.id, {
                 model: info.modelID ?? state.usageByMessage.get(info.id)?.model ?? "unknown",
+                activityAt: state.usageByMessage.get(info.id)?.activityAt ?? info.time?.created,
                 input: t?.input ?? 0,
                 output: t?.output ?? 0,
                 cacheRead: t?.cache?.read ?? 0,

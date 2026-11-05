@@ -12,7 +12,7 @@ function fakeContext() {
   const events: any[] = [];
   let wake: (() => void) | undefined;
   const controller = {
-    emit(event: any) { events.push(event); wake?.(); },
+    emit(event: any) { events.push({ timestamp: new Date().toISOString(), ...event }); wake?.(); },
     async *iterator(signal?: AbortSignal) {
       // Like the real subscription, it ends when the signal aborts.
       signal?.addEventListener("abort", () => wake?.());

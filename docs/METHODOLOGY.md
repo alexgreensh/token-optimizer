@@ -152,6 +152,44 @@ recorded session.
 - A request is counted once by request id, even when it streams in pieces or replays in
   another session (R6). The parser version is stored per session
   (`_USAGE_PARSER_VERSION`), so a parser fix re-reads only what it changed.
+- **Consumed tokens and the plan denominator** are deduplicated fresh input plus
+  output from top-level requests, sliced by the calendar day of activity. Cache
+  reads and writes are excluded. The separate `reported_*` fields retain the raw
+  `/stats` observation count for explicitly labelled diagnostics only.
+- **Every volume window** uses `session_activity`, a projection of the stored
+  per-day, per-model billing classes. A session crossing a cutoff contributes
+  only its in-window requests. `model_daily` and `daily_stats` use those same
+  slices. `session_log.date` means last known activity day, with separate
+  `first_activity_day`, `last_activity_day`, `transcript_mtime` and `collected_at`.
+  File modification time and collection time never supply missing activity dates.
+- Messages, tools, skills and dispatches use dated records when available.
+  Historical metadata without dated records uses a **lifetime session cohort**
+  on the last known activity day. Duration, quality, stale-waste and historical
+  gap statistics are cohort properties, not measurements of work performed that
+  day. Daily session details label lifetime metadata separately from dated tokens
+  and dollars. Cache-drop and stale-waste opportunities inherit this cohort limit.
+- Missing or invalid dates remain **incomplete coverage** and contribute no
+  invented volume to a period. Lifetime session-cost queries still show retained
+  estimates. Date queries sum only `on_date`; recent queries sum `in_window`, while
+  each entry keeps its explicitly separate lifetime total. Missing transcripts can
+  still supply dated history from retained daily buckets. Adapter totals without
+  request dates or proven single-day activity remain incomplete.
+- The one-time `activity_dating_v1` migration repairs stored dates backward as
+  well as forward and rebuilds all four aggregate tables. Old derived baselines,
+  workload anchors and weekly caches are retained as `.pre-activity-v1` files and
+  rebuilt. Older snapshot model mixes cannot serve as activity-based evidence;
+  explicit user model-mix settings and raw savings/compression event dates stay
+  intact. Retention follows ingestion time, so repairing an old activity date
+  does not itself evict the session.
+- OpenCode retains recording time as metadata and stores model buckets by UTC
+  activity day. Its dashboard and savings windows use those slices; unknown
+  timestamps remain incomplete. Python uses local calendar days. Baseline and
+  recent populations count distinct sessions after selecting activity, so crossing
+  midnight cannot manufacture extra sessions.
+
+Regression coverage: `test_activity_dating.py`, `test_usage_counted_once.py`,
+`test_dashboard_data.py`, `test_session_cost.py`, `test_savings_invariants.py` and
+OpenCode's `trends.activity-dating.test.ts`.
 
 ---
 

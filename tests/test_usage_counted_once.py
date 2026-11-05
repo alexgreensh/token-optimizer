@@ -338,6 +338,9 @@ def test_daily_usage_of_a_fork_leaves_out_the_parents_requests(tmp_path, monkeyp
                 per_day[day] = per_day.get(day, 0) + buckets["fresh_input"]
     conn.close()
     assert per_day == {when.strftime("%Y-%m-%d"): 3000}
+    conn = measure._init_trends_db()
+    assert measure._dashboard_spent_token_basis(conn, 30)["tokens"] == 4500
+    conn.close()
 
 
 def test_claim_held_by_a_session_without_a_row_is_ignored(tmp_path, monkeypatch):

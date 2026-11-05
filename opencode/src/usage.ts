@@ -10,6 +10,20 @@ export interface ModelUsage {
 
 export type ModelTokenBuckets = Record<string, Omit<ModelUsage, "model">>;
 
+export type DatedModelUsage = ModelUsage & { activityAt?: number };
+
+/** Unknown timestamps stay visible as incomplete coverage, never recording time. */
+export function aggregateDailyUsage(messages: Iterable<DatedModelUsage>): Record<string, ModelTokenBuckets> {
+  const days: Record<string, DatedModelUsage[]> = {};
+  for (const message of messages) {
+    const timestamp = message.activityAt;
+    const day = typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0 && Number.isFinite(new Date(timestamp).getTime())
+      ? new Date(timestamp).toISOString().slice(0, 10) : "undated";
+    (days[day] ??= []).push(message);
+  }
+  return Object.fromEntries(Object.entries(days).map(([day, usage]) => [day, aggregateModelUsage(usage)]));
+}
+
 export function aggregateModelUsage(messages: Iterable<ModelUsage>): ModelTokenBuckets {
   const buckets: ModelTokenBuckets = {};
   for (const message of messages) {

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS session_log (
   compactions INTEGER DEFAULT 0,
   mode TEXT,
   duration_seconds INTEGER DEFAULT 0,
+  daily_usage_json TEXT,
   created_at REAL NOT NULL
 );
 `;
@@ -154,6 +155,8 @@ function seed(dir: string, now: number, anchorAgeDays: number, beforeCount: numb
     );
   }
 
+  db.run(`UPDATE session_log SET daily_usage_json = json_object(date, json_object(model, json_object(
+    'input',tokens_input,'output',tokens_output,'cacheRead',tokens_cache_read,'cacheWrite',tokens_cache_write,'cost',cost_usd)))`);
   db.close();
 }
 
@@ -218,12 +221,8 @@ test("Tokens Saved card renders from live session_log + savings_events data", ()
   const html = generateDashboard({ dataDir: dir });
 
   // --- Exact computed values ---
-  // SPENT (billable, excludes cache_read): 40 rows * (fi + cw + out) = 40 * 168869 = 6754760
-  // SAVED: 3000 (seed) + 20 * 500000 = 10_003_000
-  // total = 6754760 + 10_003_000 = 16_757_760
-  // savedPct = round(10003000 / 16757760 * 100) = 60
-  // spentPct = 100 - 60 = 40
-  const SPENT = 6_754_760;
+  // Fresh input + output, excluding cache reads and writes.
+  const SPENT = 1_954_760;
   const SAVED = 10_003_000;
   const TOTAL = SPENT + SAVED;
   const SAVED_PCT = Math.round(SAVED / TOTAL * 100);

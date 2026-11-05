@@ -54,9 +54,11 @@ export function generateDashboard(opts: DashboardOptions): string {
 
   let sessions: Array<Record<string, unknown>> = [];
   let dailyStats: Array<Record<string, unknown>> = [];
+  let activityCoverage = { complete: true, undatedSessions: 0 };
   try {
     sessions = store.getRecentSessions(days);
     dailyStats = store.getDailyStats(days);
+    activityCoverage = store.getActivityCoverage();
   } finally {
     store.close();
   }
@@ -97,8 +99,7 @@ export function generateDashboard(opts: DashboardOptions): string {
   //   already excludes estimated-tier categories and nets re-expansions, so
   //   this IS the full measured token total for opencode (no separate
   //   compression_events table exists, unlike canonical/openclaw).
-  // SPENT = BILLABLE total across ALL logged sessions (fresh_input +
-  //   cache_create + output, EXCLUDES cache_read) — the SAME figure the
+  // SPENT = deduplicated fresh input + output on actual activity days — the SAME figure the
   //   dashboard's own tokens summary uses, NOT the sum of the per-model mix.
   //   model_mix only covers model-attributed rows; tokens billed without a
   //   model tag would be dropped, making the card contradict the tokens
@@ -124,13 +125,12 @@ export function generateDashboard(opts: DashboardOptions): string {
   const modelTokenCounts: Record<string, number> = {};
   let spentTokens = 0;
   for (const r of sessions) {
-    const model = String(r.model ?? "unknown");
-    // Billable basis: fresh_input + cache_create + output, EXCLUDES cache_read.
-    // Matches canonical model_mix (measure.py: billable = u["inp"] + u["cc"] + u["out"]).
-    const t = num(r.tokens_input) + num(r.tokens_cache_write) + num(r.tokens_output);
-    if (!(t > 0)) continue;
-    modelTokenCounts[model] = (modelTokenCounts[model] ?? 0) + t;
-    spentTokens += t;
+    const buckets = JSON.parse(String(r.model_token_buckets ?? "{}")) as Record<string, { input: number; output: number }>;
+    for (const [model, bucket] of Object.entries(buckets)) {
+      const tokens = num(bucket.input) + num(bucket.output);
+      modelTokenCounts[model] = (modelTokenCounts[model] ?? 0) + tokens;
+      spentTokens += tokens;
+    }
   }
   const tsTotal = spentTokens + savedTokens;
   const tsSavedPct = tsTotal > 0 ? Math.round((savedTokens / tsTotal) * 100) : 0;
@@ -320,6 +320,7 @@ tr:hover td { background: var(--bg-hover); }
 </head>
 <body>
 <div class="container">
+${activityCoverage.complete ? "" : `<p class="sub">Usage coverage incomplete: ${activityCoverage.undatedSessions} sessions have missing activity dates. Undated usage is excluded from period totals.</p>`}
   <div class="header">
     <div>
       <h1>Token Optimizer</h1>

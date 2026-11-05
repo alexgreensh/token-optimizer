@@ -118,6 +118,8 @@ _SITECUSTOMIZE = textwrap.dedent(r'''
             except Exception:
                 pass
 
+        if _compiler:
+            _time.sleep(float(_os.environ.get('TO_COLD_BOOT_DELAY_S') or 0))
         _w("boot")
         from importlib import machinery as _machinery
         _real = _machinery.SourceFileLoader.source_to_code
@@ -284,12 +286,14 @@ def bench(tmp_path):
     return Bench(tmp_path)
 
 
-def test_slow_cold_compile_runs_once_in_the_background_and_hooks_fail_open(bench):
+@pytest.mark.parametrize('boot_delay', ['0', '3'])
+def test_slow_cold_compile_runs_once_in_the_background_and_hooks_fail_open(bench, boot_delay):
     """The #264 machine: compiling measure.py takes longer than the host allows.
     Concurrent hooks finish fast with a valid (empty) envelope, exactly one
     background compile starts, the .pyc lands in the active pycache prefix,
     and the next hook runs the normal path from it."""
-    slow = {"TO_COLD_SLOW_S": str(SLOW_S), "TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S": str(WAIT_S)}
+    slow = {"TO_COLD_SLOW_S": str(SLOW_S), "TO_COLD_BOOT_DELAY_S": boot_delay,
+            "TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S": str(WAIT_S)}
     started = [bench.start(**slow) for _ in range(4)]
     results = [bench.finish(s) for s in started]
     for rc, out, err, elapsed in results:
@@ -302,12 +306,13 @@ def test_slow_cold_compile_runs_once_in_the_background_and_hooks_fail_open(bench
     assert len(exits) == 4, bench.rows()
     assert not any(r["compiled_measure"] or r["measure_loaded"] for r in exits), exits
 
-    assert len(bench.compiler_boots()) == 1, (
-        f"{len(bench.compiler_boots())} background compiles for 4 concurrent cold hooks")
     assert bench.wait_for_pyc(), f"no fresh measure .pyc under the prefix: {bench.measure_pyc()}"
     # The compiler writes the .pyc, then releases its lock: wait for the
     # release instead of racing it (a slow runner lost that race in CI).
     assert bench.wait_for_lock_release(), "the compile lock was never released"
+    # Detached worker startup can outlast all four hooks on Windows.
+    assert len(bench.compiler_boots()) == 1, (
+        f"{len(bench.compiler_boots())} background compiles for 4 concurrent cold hooks")
 
     bench.clear_log()
     rc, out, err, elapsed = bench.fire(**slow)

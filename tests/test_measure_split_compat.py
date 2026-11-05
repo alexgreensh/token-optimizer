@@ -130,11 +130,11 @@ def test_a_b_a_restore_preserves_functions_defaults_and_paths(tmp_path):
         assert a._bundled_prices_path().parent.name == 'pricing'
 
 
-def test_source_extracted_body_uses_supplied_namespace():
-    namespace = {'Path': Path, 'os': SimpleNamespace(environ={}), '__file__': '/fake/scripts/measure.py'}
+def test_source_extracted_body_uses_supplied_namespace(tmp_path):
+    namespace = {'Path': Path, 'os': SimpleNamespace(environ={}), '__file__': str(tmp_path / 'scripts/measure.py')}
     nodes = definition_nodes(['_bundled_prices_path'], namespace)
     exec(compile(nodes, '<fixture-source>', 'exec'), namespace)
-    assert namespace['_bundled_prices_path']() == Path('/fake/pricing/prices.json')
+    assert namespace['_bundled_prices_path']() == tmp_path / 'pricing/prices.json'
 
 
 def test_all_frozen_exports_remain_reachable(m):

@@ -88,7 +88,7 @@ def test_native_completeness_refuses_each_missing_provider(tmp_path, monkeypatch
     scripts = roots['skill'] / 'scripts'
     for name in hermes_doctor.REQUIRED_ENGINE_SCRIPTS:
         (scripts / name).touch()
-    (plugin / 'measure-path').write_text(str(scripts / 'measure.py'))
+    (plugin / 'measure-path').write_text(str(scripts / 'measure.py'), encoding='utf-8')
     monkeypatch.setattr(hermes_doctor, '_plugin_install_dir', lambda _: plugin)
     check = hermes_doctor._engine_checks()[0]
     assert check['status'] == 'FAIL' and '_measure/' + missing in check['detail']
@@ -115,7 +115,7 @@ def test_installed_bridge_locator_requires_complete_canonical_payload(tmp_path, 
     (scripts / 'measure.py').touch()
     shutil.copytree(SCRIPTS / '_measure', scripts / '_measure',
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-    (plugin / 'measure-path').write_text(str(scripts / 'measure.py'))
+    (plugin / 'measure-path').write_text(str(scripts / 'measure.py'), encoding='utf-8')
     spec = importlib.util.spec_from_file_location('_split_' + runtime + '_bridge', plugin / (runtime + '_hook_bridge.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

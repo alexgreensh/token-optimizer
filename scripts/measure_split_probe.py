@@ -2,6 +2,7 @@
 """Deterministic golden child. Host process, browser and network calls are fakes."""
 from __future__ import annotations
 import atexit
+import base64
 import contextlib
 import datetime
 import json
@@ -24,6 +25,7 @@ import time
 import tempfile
 import threading
 import uuid
+import urllib.request
 import webbrowser
 from types import ModuleType
 
@@ -232,6 +234,35 @@ os.kill = lambda *a: effects.append(['kill', clean(a)])
 webbrowser.open = lambda *a, **k: effects.append(['browser', clean(a), clean(k)]) or True
 
 
+def fixture_urlopen(request, *args, **kwargs):
+    url = getattr(request, 'full_url', request)
+    expected = 'https://registry.npmjs.org/@alexgreensh%2Ftoken-optimizer/5.13.64'
+    if url != expected:
+        raise PermissionError('unmanifested golden URL: ' + str(url))
+    effects.append(['registry-metadata', url])
+    return io.BytesIO(json.dumps({'dist': {
+        'tarball': 'https://registry.npmjs.org/@alexgreensh/token-optimizer/-/token-optimizer-5.13.64.tgz',
+        'integrity': 'sha512-' + base64.b64encode(bytes(64)).decode('ascii'),
+    }}).encode('utf-8'))
+
+
+urllib.request.urlopen = fixture_urlopen
+
+
+def fixture_addresses(host, port, family=0, type=0, proto=0, flags=0):
+    effects.append(['dns', clean(host), clean(port), family, type, proto, flags])
+    port = {'http': 80, 'https': 443}.get(port, port) or 0
+    if family == socket.AF_INET6:
+        address = ('2001:db8::10', int(port), 0, 0)
+    else:
+        family = socket.AF_INET
+        address = ('127.0.0.1' if host == 'localhost' else '192.0.2.10', int(port))
+    return [(family, type or socket.SOCK_STREAM, proto or socket.IPPROTO_TCP, '', address)]
+
+
+socket.getaddrinfo = fixture_addresses
+
+
 def audit(event, args):
     if event in ('open', 'os.listdir', 'os.scandir', 'sqlite3.connect') and args:
         check_home_read(args[0])
@@ -239,7 +270,8 @@ def audit(event, args):
         argv = args[1]
         if isinstance(argv, (list, tuple)) and tuple(argv) == getattr(_approved_spawn, 'argv', None):
             return
-    if event in ('socket.connect', 'socket.bind', 'os.system', 'os.posix_spawn', 'os.posix_spawnp', 'os.exec', 'subprocess.Popen'):
+    if event in ('socket.connect', 'socket.bind', 'socket.getaddrinfo', 'socket.gethostbyname', 'socket.gethostbyaddr',
+                 'os.system', 'os.posix_spawn', 'os.posix_spawnp', 'os.exec', 'subprocess.Popen'):
         effects.append(['blocked', event, clean(args)])
         raise PermissionError('golden host boundary: ' + event)
     if event == 'open':

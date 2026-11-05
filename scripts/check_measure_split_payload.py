@@ -51,6 +51,33 @@ def smoke(payload, work):
         outputs.append(proc.stdout)
     if outputs[0] != outputs[1]:
         raise RuntimeError('direct CLI and real hook launcher version bytes differ')
+    for name in ('direct', 'hook'):
+        normal_home = work / name / 'home é'
+        normal_home.mkdir(parents=True)
+        settings = normal_home / 'settings.json'
+        settings.write_text(json.dumps({'unrelated': True, 'mcpServers': {'fixture': {'command': 'fixture-mcp'}}}),
+                            encoding='utf-8')
+        normal_env = {**env, 'HOME': str(normal_home), 'USERPROFILE': str(normal_home),
+                      'CLAUDE_CONFIG_DIR': str(normal_home), 'TOKEN_OPTIMIZER_RUNTIME': 'claude',
+                      'XDG_CACHE_HOME': str(normal_home / '.cache'),
+                      'TOKEN_OPTIMIZER_SNAPSHOT_DIR': str(normal_home / 'data')}
+        argv = [sys.executable, str(measure)] if name == 'direct' else [
+            sys.executable, str(payload / 'hooks/run.py'), 'skills/token-optimizer/scripts/measure.py']
+        proc = subprocess.run([*argv, 'api-manage', 'mcp/disable', 'fixture'], cwd=cwd,
+                              env=normal_env, input=b'{}', capture_output=True, timeout=30)
+        if proc.returncode or proc.stderr or json.loads(proc.stdout).get('ok') is not True:
+            raise RuntimeError(f'installed {name} JSON management failed: {proc.stdout!r} {proc.stderr!r}')
+        saved = json.loads(settings.read_text(encoding='utf-8'))
+        if not saved.get('unrelated') or 'fixture' not in saved.get('_disabledMcpServers', {}):
+            raise RuntimeError('installed management did not preserve and update settings')
+        code = ('import sys, json; sys.path.insert(0, sys.argv[1]); import measure as m; '
+                's=m._get_savings_summary(); print(json.dumps({'
+                '"cost":m._get_model_cost("claude-sonnet-4-20250514",1000000,1000000,tier="anthropic"),'
+                '"integer":m._safe_int("7"),"tokens":s["total_tokens"],"saved":s["total_cost_usd"]}))')
+        proc = subprocess.run([sys.executable, '-c', code, str(measure.parent)], cwd=cwd,
+                              env=normal_env, capture_output=True, timeout=30)
+        if proc.returncode or proc.stderr or json.loads(proc.stdout) != {'cost': 18, 'integer': 7, 'tokens': 0, 'saved': 0}:
+            raise RuntimeError(f'installed pricing/accounting failed: {proc.stdout!r} {proc.stderr!r}')
     return outputs[0].decode().strip()
 
 

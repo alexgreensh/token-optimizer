@@ -2,6 +2,7 @@
 """Candidate-payload and deterministic split proof for the existing CI matrix."""
 from __future__ import annotations
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -97,17 +98,40 @@ def main():
     rows = rows[shard-1::total]
     if not rows:
         parser.error('empty golden selection')
+    receipt = {'base': manifest['base'], 'candidate': subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD'], cwd=split.REPO, text=True).strip(),
+        'provisional': manifest['provisional'], 'shard': args.shard,
+        'case_manifest_sha256': hashlib.sha256(golden.CASES.read_bytes()).hexdigest(),
+        'case_ids': [row['id'] for row in rows], 'captures': {}, 'comparisons': {}}
+    def save_receipt():
+        (work / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+    save_receipt()
     for source, name in ((baseline, 'base-1'), (baseline, 'base-2'), (candidate, 'candidate')):
-        print(f'{name}: {golden.capture(source, work / "golden-path", work / name, rows)} cases', flush=True)
+        receipt['captures'][name] = {'status': 'started'}
+        save_receipt()
+        try:
+            count = golden.capture(source, work / 'golden-path', work / name, rows)
+        except Exception as error:
+            receipt['captures'][name] = {'status': 'failed', 'error': repr(error)}
+            save_receipt()
+            raise
+        receipt['captures'][name] = {'status': 'complete', 'cases': count}
+        save_receipt()
+        print(f'{name}: {count} cases', flush=True)
     for actual in ('base-2', 'candidate'):
+        identities = []
         if actual == 'candidate':
             errors, identities = compare_candidate(work / 'base-1', work / actual, baseline, candidate)
             print(f'{len(identities)} installed-source identity artifacts independently verified')
         else:
             errors = golden.compare(work / 'base-1', work / actual)
+        receipt['comparisons'][actual] = {'differences': errors, 'verified_source_artifacts': identities,
+                                          'raw_differences': sorted(errors + identities)}
+        save_receipt()
         if errors:
             raise RuntimeError(actual + ':\n' + '\n'.join(errors))
     print(f'zero user-output byte differences in {len(rows)} cases; provisional={manifest["provisional"]}')
+    print('golden receipt: ' + str(work / 'receipt.json'), flush=True)
     if shard == 1:
         subprocess.run([sys.executable, str(split.REPO / 'scripts/measure_split_performance.py'),
                         '--baseline', str(baseline), '--work', str(work / 'performance')], check=True)

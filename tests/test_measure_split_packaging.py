@@ -1,6 +1,7 @@
 """An intact facade cannot conceal a missing runtime package in a payload."""
 import importlib.util
 import importlib
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -137,3 +138,63 @@ def test_cowork_distributable_zip_contains_every_provider(tmp_path):
             matches = [member for member in stream.namelist() if member.endswith('/' + relative) or member == relative]
             assert len(matches) == 1
             assert stream.read(matches[0]) == (SCRIPTS / '_measure' / name).read_bytes()
+
+
+def test_installed_smoke_exercises_normal_json_and_accounting(tmp_path):
+    sys.path.insert(0, str(REPO / 'scripts'))
+    from check_measure_split_payload import smoke
+    assert '5.13.64' in smoke(REPO, tmp_path)
+    for name in ('direct', 'hook'):
+        settings = json.loads((tmp_path / name / 'home é/settings.json').read_text(encoding='utf-8'))
+        assert settings['unrelated'] is True
+        assert 'fixture' in settings['_disabledMcpServers']
+
+
+@pytest.mark.parametrize('origin', ['.', 'plugins/token-optimizer', 'cowork/token-optimizer'])
+def test_original_manifest_shell_launcher_recovers_root_and_runs_guidance(tmp_path, origin):
+    import os
+    import subprocess
+    from test_windows_hook_launcher import _hook_runtime_bash
+    bash = _hook_runtime_bash()
+    if not bash:
+        pytest.skip('the hook runtime requires Bash or Git Bash')
+    source = REPO / origin
+    version = tmp_path / 'versions/5.13.64'
+    for relative in ('hooks', 'skills/token-optimizer', '.claude-plugin'):
+        if (source / relative).is_dir():
+            shutil.copytree(source / relative, version / relative,
+                            ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    manifest = json.loads((version / 'hooks/hooks.json').read_text(encoding='utf-8'))
+    commands = [hook['command'] for groups in manifest['hooks'].values() for group in groups for hook in group['hooks']]
+    guidance = next((command for command in commands if 'dynamic-compact-instructions' in command), None)
+    command = guidance or next(command for command in commands if 'read_cache.py' in command)
+    home = tmp_path / 'home é'
+    home.mkdir()
+    (home / '.claude').mkdir()
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(('CLAUDE', 'CODEX', 'TOKEN_OPTIMIZER'))}
+    env.update({'HOME': str(home), 'USERPROFILE': str(home), 'CLAUDE_CONFIG_DIR': str(home / '.claude'),
+                'TOKEN_OPTIMIZER_SNAPSHOT_DIR': str(home / 'data'), 'TOKEN_OPTIMIZER_RUNTIME': 'claude',
+                'TOKEN_OPTIMIZER_NO_PROC_SCAN': '1', 'TOKEN_OPTIMIZER_PYTHON': sys.executable,
+                'TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S': '-1', 'PYTHONUTF8': '1',
+                'PYTHONPYCACHEPREFIX': str(tmp_path / 'pycache'), 'XDG_CACHE_HOME': str(home / '.cache')})
+    env.pop('PYTHONDONTWRITEBYTECODE', None)
+    outputs = []
+    for index, root in enumerate((version, version.with_name('5.13.63-missing'))):
+        cache = tmp_path / ('entry-cache-' + str(index))
+        run_env = {**env, 'CLAUDE_PLUGIN_ROOT': str(root), 'PYTHONPYCACHEPREFIX': str(cache)}
+        warm = 'import sys; sys.path.insert(0, sys.argv[1]); import measure, read_cache'
+        proc = subprocess.run([sys.executable, '-c', warm, str(version / 'skills/token-optimizer/scripts')],
+                              cwd=home, env=run_env, capture_output=True, timeout=45)
+        assert proc.returncode == 0 and not proc.stderr, proc.stderr
+        proc = subprocess.run([bash, '-c', command], cwd=home,
+                              env=run_env,
+                              input=b'{}', capture_output=True, timeout=45)
+        assert proc.returncode == 0 and not proc.stderr, proc.stderr
+        if guidance:
+            assert b'COMPACTION GUIDANCE:' in proc.stdout
+        else:
+            assert b'Traceback' not in proc.stderr
+            assert list(cache.rglob('read_cache.*.pyc')), 'the Cowork entry never loaded its real target'
+        outputs.append(proc.stdout)
+    assert outputs[0] == outputs[1]

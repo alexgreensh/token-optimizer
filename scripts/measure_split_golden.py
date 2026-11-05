@@ -292,7 +292,7 @@ def capture(source, workspace, output, cases, *, compiled_cache=True):
         if row['entry'] == 'http':
             expected = {'unauthorized': 403, 'malformed': 400}.get(row['argv'][1], 200)
             if not proc.stdout.startswith(('HTTP/1.0 ' + str(expected)).encode()):
-                raise RuntimeError(row['id'] + ': unexpected HTTP status: ' + repr(proc.stdout[:100]))
+                raise RuntimeError(row['id'] + ': unexpected HTTP status: ' + repr(proc.stdout[:2000]))
         effects = work / 'effects.json'
         combined = json.loads(effects.read_text()) if effects.exists() else []
         for child in sorted(work.glob('effects-child-*.json')):

@@ -91,6 +91,95 @@ def test_unapproved_posix_spawn_remains_blocked(tmp_path):
         golden.capture(source, work / 'fixed-path', work / 'capture', [row])
 
 
+@pytest.mark.parametrize('kind', ['json', 'dollar', 'node', 'hook', 'exit'])
+def test_real_capture_detects_planted_output_and_exit_changes(tmp_path, kind):
+    """Run real handlers and entrypoints, not fabricated artifact directories."""
+    import shutil
+    import uuid
+    source = tmp_path / 'source'
+    scripts = source / 'skills/token-optimizer/scripts'
+    shutil.copytree(REPO / 'skills/token-optimizer/scripts', scripts,
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    shutil.copytree(REPO / 'hooks', source / 'hooks',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    cases = json.loads(golden.CASES.read_text())['cases']
+    name = {'json': 'api-_collect_health_data-seeded-current',
+            'dollar': 'api-_get_savings_summary-seeded-current', 'node': 'node-no-args',
+            'hook': 'hook-hooks_userpromptsubmit_runner.py-UserPromptSubmit-success-claude',
+            'exit': 'cli---version'}[kind]
+    row = next(row for row in cases if row['id'] == name)
+    facade = scripts / 'measure.py'
+    marker = 'if __name__ == "__main__":'
+    if kind == 'hook':
+        text = facade.read_text(encoding='utf-8')
+        facade.write_text(text.replace(marker, 'def _continuity_prompt_hint(**kwargs):\n'
+                                      '    return "fixture continuity hint"\n\n' + marker), encoding='utf-8')
+    work = REPO / '.scratch-u0' / ('capture-control-' + uuid.uuid4().hex)
+    golden.capture(source, work / 'fixed-path', work / 'before', [row])
+    original = work / 'before' / name
+    stdout = (original / 'stdout').read_bytes()
+    assert (original / 'exit').read_text().strip() == '0'
+    if kind == 'json':
+        assert 'recommendations' in json.loads(stdout)
+        injection = ('_original_health = _collect_health_data\n'
+                     'def _collect_health_data():\n'
+                     '    result = _original_health()\n'
+                     '    result["installed_version"] = "PLANTED"\n    return result\n\n')
+    elif kind == 'dollar':
+        assert json.loads(stdout)['total_cost_usd'] > 0
+        injection = ('_original_savings = _get_savings_summary\n'
+                     'def _get_savings_summary(*args, **kwargs):\n'
+                     '    result = _original_savings(*args, **kwargs)\n'
+                     '    result["total_cost_usd"] += 0.00000001\n    return result\n\n')
+    elif kind == 'node':
+        assert b'Sonnet' in stdout and b'10%' in stdout
+        path = scripts / 'statusline.js'
+        path.write_text(path.read_text(encoding='utf-8') + '\nprocess.stdout.write("PLANTED");\n', encoding='utf-8')
+    elif kind == 'hook':
+        assert b'fixture continuity hint' in stdout and b'hookSpecificOutput' in stdout
+        path = source / 'hooks/userpromptsubmit_runner.py'
+        text = path.read_text(encoding='utf-8')
+        assert '"additionalContext": hint' in text
+        path.write_text(text.replace('"additionalContext": hint', '"additionalContext": None'), encoding='utf-8')
+    else:
+        assert b'5.13.64' in stdout
+        injection = 'if __name__ == "__main__":\n    raise SystemExit(17)\n\n'
+    if kind in ('json', 'dollar', 'exit'):
+        text = facade.read_text(encoding='utf-8')
+        assert text.count(marker) == 1
+        facade.write_text(text.replace(marker, injection + marker), encoding='utf-8')
+    golden.capture(source, work / 'fixed-path', work / 'after', [row])
+    differences = golden.compare(work / 'before', work / 'after')
+    expected = 'exit' if kind == 'exit' else 'stdout'
+    assert 'bytes differ: ' + name + '/' + expected in differences, differences
+    if kind == 'dollar':
+        changed = json.loads((work / 'after' / name / 'stdout').read_bytes())
+        assert changed['total_cost_usd'] != json.loads(stdout)['total_cost_usd']
+
+
+def test_cloud_setup_uses_pinned_metadata_without_host_dns(tmp_path, monkeypatch):
+    import uuid
+    site = tmp_path / 'offline-site'
+    site.mkdir()
+    (site / 'sitecustomize.py').write_text(
+        'import socket\n'
+        'def no_dns(*args, **kwargs):\n    raise OSError("host DNS must not be used")\n'
+        'socket.getaddrinfo = no_dns\n', encoding='utf-8')
+    environment = golden.environment
+    monkeypatch.setattr(golden, 'environment', lambda *args: {**environment(*args), 'PYTHONPATH': str(site)})
+    row = next(row for row in json.loads(golden.CASES.read_text())['cases']
+               if row['id'] == 'cli-cloud-setup-script')
+    work = REPO / '.scratch-u0' / ('cloud-metadata-test-' + uuid.uuid4().hex)
+    for label in ('first', 'second'):
+        golden.capture(REPO, work / 'fixed-path', work / label, [row])
+        result = work / label / row['id']
+        assert (result / 'exit').read_text().strip() == '0'
+        output = (result / 'stdout').read_bytes()
+        assert b'sha512-' in output and b'5.13.64' in output
+        assert (result / 'stderr').read_bytes() == b''
+    assert golden.compare(work / 'first', work / 'second') == []
+
+
 @pytest.mark.parametrize('name,before,after', [
     ('json', b'{"field":1}\n', b'{"field":2}\n'),
     ('dollar', b'$1.23456789\n', b'$1.23456788\n'),

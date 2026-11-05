@@ -39,13 +39,17 @@ in-memory transport; their raw response and server console output are separate
 artifacts. Node runs the actual statusline with a fixed clock and process boundary.
 The fake payload includes the source-layout README marker. The Claude version
 probe returns a pinned parseable version, so normal enable paths run normally.
+Registry metadata for 5.13.64 is synthetic with a fixed SHA-512 fixture value;
+DNS uses documentation-only addresses. Unexpected URL and resolver requests are
+blocked before they can reach the host network. Watchdogs run at deterministic
+virtual-clock boundaries. SQLite fixture and snapshot handles close explicitly.
 The driver compiles each immutable payload once and reuses those code objects
 without changing source filenames or runpy globals. A cached/uncached comparison
 guards that seam. Cold-import timing and public subprocess smoke bypass it.
 
 Compare stdout, stderr, exit status, user files and HTTP bytes without rewriting
 paths or rounding prices. Database comparisons retain schema SQL and sorted table
-rows rather than comparing SQLite layout bytes. Five negative controls prove
+rows rather than comparing SQLite layout bytes. Five end-to-end planted mutations prove
 that a JSON field, dollar amount, statusline character, hook envelope or exit-code
 change is detected.
 
@@ -60,6 +64,9 @@ dollar figures.
 
 `measure_split_ci.py` checks the actual offline npm tarball, a read-only installed
 payload, the real CLI/hook launcher, BASE self-equality and candidate equality.
+Installed smoke checks run normal JSON settings management through both direct
+CLI and hook entrypoints, read back its edits, and check actual pricing and empty
+accounting results. Those bounded smokes supplement the CI golden matrix.
 `measure_split_performance.py` keeps cold import timing separate from seven warm
 samples of each deadline-sensitive path. A median regression above both 10% and
 20 ms fails for investigation.
@@ -68,3 +75,6 @@ The frozen symbol/statement manifest and lane ownership file live in `scripts/`.
 After lane-zero review, extraction lanes inherit the five canaries and edit only their assigned
 definitions and fragments. The integrator owns shared source resolution and
 logical mutations that span lanes.
+Owned retained symbols are listed separately from movable inputs. The bytecode
+bootstrap remains in the facade before its early call and compat import. New
+provider files obey the global 1,000-line limit (compat retains its stricter 200).

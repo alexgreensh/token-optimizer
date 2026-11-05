@@ -417,6 +417,8 @@ def test_merged_savings_shares_one_recipe_and_one_window(measure):
     conn = _fresh_env(tmp)
     _insert_quality_sessions(conn, tmp, n_sessions=40,
                              per_session_input=4_000_000, opus_share=0.60)
+    # Routing needs a real activity population to reach the compression add-back.
+    stamp_activity(conn)
     conn.commit()
     conn.close()
 
@@ -450,10 +452,15 @@ def test_merged_savings_shares_one_recipe_and_one_window(measure):
     # Every savings summary inside the merged view -- including the one that
     # prices the compression add-back dollars -- sees the same `since` cutoff.
     assert len(savings_calls) >= 2, savings_calls
+    assert all(c["days"] == 7 for c in savings_calls), savings_calls
     assert all(c["since"] == sentinel_since for c in savings_calls), savings_calls
     ba = merged["before_after"]
+    assert ba.get("reason") is None
+    assert ba["after_sessions"] == 40
     assert ba["compression_reprice_ratio"] == pytest.approx(1.5)
     assert ba["compression_reprice_basis"] == "routing_recipe"
+    assert ba["compression_measured_usd"] == pytest.approx(10.0)
+    assert ba["compression_transformation_usd"] == pytest.approx(15.0)
 
 
 def test_short_sessions_without_breakdown_contribute_nothing(measure):

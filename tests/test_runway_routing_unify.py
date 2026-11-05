@@ -118,11 +118,40 @@ def test_snapshot_baseline_is_used_like_the_recipe(m, monkeypatch):
                         lambda lookback_days=14: {"shares": {"sonnet": 1.0}, "first_date": "2026-01-01"})
     m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     (m.SNAPSHOT_DIR / "snapshot_before.json").write_text(
-        json.dumps({"model_mix": {"shares": {"opus": 1.0}}}), encoding="utf-8")
+        json.dumps({"model_mix": {"activity_basis": 1, "shares": {"opus": 1.0}}}),
+        encoding="utf-8")
+    recipe = m._compute_model_routing_savings(days=30)
     rw = m.runway_snapshot(days=30)
-    assert rw["routing_baseline_source"] == "snapshot"
+    assert rw["routing_baseline_source"] == recipe["baseline_source"] == "snapshot"
+    assert rw["routing_multiplier"] == pytest.approx(
+        recipe["standardized_baseline_cost_usd"] / recipe["standardized_actual_cost_usd"],
+        abs=0.001)
     assert rw["routing_multiplier"] > 1.0
     assert rw["routing_direction"] == "lighter"
+
+
+@pytest.mark.parametrize("activity_basis", [None, 0])
+def test_legacy_snapshot_mix_falls_back_to_activity_history(m, monkeypatch, activity_basis):
+    _workload(m, monkeypatch, {OPUS: {"fresh_input": 2_000_000}, SONNET: {"fresh_input": 8_000_000}}, None)
+    monkeypatch.setattr(m, "_earliest_model_mix",
+                        lambda lookback_days=14: {"shares": {"opus": 0.1, "sonnet": 0.9},
+                                                 "first_date": "2026-01-01"})
+    # Keep the card visible when the history baseline makes routing heavier.
+    monkeypatch.setattr(m, "_weekly_full_savings", lambda **kw: {
+        "saved_usd": 20.0, "start": datetime.now().isoformat()})
+    model_mix = {"shares": {"opus": 1.0}}
+    if activity_basis is not None:
+        model_mix["activity_basis"] = activity_basis
+    (m.SNAPSHOT_DIR / "snapshot_before.json").write_text(
+        json.dumps({"model_mix": model_mix}), encoding="utf-8")
+    recipe = m._compute_model_routing_savings(days=30)
+    rw = m.runway_snapshot(days=30)
+    assert rw["routing_baseline_source"] == recipe["baseline_source"] == "history"
+    assert rw["routing_multiplier"] == pytest.approx(
+        recipe["standardized_baseline_cost_usd"] / recipe["standardized_actual_cost_usd"],
+        abs=0.001)
+    assert rw["routing_multiplier"] < 1.0
+    assert rw["routing_direction"] == "heavier"
 
 
 def test_card_factor_reconciles_with_the_routing_recipe(m, monkeypatch):

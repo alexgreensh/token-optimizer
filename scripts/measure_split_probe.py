@@ -232,6 +232,9 @@ def popen(args, *a, **kw):
 subprocess.Popen = popen
 os.kill = lambda *a: effects.append(['kill', clean(a)])
 webbrowser.open = lambda *a, **k: effects.append(['browser', clean(a), clean(k)]) or True
+# Windows opens the dashboard with os.startfile, never a subprocess.
+if hasattr(os, 'startfile'):
+    os.startfile = lambda *a, **k: effects.append(['startfile', clean(a), clean(k)])
 
 
 def fixture_urlopen(request, *args, **kwargs):
@@ -267,11 +270,14 @@ def audit(event, args):
     if event in ('open', 'os.listdir', 'os.scandir', 'sqlite3.connect') and args:
         check_home_read(args[0])
     if event in ('subprocess.Popen', 'os.posix_spawn', 'os.posix_spawnp'):
-        argv = args[1]
-        if isinstance(argv, (list, tuple)) and tuple(argv) == getattr(_approved_spawn, 'argv', None):
+        argv, approved = args[1], getattr(_approved_spawn, 'argv', None)
+        # Windows audits the list2cmdline string, POSIX the argv sequence.
+        if approved is not None and (isinstance(argv, (list, tuple)) and tuple(argv) == approved
+                                     or isinstance(argv, str) and argv == subprocess.list2cmdline(approved)):
             return
     if event in ('socket.connect', 'socket.bind', 'socket.getaddrinfo', 'socket.gethostbyname', 'socket.gethostbyaddr',
-                 'os.system', 'os.posix_spawn', 'os.posix_spawnp', 'os.exec', 'subprocess.Popen'):
+                 'os.system', 'os.posix_spawn', 'os.posix_spawnp', 'os.exec', 'os.spawn', 'os.startfile',
+                 'subprocess.Popen'):
         effects.append(['blocked', event, clean(args)])
         raise PermissionError('golden host boundary: ' + event)
     if event == 'open':
@@ -449,7 +455,7 @@ elif entry == 'seed':
                                 if key in data and isinstance(data[key], (int, float)):
                                     data[key] = 1793784000
                             path.write_text(json.dumps(data))
-    print('seed-ready')
+    sys.stdout.buffer.write(b'seed-ready\n')
 elif entry == 'api':
     measure = importlib.import_module('measure')
     name, *rest = arguments

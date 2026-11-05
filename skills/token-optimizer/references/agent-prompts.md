@@ -446,7 +446,10 @@ Output file: {COORD_PATH}/audit/advanced.md
        - Does the user have ANY model routing guidance? (Yes/No)
        - If yes, is it specific (task-to-model table) or vague ("use appropriate models")?
     b. If measure.py trends DB exists (~/.claude/_backups/token-optimizer/trends.db):
-       - Run: python3 $MEASURE_PY trends --json --days 30
+       - Run: "$PY" "$MEASURE_PY" trends --json --days 30
+         (if either variable is unset in your shell, re-resolve them with the
+         SKILL.md Step 0b snippet first; `$PY` is the verified interpreter, never
+         the bare `python3` name)
        - If the command fails (non-zero exit) or output is not valid JSON (e.g., prints
          "No session logs found"), treat as "no trends data" and skip to step (d)
        - The JSON output has raw token counts per full model ID (a full id such as a dated Haiku id mapped to a count, e.g. 50000).

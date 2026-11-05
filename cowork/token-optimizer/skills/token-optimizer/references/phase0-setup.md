@@ -21,7 +21,7 @@ Keep this quick, one question max.
 
 ## Quick Pre-Check
 
-Run `python3 $MEASURE_PY report`.
+Run `"$PY" "$MEASURE_PY" report`.
 If estimated controllable tokens < 1,000 and no CLAUDE.md exists, short-circuit:
 ```
 [Token Optimizer] Your setup is already minimal (~X tokens overhead).
@@ -63,7 +63,7 @@ mkdir -p "$COORD_PATH"/{audit,analysis,plan,verification}
 ## SessionEnd Hook Check
 
 ```bash
-python3 $MEASURE_PY check-hook
+"$PY" "$MEASURE_PY" check-hook
 ```
 - Exit 0: already installed, skip to Phase 1.
 - Exit 1 (manual/script install users only): explain and offer to install:
@@ -81,7 +81,7 @@ What this does:
 - All data stays on your machine (stored in ~/.claude/_backups/token-optimizer/)
 - Powers the Trends and Health tabs in your dashboard
 
-Remove anytime: python3 measure.py setup-hook --uninstall
+Remove anytime: "$PY" "$MEASURE_PY" setup-hook --uninstall
 ```
 
 Ask user: 1) Install (dry-run first), 2) Show JSON first, 3) Skip
@@ -90,8 +90,8 @@ Ask user: 1) Install (dry-run first), 2) Show JSON first, 3) Skip
 
 Run BOTH probes in one pass:
 ```bash
-python3 "$MEASURE_PY" daemon-status
-python3 "$MEASURE_PY" daemon-consent --get
+"$PY" "$MEASURE_PY" daemon-status
+"$PY" "$MEASURE_PY" daemon-consent --get
 ```
 
 `daemon-status` prints `DAEMON_RUNNING`, `DAEMON_FOREIGN`, or `DAEMON_NOT_RUNNING`.
@@ -116,7 +116,7 @@ What installing the URL does:
 - Starts automatically at login, restarts if it ever stops
 - Only reachable from this machine (localhost)
 
-Remove anytime: python3 measure.py setup-daemon --uninstall
+Remove anytime: "$PY" "$MEASURE_PY" setup-daemon --uninstall
 ```
 
 Ask user: 1) Install (write consent first, then install), 2) Skip (set consent no)
@@ -125,7 +125,7 @@ On Linux/BSD: skip silently, mention `file://` URL works.
 ## Smart Compaction Check
 
 ```bash
-python3 $MEASURE_PY setup-smart-compact --status
+"$PY" "$MEASURE_PY" setup-smart-compact --status
 ```
 - All 4 hooks installed: skip entirely.
 - Partially or not installed: explain and offer:
@@ -134,9 +134,9 @@ python3 $MEASURE_PY setup-smart-compact --status
 [Token Optimizer] Smart Compaction captures session state BEFORE compaction fires,
 then restores it afterward. Decisions, modified files, errors, agent state.
 
-Remove anytime: python3 measure.py setup-smart-compact --uninstall
+Remove anytime: "$PY" "$MEASURE_PY" setup-smart-compact --uninstall
 ```
 
 Ask user: 1) Install (dry-run first), 2) Show JSON first, 3) Skip
 
-Output: `[Token Optimizer Initialized] Backup: $BACKUP_DIR | Coordination: $COORD_PATH`
+Output: `[Token Optimizer Initialized] Backup: {BACKUP_DIR} | Coordination: {COORD_PATH}`

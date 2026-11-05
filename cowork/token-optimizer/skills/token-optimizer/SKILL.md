@@ -17,28 +17,17 @@ The audit below reads and edits `~/.claude`, which is the wrong target anywhere 
 **a. Environment check** (touches no file; an explicit `TOKEN_OPTIMIZER_RUNTIME` wins, and Claude plugin variables are checked before stray `OPENCODE_*` exports, the same order `detect_runtime()` uses):
 
 ```bash
-if [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "claude" ] || [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "codex" ]; then
-  :
-elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "opencode" ]; then
-  echo "Token Optimizer — OpenCode runtime detected."
-elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "copilot" ]; then
-  echo "Token Optimizer — GitHub Copilot runtime detected."
-elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "cursor" ]; then
-  echo "Token Optimizer — Cursor runtime detected."
-elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "antigravity" ]; then
-  echo "Token Optimizer — Google Antigravity runtime detected."
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}${CLAUDE_PLUGIN_DATA:-}" ]; then
-  :
-elif [ -n "${OPENCODE_BIN:-}${OPENCODE_CONFIG_DIR:-}${OPENCODE_DATA_DIR:-}${OPENCODE_CONFIG:-}${OPENCODE_CLIENT:-}" ]; then
-  echo "Token Optimizer — OpenCode runtime detected."
-elif [ -n "${COPILOT_HOME:-}${TOKEN_OPTIMIZER_COPILOT_HOME:-}" ]; then
-  echo "Token Optimizer — GitHub Copilot runtime detected."
-elif [ -n "${TOKEN_OPTIMIZER_CURSOR_HOME:-}" ]; then
-  echo "Token Optimizer — Cursor runtime detected."
-elif [ -n "${CURSOR_PROJECT_DIR:-}" ] && [ -n "${CURSOR_VERSION:-}" ]; then
-  echo "Token Optimizer — Cursor runtime detected."
-elif [ -n "${TOKEN_OPTIMIZER_ANTIGRAVITY_HOME:-}" ]; then
-  echo "Token Optimizer — Google Antigravity runtime detected."
+if [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "claude" ] || [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "codex" ]; then :
+elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "opencode" ]; then echo "Token Optimizer — OpenCode runtime detected."
+elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "copilot" ]; then echo "Token Optimizer — GitHub Copilot runtime detected."
+elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "cursor" ]; then echo "Token Optimizer — Cursor runtime detected."
+elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "antigravity" ]; then echo "Token Optimizer — Google Antigravity runtime detected."
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}${CLAUDE_PLUGIN_DATA:-}" ]; then :
+elif [ -n "${OPENCODE_BIN:-}${OPENCODE_CONFIG_DIR:-}${OPENCODE_DATA_DIR:-}${OPENCODE_CONFIG:-}${OPENCODE_CLIENT:-}" ]; then echo "Token Optimizer — OpenCode runtime detected."
+elif [ -n "${COPILOT_HOME:-}${TOKEN_OPTIMIZER_COPILOT_HOME:-}" ]; then echo "Token Optimizer — GitHub Copilot runtime detected."
+elif [ -n "${TOKEN_OPTIMIZER_CURSOR_HOME:-}" ]; then echo "Token Optimizer — Cursor runtime detected."
+elif [ -n "${CURSOR_PROJECT_DIR:-}" ] && [ -n "${CURSOR_VERSION:-}" ]; then echo "Token Optimizer — Cursor runtime detected."
+elif [ -n "${TOKEN_OPTIMIZER_ANTIGRAVITY_HOME:-}" ]; then echo "Token Optimizer — Google Antigravity runtime detected."
 fi
 ```
 
@@ -50,13 +39,12 @@ fi
 | "Google Antigravity runtime detected." | Stop. Follow `docs/antigravity.md`. |
 | nothing | Continue to b. |
 
-**b. Resolve `$MEASURE_PY` once.** Every later command uses it:
+**b. Resolve `$MEASURE_PY` and `$PY`.** Each Bash call is a fresh shell, so env vars do not persist between calls: the block ends by echoing both values, and every later command must use the echoed values verbatim. `$MEASURE_PY` is the newest installed measure.py; `$PY` is an interpreter that really runs Python (on Windows the bare `python3` name is often the Store stub, which fails silently under a pipe):
 
 ```bash
 # Resolve measure.py to the NEWEST installed copy across channels so a stale
-# plugin-cache copy never shadows a fresh install. find -L follows the
-# install.sh symlink under ~/.claude/skills; cd -P resolves it before reading each
-# copy's plugin.json for its version. find (not bare globs) never errors under zsh.
+# plugin-cache copy never shadows a fresh install (find -L follows the
+# install.sh symlink; cd -P resolves it before reading each copy's plugin.json).
 MEASURE_PY=""; _best_ver=""
 while IFS= read -r _cand; do
   [ -f "$_cand" ] || continue
@@ -70,13 +58,30 @@ done <<EOF
 $(find -L "$HOME/.claude/skills" "$HOME/.claude/plugins/cache" "$HOME/.claude/token-optimizer" "$HOME/.codex/skills" "$HOME/.codex/plugins/cache" "$HOME/.config/opencode/plugins" -type f -name measure.py -path '*token-optimizer*/scripts/measure.py' 2>/dev/null)
 EOF
 if [ -z "$MEASURE_PY" ]; then echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; fi
+
+# Resolve an interpreter that really runs Python. On native-Windows Git Bash
+# `python3` is often the Microsoft Store alias stub, which fails silently under
+# a pipe (#301). Probe `python` first there, `python3` first elsewhere; require >=3.9.
+PY=""; _py_candidates="python3 python"
+case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) _py_candidates="python python3" ;; esac
+for _py in $_py_candidates; do
+  command -v "$_py" >/dev/null 2>&1 || continue
+  _py_ver="$("$_py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)" || _py_ver=""
+  _py_major="$(echo "$_py_ver" | cut -d. -f1)"; _py_minor="$(echo "$_py_ver" | cut -d. -f2)"
+  [ -n "$_py_major" ] && [ -n "$_py_minor" ] || continue
+  case "$_py_major$_py_minor" in *[!0-9]*) continue ;; esac
+  if [ "$_py_major" -lt 3 ] 2>/dev/null || { [ "$_py_major" -eq 3 ] && [ "$_py_minor" -lt 9 ]; } 2>/dev/null; then continue; fi
+  PY="$_py"; break
+done
+if [ -z "$PY" ]; then echo "[Error] Python 3.9+ not found (the Windows Store python3 stub does not count). Install Python, then retry."; exit 1; fi
+
+# Separate Bash calls do not share shell state: copy these into every later command.
+# They print to stderr so a --json command chained in the same call keeps stdout parseable.
+printf 'MEASURE_PY=%q\n' "$MEASURE_PY" >&2
+printf 'PY=%q\n' "$PY" >&2
 ```
 
-**c. The authoritative gate.** The environment check cannot see an OpenCode started without its variables; this one scans the process tree:
-
-```bash
-python3 "$MEASURE_PY" report 2>&1 | head -1
-```
+**c. The authoritative gate.** The environment check cannot see an OpenCode started without its variables; this one scans the process tree: `"$PY" "$MEASURE_PY" report 2>&1 | head -1`
 
 Any "... runtime detected." line means stop and follow that runtime's file from the table above. On Codex (`TOKEN_OPTIMIZER_RUNTIME=codex` or a Codex environment) follow `references/codex-workflow.md`. Claude Code continues below.
 
@@ -93,9 +98,9 @@ Work through these in order and tick each off; a skipped phase stays in the list
 - [ ] 5. Verify and report before/after               references/agent-prompts.md (Verification Agent)
 ```
 
-**0. Setup.** Context window detection, pre-check, backup, the coordination folder (`COORD_PATH`), hook checks, daemon, smart compaction. Then, only when `python3 "$MEASURE_PY" keepwarm-consent-status` returns `should_ask: true`, follow `references/keepwarm-consent.md` exactly; it spends the user's money, so its wording and command order are fixed.
+**0. Setup.** Context window detection, pre-check, backup, the coordination folder (`COORD_PATH`), hook checks, daemon, smart compaction. Then, only when `"$PY" "$MEASURE_PY" keepwarm-consent-status` returns `should_ask: true`, follow `references/keepwarm-consent.md` exactly; it spends the user's money, so its wording and command order are fixed.
 
-**1. Parallel audit.** Dispatch six agents in one message, each with `COORD_PATH` and its prompt from `references/agent-prompts.md`. They gather and count, so they run on the cheapest capable model; the synthesis is where judgement is spent.
+**1. Parallel audit.** Dispatch six agents in one message, each with `COORD_PATH` and its prompt from `references/agent-prompts.md`. They gather and count, so they run on the cheapest capable model; the synthesis is where judgement is spent. A missing output file is a gap to note, not a reason to stop.
 
 | Agent | Writes | Looks at |
 |-------|--------|----------|
@@ -106,24 +111,17 @@ Work through these in order and tick each off; a skipped phase stays in the list
 | Commands | `audit/commands.md` | Count, menu overhead |
 | Settings and advanced | `audit/advanced.md` | Hooks, rules, settings, @imports, cache lifetime, compaction window |
 
-A missing output file is a gap to note, not a reason to stop.
 **2. Synthesis.** One agent on the strongest available model reads every audit file and writes `{COORD_PATH}/analysis/optimization-plan.md`. If it fails, present the raw audit files.
 
-**3. Present.** Generate the dashboard and show the findings as the presentation workflow describes, then wait:
-
-```bash
-python3 "$MEASURE_PY" dashboard --coord-path "$COORD_PATH"
-```
+**3. Present.** Generate the dashboard and show the findings as the presentation workflow describes, then wait: `"$PY" "$MEASURE_PY" dashboard --coord-path "$COORD_PATH"`
 
 **4. Implement.** Only what the user approved, one change at a time, following the playbook (actions 4A-4P: CLAUDE.md, MEMORY.md, skills, file exclusion, MCP, hooks, cache, rules, settings, descriptions, compact instructions, model routing, smart compaction, quality check, version-aware optimizations, smart routing). Templates are in `examples/`. Also offer, with the measured numbers:
 
-- `python3 "$MEASURE_PY" recommendations`: the daily-measured usage recommendations (compact window, subagent cache lifetime), each with the user's own numbers and the exact command when the state is `recommend`. Relay those lines verbatim; Token Optimizer recommends, it never sets either key.
-- `python3 "$MEASURE_PY" subagent-cache status` / `compact-advice`: the single-measurement detail behind each item. Both are estimates from the user's own history; the user decides.
+- `"$PY" "$MEASURE_PY" recommendations`: the daily-measured usage recommendations (compact window, subagent cache lifetime), each with the user's own numbers and the exact command when the state is `recommend`. Relay those lines verbatim; Token Optimizer recommends, it never sets either key.
+- `"$PY" "$MEASURE_PY" subagent-cache status` / `compact-advice`: the single-measurement detail behind each item. Both are estimates from the user's own history; the user decides.
 - Repeated work a script could do instead of a model: hand over to `token-coach`, goal e.
 
-**5. Verify.** The verification agent re-measures and computes the saving. Show before and after, then the habits that keep it.
-
-If a verification number is worse than the baseline, find which change caused it, restore that file from the backup, and return to step 4.
+**5. Verify.** The verification agent re-measures and computes the saving. Show before and after, then the habits that keep it. If a verification number is worse than the baseline, find which change caused it, restore that file from the backup, and return to step 4.
 
 ## Rules for changing a user's setup
 

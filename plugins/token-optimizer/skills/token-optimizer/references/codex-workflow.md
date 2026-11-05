@@ -41,21 +41,39 @@ done <<EOF
 $(find -L "$HOME/.claude/skills" "$HOME/.claude/plugins/cache" "$HOME/.claude/token-optimizer" "$HOME/.codex/skills" "$HOME/.codex/plugins/cache" "$HOME/.config/opencode/plugins" -type f -name measure.py -path '*token-optimizer*/scripts/measure.py' 2>/dev/null)
 EOF
 if [ -z "$MEASURE_PY" ]; then echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; fi
-echo "Using: $MEASURE_PY"
+
+# Resolve an interpreter that really runs Python. On native-Windows Git Bash
+# `python3` is often the Microsoft Store alias stub, which prints "Python was
+# not found" instead of running -- and a gate piped to `head` then looks like
+# a pass (#301). Probe `python` first there, `python3` first elsewhere, and
+# accept only a clean >=3.9 version reply (same ladder install.sh uses).
+PY=""; _py_candidates="python3 python"
+case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) _py_candidates="python python3" ;; esac
+for _py in $_py_candidates; do
+  command -v "$_py" >/dev/null 2>&1 || continue
+  _py_ver="$("$_py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)" || _py_ver=""
+  _py_major="$(echo "$_py_ver" | cut -d. -f1)"; _py_minor="$(echo "$_py_ver" | cut -d. -f2)"
+  [ -n "$_py_major" ] && [ -n "$_py_minor" ] || continue
+  case "$_py_major$_py_minor" in *[!0-9]*) continue ;; esac
+  if [ "$_py_major" -lt 3 ] 2>/dev/null || { [ "$_py_major" -eq 3 ] && [ "$_py_minor" -lt 9 ]; } 2>/dev/null; then continue; fi
+  PY="$_py"; break
+done
+if [ -z "$PY" ]; then echo "[Error] Python 3.9+ not found (the Windows Store python3 stub does not count). Install Python, then retry."; exit 1; fi
+echo "Using: $MEASURE_PY" >&2
 ```
 
-Use `TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" ...` for Codex commands.
+Use `TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" ...` for Codex commands.
 
 ## 1. Start With Chat Status
 
 Run these before giving advice:
 
 ```bash
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" report
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" coach --json
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" quality current --json
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" codex-state --json
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" codex-doctor --project "$PWD" --json
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" report
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" coach --json
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" quality current --json
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" codex-state --json
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" codex-doctor --project "$PWD" --json
 ```
 
 `codex-state` reads Codex's versioned SQLite state read-only (`state_*.sqlite`, `goals_*.sqlite`): subagent count and token cost (with leaked/never-closed subagents), memory overhead from `stage1_outputs`, and goal budget utilization. It is empty-safe when those tables have no rows yet.
@@ -105,8 +123,8 @@ Use `codex-doctor` as the setup truth source.
 If hooks are missing or stale:
 
 ```bash
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" codex-install --project "$PWD" --dry-run
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" codex-install --project "$PWD"
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" codex-install --project "$PWD" --dry-run
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" codex-install --project "$PWD"
 ```
 
 Default to the balanced profile. Balanced means:
@@ -120,9 +138,9 @@ Default to the balanced profile. Balanced means:
 Only suggest these when the user accepts the tradeoff:
 
 ```bash
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" codex-install --project "$PWD" --profile quiet
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" codex-install --project "$PWD" --profile telemetry
-TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" codex-install --project "$PWD" --profile aggressive
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" codex-install --project "$PWD" --profile quiet
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" codex-install --project "$PWD" --profile telemetry
+TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" codex-install --project "$PWD" --profile aggressive
 ```
 
 Quiet is Stop-only. Telemetry adds visible PostToolUse rows. Aggressive enables all current hooks, including experimental Bash PreToolUse. Do not make aggressive the default.

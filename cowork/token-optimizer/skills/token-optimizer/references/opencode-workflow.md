@@ -45,8 +45,10 @@ Or drop a local build into `~/.config/opencode/plugins/` (OpenCode auto-loads it
 If the user genuinely wants to audit a Claude Code setup *from* OpenCode (rare),
 they can force the runtime:
 
+Resolve `$MEASURE_PY` and `$PY` first with the SKILL.md Step 0b snippet (this file is followed instead of the audit phases, so they are not set yet).
+
 ```bash
-TOKEN_OPTIMIZER_RUNTIME=claude python3 "$MEASURE_PY" report
+TOKEN_OPTIMIZER_RUNTIME=claude "$PY" "$MEASURE_PY" report
 ```
 
 This is opt-in and explicit. The default under OpenCode is to never touch
@@ -64,7 +66,7 @@ hooks into `~/.claude/settings.json` (via `measure.py setup-all-hooks`).
 - If you use **OpenCode only**: the Claude hooks are unnecessary. After
   running `install.sh`, remove them with:
   ```bash
-  python3 ~/.claude/token-optimizer/skills/token-optimizer/scripts/measure.py cleanup-duplicate-hooks
+  "$PY" ~/.claude/token-optimizer/skills/token-optimizer/scripts/measure.py cleanup-duplicate-hooks
   ```
   Or simply re-create the symlink manually:
   ```bash

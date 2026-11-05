@@ -144,7 +144,16 @@ _MEASURE_PACKAGE_SOURCES = (
 def _runtime_sources(measure_src):
     package = os.path.join(os.path.dirname(measure_src), '_measure')
     sources = (measure_src,)
-    if os.path.isdir(package):
+    required = os.path.isdir(package)
+    if not required:
+        # Old unsplit fixture trees have no package. A damaged split install
+        # must still include its missing providers in readiness/failure keys.
+        try:
+            with open(measure_src, 'rb') as stream:
+                required = b'from _measure import _compat' in stream.read()
+        except OSError:
+            pass
+    if required:
         sources += tuple(os.path.join(package, name) for name in _MEASURE_PACKAGE_SOURCES)
     return sources
 

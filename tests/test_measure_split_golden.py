@@ -117,6 +117,38 @@ def test_unapproved_posix_spawn_remains_blocked(tmp_path):
         golden.capture(source, work / 'fixed-path', work / 'capture', [row])
 
 
+def test_capture_environment_pins_home_and_config_dir_to_the_fixture(monkeypatch):
+    """Every child capture spawns (seed, hook runner, CLI) resolves HOME and
+    CLAUDE_CONFIG_DIR inside the per-case fixture home, never the real host."""
+    import subprocess
+    import types
+    import uuid
+    spawned = []
+
+    def spy(argv, *args, **kwargs):
+        spawned.append(kwargs['env'])
+        return subprocess.run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(golden, 'subprocess', types.SimpleNamespace(**{**vars(subprocess), 'run': spy}))
+    cases = {row['id']: row for row in json.loads(golden.CASES.read_text())['cases']}
+    rows = [cases['hook-hooks_userpromptsubmit_runner.py-UserPromptSubmit-success-claude'],
+            cases['api-_get_savings_summary-seeded-current']]
+    work = REPO / '.scratch-u0' / ('pinned-env-test-' + uuid.uuid4().hex)
+    golden.capture(REPO, work / 'fixed-path', work / 'capture', rows)
+    assert len(spawned) >= 3
+    case = (work / 'fixed-path' / 'case').resolve()
+    real_home = Path.home().resolve()
+    for env in spawned:
+        home = Path(env['HOME']).resolve()
+        assert home.is_relative_to(case) and not case.is_relative_to(real_home / '.claude')
+        assert env['USERPROFILE'] == env['HOME']
+        assert env['CLAUDE_CONFIG_DIR'] == str(Path(env['HOME']) / '.claude')
+        for key in ('LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME',
+                    'CODEX_HOME', 'TOKEN_OPTIMIZER_SNAPSHOT_DIR'):
+            assert Path(env[key]).resolve().is_relative_to(home), key
+        assert 'CLAUDE_PLUGIN_DATA' not in env
+
+
 @pytest.mark.parametrize('kind', ['json', 'dollar', 'node', 'hook', 'exit'])
 def test_real_capture_detects_planted_output_and_exit_changes(tmp_path, kind):
     """Run real handlers and entrypoints, not fabricated artifact directories."""

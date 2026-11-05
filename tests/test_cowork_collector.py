@@ -65,6 +65,25 @@ def _load(name: str, path: Path):
 tc = _load("to_collector_under_test", COLLECTOR)
 measure = _load("measure_under_test", MEASURE)
 
+
+def test_production_loader_registers_facade_and_restores_live_predecessor(tmp_path):
+    """The collector's real loader must work while another facade is alive."""
+    previous = sys.modules['measure']
+    original_cost = previous._get_model_cost
+    original_price = original_cost('sonnet', 1000, 100)
+    with tc._measure_import_scope():
+        loaded, _ = tc._load_measure(str(MEASURE))
+        assert loaded is not None
+        assert sys.modules['measure'] is loaded
+        assert loaded._get_model_cost('sonnet', 1000, 100) == original_price
+    assert sys.modules['measure'] is previous
+    assert previous._get_model_cost is original_cost
+    assert original_cost('sonnet', 1000, 100) == original_price
+
+
+def test_production_ingest_loads_the_split_engine(tmp_path):
+    assert tc.ingest(tmp_path / 'empty', str(MEASURE), str(tmp_path / 'trends.db'), quiet=True) == 0
+
 PRICED_MODEL = "claude-sonnet-4-20250514"
 
 

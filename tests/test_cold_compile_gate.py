@@ -79,6 +79,16 @@ def test_failure_marker_is_invalidated_by_a_package_only_source_change(tmp_path)
     (package / 'runtime.py').write_text('VALUE = 12345\n')
     assert not gate._compile_failed_for(str(marker), source)
 
+
+def test_deleted_package_is_still_part_of_a_split_facades_source_set(tmp_path):
+    gate = _gate_module()
+    source = tmp_path / 'measure.py'
+    source.write_text('from _measure import _compat as _measure_compat\n')
+    sources = gate._runtime_sources(str(source))
+    assert len(sources) == 1 + len(gate._MEASURE_PACKAGE_SOURCES)
+    assert all(not Path(path).exists() for path in sources[1:])
+    assert ':missing' not in gate._source_set_key(str(source))  # the key is a digest
+
 # Simulated compile time for measure.py, and the hook's wait for the
 # background compile. A hook that compiled inline would take >= SLOW_S.
 SLOW_S = 8.0
@@ -174,20 +184,20 @@ class Bench:
             "TO_COLD_LOG": str(self.log),
         })
 
-    def measure_pyc(self) -> Path:
+    def measure_pyc(self, source=MEASURE) -> Path:
         saved = sys.pycache_prefix
         sys.pycache_prefix = str(self.prefix)
         try:
-            return Path(importlib.util.cache_from_source(str(MEASURE)))
+            return Path(importlib.util.cache_from_source(str(source)))
         finally:
             sys.pycache_prefix = saved
 
-    def pyc_fresh(self) -> bool:
+    def pyc_fresh(self, source=MEASURE) -> bool:
         try:
-            head = self.measure_pyc().read_bytes()[:16]
+            head = self.measure_pyc(source).read_bytes()[:16]
         except OSError:
             return False
-        st = MEASURE.stat()
+        st = source.stat()
         return (len(head) == 16 and head[:4] == importlib.util.MAGIC_NUMBER
                 and int.from_bytes(head[8:12], "little") == int(st.st_mtime) & 0xFFFFFFFF
                 and int.from_bytes(head[12:16], "little") == st.st_size & 0xFFFFFFFF)
@@ -241,10 +251,10 @@ class Bench:
             time.sleep(0.1)
         return False
 
-    def wait_for_pyc(self, timeout=150.0):
+    def wait_for_pyc(self, timeout=150.0, source=MEASURE):
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            if self.pyc_fresh():
+            if self.pyc_fresh(source):
                 return True
             time.sleep(0.2)
         return False
@@ -350,23 +360,37 @@ def test_cold_domain_with_warm_facade_compiles_in_the_background(bench):
     assert not bench.compiler_boots()
 
 
-def test_failed_background_compile_falls_back_to_the_inline_compile(bench):
+@pytest.mark.parametrize('package_only', [False, True])
+def test_failed_background_compile_falls_back_to_the_inline_compile(bench, package_only):
     """A compile that cannot succeed must not leave every later hook failing
     open: the hook compiles inline as it did before the gate (and that inline
     import writes the cache)."""
+    target = MEASURE
+    if package_only:
+        import py_compile
+        py_compile.compile(str(MEASURE), cfile=str(bench.measure_pyc()), doraise=True)
+        target = SCRIPTS / '_measure/runtime.py'
+        bench.env['TO_COLD_TARGET'] = '/_measure/runtime.py'
     rc, _out, err, _elapsed = bench.fire(TO_COLD_COMPILER_FAILS="1",
                                         TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S="20")
     assert rc == 0, err[-2000:]
     assert len(bench.compiler_boots()) == 1
     [hook] = bench.hook_exits()
     assert hook["measure_loaded"] and hook["compiled_measure"], hook
-    assert bench.pyc_fresh()
+    assert bench.pyc_fresh(target)
 
 
-def test_live_lock_defers_to_the_running_compile_and_stale_lock_is_taken_over(bench):
+@pytest.mark.parametrize('package_only', [False, True])
+def test_live_lock_defers_to_the_running_compile_and_stale_lock_is_taken_over(bench, package_only):
     """A fresh lock means another hook's compile is running: no second compile,
     fail open after the wait. A lock past its stale age belongs to a compile
     that died: the next hook starts a new one."""
+    target = MEASURE
+    if package_only:
+        import py_compile
+        py_compile.compile(str(MEASURE), cfile=str(bench.measure_pyc()), doraise=True)
+        target = SCRIPTS / '_measure/runtime.py'
+        bench.env['TO_COLD_TARGET'] = '/_measure/runtime.py'
     lock = bench.measure_pyc().parent / ".token-optimizer-compile.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text("4242 0\n", encoding="utf-8")
@@ -378,7 +402,7 @@ def test_live_lock_defers_to_the_running_compile_and_stale_lock_is_taken_over(be
     # is what this test is about.
     assert elapsed < HANG_S, f"hook waited {elapsed:.1f}s on a lock nobody will release"
     assert not bench.compiler_boots(), "started a compile while another one holds the lock"
-    assert not bench.pyc_fresh()
+    assert not bench.pyc_fresh(target)
 
     old = time.time() - 600
     os.utime(lock, (old, old))
@@ -393,7 +417,7 @@ def test_live_lock_defers_to_the_running_compile_and_stale_lock_is_taken_over(be
     except FileNotFoundError:
         still_stale = False  # taken over and already released
     assert not still_stale, "the dead compile's stale lock was never taken over"
-    assert bench.wait_for_pyc()
+    assert bench.wait_for_pyc(source=target)
     assert len(bench.compiler_boots()) == 1
 
 

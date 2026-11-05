@@ -1130,7 +1130,7 @@ def _first_read_compress(
                 source_file_path=_safe_path,
                 language=language,
                 archived_from="first_read_skeleton",
-                output_text=_safe_skel[:50000],
+                output_text=_safe_skel,
             )
         except Exception:
             pass

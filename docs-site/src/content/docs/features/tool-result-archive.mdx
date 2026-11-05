@@ -21,7 +21,9 @@ Archiving stores a recovery copy; eligible MCP results also get a preview/pointe
 
 The pointer left in context is written for the model, not just for you. It states the `tool_use_id` and the exact `expand` invocation, so when the model later realizes it needs the full output, it can issue the retrieval itself without guessing. The hint is what makes the archive usable mid-session rather than only a manual recovery tool.
 
-When the model knows *what* it needs but not *which* archived result holds it, `expand --search` runs a full-text search over the archived output (SQLite FTS5, with a plain-text fallback) and returns the matching chunk, so it recovers one relevant result instead of re-loading everything.
+When the model knows *what* it needs but not *which* archived result holds it, `expand --search` runs a full-text search over the entire archived output body (SQLite FTS5, with a plain-text fallback — the index covers the whole stored response, not a prefix) and returns the matching chunk, so it recovers one relevant result instead of re-loading everything. Each hit reports the archive key, tool, origin, capture time, content hash, total length, truncation state, lineage, and a snippet.
+
+`expand` also reads bounded windows, so the model can pull back only the part it needs instead of the whole archive: `--lines A:B` for a 1-based line range, `--start N --chars M` for a character window, and `--match TEXT [--context N] [--skip K]` for context windows around regex or literal matches. A bounded read prints a provenance header (source, capture time, hash, total length, truncation) and footer commands for the previous/next window or the full result. Only the returned characters are debited against archive savings.
 
 ## When it fires
 
@@ -45,6 +47,11 @@ python3 measure.py expand TOOL_USE_ID
 
 # Retrieve from a specific session
 python3 measure.py expand TOOL_USE_ID --session SESSION_ID
+
+# Bounded windows: only the requested slice comes back
+python3 measure.py expand TOOL_USE_ID --lines 50:120
+python3 measure.py expand TOOL_USE_ID --start 4000 --chars 2000
+python3 measure.py expand TOOL_USE_ID --match "connection reset" --context 3
 
 # List every archived result for the session
 python3 measure.py expand --list

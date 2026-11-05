@@ -27,6 +27,7 @@ honestly on a platform must render nothing there. Concretely:
 
 Run: python3 -m pytest tests/test_platform_savings_isolation.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import json
 import os
@@ -50,6 +51,7 @@ FOREIGN_RUNTIMES = ("codex", "hermes", "copilot", "opencode", "cursor", "antigra
 # non-Anthropic runtime's own history produces, and the mix-tracking shape on Claude.
 BASELINE_NO_OPUS_ERA = {
     "version": 4,
+    "activity_basis": 1,
     "typical_session": {
         "fresh_input": 30000.0, "cache_write": 487000.0,
         "cache_read": 13500000.0, "output": 51000.0,
@@ -191,6 +193,7 @@ def _seed_db(snap, *, model, n_quality=12, n_short=6, quality_input=2_000_000,
             (f"/short/{i}.jsonl", today, short_input, 300, 0.0,
              json.dumps(breakdown)),
         )
+    stamp_activity(conn)
     conn.commit()
     conn.close()
 

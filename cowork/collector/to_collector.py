@@ -390,6 +390,7 @@ def parse_cowork_sessions(data_dir: Path) -> tuple[dict[str, dict[str, Any]], di
             "tool_calls": {},  # tool_name -> count
             "model_events": {},  # model -> api_request event count
             "reported_cost_usd": 0.0,
+            "daily_usage": {}, "daily_calls": {},
             "first_ts": None,
             "last_ts": None,
         })
@@ -420,6 +421,17 @@ def parse_cowork_sessions(data_dir: Path) -> tuple[dict[str, dict[str, Any]], di
             bd["output"] += out_tok
             bd["cache_read"] += cr_tok
             bd["cache_create"] += cc_tok
+            activity = _event_time(merged, None)
+            day = activity.astimezone().date().isoformat() if activity else "undated"
+            daily = s["daily_usage"].setdefault(day, {}).setdefault(model, {
+                "fresh_input": 0, "cache_read": 0, "cache_create": 0,
+                "cache_create_5m": 0, "cache_create_1h": 0, "output": 0})
+            daily["fresh_input"] += in_tok
+            daily["output"] += out_tok
+            daily["cache_read"] += cr_tok
+            daily["cache_create"] += cc_tok
+            daily["cache_create_5m"] += cc_tok
+            s["daily_calls"][day] = s["daily_calls"].get(day, 0) + 1
             try:
                 s["reported_cost_usd"] += float(merged.get("cost_usd") or 0)
             except (TypeError, ValueError):
@@ -684,6 +696,13 @@ def ingest(data_dir: Path, measure_path: str | None = None, db_override: str | N
                           file=sys.stderr)
                 continue
             if cur.rowcount > 0:
+                days = measure._activity_days(s["daily_usage"])
+                usage = json.dumps(s["daily_usage"])
+                conn.execute(
+                    "UPDATE session_log SET date=?,first_activity_day=?,last_activity_day=?,daily_usage_json=?,"
+                    "parent_daily_usage_json=?,daily_calls_json=? WHERE jsonl_path=?",
+                    (days[-1] if days else "", days[0] if days else None, days[-1] if days else None,
+                     usage, usage, json.dumps(s["daily_calls"]), jsonl_path))
                 written += 1
             written_paths.append(jsonl_path)
         if written > 0 or removed_paths:

@@ -53,7 +53,7 @@ class _Db:
             """
             CREATE TABLE session_log (id INTEGER PRIMARY KEY, date TEXT,
                 daily_usage_json TEXT, model_usage_breakdown_json TEXT,
-                all_model_usage_json TEXT, model_usage_json TEXT);
+                all_model_usage_json TEXT, model_usage_json TEXT, first_activity_day TEXT, last_activity_day TEXT);
             CREATE TABLE model_daily (date TEXT, model TEXT, total_tokens INTEGER,
                 PRIMARY KEY (date, model));
             """
@@ -69,12 +69,12 @@ class _Db:
     def session(self, daily=None, breakdown=None, totals=None, date=None):
         self.conn.execute(
             "INSERT INTO session_log (date, daily_usage_json, model_usage_breakdown_json, "
-            "all_model_usage_json, model_usage_json) VALUES (?,?,?,?,?)",
+            "all_model_usage_json, model_usage_json, first_activity_day, last_activity_day) VALUES (?,?,?,?,?,?,?)",
             (date or self.day(0),
              json.dumps(daily) if daily is not None else None,
              json.dumps(breakdown) if breakdown is not None else None,
              json.dumps(totals) if totals is not None else None,
-             None),
+             None, date or self.day(0), date or self.day(0)),
         )
         self.conn.commit()
 

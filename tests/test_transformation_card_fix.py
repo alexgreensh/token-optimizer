@@ -23,6 +23,7 @@ prices against:
 
 Run: python3 -m pytest tests/test_transformation_card_fix.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import json
 import sqlite3
@@ -38,6 +39,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" 
 # The real frozen JUNE baseline (captured 2026-06-23), window 2026-03-18..2026-04-17.
 JUNE_BASELINE = {
     "version": 4,
+    "activity_basis": 1,
     "typical_session": {
         "fresh_input": 43395.8, "cache_write": 688319.3,
         "cache_read": 20616554.3, "output": 74232.5,
@@ -108,6 +110,7 @@ def _seed(tmp, sessions, baseline=None):
             (f"/s/{tmp}/{i}.jsonl", today, inp, out, hit, cw, 0,
              json.dumps(mu), json.dumps(mu), mins),
         )
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     return snap
@@ -284,6 +287,7 @@ def _seed_two_months(tmp, heavy_n, heavy_inp, light_n, light_inp, mu=None,
              int(inp * 0.02), 0, json.dumps(mu), json.dumps(mu), mins,
              calls_per, calls_per * 3),
         )
+    stamp_activity(conn)
     conn.commit()
     conn.close()
 

@@ -1,3 +1,4 @@
+from _activity_fixtures import stamp_activity
 import importlib
 import sqlite3
 import sys
@@ -27,6 +28,7 @@ def test_trends_exposes_labelled_main_cache_and_excluded_population(monkeypatch,
       ("2099-01-01", 1, 100, 10, 5, .10, 0),
     ]
     conn.executemany("INSERT INTO session_log (date,duration_minutes,input_tokens,output_tokens,message_count,cache_hit_rate,is_sidechain) VALUES (?,?,?,?,?,?,?)", rows)
+    stamp_activity(conn)
     stats = mod._query_dashboard_population_metrics(conn, 30)
     assert stats == {
       "all_sessions": 4, "main_work_sessions": 3, "delegated_sessions": 1,

@@ -152,6 +152,83 @@ recorded session.
 - A request is counted once by request id, even when it streams in pieces or replays in
   another session (R6). The parser version is stored per session
   (`_USAGE_PARSER_VERSION`), so a parser fix re-reads only what it changed.
+- **Consumed tokens and the plan denominator** are deduplicated fresh input plus
+  output from top-level requests, sliced by the calendar day of activity. Cache
+  reads and writes are excluded. The separate `reported_*` fields retain the raw
+  `/stats` observation count for explicitly labelled diagnostics only.
+  Top-level means the parent transcript's own requests: `parent_daily_usage_json`
+  supplies it directly. Rows collected before parent provenance existed fall back
+  to the combined parent+delegated map; those rows are counted in
+  `combined_fallback_rows`, the basis string says "combined", and `complete` is
+  false — legacy combined usage is never certified as top-level. The reported
+  model mix uses the same parent-then-combined selection and reports its own
+  `model_mix_combined_fallback_rows`.
+- **Every volume window** uses `session_activity`, a projection of the stored
+  per-day, per-model billing classes. A session crossing a cutoff contributes
+  only its in-window requests. `model_daily` and `daily_stats` use those same
+  slices. `session_log.date` means last known activity day, with separate
+  `first_activity_day`, `last_activity_day`, `transcript_mtime` and `collected_at`.
+  Every writer bounds the union of combined usage, parent usage and metadata
+  days, including the DB-free JSONL fallback. The trends prefilter keeps NULL
+  bounds and rows whose last activity reaches the window; an empty parent map
+  does not exempt an old row from filtering.
+  File modification time and collection time never supply missing activity dates.
+  The projection unions billing days with `daily_metrics_json` days: a day with
+  dated user/tool/skill activity but no billed usage still emits a row carrying
+  its dated metadata and zero tokens, so metadata-only activity never disappears
+  from windows or rebuilt aggregates.
+- Messages, tools, skills and dispatches use dated records when available.
+  Historical metadata without dated records uses a **lifetime session cohort**
+  on the last known activity day. Duration, quality, stale-waste and historical
+  gap statistics are cohort properties, not measurements of work performed that
+  day. Daily session details label lifetime metadata separately from dated tokens
+  and dollars. Cache-drop and stale-waste opportunities inherit this cohort limit.
+- Per-day API-call counts come from `daily_calls_json`. When that evidence was
+  never recorded the day contributes NULL, not a measured zero, and the
+  projection's `api_calls_known` flag exposes the gap. The migration allocates a
+  session's whole call count to its day only when the session has exactly one
+  proven activity day and all retained usage/metadata buckets have valid dates
+  and object values; invalid buckets and multi-day sessions keep unknown.
+  Work-unit figures (`_price_parent_window`, the structural compounding formula)
+  disclose `api_calls_unknown` sessions, and the api_call work unit is only used
+  when both eras have complete call evidence — otherwise the unit falls back to
+  messages rather than pricing a lower bound as measured.
+- Missing or invalid dates remain **incomplete coverage** and contribute no
+  invented volume to a period. Lifetime session-cost queries still show retained
+  estimates. Date queries sum only `on_date`; recent queries sum `in_window`, while
+  each entry keeps its explicitly separate lifetime total. Missing transcripts can
+  still supply dated history from retained daily buckets. Adapter totals without
+  request dates or proven single-day activity remain incomplete.
+- The one-time `activity_dating_v1` migration repairs stored dates backward as
+  well as forward and rebuilds all four aggregate tables. Before rewriting it
+  journals the old `session_log` dates and `daily_calls_json`, keyed by
+  `jsonl_path`, in `activity_dating_v1_journal` and copies
+  the four aggregate tables to `*_pre_activity_v1` inside the same transaction;
+  `rollback_activity_dating` restores those fields and aggregates and clears
+  the marker. This is a **developer-only safety net**, with no CLI, for checking
+  a migration on a database copy before any recollection or new writes. It
+  restores snapshot dates even for recollected rows and discards subsequent
+  aggregate days, so it is not a supported downgrade or live recovery path.
+  A migration failure, including a write lock at `BEGIN IMMEDIATE`, rolls back,
+  logs the error and returns a usable unmigrated connection for retry on the
+  next init. Old derived
+  baselines, workload anchors and weekly caches always leave their live names —
+  a taken `.pre-activity-v1` archive moves the active copy to the next free
+  `.pre-activity-v1.N`, so a stale file cannot survive — and rebuilt anchors
+  carry an `activity_basis` marker their readers enforce. Older snapshot model
+  mixes cannot serve as activity-based evidence; explicit user model-mix
+  settings and raw savings/compression event dates stay intact. Retention
+  follows ingestion time, so repairing an old activity date does not itself
+  evict the session.
+- OpenCode retains recording time as metadata and stores model buckets by UTC
+  activity day. Its dashboard and savings windows use those slices; unknown
+  timestamps remain incomplete. Python uses local calendar days. Baseline and
+  recent populations count distinct sessions after selecting activity, so crossing
+  midnight cannot manufacture extra sessions.
+
+Regression coverage: `test_activity_dating.py`, `test_usage_counted_once.py`,
+`test_dashboard_data.py`, `test_session_cost.py`, `test_savings_invariants.py`,
+`test_trends_window_filter.py` and OpenCode's `trends.activity-dating.test.ts`.
 
 ---
 

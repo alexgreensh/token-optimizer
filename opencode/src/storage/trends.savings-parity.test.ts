@@ -65,7 +65,7 @@ test("unknown events use their session's per-class model mix", () => {
   const store = new TrendsStore(dir);
   const buckets = { sonnet: { input: 100, output: 300, cacheRead: 0, cacheWrite: 0, cost: 0 },
     "opus-5-5": { input: 300, output: 100, cacheRead: 0, cacheWrite: 0, cost: 0 } };
-  store.recordSession({ sessionId: "mixed", project: null, model: "sonnet", modelTokenBuckets: buckets,
+  store.recordSession({ sessionId: "mixed", project: null, model: "sonnet", modelTokenBuckets: buckets, dailyUsage: { [new Date().toISOString().slice(0, 10)]: buckets },
     tokensInput: 400, tokensOutput: 400, tokensCacheRead: 0, tokensCacheWrite: 0, costUsd: 0,
     resourceHealth: null, sessionEfficiency: null, toolCalls: 0, compactions: 0, mode: null, durationSeconds: 1 });
   const db = new Database(join(dir, "trends.db"));

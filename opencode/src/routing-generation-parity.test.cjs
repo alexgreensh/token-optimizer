@@ -41,7 +41,7 @@ print(json.dumps(m._compute_model_routing_savings(days=30)))
 const python = (() => { try { execFileSync('python3.14', ['--version'], {stdio: 'pipe', windowsHide: true}); return 'python3.14'; } catch { return null; } })();
 
 function scenario(beforeModel, afterModel) {
-  const row = (ts, model) => ({created_at: ts / 1000, date: new Date(ts).toISOString().slice(0, 10), model,
+  const row = (ts, model) => ({created_at: ts / 1000, date: new Date(ts).toISOString(), model,
     tokens_input: 100000, tokens_output: 10000, tokens_cache_read: 0, tokens_cache_write: 0, cost_usd: 0, duration_seconds: 300});
   const rows = [row(T0, beforeModel)];
   for (let i = 0; i < 35; i++) rows.push(row(T0 + (2 + i / 2) * DAY, beforeModel));

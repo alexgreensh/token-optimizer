@@ -127,10 +127,11 @@ export async function setupV2(ctx: Context): Promise<Cleanup> {
     throw error;
   }
 
-  const usage = async (id: string, sessionID: unknown, tokens: Usage, cost: unknown, modelID?: string) => {
+  const usage = async (id: string, sessionID: unknown, tokens: Usage, cost: unknown, modelID?: string, activityAt?: number) => {
     await legacy.event?.({ event: {
       type: "message.updated", properties: { info: {
         role: "assistant", id, sessionID, tokens, cost, ...(modelID ? { modelID } : {}),
+        ...(activityAt !== undefined ? { time: { created: activityAt } } : {}),
       } },
     } } as never);
   };
@@ -143,22 +144,25 @@ export async function setupV2(ctx: Context): Promise<Cleanup> {
         if (event.id && !remember(handled, event.id)) continue;
         try {
           const data = event.data as Record<string, unknown>;
+          const rawTime = (event as unknown as { timestamp?: unknown }).timestamp;
+          const eventTime = typeof rawTime === "string" ? Date.parse(rawTime) : typeof rawTime === "number" ? rawTime : NaN;
+          const activityAt = Number.isFinite(eventTime) ? eventTime : undefined;
           if (event.type === "session.created") {
             await legacy.event?.({ event: { type: "session.created", properties: { info: { id: data.sessionID } } } } as never);
           } else if (event.type === "session.step.ended" || event.type === "session.step.failed") {
             // One final usage per assistant step; a failed step can still have been billed.
-            if (data.tokens || data.cost) await usage(event.id, data.sessionID, data.tokens as Usage, data.cost);
+            if (data.tokens || data.cost) await usage(event.id, data.sessionID, data.tokens as Usage, data.cost, undefined, activityAt);
           } else if ((event.type as string) === "session.usage.recorded") {
             // Auxiliary requests (title, compaction). Not in 2.0.18's plugin event
             // list; handled for hosts that deliver it, deduped against compaction.ended.
             const tokens = data.tokens as Usage;
             const id = data.source === "compaction" ? compactionKey(data.sessionID, tokens) : String((event as { id: string }).id);
-            await usage(id, data.sessionID, tokens, data.cost);
+            await usage(id, data.sessionID, tokens, data.cost, undefined, activityAt);
           } else if (event.type === "session.compaction.ended") {
             if (data.tokens || data.cost) {
               const tokens = data.tokens as Usage;
               await usage(compactionKey(data.sessionID, tokens), data.sessionID, tokens, data.cost,
-                (data.model as { id?: string } | undefined)?.id);
+                (data.model as { id?: string } | undefined)?.id, activityAt);
             }
             await legacy["experimental.compaction.autocontinue"]?.({ sessionID: data.sessionID } as never, {} as never);
           } else if (event.type === "session.idle") {

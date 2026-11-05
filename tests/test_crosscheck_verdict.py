@@ -17,6 +17,7 @@ falls back to measured savings.
 
 Run: python3 -m pytest tests/test_crosscheck_verdict.py -v
 """
+from _activity_fixtures import stamp_activity
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -67,6 +68,7 @@ def _seed_divergent_units(tmp, heavy_n=200, heavy_inp=20_000_000,
              int(inp * 0.02), 0, json.dumps(mu), json.dumps(mu), mins,
              calls, msgs),
         )
+    stamp_activity(conn)
     conn.commit()
     conn.close()
 

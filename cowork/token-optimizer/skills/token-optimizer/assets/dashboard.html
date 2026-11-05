@@ -3490,9 +3490,8 @@ var DB = (function() {
   // renderSavings render it identically without duplicating the body logic.
   // Reads trends data from the global `data`; the savings object is passed as
   // `savings` (data.savings in renderTrends, the in-scope `s` in renderSavings).
-  // SPENT = data.trends.total_tokens on the Claude /stats-compatible basis:
-  // fresh input + every streamed assistant output record from top-level
-  // transcripts, with cache read/write classes excluded. NOT sum(model_mix):
+  // SPENT = deduplicated fresh input + output on actual activity days.
+  // Cache reads and writes are excluded. NOT sum(model_mix):
   // model_mix can omit unattributed tokens. Fail-open to that sum rather than 0.
   // SAVED = savings.total_tokens. Fail-open: SAVED ≤ 0 → return '' (omit card
   // entirely); SAVED > 0 but SPENT missing/zero → render hero + footer only.
@@ -3510,9 +3509,9 @@ var DB = (function() {
     for (var tsMk in tsModelMix) { tsModelTotal += tsModelMix[tsMk]; }
     var tsIsCodex = data.runtime === 'codex';
     var tsPeriodDays = Number(tsTrends.period_days) || Number(s.period_days) || 30;
-    // SPENT = provider-stats-compatible total, fail-open to sum(model_mix).
+    // Missing dated coverage must not be replaced by lifetime model totals.
     var tsReportedTotal = Number(tsTrends.total_tokens) || 0;
-    var tsSpentTokens = tsReportedTotal > 0 ? tsReportedTotal : tsModelTotal;
+    var tsSpentTokens = Object.prototype.hasOwnProperty.call(tsTrends, 'total_tokens') ? Math.max(0, tsReportedTotal) : tsModelTotal;
     // (tsWouldSendTotal / percentages are computed below, AFTER the estimated
     // tier is summed: the card headlines the FULL saved total in every state.)
     // Estimated-tier tokens (kept OUT of the measured SAVED total by
@@ -3612,6 +3611,10 @@ var DB = (function() {
       html += '<div class="empty-state">No trends data yet. ' + collectNote + '</div>';
       el.innerHTML = html;
       return;
+    }
+
+    if (t.activity_coverage && t.activity_coverage.complete === false) {
+      html += '<div class="empty-state">Usage coverage incomplete: ' + fn(t.activity_coverage.undated_sessions || 0) + ' sessions have missing activity dates. Undated usage is excluded from period totals.</div>';
     }
 
     // Pricing tier display

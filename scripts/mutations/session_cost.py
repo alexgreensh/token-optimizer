@@ -43,7 +43,7 @@ MUTATIONS = [
     ("session total drops the subagents (main thread only)",
      [HAND, TEXT],
      MEASURE,
-     [("        total_cost = sum(sl[1] for sl in slices)\n",
+     [("        total_cost = sum(\n                _cost_from_model_breakdown(models, tier=pricing_tier)\n                for models in du.values() if isinstance(models, dict))\n",
        "        total_cost = session_cost\n")]),
     ("a session stored under two paths is counted twice",
      [TWICE],

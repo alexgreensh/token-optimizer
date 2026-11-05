@@ -457,6 +457,8 @@ def _parse_session_records(records, incomplete=False, sampled=False):
     previous_usage: dict[str, int] | None = None
     current_model = _UNKNOWN_MODEL
     per_model_usage: dict[str, dict[str, int]] = {}
+    daily_usage: dict[str, dict[str, dict[str, int]]] = {}
+    daily_calls: dict[str, int] = {}
     rate_limits_latest: dict[str, Any] | None = None
     effort_counts: dict[str, int] = {}
     tool_durations_ms: list[float] = []
@@ -532,6 +534,14 @@ def _parse_session_records(records, incomplete=False, sampled=False):
                 bucket["fresh_input"] += max(0, turn_usage["input_tokens"] - turn_usage["cached_input_tokens"])
                 bucket["cache_read"] += max(0, turn_usage["cached_input_tokens"])
                 bucket["output"] += max(0, turn_usage["output_tokens"])
+                day = ts.astimezone().date().isoformat() if ts else "undated"
+                day_bucket = daily_usage.setdefault(day, {}).setdefault(model_key, {
+                    "fresh_input": 0, "cache_read": 0, "cache_create": 0, "output": 0})
+                day_bucket["fresh_input"] += max(0, turn_usage["input_tokens"] - turn_usage["cached_input_tokens"])
+                day_bucket["cache_read"] += max(0, turn_usage["cached_input_tokens"])
+                day_bucket["output"] += max(0, turn_usage["output_tokens"])
+                if turn_usage['input_tokens'] or turn_usage['output_tokens']:
+                    daily_calls[day] = daily_calls.get(day, 0) + 1
                 if turn_usage['input_tokens'] or turn_usage['output_tokens']:
                     bucket.setdefault('requests', []).append({
                         'fresh_input': max(0, turn_usage['input_tokens'] - turn_usage['cached_input_tokens']),
@@ -652,6 +662,8 @@ def _parse_session_records(records, incomplete=False, sampled=False):
         "p95_call_gap_seconds": None,
         "model_usage": model_usage,
         "model_usage_breakdown": model_usage_breakdown,
+        "daily_usage": daily_usage,
+        "daily_calls": daily_calls,
         "skills_used": skills_used,
         "subagents_used": subagents_used,
         "tool_calls": tool_calls,

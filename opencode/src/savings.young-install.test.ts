@@ -17,6 +17,7 @@ const T0 = Date.parse("2026-01-01T00:00:00Z"); // install day
 function row(tsMs: number, model: string, fi: number, cr: number, cw: number, out: number) {
   return {
     created_at: Math.floor(tsMs / 1000),
+    date: new Date(tsMs).toISOString(),
     model,
     tokens_input: fi,
     tokens_cache_read: cr,

@@ -30,6 +30,7 @@ an allocation, not a measurement.
 
 Run: python3 -m pytest tests/test_savings_model_mix_reprice.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import json
 import sqlite3
@@ -110,6 +111,7 @@ def _ledger_db(m, tmp_path, monkeypatch, events, sessions):
             "INSERT INTO savings_events(timestamp,event_type,tokens_saved,"
             "cost_saved_usd,model,session_uuid) VALUES(?,?,?,?,?,?)",
             ((now - timedelta(hours=1)).isoformat(), et, tok, cost, model, uuid))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)
@@ -208,6 +210,7 @@ def test_missing_session_uuid_column_degrades_instead_of_zeroing_the_summary(m, 
     """)
     conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd)"
                  " VALUES(?,?,?,?)", (datetime.now().isoformat(), "tool_archive", 1_000_000, 3.0))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)
@@ -299,6 +302,7 @@ def _temp_runway_db(m, tmp_path, monkeypatch):
                  (datetime.now().date().isoformat(), 1_000_000, 200_000))
     conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved) VALUES(?,?,?)",
                  (datetime.now().isoformat(), "archive", 50_000))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)

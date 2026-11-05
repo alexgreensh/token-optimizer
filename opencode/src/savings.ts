@@ -53,6 +53,7 @@ const MIN_INPUT_TOKENS = 1000;
 const MIN_DURATION_SECONDS = 60;
 
 interface SessionRec {
+  id?: string;
   ts: number; // epoch ms
   model: string; // normalized pricing key
   fi: number; // fresh input
@@ -65,6 +66,20 @@ interface SessionRec {
   aggregateOnly: boolean;
 }
 
+function mergeSessionDays(rows: SessionRec[]): SessionRec[] {
+  const merged = new Map<string, SessionRec>();
+  rows.forEach((row, index) => {
+    const key = row.id ?? `row:${index}`;
+    const prior = merged.get(key);
+    if (!prior) { merged.set(key, { ...row, buckets: [...row.buckets] }); return; }
+    for (const field of ["fi", "cr", "cw", "out", "cost"] as const) prior[field] += row[field];
+    prior.durationSec = Math.max(prior.durationSec, row.durationSec);
+    prior.buckets.push(...row.buckets);
+    prior.aggregateOnly = prior.aggregateOnly && row.aggregateOnly;
+  });
+  return [...merged.values()];
+}
+
 function num(v: unknown): number {
   const n = typeof v === "number" ? v : parseFloat(String(v));
   return Number.isFinite(n) ? n : 0;
@@ -72,9 +87,7 @@ function num(v: unknown): number {
 
 function toRec(row: Record<string, unknown>): SessionRec {
   const ts =
-    num(row.created_at) > 0
-      ? num(row.created_at) * 1000
-      : Date.parse(String(row.date ?? "")) || 0;
+    Date.parse(String(row.date ?? "")) || 0;
   // Clamp every class >= 0 (corrupt-row protection, like measure.py's
   // _session_token_vector clamps). cache-write is a separate billed column in
   // session_log, kept distinct from fresh input.
@@ -94,13 +107,14 @@ function toRec(row: Record<string, unknown>): SessionRec {
     cr: Math.max(0, num(row.tokens_cache_read)), cw: Math.max(0, num(row.tokens_cache_write)), out: Math.max(0, num(row.tokens_output)) });
   return {
     ts,
+    id: typeof row.session_id === "string" ? row.session_id : undefined,
     model: String(row.model ?? "unknown"),
     fi: Math.max(0, num(row.tokens_input)),
     cr: Math.max(0, num(row.tokens_cache_read)),
     cw: Math.max(0, num(row.tokens_cache_write)),
     out: Math.max(0, num(row.tokens_output)),
     cost: num(row.cost_usd),
-    durationSec: Math.max(0, num(row.duration_seconds)),
+    durationSec: Math.max(0, num(row.cohort_duration_seconds ?? row.duration_seconds)),
     buckets,
     aggregateOnly,
   };
@@ -430,7 +444,7 @@ export function computeRealizedSavings(
   const installDate = new Date(installTs).toISOString().slice(0, 10);
   const windowStart = installTs + BASELINE_ONBOARDING_DAYS * DAY_MS;
   const windowEnd = windowStart + BASELINE_EARLY_WINDOW_DAYS * DAY_MS;
-  const before = history.filter((r) => r.ts >= windowStart && r.ts < windowEnd);
+  const before = mergeSessionDays(history.filter((r) => r.ts >= windowStart && r.ts < windowEnd));
 
   if (before.length < BASELINE_MIN_STABLE_SESSIONS) {
     const daysLeft = Math.max(0, Math.ceil((windowEnd - now) / DAY_MS));
@@ -462,7 +476,7 @@ export function computeRealizedSavings(
   // CURRENT window = recent sessions in lookback, strictly after the baseline
   // window (cohort separation). This is the EXACT volume held constant on both arms.
   const afterStart = Math.max(windowEnd, now - days * DAY_MS);
-  const after = history.filter((r) => r.ts >= afterStart);
+  const after = mergeSessionDays(history.filter((r) => r.ts >= afterStart));
 
   // BASELINE efficiency anchors (mix + pool cache-hit), from the early window.
   const beforeMix = modelMix(before);
@@ -665,7 +679,7 @@ export function computeRealizedSavings(
 
   // Cumulative is an extrapolation of the current transformation, including
   // its event add-backs, across comparable sessions with eligible model usage.
-  const allAfter = history.filter((r) => r.ts >= windowEnd && hasEligibleUsage(r, ceilings));
+  const allAfter = mergeSessionDays(history.filter((r) => r.ts >= windowEnd && hasEligibleUsage(r, ceilings)));
   const perSessionTransformation = recentN > 0 ? transformation / recentN : 0;
   const cumulative = perSessionTransformation * allAfter.length;
 

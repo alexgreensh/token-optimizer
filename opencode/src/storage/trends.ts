@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { knownModelRate } from "../pricing.js";
-import type { ModelTokenBuckets } from "../usage.js";
+import { aggregateModelUsage, type ModelTokenBuckets } from "../usage.js";
 
 const TRENDS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS session_log (
@@ -97,6 +97,7 @@ export interface SessionTrendData {
   project: string | null;
   model: string | null;
   modelTokenBuckets?: ModelTokenBuckets;
+  dailyUsage?: Record<string, ModelTokenBuckets>;
   tokensInput: number;
   tokensOutput: number;
   tokensCacheRead: number;
@@ -132,6 +133,9 @@ export class TrendsStore {
       const cols = this.db.query("PRAGMA table_info(session_log)").all() as Array<{ name: string }>;
       if (!cols.some((col) => col.name === "model_token_buckets")) {
         this.db.exec("ALTER TABLE session_log ADD COLUMN model_token_buckets TEXT");
+      }
+      for (const name of ["daily_usage_json", "first_activity_day", "last_activity_day"]) {
+        if (!cols.some((col) => col.name === name)) this.db.exec(`ALTER TABLE session_log ADD COLUMN ${name} TEXT`);
       }
       const eventCols = this.db.query("PRAGMA table_info(savings_events)").all() as Array<{ name: string }>;
       if (!eventCols.some((col) => col.name === "token_class")) {
@@ -411,16 +415,17 @@ export class TrendsStore {
 
   recordSession(data: SessionTrendData): void {
     const db = this.connect();
-    const date = new Date().toISOString().split("T")[0];
-    // Upsert that PRESERVES the original date + created_at. INSERT OR REPLACE is a
-    // DELETE+INSERT, so a re-recorded session (double session.deleted) would jump
-    // to today's date bucket and lose its original timestamp.
+    const days = Object.keys(data.dailyUsage ?? {}).filter(activityDay).sort();
+    const first = days[0] ?? null, last = days.at(-1) ?? null;
     db.run(
       `INSERT INTO session_log
        (session_id, date, project, model, model_token_buckets, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
-        cost_usd, resource_health, session_efficiency, tool_calls, compactions, mode, duration_seconds, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cost_usd, resource_health, session_efficiency, tool_calls, compactions, mode, duration_seconds, created_at,
+        daily_usage_json, first_activity_day, last_activity_day)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
+         date=excluded.date, first_activity_day=excluded.first_activity_day, last_activity_day=excluded.last_activity_day,
+         daily_usage_json=excluded.daily_usage_json,
          project=excluded.project, model=excluded.model,
          model_token_buckets=COALESCE(excluded.model_token_buckets, session_log.model_token_buckets),
          tokens_input=excluded.tokens_input, tokens_output=excluded.tokens_output,
@@ -429,67 +434,120 @@ export class TrendsStore {
          session_efficiency=excluded.session_efficiency, tool_calls=excluded.tool_calls,
          compactions=excluded.compactions, mode=excluded.mode,
          duration_seconds=excluded.duration_seconds`,
-      [
-        data.sessionId,
-        date,
-        data.project,
-        data.model,
-        data.modelTokenBuckets ? JSON.stringify(data.modelTokenBuckets) : null,
-        data.tokensInput,
-        data.tokensOutput,
-        data.tokensCacheRead,
-        data.tokensCacheWrite,
-        data.costUsd,
-        data.resourceHealth,
-        data.sessionEfficiency,
-        data.toolCalls,
-        data.compactions,
-        data.mode,
-        data.durationSeconds,
-        Date.now() / 1000,
-      ],
+      [data.sessionId, last ?? "", data.project, data.model,
+       data.modelTokenBuckets ? JSON.stringify(data.modelTokenBuckets) : null,
+       data.tokensInput, data.tokensOutput, data.tokensCacheRead, data.tokensCacheWrite,
+       data.costUsd, data.resourceHealth, data.sessionEfficiency, data.toolCalls,
+       data.compactions, data.mode, data.durationSeconds, Date.now() / 1000,
+       data.dailyUsage ? JSON.stringify(data.dailyUsage) : null, first, last],
     );
   }
 
-  getRecentSessions(days: number = 30): Array<Record<string, unknown>> {
-    const db = this.connect();
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - days);
-    const cutoffStr = cutoff.toISOString().split("T")[0];
-
-    return db
-      .query("SELECT * FROM session_log WHERE date >= ? ORDER BY created_at DESC")
-      .all(cutoffStr) as Array<Record<string, unknown>>;
+  /** One usage row per session and activity day. Legacy undated rows are omitted. */
+  private activityRows(days?: number): Array<Record<string, unknown>> {
+    const cutoff = days === undefined ? "" : new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+    const result: Array<Record<string, unknown>> = [];
+    for (const row of this.connect().query("SELECT * FROM session_log").all() as Array<Record<string, unknown>>) {
+      const usage = dailyUsage(row.daily_usage_json);
+      const dated = Object.keys(usage).filter(activityDay).sort();
+      const last = dated.at(-1);
+      for (const day of dated) {
+        if (day < cutoff) continue;
+        const buckets = usage[day]!;
+        const totals = Object.values(buckets).reduce((acc, bucket) => ({
+          input: acc.input + bucket.input, output: acc.output + bucket.output,
+          cacheRead: acc.cacheRead + bucket.cacheRead, cacheWrite: acc.cacheWrite + bucket.cacheWrite,
+          cost: acc.cost + bucket.cost,
+        }), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+        const model = Object.entries(buckets).sort((a, b) =>
+          (b[1].input + b[1].output + b[1].cacheWrite) - (a[1].input + a[1].output + a[1].cacheWrite))[0]?.[0] ?? "unknown";
+        result.push({ ...row, date: day, model, model_token_buckets: JSON.stringify(buckets),
+          tokens_input: totals.input, tokens_output: totals.output, tokens_cache_read: totals.cacheRead,
+          tokens_cache_write: totals.cacheWrite, cost_usd: totals.cost,
+          tool_calls: day === last ? row.tool_calls : 0,
+          compactions: day === last ? row.compactions : 0,
+          duration_seconds: day === last ? row.duration_seconds : 0,
+          cohort_duration_seconds: row.duration_seconds,
+          metadata_basis: "lifetime session cohort on last activity day" });
+      }
+    }
+    return result.sort((a, b) => String(a.date).localeCompare(String(b.date)));
   }
 
-  /** All sessions ever recorded, oldest-first. Used to establish the realized-
-   *  savings baseline (the earliest stable usage window). */
+  getActivityCoverage(): { complete: boolean; undatedSessions: number } {
+    const rows = this.connect().query("SELECT daily_usage_json FROM session_log").all() as Array<{ daily_usage_json: string | null }>;
+    const undatedSessions = rows.filter((r) => {
+      const usage = dailyUsage(r.daily_usage_json);
+      return Object.keys(usage).length === 0 || Object.keys(usage).some((day) => !activityDay(day));
+    }).length;
+    return { complete: undatedSessions === 0, undatedSessions };
+  }
+
+  /** One session, with volumes summed only over its in-window activity days. */
+  getRecentSessions(days: number = 30): Array<Record<string, unknown>> {
+    const sessions = new Map<string, Record<string, unknown>>();
+    for (const row of this.activityRows(days)) {
+      const key = String(row.session_id), previous = sessions.get(key);
+      if (!previous) { sessions.set(key, row); continue; }
+      const summed = { ...row };
+      for (const field of ["tokens_input", "tokens_output", "tokens_cache_read", "tokens_cache_write", "cost_usd", "tool_calls", "compactions", "duration_seconds"]) {
+        summed[field] = Number(previous[field] ?? 0) + Number(row[field] ?? 0);
+      }
+      const models = aggregateModelUsage([previous, row].flatMap((r) =>
+        Object.entries(JSON.parse(String(r.model_token_buckets)) as ModelTokenBuckets).map(([model, bucket]) => ({ model, ...bucket }))));
+      summed.model_token_buckets = JSON.stringify(models);
+      sessions.set(key, summed);
+    }
+    return [...sessions.values()].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  }
+
+  /** Dated slices for savings windows, oldest first. Recording time is metadata. */
   getAllSessions(): Array<Record<string, unknown>> {
-    const db = this.connect();
-    return db
-      .query("SELECT * FROM session_log ORDER BY created_at ASC")
-      .all() as Array<Record<string, unknown>>;
+    return this.activityRows();
   }
 
   getDailyStats(days: number = 30): Array<Record<string, unknown>> {
-    const db = this.connect();
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - days);
-    const cutoffStr = cutoff.toISOString().split("T")[0];
-
-    return db
-      .query(
-        `SELECT date,
-                COUNT(*) as sessions,
-                SUM(tokens_input) as total_input,
-                SUM(tokens_output) as total_output,
-                AVG(COALESCE(resource_health, 0)) as avg_resource_health,
-                AVG(COALESCE(session_efficiency, 0)) as avg_session_efficiency
-         FROM session_log
-         WHERE date >= ?
-         GROUP BY date
-         ORDER BY date DESC`,
-      )
-      .all(cutoffStr) as Array<Record<string, unknown>>;
+    const daily = new Map<string, Record<string, number | string>>();
+    for (const row of this.activityRows(days)) {
+      const day = String(row.date);
+      const stats = daily.get(day) ?? { date: day, sessions: 0, total_input: 0, total_output: 0,
+        avg_resource_health: 0, avg_session_efficiency: 0 };
+      for (const [field, source] of [["total_input", "tokens_input"], ["total_output", "tokens_output"],
+                                    ["avg_resource_health", "resource_health"], ["avg_session_efficiency", "session_efficiency"]]) {
+        stats[field!] = Number(stats[field!] ?? 0) + Number(row[source!] ?? 0);
+      }
+      stats.sessions = Number(stats.sessions) + 1;
+      daily.set(day, stats);
+    }
+    const result: Array<Record<string, unknown>> = [...daily.values()].map((r) => ({ ...r,
+      avg_resource_health: Number(r.avg_resource_health) / Number(r.sessions),
+      avg_session_efficiency: Number(r.avg_session_efficiency) / Number(r.sessions),
+    }));
+    return result.sort((a, b) => String(b.date).localeCompare(String(a.date)));
   }
+}
+
+function activityDay(day: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(day))
+    && new Date(day).toISOString().slice(0, 10) === day;
+}
+
+function dailyUsage(raw: unknown): Record<string, ModelTokenBuckets> {
+  try {
+    const value = JSON.parse(String(raw ?? "null"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const result: Record<string, ModelTokenBuckets> = {};
+    for (const [day, models] of Object.entries(value)) {
+      if (!models || typeof models !== "object" || Array.isArray(models)) continue;
+      const buckets: ModelTokenBuckets = {};
+      for (const [model, bucket] of Object.entries(models)) {
+        if (!bucket || typeof bucket !== "object") continue;
+        const b = bucket as Record<string, unknown>;
+        buckets[model] = { input: Math.max(0, Number(b.input) || 0), output: Math.max(0, Number(b.output) || 0),
+          cacheRead: Math.max(0, Number(b.cacheRead) || 0), cacheWrite: Math.max(0, Number(b.cacheWrite) || 0), cost: Math.max(0, Number(b.cost) || 0) };
+      }
+      result[day] = buckets;
+    }
+    return result;
+  } catch { return {}; }
 }

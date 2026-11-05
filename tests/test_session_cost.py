@@ -204,7 +204,8 @@ def test_a_multi_day_session_gives_the_asked_days_share(history, tmp_path):
     assert s["cost_usd"]["total"] == pytest.approx(0.048, abs=1e-6)
     assert s["cost_usd"]["on_date"] == pytest.approx(0.024, abs=1e-6)
     (one_day,) = _q(history, "garden", "yesterday")["sessions"]
-    assert "on_date" not in one_day["cost_usd"]
+    assert one_day["cost_usd"]["on_date"] == pytest.approx(GARDEN_TOTAL)
+    assert _q(history, "longrun", "yesterday")["total_cost_usd"] == pytest.approx(0.024)
 
 
 def test_same_number_as_the_dashboard(history):

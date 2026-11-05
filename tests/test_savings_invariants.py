@@ -105,3 +105,10 @@ def test_every_test_the_methodology_cites_exists():
     assert cited
     missing = sorted(name for name in cited if not (ROOT / "tests" / name).exists())
     assert not missing, missing
+
+
+def test_methodology_discloses_checkpoint_restore_bounds_and_scope():
+    doc = METHODOLOGY.read_text(encoding="utf-8")
+    assert "6,300" in doc and "4,000" in doc and "1,500" in doc and "800" in doc
+    assert "OpenCode and OpenClaw" in doc
+    assert "working set" in doc and "checkpoint_restore" in doc

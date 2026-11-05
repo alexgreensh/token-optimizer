@@ -1068,7 +1068,7 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
             if _out_id:
                 tool_results.append({
                     "tool_use_id": str(_out_id), "is_error": False,
-                    "text": text[:2000]})
+                    "text": checkpoint_state.result_excerpt(text)})
                 if len(tool_results) > 200:
                     tool_results.pop(0)
             if _looks_like_error_text(text):
@@ -1083,7 +1083,7 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
                     "tool_use_id": str(_end_id),
                     "is_error": bool(exit_code not in (None, 0) or "error" in status),
                     "exit_code": exit_code,
-                    "text": text[:2000]})
+                    "text": checkpoint_state.result_excerpt(text)})
                 if len(tool_results) > 200:
                     tool_results.pop(0)
             if exit_code not in (None, 0) or "error" in status or _looks_like_error_text(text):
@@ -1137,7 +1137,7 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
         "todos": todos,
         "active_plan": active_plan,
         "current_step": {
-            "last_user": last_user_msg[:500],
+            "last_user": last_user_msg,
             "last_assistant": last_assistant_msg[:500],
         },
         "task_state": task_state,

@@ -43663,7 +43663,8 @@ def _extract_session_state(filepath, tail_lines=500):
                         tool_results.append({
                             "tool_use_id": str(_block.get("tool_use_id") or ""),
                             "is_error": bool(_block.get("is_error")),
-                            "text": _ingest_redact(_tool_result_text(_block.get("content")))[:2000],
+                            "text": checkpoint_state.result_excerpt(
+                                _ingest_redact(_tool_result_text(_block.get("content")))),
                         })
                         if len(tool_results) > 200:
                             tool_results.pop(0)
@@ -43806,7 +43807,7 @@ def _extract_session_state(filepath, tail_lines=500):
         "todos": todos,
         "active_plan": active_plan,
         "current_step": {
-            "last_user": last_user_msg[:500],
+            "last_user": last_user_msg,
             "last_assistant": last_assistant_msg[:500],
         },
         "task_state": task_state,
@@ -44065,7 +44066,8 @@ def _checkpoint_sections(state, quality_summary=None, archive_entries=None):
     obj = ts_task.get("objective") or {}
     if isinstance(obj, dict) and obj.get("text"):
         sections.append(_checkpoint_section(
-            "Objective", ["## Objective", str(obj["text"])], "hard", 1500))
+            "Objective", ["## Objective", str(obj["text"])], "hard",
+            checkpoint_state.OBJECTIVE_MAX_CHARS + len("## Objective\n")))
     constraints = ts_task.get("user_constraints") or []
     con_lines = ["## User Constraints"] + [
         f"- {c.get('text', '')}" for c in constraints
@@ -44078,9 +44080,11 @@ def _checkpoint_sections(state, quality_summary=None, archive_entries=None):
     if isinstance(nxt, dict) and nxt.get("text"):
         _nxt_src = nxt.get("source") or {}
         _nxt_src_kind = _nxt_src.get("kind", "?") if isinstance(_nxt_src, dict) else "?"
+        title = ("Last assistant statement (no tracked next step)"
+                 if nxt.get("basis") == "assistant_statement" else "Next Action")
         sections.append(_checkpoint_section(
-            "Next Action",
-            ["## Next Action", f"- {nxt['text']}",
+            title,
+            [f"## {title}", f"- {nxt['text']}",
              f"  (basis: {nxt.get('basis') or 'unknown'}; source: {_nxt_src_kind})"],
             "hard", 700))
 
@@ -44462,7 +44466,7 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
             "quality": quality_summary,
             "session_id": sid,
             "git": {"branch": git_branch, "sha": git_sha},
-            "active_task": state["current_step"]["last_user"][:500] if state["current_step"]["last_user"] else None,
+            "active_task": state["current_step"]["last_user"] or None,
             "active_plan": state.get("active_plan"),
             "todos": [{"content": c, "status": s} for c, s in state.get("todos", [])],
             "modified_files": [{"path": p, "action": a, "range": r} for p, a, r in state["active_files"]],
@@ -44729,14 +44733,16 @@ def _merge_earlier_checkpoint_context(primary_cp, older_cps, max_sources=3):
 def _open_work_signals(session_id):
     """Open-requirement dependency corpus + protected paths for drop decisions.
 
-    Returns ``(texts, protected_paths)``: texts define open work (objective,
+    Returns ``(texts, protected_paths, closed_texts)``: texts define open work (objective,
     user constraints, OPEN requirements, next action, open questions,
     decisions) and protected_paths are files tied to the work (modified files,
     active plan). Sourced from the latest VALID checkpoint sidecar for the
-    session; both empty when no usable checkpoint exists.
+    session. Closed texts are explicit completed requirements or dead ends;
+    an absent path in open texts alone never establishes independence.
     """
     texts: list[str] = []
     protected: set[str] = set()
+    closed_texts: list[str] = []
     try:
         cp = _best_checkpoint_for_session(session_id, within_retention=True)
     except Exception:
@@ -44757,6 +44763,11 @@ def _open_work_signals(session_id):
             st = str(r.get("status") or "").lower()
             if st not in ("completed", "done", "complete", "cancelled"):
                 texts.append(str(r.get("text") or ""))
+            else:
+                closed_texts.append(str(r.get("text") or ""))
+        for dead in ts2.get("dead_ends") or []:
+            if isinstance(dead, dict):
+                closed_texts.append(str(dead.get("target") or dead.get("text") or ""))
         na = ts2.get("next_action") or {}
         if isinstance(na, dict) and na.get("text"):
             texts.append(str(na["text"]))
@@ -44777,7 +44788,7 @@ def _open_work_signals(session_id):
             protected.add(str(p))
     if side.get("active_plan"):
         protected.add(str(side["active_plan"]))
-    return texts, protected
+    return texts, protected, closed_texts
 
 
 def _opening_context_text(cwd):
@@ -45212,10 +45223,10 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
     def _print_checkpoint_body(cp_path, prefix_msg, merged_body=""):
         """Read checkpoint, strip header, print body with injection mitigation.
 
-        The ``## Next Action`` section is pulled ahead of the body and exempt
-        from the restore cap: a capped restore must never drop the immediate
-        next step (gap-checkpoint). ``merged_body`` is pre-built earlier-
-        checkpoint context, neutralized here and printed under its own fence.
+        Next Action (or the explicitly labelled assistant fallback) is pinned
+        ahead of the body. Content budgets total 6,300 chars: 800 pinned,
+        4,000 body and 1,500 earlier context, plus truncation markers and fences.
+        ``merged_body`` is neutralized here and printed under its own fence.
         """
         cp_path = _safe_checkpoint_file(cp_path)
         if cp_path is None:
@@ -45230,9 +45241,12 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
         if not body:
             return
         # Pin Next Action before the cap so truncation can never drop it.
-        next_action_block = _extract_checkpoint_section(body, "Next Action")
-        if next_action_block:
-            body = _remove_checkpoint_section(body, "Next Action")
+        next_action_block = ""
+        for title in ("Next Action", "Last assistant statement (no tracked next step)"):
+            next_action_block = _extract_checkpoint_section(body, title)
+            if next_action_block:
+                body = _remove_checkpoint_section(body, title)
+                break
         # Neutralize forged sentinels / control chars before injecting, and cap
         # the surface area. The body is replayed prior-conversation text and is
         # attacker-influenceable, so it must not be able to break the data fence.
@@ -47790,12 +47804,9 @@ def dynamic_compact_instructions(session_id=None):
             for e in errors:
                 parts.append(f"  - {e}")
 
-        # Dependency-based drop candidates (gap-checkpoint): "safe to drop" is
-        # decided by dependency on OPEN requirements — never by read frequency.
-        # A one-time read can hold the only user constraint or acceptance
-        # criterion; a repeatedly-read file can be a dead end. Every candidate
-        # keeps a retrieval pointer so nothing is lost, only deferred.
-        req_texts, protected_paths = _open_work_signals(session_id)
+        # Only explicit closed work can justify dropping a file. Absence from
+        # the objective/todos leaves its dependency unknown.
+        req_texts, protected_paths, closed_texts = _open_work_signals(session_id)
         # Session-level signals also count as open work.
         for d in anchor.get("decisions", []):
             req_texts.append(str(d))
@@ -47806,15 +47817,23 @@ def dynamic_compact_instructions(session_id=None):
                     req_texts.append(str(d))
         except Exception:
             pass
-        dependency_known = bool(req_texts or protected_paths)
         corpus = "\n".join(t for t in req_texts if t).lower()
+        closed_corpus = "\n".join(closed_texts).lower()
         try:
             protected_norm = {os.path.normpath(p) for p in protected_paths}
         except Exception:
             protected_norm = set()
 
+        def _mentions_file(fp, text):
+            norm = str(fp).replace("\\", "/").lower()
+            base = norm.rsplit("/", 1)[-1]
+            return bool((norm and norm in text) or (len(base) >= 4 and re.search(
+                r"(?<![\w.-])" + re.escape(base) + r"(?![\w.-])", text)))
+
         def _file_is_protected(fp, entry=None):
             fp_s = str(fp)
+            if store.was_file_edited(fp_s):
+                return True
             if fp_s in protected_paths:
                 return True
             try:
@@ -47822,15 +47841,12 @@ def dynamic_compact_instructions(session_id=None):
                     return True
             except Exception:
                 pass
-            if dependency_known:
-                norm = fp_s.replace("\\", "/").lower()
-                base = norm.rsplit("/", 1)[-1]
-                if (norm and norm in corpus) or (len(base) >= 4 and base in corpus):
-                    return True
+            if _mentions_file(fp, corpus):
+                return True
+            if _mentions_file(fp, closed_corpus):
                 return False
-            # No requirement signal at all: read frequency is only weak
-            # evidence, used here solely because there is no dependency data
-            # to decide by (the pre-gap conservative behavior).
+            # Unknown dependency: keep the conservative frequency fallback,
+            # even when an unrelated objective/requirement exists.
             if entry is not None and int(entry.get("read_count") or 1) >= 2:
                 return True
             return False
@@ -47839,7 +47855,7 @@ def dynamic_compact_instructions(session_id=None):
             preserved = [f for f in active_files if _file_is_protected(f["file_path"], f)]
             if preserved:
                 parts.append("")
-                parts.append("PRESERVE - Files tied to open requirements:")
+                parts.append("PRESERVE - Open work and repeatedly-read files:")
                 for f in preserved:
                     fp = f["file_path"]
                     short = fp.replace(str(Path.home()), "~")
@@ -47862,10 +47878,7 @@ def dynamic_compact_instructions(session_id=None):
                 tokens = h["output_tokens_est"]
                 parts.append(f"  - {cmd} ({tokens} tokens)")
 
-        # DROP candidates: every tracked file NOT referenced by open
-        # requirements, largest token estimate first. Read count is recorded
-        # for context but never decides inclusion — frequency is not evidence
-        # of disposability (or of necessity).
+        # Positive closed-work evidence is required, largest estimate first.
         drop_candidates: list[tuple[int, str]] = []
         try:
             all_reads = store.get_all_file_entries()
@@ -47879,6 +47892,8 @@ def dynamic_compact_instructions(session_id=None):
                 continue
             if _file_is_protected(fp, entry):
                 continue
+            if not _mentions_file(fp, closed_corpus):
+                continue
             rc = int(entry.get("read_count") or 1)
             short = str(fp).replace(str(Path.home()), "~")
             drop_candidates.append((
@@ -47890,7 +47905,7 @@ def dynamic_compact_instructions(session_id=None):
         if drop_candidates:
             parts.append("")
             parts.append(
-                "DROP - Safe to discard (not referenced by open requirements; "
+                "DROP - Safe to discard (referenced only by closed work; "
                 "re-read the path if needed):")
             parts.extend(line for _neg, line in drop_candidates[:5])
 

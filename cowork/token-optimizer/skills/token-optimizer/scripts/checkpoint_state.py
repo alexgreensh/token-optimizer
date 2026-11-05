@@ -35,6 +35,7 @@ _MAX_DEAD_ENDS = 8
 _MAX_ASSUMPTIONS = 8
 _MAX_CHANGED_FILES = 20
 _TEXT = 400  # per-item text cap
+OBJECTIVE_MAX_CHARS = 1500
 
 # Constraint cues in USER text. Deliberately conservative: a false positive
 # costs one extra preserved line, a false negative can drop the only stated
@@ -59,10 +60,15 @@ _ASSUMPTION_RE = re.compile(
 # A check only counts as a "verified fact" when the tool looks like a
 # verification step (test/build/lint run), not any successful command.
 _VERIFY_RE = re.compile(
-    r"pytest|py\.test|unittest|npm\s+(?:test|run|build)|pnpm|yarn|"
-    r"\bmake\b|cargo|go\s+test|mvn|gradle|ctest|rspec|jest|vitest|"
-    r"\bbuild\b|\blint\b|\btest(?:s|ing)?\b|checkmarx|mypy|eslint|"
-    r"bash|shell|exec|command",
+    r"(?:^|[;&|])\s*(?:env\s+)?(?:[A-Za-z_]\w*=\S+\s+)*"
+    r"(?:[^\s;|&]*[/\\])?(?:"
+    r"python(?:\d+(?:\.\d+)*)?\s+-m\s+(?:pytest|unittest)|"
+    r"pytest|py\.test|ctest|rspec|jest|vitest|mypy|eslint|ruff\s+check|"
+    r"(?:npm|pnpm|yarn|bun)\s+(?:test|build|lint|check|run\s+(?:test|build|lint|check))|"
+    r"(?:npx|pnpm\s+exec|bunx)\s+(?:jest|vitest|eslint|tsc)|"
+    r"cargo\s+(?:test|check|build|clippy)|go\s+(?:test|build|vet)|"
+    r"make(?:\s+(?:test|check|build|lint|all))?|mvn\s+(?:test|verify|package)|"
+    r"gradle\s+(?:test|check|build)|tsc)(?=\s|$)",
     re.IGNORECASE,
 )
 
@@ -73,9 +79,10 @@ _FAIL_RE = re.compile(
     re.IGNORECASE,
 )
 _PASS_RE = re.compile(
-    r"\bpassed\b|\b0\s+failed\b|\bsuccess(?:ful|fully)?\b|"
-    r"\bexit(?:ed)?\s+(?:with\s+)?(?:code\s+)?0\b|\ball\s+green\b",
-    re.IGNORECASE,
+    r"\b\d+\s+passed\b|\b0\s+failed\b|\btest result:\s*ok\b|"
+    r"^\s*(?:all (?:checks|tests) passed|BUILD SUCCESS(?:FUL)?|Build succeeded)\b|"
+    r"^\s*PASS(?:\s|$)|^ok\s+\S+|^OK\s*$|^Found 0 errors\b",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 _DONE_STATUSES = {"completed", "done", "complete"}
@@ -100,27 +107,33 @@ def _sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", text) if s.strip()]
 
 
+def result_excerpt(text: str) -> str:
+    """Bound already-redacted output while retaining runner summary tails."""
+    if len(text) <= 2000:
+        return text
+    return text[:500] + "\n…\n" + text[-1500:]
+
+
 def _check_outcome(is_error: Any, exit_code: Any, text: str) -> tuple[str, bool]:
     """(outcome, explicit_success) for one tool call/result pair.
 
-    ``explicit_success`` is True only on a positive success signal (pass
-    markers or exit code 0) — the bar for a "verified fact". A bare absence of
-    errors is 'unknown', not 'completed'.
+    ``explicit_success`` requires a pass marker in the summary tail. Exit 0
+    completes a check but alone cannot make its target a verified fact.
     """
     if is_error or (exit_code is not None and exit_code != 0):
         return "failed", False
-    t = text or ""
+    t = (text or "")[-1500:]
     fail_hits = len(_FAIL_RE.findall(t))
     pass_hits = len(_PASS_RE.findall(t))
     if fail_hits and fail_hits >= pass_hits:
         return "failed", False
     if pass_hits or exit_code == 0:
-        return "completed", True
+        return "completed", bool(pass_hits)
     return "unknown", False
 
 
 def _looks_like_verification(tool: str, target: str) -> bool:
-    return bool(_VERIFY_RE.search(f"{tool} {target}"))
+    return bool(_VERIFY_RE.search(target))
 
 
 def build_task_state(
@@ -147,7 +160,7 @@ def build_task_state(
     - ``objective``: ``{"text", "source"}`` from the caller's head-scan of the
       FIRST user message; ``None`` when the transcript has none.
     """
-    user_texts = [( _clip(t, 500), sid) for t, sid in user_texts if _clip(t, 500)]
+    user_texts = [(str(t).strip(), sid) for t, sid in user_texts if t and str(t).strip()]
     assistant_texts = [(_clip(t, 500), sid) for t, sid in assistant_texts if _clip(t, 500)]
     tool_calls = [c for c in tool_calls if isinstance(c, dict) and c.get("id")]
     tool_results = [r for r in tool_results if isinstance(r, dict)]
@@ -156,29 +169,39 @@ def build_task_state(
     # --- objective: the FIRST user message (head-scan), never the last "continue".
     if objective and objective.get("text"):
         objective_obj = {
-            "text": _clip(objective["text"], 500),
+            "text": _clip(objective["text"], OBJECTIVE_MAX_CHARS),
             "source": objective.get("source") or _src("user_message"),
         }
     elif user_texts:
         # Fallback: first user text observed in the extraction window. For
         # sessions within the tail window this IS the first message.
-        objective_obj = {"text": user_texts[0][0], "source": _src("user_message", user_texts[0][1])}
+        objective_obj = {"text": _clip(user_texts[0][0], OBJECTIVE_MAX_CHARS),
+                         "source": _src("user_message", user_texts[0][1])}
     else:
         objective_obj = None
 
     # --- user constraints: pattern-extracted candidates from user messages.
     constraints: list[dict[str, Any]] = []
     seen_constraints: set[str] = set()
-    for text, sid in user_texts:
+    constraint_inputs = [
+        (text, _src("user_message", sid)) for text, sid in user_texts]
+    if objective and objective.get("text"):
+        constraint_inputs.insert(0, (str(objective["text"]), objective_obj["source"]))
+    for text, source in constraint_inputs:
         for sent in _sentences(text):
-            if not _CONSTRAINT_RE.search(sent):
+            sent = " ".join(sent.split())
+            cue = _CONSTRAINT_RE.search(sent)
+            if not cue:
                 continue
-            clip = _clip(sent, 300)
+            # A cue beyond the sentence cap must not disappear behind its
+            # background prefix. Preserve nearby context and mark the excerpt.
+            start = max(0, cue.start() - 60) if cue.end() > 300 else 0
+            clip = _clip(("… " if start else "") + sent[start:], 300)
             key = _norm(clip)
             if key in seen_constraints:
                 continue
             seen_constraints.add(key)
-            constraints.append({"text": clip, "source": _src("user_message", sid)})
+            constraints.append({"text": clip, "source": source})
             if len(constraints) >= _MAX_CONSTRAINTS:
                 break
         if len(constraints) >= _MAX_CONSTRAINTS:
@@ -195,8 +218,18 @@ def build_task_state(
     results_by_id: dict[str, dict[str, Any]] = {}
     for r in tool_results:
         rid = str(r.get("tool_use_id") or "")
-        if rid and rid not in results_by_id:
-            results_by_id[rid] = r
+        if not rid:
+            continue
+        previous = results_by_id.get(rid)
+        if previous is None:
+            results_by_id[rid] = dict(r)
+        elif r.get("exit_code") is not None:
+            results_by_id[rid] = dict(r, text=r.get("text") or previous.get("text") or "")
+        elif previous.get("exit_code") is None:
+            results_by_id[rid] = dict(r, is_error=bool(r.get("is_error") or previous.get("is_error")),
+                                     text=r.get("text") or previous.get("text") or "")
+        elif not previous.get("text"):
+            previous["text"] = r.get("text") or ""
 
     checks: list[dict[str, Any]] = []
     succeeded_targets: set[str] = set()
@@ -324,7 +357,7 @@ def build_task_state(
     unknown_fields: list[str] = []
     if not objective_obj:
         unknown_fields.append("objective")
-    if not user_texts:
+    if not constraint_inputs:
         unknown_fields.append("user_constraints")
     if not todos:
         unknown_fields.append("requirements")

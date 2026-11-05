@@ -185,6 +185,23 @@ them:
 
 ## 9. Known limits
 
+- Checkpoint task state is deterministic transcript evidence. Constraints are scanned
+  from full redacted user texts and the original objective before sentence caps;
+  the objective retains up to 1,500 characters. Missing semantic fields stay unknown.
+  Verified facts require a recognized verification command target and a pass marker
+  in the result's summary tail. An exit code alone records a completed check.
+- Compaction DROP guidance needs an explicit reference in completed requirements or
+  dead ends, with no open-work reference. Files edited in the session store are
+  protected even after the latest checkpoint; unknown dependencies retain the
+  conservative repeated-read fallback.
+- Checkpoint restore content budgets total **6,300 characters**: **800** for the pinned
+  Next Action (or labelled last assistant statement), **4,000** for the body and
+  **1,500** for provenance-tagged earlier facts, plus truncation markers and fences.
+  The estimated `checkpoint_restore` credit is sized from the working set, not from
+  this payload length. This task-state path serves Claude Code, Codex, Cowork and
+  Hermes. OpenCode and OpenClaw retain their own checkpoint implementations; this
+  task-state change is not ported to them.
+
 - Routing and estimates are estimates. They are labelled and kept separate from
   measured parts.
 - Rows from before per-turn evidence was recorded use session-mix or input-rate floors,

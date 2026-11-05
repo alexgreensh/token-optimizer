@@ -14,8 +14,8 @@ These tests pin the replacement contract:
 - restore prefers the LATEST VALID checkpoint and merges still-relevant
   facts from older saves with provenance, instead of ranking triggers;
 - the restore cap can never drop the next action;
-- compaction drop candidates are chosen by dependency on open requirements,
-  never by read frequency, and always keep a retrieval pointer.
+- compaction drop candidates need positive closed-work evidence; unknown
+  dependencies retain the conservative read-frequency fallback.
 
 Run: python3.14 -m pytest tests/test_checkpoint_task_state.py -x -q
 """
@@ -156,6 +156,140 @@ def test_objective_is_first_user_message_not_latest_continue(m):
     assert state["current_step"]["last_user"] == "continue"
 
 
+def test_constraints_after_500_chars_and_long_active_task_survive(m):
+    mod, _cp, tmp = m
+    prompt = "Background context. " * 40 + "Never touch the production database."
+    state = mod._extract_session_state(str(_transcript(tmp, [_user(prompt)])))
+    assert state["task_state"]["objective"]["text"] == prompt
+    assert state["current_step"]["last_user"] == prompt
+    assert any(c["text"] == "Never touch the production database."
+               for c in state["task_state"]["user_constraints"])
+
+
+def test_late_constraint_cue_survives_a_long_sentence():
+    import checkpoint_state
+    prompt = "context " * 90 + "Never touch the production database."
+    ts = checkpoint_state.build_task_state(user_texts=[(prompt, "original")])
+    assert any("Never touch the production database." in c["text"] for c in ts["user_constraints"])
+
+
+def test_edit_markers_never_persist_raw_path_credentials(m):
+    import session_store
+    mod, _cp, tmp = m
+    store = session_store.SessionStore(SID, snapshot_dir=tmp / "snap")
+    secret = "ghp_" + "A" * 36
+    before = store._connect().total_changes
+    store.record_file_edit(f"/work/{secret}/module.py")
+    assert store._connect().total_changes > before
+    rows = store._connect().execute("SELECT key, value FROM session_meta").fetchall()
+    assert rows
+    assert secret not in str([tuple(row) for row in rows])
+    store.close()
+
+
+def test_objective_constraints_survive_outside_the_tail_window(m):
+    mod, _cp, tmp = m
+    prompt = "Ship the fix. Do not push to main."
+    records = [_user(prompt, uuid="original")]
+    records += [_assistant([_text("working")], uuid=str(i)) for i in range(510)]
+    records += [_user("ok continue", uuid="latest")]
+    state = mod._extract_session_state(str(_transcript(tmp, records)))
+    assert state["current_step"]["last_user"] == "ok continue"
+    assert {c["text"] for c in state["task_state"]["user_constraints"]} == {"Do not push to main."}
+    assert state["task_state"]["user_constraints"][0]["source"]["id"] == "original"
+
+
+def test_objective_uses_the_hard_tier_cap_and_still_renders(m):
+    mod, _cp, tmp = m
+    prompt = "Objective detail " * 110
+    state = mod._extract_session_state(str(_transcript(tmp, [_user(prompt)])))
+    objective = state["task_state"]["objective"]["text"]
+    assert len(objective) == 1500
+    rendered = mod._render_checkpoint_sections(mod._checkpoint_sections(state))
+    assert objective in rendered
+
+
+@pytest.mark.parametrize("reads", [1, 4])
+def test_file_not_named_in_todos_has_unknown_dependency(m, monkeypatch, reads):
+    mod, cp_dir, tmp = m
+    import session_store
+    monkeypatch.setattr(session_store, "SNAPSHOT_DIR", tmp / "snap")
+    store = session_store.SessionStore(SID, snapshot_dir=tmp / "snap")
+    store.upsert_file_entry("/work/spec.md", {"mtime_ns": 1, "size_bytes": 9000,
+        "ranges_seen": [], "tokens_est": 3000, "read_count": reads, "last_access": time.time()})
+    store.insert_intel_event("Read", "read-spec", "spec reviewed", 500)
+    store.close()
+    _write_cp(cp_dir, SID, "20261004-120000", "stop", "## Active Task\nfix parser\n",
+              sidecar={"task_state": {"objective": {"text": "Fix parser"}}})
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mod.dynamic_compact_instructions(session_id=SID)
+    assert "DROP - Safe to discard" not in buf.getvalue()
+
+
+@pytest.mark.parametrize("command,output,exit_code,verified", [
+    ("ls logs/", "deploy-success.log", None, False),
+    ("echo pytest", "12 passed", 0, False),
+    ("cat tests/test_example.py", "12 passed", 0, False),
+    ("pytest -q", "success.log", None, False),
+    ("pytest -q", "12 passed\n" + "noise\n" * 400, None, False),
+    ("pytest -q", "", 0, False),
+    ("pytest -q", "12 passed in 0.2s", None, True),
+    ("npm test", "Tests: 12 passed, 12 total", 0, True),
+    ("cargo test", "test result: ok. 12 passed; 0 failed", 0, True),
+    ("go test ./...", "ok  example/package 0.2s", 0, True),
+    ("make check", "All checks passed", 0, True),
+    ("python3 -m pytest -q", "12 passed", 0, True),
+    ("npx eslint src", "All checks passed", 0, True),
+])
+def test_verified_facts_require_runner_target_and_summary_marker(command, output, exit_code, verified):
+    import checkpoint_state
+    ts = checkpoint_state.build_task_state(
+        tool_calls=[{"id": "check", "name": "Bash", "target": command}],
+        tool_results=[{"tool_use_id": "check", "text": output, "exit_code": exit_code}])
+    assert bool(ts["verified_facts"]) is verified
+
+
+@pytest.mark.parametrize("host", ["claude", "codex_output", "codex_end"])
+def test_long_check_output_retains_head_and_summary_tail(m, host):
+    mod, _cp, tmp = m
+    output = "runner start\n" + "working\n" * 1000 + "\n42 passed in 2s"
+    if host == "claude":
+        records = [_user("Run tests"),
+                   _assistant([_tool_use("run", "Bash", {"command": "pytest -q"})]),
+                   _tool_result("run", output)]
+        state = mod._extract_session_state(str(_transcript(tmp, records)))
+    else:
+        import codex_session
+        result = ({"type": "function_call_output", "output": output} if host == "codex_output"
+                  else {"type": "exec_command_end", "aggregated_output": output, "exit_code": 0})
+        records = [{"type": "event_msg", "payload": {"type": "function_call", "name": "exec_command",
+                    "call_id": "run", "arguments": json.dumps({"cmd": "pytest -q"})}},
+                   {"type": "event_msg", "payload": dict(result, call_id="run")}]
+        state = codex_session.extract_session_state(_transcript(tmp, records))
+    assert state["task_state"]["checks"][0]["outcome"] == "completed"
+    assert state["task_state"]["verified_facts"]
+
+
+@pytest.mark.parametrize("end_first", [False, True])
+def test_codex_duplicate_results_keep_explicit_exit_code(m, end_first):
+    import codex_session
+    mod, _cp, tmp = m
+    results = [
+        {"type": "function_call_output", "call_id": "run", "output": "12 passed"},
+        {"type": "exec_command_end", "call_id": "run", "exit_code": 2,
+         "aggregated_output": "12 passed"},
+    ]
+    if end_first:
+        results.reverse()
+    records = [{"type": "event_msg", "payload": {"type": "function_call", "name": "exec_command",
+                "call_id": "run", "arguments": json.dumps({"cmd": "pytest -q"})}}]
+    records += [{"type": "event_msg", "payload": r} for r in results]
+    ts = codex_session.extract_session_state(_transcript(tmp, records))["task_state"]
+    assert ts["checks"][0]["outcome"] == "failed"
+    assert not ts["verified_facts"]
+
+
 def test_checks_pair_tool_use_with_result_outcomes(m):
     mod, _cp, tmp = m
     records = [
@@ -294,6 +428,28 @@ def test_restore_skips_invalid_latest_checkpoint(m):
     assert "real older state" in out
 
 
+def test_restore_excludes_saves_after_recent_precompact_anchor(m):
+    mod, cp_dir, _tmp = m
+    _write_cp(cp_dir, SID, "20261004-100000", "auto",
+              "## Active Task\nprecompact task\n", age_s=30)
+    _write_cp(cp_dir, SID, "20261004-110000", "progressive-20",
+              "## Active Task\npostcompact summary\n", age_s=10)
+    out = _restore(mod, SID)
+    assert "precompact task" in out
+    assert "postcompact summary" not in out
+
+
+def test_restore_does_not_prefer_auto_over_newer_valid_state(m):
+    mod, cp_dir, _tmp = m
+    _write_cp(cp_dir, SID, "20261004-100000", "auto",
+              "## Active Task\nstale precompact task\n", age_s=7200)
+    _write_cp(cp_dir, SID, "20261004-110000", "progressive-20",
+              "## Active Task\ncurrent task\n", age_s=10)
+    out = _restore(mod, SID)
+    assert "current task" in out
+    assert "stale precompact task" not in out
+
+
 def test_restore_never_drops_next_action_over_cap(m):
     mod, cp_dir, _tmp = m
     filler = "\n".join(f"## Section {i}\n" + "z" * 300 for i in range(60))
@@ -302,6 +458,22 @@ def test_restore_never_drops_next_action_over_cap(m):
     _write_cp(cp_dir, SID, "20261004-120000", "stop", body)
     out = _restore(mod, SID)
     assert "finish the migration step" in out
+
+
+def test_untracked_assistant_statement_is_labelled_and_pinned(m):
+    mod, cp_dir, tmp = m
+    records = [_user("Fix the parser"), _assistant([_text("Done, all tests pass.")])]
+    state = mod._extract_session_state(str(_transcript(tmp, records)))
+    rendered = mod._render_checkpoint_sections(mod._checkpoint_sections(state))
+    heading = "## Last assistant statement (no tracked next step)"
+    assert heading in rendered
+    assert "## Next Action" not in rendered
+    _write_cp(cp_dir, SID, "20261004-120000", "stop",
+              "## Objective\n" + "filler " * 1000 + "\n" + rendered)
+    out = _restore(mod, SID)
+    assert heading in out
+    assert out.index("Done, all tests pass.") < out.index("filler")
+    assert "[Token Optimizer] Post-compact recovery (" in out
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +512,10 @@ def test_drop_candidates_use_open_requirements_not_read_frequency(m, monkeypatch
               sidecar={"version": 2,
                        "task_state": {"version": 2, "requirements": [
                            {"text": "fix /work/src/billing.py export bug",
-                            "status": "in_progress", "source": "todo_snapshot"}]},
+                            "status": "in_progress", "source": "todo_snapshot"},
+                           {"text": "explore /work/src/old_experiment.py",
+                            "status": "completed", "source": "todo_snapshot"}],
+                           "dead_ends": [{"target": "/work/src/dead_end.py", "text": "abandoned experiment"}]},
                        "open_questions": [], "decisions": []})
 
     buf = io.StringIO()
@@ -354,6 +529,38 @@ def test_drop_candidates_use_open_requirements_not_read_frequency(m, monkeypatch
     assert "dead_end.py" in drop_section, out
     # Every drop candidate keeps a retrieval pointer.
     assert "re-read" in drop_section or "recover" in drop_section.lower(), out
+
+
+def test_unknown_dependencies_and_edits_after_checkpoint_are_not_drop_candidates(m, monkeypatch):
+    mod, cp_dir, tmp = m
+    import read_cache
+    import session_store
+    snap = tmp / "snap"
+    monkeypatch.setattr(session_store, "SNAPSHOT_DIR", snap)
+    store = session_store.SessionStore(SID, snapshot_dir=snap)
+    hot = str(tmp / "spec.md")
+    edited = str(tmp / "module.py")
+    Path(edited).write_text("value = 1\n" * 2000)
+    _write_cp(cp_dir, SID, "20261004-120000", "stop", "## Active Task\nwork on the parser\n",
+              sidecar={"task_state": {"objective": {"text": "Fix parser"}, "requirements": [
+                  {"text": f"old experiment {edited}", "status": "completed"}]}})
+    for fp, count in ((hot, 4), (edited, 1)):
+        store.upsert_file_entry(fp, {"mtime_ns": 1, "size_bytes": 9000, "ranges_seen": [],
+                                    "tokens_est": 3000, "read_count": count, "last_access": time.time()})
+    monkeypatch.setattr(read_cache, "_make_store", lambda *_a, **_kw: store)
+    before = store._connect().total_changes
+    read_cache.handle_invalidate({"tool_name": "Edit", "session_id": SID,
+                                  "tool_input": {"file_path": edited}}, quiet=True)
+    assert store._connect().total_changes > before
+    assert store.was_file_edited(edited)
+    assert store.get_file_entry(edited)["tokens_est"] > 200
+    store.close()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mod.dynamic_compact_instructions(session_id=SID)
+    out = buf.getvalue()
+    assert "DROP - Safe to discard" not in out, out
+    assert hot in out, out
 
 
 # ---------------------------------------------------------------------------

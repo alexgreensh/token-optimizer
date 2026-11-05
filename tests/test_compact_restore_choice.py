@@ -131,7 +131,7 @@ def test_the_latest_valid_checkpoint_wins_over_an_older_richer_one(tmp_path):
 def test_an_old_precompact_capture_does_not_hide_later_saves(tmp_path):
     """A PreCompact capture older than a compaction can take belongs to an earlier
     compaction (this one's capture failed, #253): it does not fence off the saves
-    made since, so the choice falls back to the usual ranking."""
+    made since, so the newest valid progressive save wins over the stale auto."""
     home, project, tpath, log = _session(tmp_path)
     auto = _precompact(home, project, tpath, log)
     hours_ago = time.time() - 2 * 3600

@@ -317,3 +317,16 @@ def test_prefix_gate_is_start_anchored_and_whitespace_tolerant(flow):
     # A user prompt that merely mentions the tag mid-text is still the user's.
     assert "Cold-resume lean" in _hook(
         env, "continue last session (ignore the <task-notification> noise)", CUR_SID, proj)
+
+
+def test_reminder_wrapped_notification_never_injects(flow):
+    """A leading <system-reminder> must not smuggle a <task-notification> past
+    the harness gate; a real prompt after the reminder still works."""
+    env, proj, _ = flow
+    wrapped = "<system-reminder>housekeeping</system-reminder>\n" + NOTIFICATION
+    assert _hook(env, wrapped, CUR_SID, proj) == ""
+    assert "Cold-resume lean" in _hook(
+        env, "<system-reminder>housekeeping</system-reminder> continue last session",
+        CUR_SID, proj)
+    # A prompt that is only reminder blocks is all harness.
+    assert _hook(env, "<system-reminder>only this</system-reminder>", CUR_SID, proj) == ""

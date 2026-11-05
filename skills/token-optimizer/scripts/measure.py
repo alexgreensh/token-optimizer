@@ -46063,6 +46063,15 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
     text = str(prompt_text or "").strip()
     if not text:
         return ""
+    # A <system-reminder> block can lead a real prompt (same shape as the
+    # transcript records _task_user_text handles): drop leading blocks so a
+    # reminder-wrapped <task-notification> still hits the harness gate below.
+    # An unclosed block is all harness.
+    while text.startswith("<system-reminder>"):
+        end = text.find("</system-reminder>")
+        text = "" if end < 0 else text[end + len("</system-reminder>"):].strip()
+    if not text:
+        return ""
     # The harness fires UserPromptSubmit for its own messages too (a background
     # subagent finishing sends a <task-notification>). Those can quote resume cues
     # or session ids, but they are not the user asking to resume anything.

@@ -842,7 +842,7 @@ def test_to_never_writes_the_project_file():
     built in exactly one place (runtime_env.PROJECT_CONFIG_RELPATH) and that
     module only reads it."""
     assert runtime_env.PROJECT_CONFIG_RELPATH == (".claude", "token-optimizer.json")
-    for path in list(SCRIPTS.glob("*.py")) + list(HOOKS.glob("*.py")):
+    for path in list(SCRIPTS.rglob("*.py")) + list(HOOKS.glob("*.py")):
         text = path.read_text(encoding="utf-8")
         if path.name != "runtime_env.py":
             assert "PROJECT_CONFIG_RELPATH" not in text and "_project_config_path" not in text, path.name

@@ -58,3 +58,5 @@ if [ -n "$(git -C "${REPO_ROOT}" status --porcelain -- cowork/token-optimizer)" 
 fi
 
 echo "mirror-sync OK: cowork/token-optimizer matches canonical skills/ + hooks/"
+
+python3 "${REPO_ROOT}/scripts/check_measure_split_payload.py" --mirrors

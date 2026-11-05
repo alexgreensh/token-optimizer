@@ -1284,6 +1284,13 @@ verify_skill_payload() {
     [ -f "$skill_md" ] || return 1
     [ -f "$measure_py" ] || return 1
 
+    # An intact facade cannot run without every eager provider.
+    local module
+    for module in __init__ _compat runtime pricing audit dashboard lifecycle sessions \
+                  trends cache_policy daemon quality_archive continuity savings cli; do
+        [ -f "${skill_root}/scripts/_measure/${module}.py" ] || return 1
+    done
+
     # Derive the references/*.md files SKILL.md actually references and verify
     # each one is present. sort -u dedups; the while loop reads one path per line.
     local ref

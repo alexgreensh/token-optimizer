@@ -19,6 +19,7 @@ loaded measure and whether it compiled it.
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import json
@@ -37,6 +38,46 @@ HOOKS = REPO / "hooks"
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 MEASURE = SCRIPTS / "measure.py"
 COMPILER_TAG = "token-optimizer-bytecode-warmup"
+
+
+def _gate_module():
+    spec = importlib.util.spec_from_file_location('split_gate_under_test', HOOKS / 'module_runner.py')
+    module = importlib.util.module_from_spec(spec)
+    _split_exec_module(module)
+    return module
+
+
+def test_warm_facade_does_not_hide_a_cold_domain(tmp_path, monkeypatch):
+    gate = _gate_module()
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    (scripts / 'measure.py').write_text('VALUE = 1\n')
+    package = scripts / '_measure'
+    package.mkdir()
+    for name in ('__init__', '_compat', 'runtime', 'pricing', 'audit', 'dashboard',
+                 'lifecycle', 'sessions', 'trends', 'cache_policy', 'daemon',
+                 'quality_archive', 'continuity', 'savings', 'cli'):
+        (package / (name + '.py')).write_text('VALUE = 1\n')
+    monkeypatch.setattr(gate, '_bytecode_path', lambda src: str(tmp_path / 'cache' / (Path(src).name + '.pyc')))
+    monkeypatch.setattr(gate, '_bytecode_fresh', lambda src, cache: Path(src).name != 'runtime.py')
+    monkeypatch.setattr(gate, '_start_background_compile', lambda *args: type('Child', (), {'poll': lambda self: None})())
+    assert gate._measure_bytecode_ready(str(scripts), 0) is False
+
+
+def test_failure_marker_is_invalidated_by_a_package_only_source_change(tmp_path):
+    gate = _gate_module()
+    scripts = tmp_path / 'scripts'
+    package = scripts / '_measure'
+    package.mkdir(parents=True)
+    (scripts / 'measure.py').write_text('VALUE = 1\n')
+    for name in gate._MEASURE_PACKAGE_SOURCES:
+        (package / name).write_text('VALUE = 1\n')
+    marker = tmp_path / 'failed'
+    source = str(scripts / 'measure.py')
+    marker.write_text(gate._source_set_key(source))
+    assert gate._compile_failed_for(str(marker), source)
+    (package / 'runtime.py').write_text('VALUE = 12345\n')
+    assert not gate._compile_failed_for(str(marker), source)
 
 # Simulated compile time for measure.py, and the hook's wait for the
 # background compile. A hook that compiled inline would take >= SLOW_S.
@@ -72,7 +113,7 @@ _SITECUSTOMIZE = textwrap.dedent(r'''
         _real = _machinery.SourceFileLoader.source_to_code
 
         def _source_to_code(self, data, path, *a, **k):
-            if str(path).replace("\\", "/").endswith("/measure.py"):
+            if str(path).replace("\\", "/").endswith(_os.environ.get("TO_COLD_TARGET", "/measure.py")):
                 _state["compiled_measure"] = True
                 _w("compile-measure")
                 slow = float(_os.environ.get("TO_COLD_SLOW_S") or 0)
@@ -285,6 +326,30 @@ def test_fast_cold_compile_inside_the_wait_runs_the_hook_as_before(bench):
     assert bench.pyc_fresh()
 
 
+def test_cold_domain_with_warm_facade_compiles_in_the_background(bench):
+    import py_compile
+    destination = bench.measure_pyc()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    py_compile.compile(str(MEASURE), cfile=str(destination), doraise=True,
+                       invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+    assert bench.pyc_fresh()
+    slow = {'TO_COLD_TARGET': '/_measure/runtime.py', 'TO_COLD_SLOW_S': str(SLOW_S),
+            'TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S': str(WAIT_S)}
+    rc, out, err, elapsed = bench.fire(**slow)
+    assert rc == 0 and _valid_envelope(out), err[-2000:]
+    assert elapsed < FAST_EXIT_S, 'the cold domain compiled on the hook deadline'
+    [cold] = bench.hook_exits()
+    assert not cold['compiled_measure'] and not cold['measure_loaded']
+    assert len(bench.compiler_boots()) == 1
+    assert bench.wait_for_lock_release(), 'package compile did not release the shared lock'
+    bench.clear_log()
+    rc, out, err, _ = bench.fire(**slow)
+    assert rc == 0 and _valid_envelope(out), err[-2000:]
+    [warm] = bench.hook_exits()
+    assert warm['measure_loaded'] and not warm['compiled_measure']
+    assert not bench.compiler_boots()
+
+
 def test_failed_background_compile_falls_back_to_the_inline_compile(bench):
     """A compile that cannot succeed must not leave every later hook failing
     open: the hook compiles inline as it did before the gate (and that inline
@@ -347,7 +412,7 @@ _RESERVE_OVERRIDES_S = {"codex_hook_bridge": 4.5}
 def _module_runner():
     spec = importlib.util.spec_from_file_location("_module_runner_264", HOOKS / "module_runner.py")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

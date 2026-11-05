@@ -144,6 +144,8 @@ def test_installed_smoke_exercises_normal_json_and_accounting(tmp_path):
     sys.path.insert(0, str(REPO / 'scripts'))
     from check_measure_split_payload import smoke
     assert '5.13.64' in smoke(REPO, tmp_path)
+    # Windows 3.14 CI timed out recompiling the facade on every call; it compiles once, outside the payload.
+    assert list((tmp_path / 'pycache').rglob('measure.*.pyc'))
     for name in ('direct', 'hook'):
         settings = json.loads((tmp_path / name / 'home é/settings.json').read_text(encoding='utf-8'))
         assert settings['unrelated'] is True

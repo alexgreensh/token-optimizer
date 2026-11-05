@@ -35,9 +35,11 @@ def smoke(payload, work):
     cwd = work / 'outside source'
     cwd.mkdir(parents=True, exist_ok=True)
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(('CLAUDE', 'CODEX', 'TOKEN_OPTIMIZER', 'HERMES', 'COPILOT', 'CURSOR', 'GROK', 'ANTIGRAVITY', 'DEVIN'))}
+           if key != 'PYTHONDONTWRITEBYTECODE' and not key.startswith(('CLAUDE', 'CODEX', 'TOKEN_OPTIMIZER', 'HERMES', 'COPILOT', 'CURSOR', 'GROK', 'ANTIGRAVITY', 'DEVIN'))}
     env.update({'HOME': str(home), 'USERPROFILE': str(home), 'CLAUDE_CONFIG_DIR': str(home),
-                'XDG_CACHE_HOME': str(home / '.cache'), 'PYTHONDONTWRITEBYTECODE': '1',
+                'XDG_CACHE_HOME': str(home / '.cache'),
+                # Compile the 3 MB facade once, outside the payload, not once per call.
+                'PYTHONPYCACHEPREFIX': str(work / 'pycache'),
                 'TOKEN_OPTIMIZER_REMOTE_LEAN': '1', 'TOKEN_OPTIMIZER_NO_PROC_SCAN': '1',
                 'TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S': '-1', 'PYTHONUTF8': '1'})
     measure = payload / 'skills/token-optimizer/scripts/measure.py'

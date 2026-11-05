@@ -115,14 +115,22 @@ def spec_from_flags(flags):
 
 
 def line_count(text):
-    """Number of lines ``splitlines`` sees (0 for empty text)."""
-    return len(text.splitlines())
+    """Number of LF-terminated lines ``_split_lines`` sees (0 for empty text)."""
+    return len(_split_lines(text)[0])
 
 
 def _split_lines(text):
     """(line parts with keepends, start offsets). offsets[i] starts line i;
-    offsets[len(parts)] == len(text) is the end sentinel."""
-    parts = text.splitlines(keepends=True)
+    offsets[len(parts)] == len(text) is the end sentinel.
+
+    Lines split on ``\\n`` only so line numbers agree with ``grep -n``/``sed -n``;
+    ``str.splitlines`` would also break on \\x0b, \\x0c, \\x1c-\\x1e, \\x85 and
+    U+2028/U+2029, which are not line boundaries for the archived tools.
+    """
+    raw = text.split("\n")
+    parts = [seg + "\n" for seg in raw[:-1]]
+    if raw[-1]:
+        parts.append(raw[-1])
     offsets = [0]
     for part in parts:
         offsets.append(offsets[-1] + len(part))
@@ -226,21 +234,20 @@ def _clip_to_matches(text, parts, offsets, group, rx, needle):
 
 def match_windows(text, pattern, context=DEFAULT_MATCH_CONTEXT, skip=0,
                   limit=MAX_MATCH_WINDOWS):
-    """``limit`` context windows around regex/substring matches, after ``skip``
+    """``limit`` context windows around literal substring matches, after ``skip``
     groups. Returns ``(windows, group_total)``; ``group_total`` counts every
-    match group so the caller can say how many remain. A pattern that does not
-    compile as regex falls back to literal substring (grep -F semantics)."""
+    match group so the caller can say how many remain.
+
+    The pattern is always a literal substring (``grep -F`` semantics), never a
+    regex: an agent-supplied pattern cannot backtrack over a multi-MB archive.
+    """
     parts, offsets = _split_lines(text)
     n_lines = len(parts)
-    if n_lines == 0 or not str(pattern):
+    needle = str(pattern)
+    if n_lines == 0 or not needle:
         return [], 0
-    try:
-        rx = re.compile(str(pattern))
-        needle = None
-    except re.error:
-        rx, needle = None, str(pattern)
     matched = [i for i, line in enumerate(parts)
-               if _match_span(line, rx, needle) is not None]
+               if _match_span(line, None, needle) is not None]
     if not matched:
         return [], 0
     # Cluster matched lines into groups: two matches share a window when their
@@ -258,7 +265,7 @@ def match_windows(text, pattern, context=DEFAULT_MATCH_CONTEXT, skip=0,
         ws, we = offsets[lo], offsets[hi + 1]
         clipped = we - ws > MAX_MATCH_WINDOW_CHARS
         if clipped:
-            ws, we = _clip_to_matches(text, parts, offsets, group, rx, needle)
+            ws, we = _clip_to_matches(text, parts, offsets, group, None, needle)
         windows.append(_window(
             text, offsets, n_lines, ws, we,
             has_prev=False, has_next=False, clipped=clipped,

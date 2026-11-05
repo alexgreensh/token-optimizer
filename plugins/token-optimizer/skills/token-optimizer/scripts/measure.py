@@ -42682,6 +42682,26 @@ def _merge_char_ranges(ranges):
     return out
 
 
+def _subtract_char_ranges(ranges, covered):
+    """The parts of ``ranges`` not already inside merged ``covered`` ranges."""
+    out = []
+    for s, e in _merge_char_ranges(ranges):
+        cur = s
+        for cs, ce in covered:
+            if ce <= cur:
+                continue
+            if cs >= e:
+                break
+            if cs > cur:
+                out.append((cur, min(cs, e)))
+            cur = max(cur, ce)
+            if cur >= e:
+                break
+        if cur < e:
+            out.append((cur, e))
+    return _merge_char_ranges(out)
+
+
 def _reexpand_detail_ranges(detail, total_chars):
     """Char ranges a prior re-expansion debit covered, or None for a legacy row.
 
@@ -42715,11 +42735,12 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name="",
 
     ``content_ranges`` carries the (start, end) char offsets of ``response_text``
     that were actually returned — a bounded ``expand --lines/--chars/--match``
-    debits only those tokens, while a full expand (``None``) debits the whole
-    response as before. The debit detail records the returned range set, and an
-    identical repeat expand of the same range set is deduped per
-    (session_id, tool_use_id); overlapping-but-different ranges each debit,
-    because those tokens really did re-enter context. Never raises.
+    debits only those tokens, while a full expand (``None``) asks for the whole
+    response. Coverage is a growing union per (session_id, tool_use_id): a debit
+    is logged only for characters no earlier re-expansion of that item already
+    covered, so overlapping windows and full-then-bounded reads cannot reverse
+    more than the item once. Legacy rows without a `` chars `` spec count as full
+    coverage. The detail records the range set actually debited. Never raises.
     """
     try:
         total_chars = len(response_text or "")
@@ -42727,7 +42748,7 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name="",
             return
         if content_ranges is None:
             wanted = [(0, total_chars)]
-            bounded = False
+            requested_bounded = False
         else:
             wanted = []
             for s, e in content_ranges:
@@ -42735,19 +42756,20 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name="",
                 e = max(0, min(int(e), total_chars))
                 if e > s:
                     wanted.append((s, e))
-            wanted = _merge_char_ranges(wanted)
-            bounded = True
+            requested_bounded = True
+        wanted = _merge_char_ranges(wanted)
         if not wanted:
             return
-        wanted_key = tuple(wanted)
         sid = sanitize_session_id(session_id) if session_id else None
+        covered = []
         if TRENDS_DB.exists():
             conn = _init_trends_db()
             try:
                 rows = conn.execute(
                     "SELECT detail FROM savings_events WHERE event_type='tool_archive_reexpand' "
+                    "AND (session_id = ? OR (? IS NULL AND session_id IS NULL)) "
                     "AND (detail = ? OR substr(detail, 1, ?) = ? OR substr(detail, 1, ?) = ?)",
-                    (tool_use_id, len(tool_use_id) + 2, tool_use_id + " (",
+                    (sid, sid, tool_use_id, len(tool_use_id) + 2, tool_use_id + " (",
                      len(tool_use_id) + 1, tool_use_id + " "),
                 ).fetchall()
             finally:
@@ -42756,11 +42778,16 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name="",
                 prior = _reexpand_detail_ranges(prior_detail, total_chars)
                 # A legacy row (no range spec) re-expanded everything; a bounded
                 # row covers exactly the ranges it returned.
-                prior_key = tuple(prior) if prior is not None else ((0, total_chars),)
-                if prior_key == wanted_key:
-                    return
+                if prior is None:
+                    covered = [(0, total_chars)]
+                    break
+                covered.extend(prior)
+            covered = _merge_char_ranges(covered)
+        debited = _subtract_char_ranges(wanted, covered)
+        if not debited:
+            return
         fresh_text = "".join(
-            response_text[s:e] for s, e in wanted)
+            response_text[s:e] for s, e in debited)
         tokens = _estimate_tokens(fresh_text)
         if tokens <= 0:
             return
@@ -42768,8 +42795,8 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name="",
         # same way as its media archive row.
         name = re.sub(r"[^A-Za-z0-9_.:-]", "", str(tool_name or ""))[:120]
         detail = f"{tool_use_id} ({name})" if name else tool_use_id
-        if bounded:
-            detail += " chars " + ",".join(f"{s}-{e}" for s, e in wanted)
+        if requested_bounded or debited != wanted:
+            detail += " chars " + ",".join(f"{s}-{e}" for s, e in debited)
         _log_savings_event("tool_archive_reexpand", tokens, session_id=sid, detail=detail)
     except Exception:
         pass
@@ -56808,19 +56835,31 @@ def _progressive_disclosure_summary(days=30):
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         conn = _init_trends_db()
         try:
+            counted = _counted_table(conn, "savings_events")
             rows = conn.execute(
                 "SELECT event_type, COUNT(*), COALESCE(SUM(tokens_saved),0) "
-                "FROM " + _counted_table(conn, "savings_events") + " WHERE timestamp >= ? "
+                "FROM " + counted + " WHERE timestamp >= ? "
                 "AND event_type IN ('tool_archive','tool_archive_reexpand') GROUP BY event_type",
+                (cutoff,),
+            ).fetchall()
+            re_rows = conn.execute(
+                "SELECT detail FROM " + counted + " WHERE timestamp >= ? "
+                "AND event_type = 'tool_archive_reexpand'",
                 (cutoff,),
             ).fetchall()
         finally:
             conn.close()
         agg = {r[0]: (int(r[1]), int(r[2] or 0)) for r in rows}
         arch_n, arch_tok = agg.get("tool_archive", (0, 0))
-        re_n, re_tok = agg.get("tool_archive_reexpand", (0, 0))
+        re_tok = agg.get("tool_archive_reexpand", (0, 0))[1]
         out["archived"] = arch_n
-        out["reexpanded"] = re_n
+        # Multiple bounded debits can hit one archived item; "re-expanded" is a
+        # count of distinct tool_use_ids, not debit events.
+        out["reexpanded"] = len({
+            detail.split(" ", 1)[0]
+            for (detail,) in re_rows
+            if detail and detail.strip()
+        })
         out["net_collapsed_tokens"] = max(0, arch_tok - re_tok)
     except (sqlite3.Error, OSError):
         pass

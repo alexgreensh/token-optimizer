@@ -1658,9 +1658,10 @@ def archive_result(quiet: bool = False) -> None:
             source_file_path=lineage_source_file[:500] if lineage_source_file else None,
             language=lineage_language,
             archived_from="PostToolUse",
-            # Index the whole stored response, not a prefix: `expand --search`
-            # must find matches anywhere in the archived body (the sidecar caps
-            # at 5MB, so output_text stays bounded by _ARCHIVE_MAX_SIZE).
+            # Hand the whole stored response to SessionStore: it bounds
+            # output_text to a head+tail search index (index_truncated=1) so a
+            # few 5MB archives cannot fill the 50MB session DB, while the
+            # sidecar keeps the full redacted body for `expand`.
             output_text=safe_response,
             truncated=1 if truncated else 0,
         )

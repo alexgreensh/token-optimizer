@@ -38,6 +38,11 @@ SNAPSHOT_DIR = resolve_snapshot_dir()
 SESSION_STORE_DIR = SNAPSHOT_DIR / "session-store"
 
 MAX_DB_SIZE_BYTES = 50 * 1024 * 1024  # 50MB cap
+# tool_outputs.output_text is a search index copy, not the recovery source (the
+# archive sidecar keeps the full redacted body). Bound it so a few multi-MB
+# archives cannot fill the 50MB session DB and pause every later write.
+MAX_TOOL_OUTPUT_INDEX_BYTES = 1024 * 1024
+_INDEX_TRUNCATED_MARKER = "\n[... index truncated ...]\n"
 CLEANUP_AGE_HOURS = 48
 
 # v2: added tool_outputs lineage columns + the FTS5 archive index, and
@@ -77,7 +82,8 @@ CREATE TABLE IF NOT EXISTS tool_outputs (
     language TEXT,
     archived_from TEXT,
     output_text TEXT,
-    truncated INTEGER
+    truncated INTEGER,
+    index_truncated INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS command_outputs (
@@ -161,6 +167,27 @@ def _sanitize_session_id(sid: str) -> str:
     if not sid or not re.match(r"^[a-zA-Z0-9_-]+$", sid):
         return f"fallback-{uuid.uuid4().hex[:12]}"
     return sid
+
+
+def _bound_tool_output_index(text: Optional[str]):
+    """Bound ``output_text`` to a head+tail search index.
+
+    Returns ``(index_text, index_truncated)``. The full redacted body still lives
+    in the archive sidecar; this column only feeds FTS/LIKE search, so keeping a
+    bounded head and tail preserves findability without letting a few multi-MB
+    outputs fill the per-session database cap.
+    """
+    if text is None:
+        return None, 0
+    raw = text.encode("utf-8", "replace")
+    if len(raw) <= MAX_TOOL_OUTPUT_INDEX_BYTES:
+        return text, 0
+    marker = _INDEX_TRUNCATED_MARKER.encode("utf-8")
+    head_budget = MAX_TOOL_OUTPUT_INDEX_BYTES // 2
+    tail_budget = MAX_TOOL_OUTPUT_INDEX_BYTES - head_budget - len(marker)
+    head = raw[:head_budget].decode("utf-8", "ignore")
+    tail = raw[len(raw) - tail_budget:].decode("utf-8", "ignore") if tail_budget > 0 else ""
+    return head + _INDEX_TRUNCATED_MARKER + tail, 1
 
 
 class SessionStore:
@@ -283,6 +310,7 @@ class SessionStore:
             ("archived_from", "TEXT"),
             ("output_text", "TEXT"),
             ("truncated", "INTEGER"),
+            ("index_truncated", "INTEGER"),
         ):
             if col not in cols:
                 try:
@@ -659,6 +687,7 @@ class SessionStore:
     ) -> None:
         if self._is_over_size_cap():
             return
+        index_text, index_truncated = _bound_tool_output_index(output_text)
         conn = self._connect()
         conn.execute(
             """INSERT OR IGNORE INTO tool_outputs
@@ -666,15 +695,15 @@ class SessionStore:
                 output_hash, output_chars, output_tokens_est,
                 compressed_preview, timestamp,
                 source_file_path, language, archived_from, output_text,
-                truncated)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                truncated, index_truncated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 tool_use_id, tool_name, tool_type, command_or_path,
                 output_hash, output_chars, output_tokens_est,
                 compressed_preview, time.time(),
-                source_file_path, language, archived_from, output_text,
-                truncated,
+                source_file_path, language, archived_from, index_text,
+                truncated, index_truncated,
             ),
         )
         # fix-1: the external-content FTS mirror is maintained by the AFTER
@@ -689,7 +718,7 @@ class SessionStore:
         """Full-text search over archived tool outputs Returns rows carrying
         (tool_use_id, tool_name, command_or_path, source_file_path, language,
         archived_from, output_hash, output_chars, timestamp, truncated,
-        snippet) ranked by relevance. Uses FTS5 ``bm25()`` when available; falls back to a
+        index_truncated, snippet) ranked by relevance. Uses FTS5 ``bm25()`` when available; falls back to a
         bounded ``LIKE '%term%'`` query over the lineage + output_text
         columns when FTS5 is not compiled into SQLite. Never raises: an
         empty/invalid query or a missing index returns an empty list.
@@ -704,6 +733,7 @@ class SessionStore:
                     """SELECT t.tool_use_id, t.tool_name, t.command_or_path,
                               t.source_file_path, t.language, t.archived_from,
                               t.output_hash, t.output_chars, t.timestamp, t.truncated,
+                              t.index_truncated,
                               snippet(tool_outputs_fts, 6, '>>', '<<', '...', 16) AS snippet
                        FROM tool_outputs_fts f
                        JOIN tool_outputs t ON t.rowid = f.rowid
@@ -731,6 +761,7 @@ class SessionStore:
                 r"""SELECT tool_use_id, tool_name, command_or_path,
                           source_file_path, language, archived_from,
                           output_hash, output_chars, timestamp, truncated,
+                          index_truncated,
                           substr(COALESCE(output_text, compressed_preview, ''), 1, 200) AS snippet
                    FROM tool_outputs
                    WHERE tool_name LIKE ? ESCAPE '\' OR command_or_path LIKE ? ESCAPE '\'

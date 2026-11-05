@@ -87,6 +87,21 @@ def _reexpand_rows(tmp_path):
         conn.close()
 
 
+def _progressive_summary(tmp_path):
+    code = (
+        "import json, sys; "
+        f"sys.path.insert(0, {str(SCRIPTS)!r}); "
+        "import measure; "
+        "print(json.dumps(measure._progressive_disclosure_summary(days=30)))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, env=_env(tmp_path), timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
 def test_expand_lines_returns_only_that_range(tmp_path):
     _seed_archive(tmp_path)
     out = _run_measure(["expand", KEY, "--lines", "50:52"], _env(tmp_path))
@@ -158,6 +173,27 @@ def test_expand_match_no_results_prints_header_and_full_command(tmp_path):
     assert _reexpand_rows(tmp_path) == []
 
 
+def test_expand_match_pattern_is_literal_not_regex(tmp_path):
+    from archive_window import match_windows
+    # A regex-looking pattern must not match the regex it would compile to.
+    assert match_windows("MATCHME\n", "MATCH.*") == ([], 0)
+    windows, total = match_windows("xx MATCH.* yy\n", "MATCH.*")
+    assert total == 1 and windows and "MATCH.*" in windows[0].text
+
+
+def test_expand_lines_count_only_lf_breaks(tmp_path):
+    body = "alpha\x0cbeta\nMATCHME gamma\nomega\x85delta\nlast"
+    _seed_archive(tmp_path, body=body)
+    env = _env(tmp_path)
+    out = _run_measure(["expand", KEY, "--lines", "2:2"], env)
+    assert out.returncode == 0, out.stderr
+    assert "MATCHME gamma" in out.stdout
+    assert "alpha" not in out.stdout and "omega" not in out.stdout
+    out = _run_measure(["expand", KEY, "--match", "MATCHME", "--context", "0"], env)
+    assert out.returncode == 0, out.stderr
+    assert "matched lines: 2" in out.stdout
+
+
 def test_expand_full_default_is_byte_for_byte(tmp_path):
     _seed_archive(tmp_path)
     out = _run_measure(["expand", KEY], _env(tmp_path))
@@ -182,10 +218,12 @@ def test_expand_invalid_specs_exit_1(tmp_path, extra):
     assert out.stdout == ""
 
 
-def test_expand_bounded_debit_charges_only_returned(tmp_path):
+def test_expand_debits_only_previously_uncovered_chars(tmp_path):
     _seed_archive(tmp_path)
     env = _env(tmp_path)
-    window = BODY[BODY.index("line 050"):BODY.index("line 053")]
+    start = BODY.index("line 050")
+    end = BODY.index("line 053")
+    window = BODY[start:end]
     out = _run_measure(["expand", KEY, "--lines", "50:52"], env)
     assert out.returncode == 0, out.stderr
     rows = _reexpand_rows(tmp_path)
@@ -193,14 +231,30 @@ def test_expand_bounded_debit_charges_only_returned(tmp_path):
     tokens, detail = rows[0]
     assert tokens == estimate_tokens(window)
     assert "chars " in detail and KEY in detail
-    # A full expand of the same entry debits far more.
+    # A full expand debits only the chars the bounded window did not cover.
     _run_measure(["expand", KEY], env)
     rows = _reexpand_rows(tmp_path)
     assert len(rows) == 2
-    assert rows[1][0] == estimate_tokens(BODY)
+    uncovered = BODY[:start] + BODY[end:]
+    assert rows[1][0] == estimate_tokens(uncovered)
+    assert f"chars 0-{start},{end}-{len(BODY)}" in rows[1][1]
 
 
-def test_expand_repeat_window_deduped_but_overlap_debits(tmp_path):
+def test_expand_full_then_bounded_adds_no_debit(tmp_path):
+    _seed_archive(tmp_path)
+    env = _env(tmp_path)
+    assert _run_measure(["expand", KEY], env).returncode == 0
+    before = _reexpand_rows(tmp_path)
+    assert len(before) == 1
+    out = _run_measure(["expand", KEY, "--lines", "50:52"], env)
+    assert out.returncode == 0, out.stderr
+    assert _reexpand_rows(tmp_path) == before
+    # A repeated full expand is still covered by the same union.
+    assert _run_measure(["expand", KEY], env).returncode == 0
+    assert _reexpand_rows(tmp_path) == before
+
+
+def test_expand_overlapping_windows_debit_their_union(tmp_path):
     _seed_archive(tmp_path)
     env = _env(tmp_path)
     _run_measure(["expand", KEY, "--lines", "50:52"], env)
@@ -210,12 +264,30 @@ def test_expand_repeat_window_deduped_but_overlap_debits(tmp_path):
     _run_measure(["expand", KEY, "--start", str(first_window_start),
                   "--chars", str(first_window_end - first_window_start)], env)
     assert len(_reexpand_rows(tmp_path)) == 1
-    # A different overlapping window is a different return → debits again.
+    # The second window overlaps, so only its uncovered tail (line 053) debits.
+    uncovered_start = BODY.index("line 053")
+    uncovered_end = BODY.index("line 054")
     _run_measure(["expand", KEY, "--lines", "51:53"], env)
-    assert len(_reexpand_rows(tmp_path)) == 2
+    rows = _reexpand_rows(tmp_path)
+    assert len(rows) == 2
+    assert rows[1][0] == estimate_tokens(BODY[uncovered_start:uncovered_end])
+    assert f"chars {uncovered_start}-{uncovered_end}" in rows[1][1]
     # A second identical bounded expand stays deduped.
     _run_measure(["expand", KEY, "--lines", "51:53"], env)
     assert len(_reexpand_rows(tmp_path)) == 2
+
+
+def test_progressive_disclosure_counts_distinct_reexpanded_ids(tmp_path):
+    _seed_archive(tmp_path)
+    _seed_archive(tmp_path, key="tu-bounded-2")
+    env = _env(tmp_path)
+    # Two debit events for KEY (overlapping windows) plus one for KEY-2.
+    _run_measure(["expand", KEY, "--lines", "50:52"], env)
+    _run_measure(["expand", KEY, "--lines", "51:53"], env)
+    _run_measure(["expand", "tu-bounded-2", "--lines", "1:2"], env)
+    assert len(_reexpand_rows(tmp_path)) == 3
+    summary = _progressive_summary(tmp_path)
+    assert summary["reexpanded"] == 2
 
 
 def test_expand_bounded_session_scoped(tmp_path):
@@ -256,6 +328,45 @@ def test_search_indexes_beyond_former_50k_cap(tmp_path):
     assert "tu-deep-search" in out.stdout
     assert "captured:" in out.stdout and "hash:" in out.stdout
     assert "chars:" in out.stdout and "stored_truncated:" in out.stdout
+
+
+def test_large_archive_index_is_bounded_and_marked(tmp_path):
+    """Six 5MB archived bodies must not fill the 50MB session store: the FTS
+    index keeps a bounded head+tail copy and later cache writes still land."""
+    from session_store import SessionStore
+    store = SessionStore(SESSION, snapshot_dir=tmp_path / "snap")
+    try:
+        body = ("headmarkerzed " + "x" * 2_500_000 +
+                " midmarkerqqq " + "y" * 2_499_000 +
+                " tailmarkeryd")
+        for i in range(6):
+            store.insert_tool_output(
+                tool_use_id=f"tu-big-{i}",
+                tool_name="mcp__big__fetch",
+                tool_type="mcp",
+                command_or_path="big.fetch",
+                output_hash=f"hash-{i}",
+                output_chars=len(body),
+                output_tokens_est=len(body) // 4,
+                output_text=body,
+                archived_from="test",
+                truncated=0,
+            )
+        store.upsert_cached_content("late.txt", "late content", "late-hash")
+        assert store.get_cached_content("late.txt") is not None
+        row = store._connect().execute(
+            "SELECT length(output_text) AS n, index_truncated "
+            "FROM tool_outputs WHERE tool_use_id = 'tu-big-0'"
+        ).fetchone()
+        assert int(row["index_truncated"]) == 1
+        assert int(row["n"]) < 2_000_000
+        head_hits = store.search_tool_outputs("headmarkerzed")
+        tail_hits = store.search_tool_outputs("tailmarkeryd")
+        assert head_hits and tail_hits
+        assert all(int(h.get("index_truncated") or 0) == 1 for h in head_hits)
+        assert store.search_tool_outputs("midmarkerqqq") == []
+    finally:
+        store.close()
 
 
 def test_bounded_expand_output_is_recovery_not_rearchived(tmp_path):
@@ -306,3 +417,15 @@ def test_expand_recognizer_rejects_glued_shell_operators(tmp_path):
     for bad in ("--match a;b", "--match a&&b", "--match a|b",
                 "--match $(id)", "--lines 1:2;id", "--lines 1:2>out"):
         assert not is_expand_command(base + " " + bad), bad
+
+
+def test_expand_recognizer_rejects_expansion_values_and_bad_session(tmp_path):
+    import shlex
+    from recovery_output import is_expand_command
+    mp = shlex.quote(str(SCRIPTS / "measure.py"))
+    base = f"python3 {mp} expand {KEY}"
+    for bad in ("--match \"$(id)\"", "--match '$(id)'",
+                "--match 'a`id`b'", "--lines \"$(id)\"",
+                "--session sess.ion", "--session sess:ion"):
+        assert not is_expand_command(base + " " + bad), bad
+    assert is_expand_command(base + " --session sess-ion_1 --lines 1:2")

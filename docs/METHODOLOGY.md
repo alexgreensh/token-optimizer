@@ -68,9 +68,10 @@ verbosity nudges with an observed before/after, loop detection, cross-turn dedup
   - re-expansions of media archives (R8), matched by tool name or, for older rows, by
     session, time and size (`_media_reexpand_pair_sql`)
 - Re-expanding an archived result reverses its credit (`tool_archive_reexpand`).
-  A bounded `expand` window debits only the characters it returned (the detail
-  records the returned char ranges); a full expand debits the whole stored
-  response as before.
+  Coverage is a growing union per archived item: a bounded `expand` window debits
+  only characters no earlier re-expansion of that item already covered (the detail
+  records the debited char ranges); a full expand debits whatever is still
+  uncovered, or the whole stored response when nothing was returned before.
 - Verbosity is folded per API request, never per transcript line.
 
 ### 3.2 Model routing (estimated)

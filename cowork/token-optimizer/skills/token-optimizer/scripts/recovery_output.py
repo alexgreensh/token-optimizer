@@ -80,7 +80,17 @@ def _expand_tail_ok(tokens):
         rest[-1] = rest[-1][:-1]
     i = 0
     while i < len(rest):
-        if rest[i] not in _EXPAND_VALUE_FLAGS or i + 1 >= len(rest):
+        flag = rest[i]
+        if flag not in _EXPAND_VALUE_FLAGS or i + 1 >= len(rest):
+            return False
+        value = rest[i + 1]
+        if flag == '--session':
+            # Same closed charset the recognizer used before bounded flags.
+            if not re.fullmatch(r'[a-zA-Z0-9_-]+', value):
+                return False
+        elif '$' in value or '`' in value:
+            # Quoting does not stop the shell from expanding $(...) or `...`
+            # inside a double-quoted value; keep recovery output to literal text.
             return False
         i += 2
     return True

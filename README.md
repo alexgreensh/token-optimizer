@@ -501,8 +501,11 @@ python3 measure.py expand <tool-use-id>   # Retrieve a specific result
 python3 measure.py expand --search <query>  # Search archived results by keyword/lineage
 python3 measure.py expand <id> --lines 50:120        # Just lines 50-120 of the archive
 python3 measure.py expand <id> --start 4000 --chars 2000  # A 2KB char window
-python3 measure.py expand <id> --match "ERROR" --context 3  # Context windows around matches
+python3 measure.py expand <id> --match "ERROR" --context 3  # Literal-substring context windows
 ```
+
+`--match` is a literal substring (`grep -F` semantics), not a regex, and line
+numbers count `\n` breaks the way `grep -n`/`sed -n` do.
 
 `expand --search` runs a full-text search (FTS5 with a `LIKE` fallback) over
 the entire archived response body — not just a prefix — plus tool name,

@@ -462,6 +462,11 @@ def _sub_clear_compacted(hook_input: dict) -> None:
     Emits nothing on stdout by design (all its output, success and failure, goes
     to stderr), so it cannot perturb the SessionStart context stream.
     """
+    # The context just emptied, so resume blocks this session already received
+    # (prompt-continuity dedups identical ones) are no longer in it. Cheap local
+    # unlink; never raises.
+    if hook_input:
+        measure._clear_resume_dedup_markers(hook_input.get("session_id"))
     budget = _runner_budget(10)
     if budget < 0.1:
         return

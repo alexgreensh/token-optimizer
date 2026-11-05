@@ -47606,6 +47606,47 @@ def _checkpoint_session_id(checkpoint, sidecar=None):
     return m.group(1) if m else (fn or "unknown")
 
 
+def _resume_dedup_tag(block):
+    import hashlib
+    return "resume-" + hashlib.sha1(str(block).encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _resume_block_already_injected(block, session_id):
+    """True when this exact resume block was already injected in this session.
+
+    Reuses the run-once marker. Fails open (returns False, so the block is
+    injected as before) with no usable session id or on any error.
+    """
+    try:
+        return bool(_ran_once_this_session(_resume_dedup_tag(block), session_id))
+    except Exception:
+        return False
+
+
+def _clear_resume_dedup_markers(session_id):
+    """Forget which resume blocks this session already received.
+
+    Called when compaction or /clear drops the context that held them, so a
+    legitimate later resume request injects again. Never raises.
+    """
+    try:
+        if not session_id:
+            return
+        safe_sid = sanitize_session_id(str(session_id))
+        if safe_sid == "unknown":
+            return
+        pattern = re.compile(r"once-resume-[0-9a-f]{16}-" + re.escape(safe_sid) + r"\.json")
+        for marker in QUALITY_CACHE_DIR.glob("once-resume-*.json"):
+            if not pattern.fullmatch(marker.name):
+                continue
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_minutes=60 * 24 * 7):
     """Topic-matched prior-session continuity hint (runtime-agnostic core).
 
@@ -47633,6 +47674,20 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
     text = str(prompt_text or "").strip()
     if not text:
         return ""
+    # A <system-reminder> block can lead a real prompt (same shape as the
+    # transcript records _task_user_text handles): drop leading blocks so a
+    # reminder-wrapped <task-notification> still hits the harness gate below.
+    # An unclosed block is all harness.
+    while text.startswith("<system-reminder>"):
+        end = text.find("</system-reminder>")
+        text = "" if end < 0 else text[end + len("</system-reminder>"):].strip()
+    if not text:
+        return ""
+    # The harness fires UserPromptSubmit for its own messages too (a background
+    # subagent finishing sends a <task-notification>). Those can quote resume cues
+    # or session ids, but they are not the user asking to resume anything.
+    if text.startswith(_HARNESS_TASK_PREFIXES):
+        return ""
     checkpoints = list_checkpoints(max_age_minutes=max_age_minutes)
     if not checkpoints:
         return ""
@@ -47650,6 +47705,11 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
         except Exception:
             block = ""
         if block:
+            # An identical block is injected once per session: a second copy only
+            # adds tokens until compaction. A different block still injects, and
+            # compaction/clear clears the markers (_clear_resume_dedup_markers).
+            if _resume_block_already_injected(block, session_id):
+                return ""
             return block
         # No same-project match. When cwd is known, do NOT fall through to the
         # (un-gated) lightweight hint below -- that could surface a DIFFERENT
@@ -65193,6 +65253,8 @@ if __name__ == "__main__":
         # re-inject the billed checkpoint pointer on every prompt in Cowork.
         # Only the new-session pointer is guarded -- the --compact restore must
         # run on each compaction.
+        if is_compact or source == "clear":
+            _clear_resume_dedup_markers(sid)
         if new_session_only and "--once-mark" in args:
             _mark_ran_this_session("compact-restore-new-session", sid)
         elif ("--once-per-session" in args and new_session_only

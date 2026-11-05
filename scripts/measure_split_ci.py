@@ -44,7 +44,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--golden-only', action='store_true')
-    parser.add_argument('--case', action='append')
+    parser.add_argument('--case', action='append', help='bounded case selection; skips the full performance workload')
     parser.add_argument('--shard', default='1/1')
     args = parser.parse_args()
     work = args.work.resolve()
@@ -132,7 +132,7 @@ def main():
             raise RuntimeError(actual + ':\n' + '\n'.join(errors))
     print(f'zero user-output byte differences in {len(rows)} cases; provisional={manifest["provisional"]}')
     print('golden receipt: ' + str(work / 'receipt.json'), flush=True)
-    if shard == 1:
+    if shard == 1 and not args.case:
         subprocess.run([sys.executable, str(split.REPO / 'scripts/measure_split_performance.py'),
                         '--baseline', str(baseline), '--work', str(work / 'performance')], check=True)
     return 0

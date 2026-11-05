@@ -16,6 +16,7 @@ def tooling():
 
 @pytest.mark.parametrize('body', ['result = str(exc)', 'result = str(exc); del exc',
     'result = str(exc) + """\nunchanged literal\n"""',
+    'result = f"""\nunchanged {exc}\n"""',
     'def read_error():\n            return str(exc)\n        result = read_error()'])
 @pytest.mark.parametrize('star', [False, True])
 def test_cli_exception_target_is_global_and_deleted_after_handler(tmp_path, body, star):

@@ -16,8 +16,12 @@ def activity_days(usage):
 
 
 def activity_coverage(conn):
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
+    if "daily_usage_json" not in columns:
+        return {"complete": False, "undated_sessions": 0}
+    parent_col = "parent_daily_usage_json" if "parent_daily_usage_json" in columns else "NULL"
     incomplete = 0
-    for raw, parent in conn.execute("SELECT daily_usage_json,parent_daily_usage_json FROM session_log"):
+    for raw, parent in conn.execute(f"SELECT daily_usage_json,{parent_col} FROM session_log"):
         try:
             usage = json.loads(raw) if raw is not None else None
         except (TypeError, ValueError):
@@ -39,27 +43,32 @@ def ensure_activity_schema(conn):
                 if name not in {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}:
                     raise
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY)")
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='view' AND name='session_activity'").fetchone():
+    if conn.execute("SELECT 1 FROM main.sqlite_master WHERE type='view' AND name='session_activity'").fetchone():
+        conn.execute("DROP VIEW main.session_activity")
+    ensure_activity_view(conn)
+
+
+def ensure_activity_view(conn):
+    """Connection-local projection, including legacy/read-only database shapes."""
+    if conn.execute("SELECT 1 FROM sqlite_temp_master WHERE type='view' AND name='session_activity'").fetchone():
         return
-    # Each projection has the session_log interface, but token classes and models
-    # describe just this day. Historical metadata is a last-active-day cohort,
-    # never apportioned in proportion to tokens or copied onto every day.
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(session_log)")]
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
+    def source(name, default="NULL"):
+        return "s." + name if name in columns else default
     def total(field):
         return f"COALESCE((SELECT SUM(COALESCE(json_extract(value, '$.{field}'),0)) FROM json_each(d.value)),0)"
     fresh, read, write, output = [total(k) for k in ("fresh_input", "cache_read", "cache_create", "output")]
     inp = f"({fresh}+{read}+{write})"
-    model_mix = "(SELECT json_group_object(key, COALESCE(json_extract(value,'$.fresh_input'),0)+COALESCE(json_extract(value,'$.cache_create'),0)+COALESCE(json_extract(value,'$.output'),0)) FROM json_each(d.value))"
+    model_mix = "(SELECT json_group_object(key, COALESCE(json_extract(value,'$.fresh_input'),0)+COALESCE(json_extract(value,'$.cache_create'),0)+COALESCE(json_extract(value,'$.output'),0)+COALESCE(json_extract(value,'$.unsplit'),0)) FROM json_each(d.value))"
     overrides = {
         "date": "d.key", "input_tokens": inp, "output_tokens": output,
         "cache_hit_rate": f"CASE WHEN {inp}>0 THEN 1.0*{read}/{inp} ELSE 0 END",
         "cache_create_1h_tokens": total("cache_create_1h"),
-        # Older buckets may have unsplit cache writes, retained at the 5m rate.
         "cache_create_5m_tokens": f"({write}-{total('cache_create_1h')})",
         "model_usage_json": model_mix, "all_model_usage_json": model_mix,
         "model_usage_breakdown_json": "d.value",
         "daily_usage_json": "json_object(d.key, json(d.value))",
-        "api_calls": "json_extract(s.daily_calls_json, '$.\"' || d.key || '\"')",
+        "api_calls": f"json_extract({source('daily_calls_json')}, '$.\"' || d.key || '\"')",
     }
     cohort_defaults = {
         "message_count": "0", "duration_minutes": "0", "skills_json": "'{}'",
@@ -68,16 +77,19 @@ def ensure_activity_schema(conn):
         "max_call_gap_seconds": "NULL", "p95_call_gap_seconds": "NULL",
     }
     for name, default in cohort_defaults.items():
-        overrides[name] = f"CASE WHEN d.key=s.date THEN s.{name} ELSE {default} END"
-    # New transcripts carry dated messages/tools/duration. Legacy metadata keeps
-    # the explicitly documented session-cohort semantics above.
+        overrides[name] = f"CASE WHEN d.key={source('date')} THEN {source(name, default)} ELSE {default} END"
     for name in ("message_count", "duration_minutes", "skills_json", "subagents_json", "tool_calls_json"):
         key = name.removesuffix("_json")
-        overrides[name] = f"COALESCE(json_extract(s.daily_metrics_json, '$.\"' || d.key || '\".{key}'), {overrides[name]})"
-    projection = ", ".join(f'{overrides.get(c, "s."+c)} AS "{c}"' for c in cols)
-    conn.execute(f"""CREATE VIEW IF NOT EXISTS session_activity AS SELECT {projection}
-        FROM session_log s, json_each(CASE WHEN json_valid(s.daily_usage_json)
-             THEN s.daily_usage_json ELSE '{{}}' END) d
+        overrides[name] = f"COALESCE(json_extract({source('daily_metrics_json')}, '$.\"' || d.key || '\".{key}'), {overrides[name]})"
+    # Optional ingestion/provenance columns are deliberately not dependencies of
+    # this view. Their migrations can fail or be retried independently.
+    for name in ("id", "jsonl_path", "project", "is_sidechain", "session_uuid", "slug", "topic", "collected_at", "version"):
+        overrides[name] = source(name, "s.rowid" if name == "id" else "NULL")
+    projection = ", ".join(f'{expr} AS "{name}"' for name, expr in overrides.items())
+    usage = f"COALESCE({source('daily_usage_json')},{source('parent_daily_usage_json')})"
+    conn.execute(f"""CREATE TEMP VIEW session_activity AS SELECT {projection}
+        FROM main.session_log s, json_each(CASE WHEN json_valid({usage})
+             THEN {usage} ELSE '{{}}' END) d
         WHERE length(d.key)=10 AND d.key GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
           AND date(d.key)=d.key AND d.type='object'""")
 

@@ -8,6 +8,7 @@ unavailable, the behaviour falls back to the rolling 7-day lookback.
 
 Run: python3 -m pytest tests/test_dashboard_window_align.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import sqlite3
 import sys
@@ -54,6 +55,7 @@ def _temp_trends(m, tmp_path, monkeypatch):
                  (today, 1_000_000, 200_000))
     conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved) VALUES(?,?,?)",
                  (now_iso, "archive", 50_000))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)

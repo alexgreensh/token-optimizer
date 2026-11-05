@@ -76,7 +76,7 @@ test('class-less priced savings disclose the input-rate floor', () => {
 test('displayed levers add to the displayed headline while raw values stay exact', () => {
   const dir = mkdir('cents-');
   const day = 86400, t = 1750000000, now = t + 60 * day;
-  const row = (id, ts, model) => ({session_id:id, created_at:ts, date:'2026-01-01', model, tokens_input:100000,
+  const row = (id, ts, model) => ({session_id:id, created_at:ts, date:new Date(ts * 1000).toISOString(), model, tokens_input:100000,
     tokens_output:10000, tokens_cache_read:0, tokens_cache_write:0, cost_usd:0, duration_seconds:300});
   const rows = [row('install', t, 'opus')];
   for (let i = 0; i < 35; i++) rows.push(row('before'+i, t + (2 + i / 2) * day, 'opus'));

@@ -265,7 +265,7 @@ def _detached_python_exe():
 import antigravity_session
 import codex_io
 import codex_session
-from session_activity import activity_days as _activity_days, activity_coverage, ensure_activity_schema, repair_activity_dates
+from session_activity import activity_days as _activity_days, activity_coverage, ensure_activity_schema, ensure_activity_view, repair_activity_dates
 import deterministic_candidates
 import codex_state
 import copilot_session
@@ -1979,6 +1979,7 @@ def _resolve_session_model(session_id=None):
         try:
             if TRENDS_DB.exists():
                 conn = _init_trends_db()
+                ensure_activity_view(conn)
                 try:
                     row = conn.execute(
                         "SELECT model_usage_json FROM session_activity "
@@ -14538,6 +14539,10 @@ def _init_trends_db():
     # Migrate: add quality columns to daily_stats for existing DBs
     try:
         ds_cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_stats)").fetchall()}
+        for name, kind in (("session_count", "INTEGER"), ("total_input", "INTEGER"),
+                           ("total_output", "INTEGER"), ("total_duration", "REAL"), ("avg_cache_hit", "REAL")):
+            if name not in ds_cols:
+                conn.execute(f"ALTER TABLE daily_stats ADD COLUMN {name} {kind}")
         if "avg_quality_score" not in ds_cols:
             conn.execute("ALTER TABLE daily_stats ADD COLUMN avg_quality_score REAL")
         if "worst_grade" not in ds_cols:
@@ -14711,6 +14716,11 @@ def _init_trends_db():
             path = SNAPSHOT_DIR / name
             retained = path.with_name(path.name + ".pre-activity-v1")
             if path.exists() and not retained.exists():
+                try:
+                    if json.loads(path.read_text()).get("activity_basis") == 1:
+                        continue
+                except (OSError, ValueError, AttributeError):
+                    pass
                 path.rename(retained)
         conn.execute("INSERT INTO schema_migrations(name) VALUES ('activity_dating_v1')")
         conn.commit()
@@ -25988,6 +25998,7 @@ def _hermes_refresh_session_totals(conn, dedup_key, parsed):
             dedup_key,
         ),
     )
+    _store_adapter_activity(conn, dedup_key, parsed)
     return True
 
 
@@ -28833,6 +28844,8 @@ def _price_session_row(sr, pricing_tier):
     dom_model = max(mu, key=mu.get) if mu else "unknown"
     mb = _safe_json_dict(sr["model_usage_breakdown_json"])
     du = _safe_json_dict(sr["daily_usage_json"])
+    if not du and "parent_daily_usage_json" in sr.keys():
+        du = _safe_json_dict(sr["parent_daily_usage_json"])
 
     if mb:
         session_priced_tokens, session_unpriced_tokens = _session_price_buckets(mb, pricing_tier)
@@ -29469,6 +29482,7 @@ def _query_trends_db(conn, days):
     """Internal: run all queries against the trends DB. Caller handles errors."""
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
+    ensure_activity_view(conn)
     population_metrics = _query_dashboard_population_metrics(conn, days)
     spent_basis = _dashboard_spent_token_basis(conn, days=days)
     coverage = activity_coverage(conn)
@@ -29620,7 +29634,7 @@ def _query_trends_db(conn, days):
                   cache_create_1h_tokens, cache_create_5m_tokens,
                   avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds, skills_json,
                   subagents_json, model_usage_json, slug, topic, project,
-                  model_usage_breakdown_json, daily_usage_json,
+                  model_usage_breakdown_json, daily_usage_json, parent_daily_usage_json,
                   quality_score, quality_grade
            FROM session_log ORDER BY date DESC""",
         (),
@@ -29823,6 +29837,7 @@ def _query_trends_db(conn, days):
 
 def _query_dashboard_population_metrics(conn, days):
     """Return explicitly labelled dashboard populations from session_log."""
+    ensure_activity_view(conn)
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     row = conn.execute(
         """SELECT COUNT(*) AS all_n,
@@ -29832,7 +29847,7 @@ def _query_dashboard_population_metrics(conn, days):
                   SUM(CASE WHEN COALESCE(is_sidechain,0)=1 OR COALESCE(message_count,0)<20 THEN 1 ELSE 0 END) AS ineligible_n,
                   AVG(CASE WHEN COALESCE(is_sidechain,0)=0 AND COALESCE(message_count,0)>=20 THEN cache_hit_rate END) AS eligible_hit,
                   AVG(CASE WHEN COALESCE(is_sidechain,0)=1 OR COALESCE(message_count,0)<20 THEN cache_hit_rate END) AS ineligible_hit
-           FROM session_log WHERE id IN (SELECT id FROM session_activity WHERE date >= ?)""", (cutoff,)
+           FROM session_log WHERE rowid IN (SELECT id FROM session_activity WHERE date >= ?)""", (cutoff,)
     ).fetchone()
     return {
         "all_sessions": int(row["all_n"] or 0),
@@ -51945,6 +51960,7 @@ def _compound_structural(s, days, fallback_prefix):
         return None
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     conn = _init_trends_db()
+    ensure_activity_view(conn)
     try:
         row = conn.execute(
             "SELECT COALESCE(SUM(api_calls),0), COALESCE(SUM(cache_create_1h_tokens),0), "
@@ -52132,6 +52148,7 @@ def _estimate_uncaptured_runtime(days=30, compression=None, savings=None):
             return zero
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             # Quality filter removed (quality-filter audit 2026-08-29): the
             # filter shrank session_count from 2983 to 449 on the real ledger,
@@ -52476,6 +52493,7 @@ def _estimate_retrieval_serve_savings(days=30):
             return zero
         cutoff_dt = datetime.now() - timedelta(days=days)
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             served = conn.execute(
                 _RETRIEVAL_SERVED_SQL[_counted_table(conn, "savings_events")],
@@ -52625,6 +52643,64 @@ def _model_output_rate_per_mtok(model):
         return _get_model_cost(model, 0, 1_000_000)  # output-only -> $/MTok output
     except Exception:
         return 0.0
+
+
+def _session_output_fraction(days=30):
+    """Measured OUTPUT share of the FRESH-rate token mix, from the user's session_log.
+
+    Returns SUM(output) / SUM(fresh_input + output) over the window, clamped to
+    [0, 1]. The denominator deliberately EXCLUDES cache-read and cache-creation
+    tokens: those are priced separately at their own (cheap) cache rates, so the
+    blend here only governs the split between FRESH input and output — the two
+    classes that share the full input/output rate axis. Using total input_tokens
+    (which is dominated by cache-read) as the denominator collapsed this fraction
+    to ~0.5% and made the blended rate effectively the input rate, understating
+    routing savings ~3x. Fresh input and output are taken from _session_token_vector
+    so the negative-fresh clamp is applied consistently. Grounded in the user's OWN
+    data, never an invented multiplier. Returns 0.0 (input-only, conservative) when
+    there is no usable history.
+    """
+    try:
+        if not TRENDS_DB.exists():
+            return 0.0
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        conn = _init_trends_db()
+        ensure_activity_view(conn)
+        try:
+            # Quality filter removed (audit 2026-08-29): this is a
+            # volume-weighted metric (SUM(output)/SUM(fresh+output)), so
+            # gating by count is irrelevant. Short sessions with real output
+            # tokens must be included.
+            rows = conn.execute(
+                "SELECT input_tokens, output_tokens, cache_create_5m_tokens, "
+                "cache_create_1h_tokens, cache_hit_rate FROM session_activity "
+                "WHERE input_tokens IS NOT NULL AND date >= ? "
+                "AND COALESCE(is_sidechain, 0) = 0",
+                (cutoff,),
+            ).fetchall()
+        finally:
+            conn.close()
+        fresh_total = 0.0
+        out_total = 0.0
+        for r in rows:
+            fi, _cw, _cr, out = _session_token_vector(r)
+            fresh_total += fi
+            out_total += out
+        denom = fresh_total + out_total
+        if denom <= 0:
+            return 0.0
+        return max(0.0, min(1.0, out_total / denom))
+    except (sqlite3.Error, OSError):
+        return 0.0
+
+
+_ROUTING_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h",
+                    "cache_read", "output", "unsplit")
+
+
+_ROUTING_BILLABLE_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h",
+                             "output", "unsplit")
+
 
 
 def _foreign_savings_card_exact(model):
@@ -52839,15 +52915,17 @@ def _routing_usage_by_model(days=30, since=None):
             return out
         cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
+            first = "first_activity_day" if "first_activity_day" in columns else "NULL"
+            last = "last_activity_day" if "last_activity_day" in columns else "NULL"
             rows = conn.execute(
-                "SELECT date, daily_usage_json, model_usage_breakdown_json, "
-                "all_model_usage_json, model_usage_json FROM session_activity WHERE date >= ?",
-                (cutoff,),
-            ).fetchall()
+                "SELECT date,daily_usage_json,model_usage_breakdown_json,all_model_usage_json,model_usage_json,"
+                + first + "," + last + " FROM session_log").fetchall()
         finally:
             conn.close()
-        for row_date, du_raw, mb_raw, amu_raw, mu_raw in rows:
+        for row_date, du_raw, mb_raw, amu_raw, mu_raw, first_day, last_day in rows:
             du = _safe_json_dict(du_raw)
             if du:
                 undated_day = ""
@@ -52858,6 +52936,8 @@ def _routing_usage_by_model(days=30, since=None):
                     for model, parts in models.items():
                         if isinstance(parts, dict) and _normalize_model_name(model):
                             _add_routing_buckets(out.setdefault(model, {}), parts)
+                continue
+            if not first_day or first_day != last_day or first_day < cutoff:
                 continue
             totals = _safe_json_dict(amu_raw) or _safe_json_dict(mu_raw)
             mb = _safe_json_dict(mb_raw)
@@ -53346,6 +53426,7 @@ def _sum_tool_calls(days=30):
             return out
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             rows = conn.execute(
                 "SELECT tool_calls_json FROM session_activity "
@@ -53441,6 +53522,7 @@ def _estimate_cache_drop_savings(days=30):
             return zero
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             # Quality filter removed (audit 2026-08-29): a short automation
             # session that had a cache drop is still a real cache drop.
@@ -53730,6 +53812,7 @@ def _compute_baseline_state():
         if not TRENDS_DB.exists():
             return None
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             rows = conn.execute(
                 "SELECT date, id, input_tokens, output_tokens, cache_create_5m_tokens, "
@@ -53908,8 +53991,6 @@ def _migrate_baseline(data):
     if not isinstance(data, dict):
         return None
     v = data.get("version")
-    if data.get("activity_basis") != 1:
-        return None
     if v == _BASELINE_VERSION:
         return dict(data)
     if v == 3:
@@ -53963,7 +54044,7 @@ def _baseline_adoption_candidates():
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError, AttributeError):
             return
-        if _baseline_is_well_formed(data) and data.get("activity_basis") == 1:
+        if _baseline_is_well_formed(data):
             out.append((path, data))
 
     try:
@@ -54067,7 +54148,7 @@ def _get_baseline_state(freeze=True):
             # under a versioned name so it stays recoverable and can still act as
             # the incumbent for the shrink guard below.
             if isinstance(data, dict):
-                migrated = _migrate_baseline(data)
+                migrated = _migrate_baseline(data) if data.get("activity_basis") == 1 else None
                 if migrated is not None and _baseline_is_well_formed(migrated):
                     try:
                         _write_baseline_state(bpath, migrated)
@@ -54091,7 +54172,7 @@ def _get_baseline_state(freeze=True):
     # gets a fresh data dir; the old anchor is stranded, not deleted. Re-capturing
     # months later reads a thinned history and yields a smaller, wronger anchor.
     adopted = _adopt_orphaned_baseline()
-    if adopted is not None:
+    if adopted is not None and adopted.get("activity_basis") == 1:
         if incumbent is not None and _baseline_shrink_is_material(incumbent, adopted):
             adopted = None          # never adopt DOWNWARD past the guard
         else:
@@ -54193,6 +54274,7 @@ def _mix_from_session_rows(cutoff):
         if not TRENDS_DB.exists():
             return {}
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             # Quality filter removed (audit 2026-08-29): the filter removed
             # nearly all Haiku sessions (3.6% -> 0.1%) and reduced Sonnet share
@@ -54213,7 +54295,7 @@ def _mix_from_session_rows(cutoff):
                 if not model:
                     continue
                 try:
-                    t = int(toks or 0)
+                    t = float(toks or 0)
                 except (TypeError, ValueError):
                     continue
                 if t > 0:
@@ -54596,6 +54678,7 @@ def _short_session_pool_savings(cutoff, baseline_opus_share, tier=None,
         if tier is None:
             tier = _load_pricing_tier()
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             rows = conn.execute(
                 "SELECT model_usage_breakdown_json FROM session_activity "
@@ -54663,6 +54746,7 @@ def _baseline_progress():
         if not TRENDS_DB.exists():
             return None
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             # Quality filter removed (audit 2026-08-29): the filter can delay
             # the "ready" signal for users with many short sessions. The
@@ -54730,6 +54814,7 @@ def _price_parent_window(conn, where, params, tier):
     `flat_usd` prices every session at _WEIGHT_POOL_FLAT_RATES so the two eras are
     measured with the same ruler. Never raises.
     """
+    ensure_activity_view(conn)
     rows = conn.execute(
         "SELECT input_tokens, output_tokens, cache_create_5m_tokens, "
         "cache_create_1h_tokens, cache_hit_rate, model_usage_json, all_model_usage_json, "
@@ -55032,6 +55117,7 @@ def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=Non
         if not TRENDS_DB.exists():
             return None
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             months = [
                 str(r[0]) for r in conn.execute(
@@ -55522,6 +55608,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # But the cache-hit rate (cur_hit) must be computed from ALL sessions, so a
         # separate unfiltered query is used for that below (audit 2026-08-29).
         conn = _init_trends_db()
+        ensure_activity_view(conn)
         try:
             recent_rows = conn.execute(
                 "SELECT input_tokens, output_tokens, cache_create_5m_tokens, "
@@ -58251,6 +58338,7 @@ def _install_date():
     try:
         if TRENDS_DB.exists():
             conn = _init_trends_db()
+            ensure_activity_view(conn)
             try:
                 row = conn.execute("SELECT MIN(date) FROM session_activity").fetchone()
             finally:

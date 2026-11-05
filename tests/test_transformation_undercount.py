@@ -18,6 +18,7 @@ window's real spend:
 
 Run: python3 -m pytest tests/test_transformation_undercount.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import json
 import sqlite3
@@ -36,6 +37,7 @@ HAIKU = "claude-haiku-4-5-20251001"
 
 FROZEN_BASELINE = {
     "version": 4,
+    "activity_basis": 1,
     "typical_session": {
         "fresh_input": 30000.0, "cache_write": 487000.0,
         "cache_read": 13500000.0, "output": 51000.0,
@@ -146,6 +148,7 @@ def test_sidechain_pool_enters_headline_at_window_value(measure):
     conn = _fresh_env(tmp)
     _insert_quality_sessions(conn, tmp, n_sessions=40,
                              per_session_input=4_000_000, opus_share=0.30)
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     # 1400 delegated sessions saved a net $250 over the window. The pre-fix
@@ -172,6 +175,7 @@ def test_sidechain_delta_independent_of_main_session_count(measure):
         conn = _fresh_env(tmp)
         _insert_quality_sessions(conn, tmp, n_sessions=n,
                                  per_session_input=4_000_000, opus_share=0.30)
+        stamp_activity(conn)
         conn.commit()
         conn.close()
         mod._subagent_pool_savings = lambda **kw: dict(pool)
@@ -195,6 +199,7 @@ def test_now_arm_mix_ignores_rolled_up_subagent_usage(measure):
         conn, tmp, n_sessions=40, per_session_input=4_000_000, opus_share=1.0,
         parent_usage={OPUS: 4_000_000},
         all_usage={OPUS: 4_000_000, HAIKU: 36_000_000})
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     with_rollup = mod._estimate_before_after_savings(days=30)
@@ -204,6 +209,7 @@ def test_now_arm_mix_ignores_rolled_up_subagent_usage(measure):
     _insert_quality_sessions(
         conn, tmp, n_sessions=40, per_session_input=4_000_000, opus_share=1.0,
         parent_usage={OPUS: 4_000_000}, all_usage={OPUS: 4_000_000})
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     without_rollup = mod._estimate_before_after_savings(days=30)
@@ -221,6 +227,7 @@ def test_now_arm_mix_falls_back_to_all_usage_when_parent_missing(measure):
     _insert_quality_sessions(conn, tmp, n_sessions=40,
                              per_session_input=4_000_000, opus_share=0.30,
                              parent_usage=None)
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     r = mod._estimate_before_after_savings(days=30)
@@ -243,6 +250,7 @@ def test_short_sessions_priced_as_their_own_pool(measure):
     _insert_quality_sessions(conn, tmp, n_sessions=40,
                              per_session_input=4_000_000, opus_share=0.30)
     _insert_short_sessions(conn, tmp, n_sessions=300, breakdown=_SHORT_BREAKDOWN)
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     r = mod._estimate_before_after_savings(days=30)
@@ -261,6 +269,7 @@ def test_short_session_pool_joins_headline_reconciliation(measure):
     _insert_quality_sessions(conn, tmp, n_sessions=40,
                              per_session_input=4_000_000, opus_share=0.30)
     _insert_short_sessions(conn, tmp, n_sessions=300, breakdown=_SHORT_BREAKDOWN)
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     r = mod._estimate_before_after_savings(days=30)
@@ -283,6 +292,7 @@ def test_estimated_avoided_volume_pools_join_headline_separately(measure):
     conn = _fresh_env(tmp)
     _insert_quality_sessions(conn, tmp, n_sessions=40,
                              per_session_input=4_000_000, opus_share=0.30)
+    stamp_activity(conn)
     conn.commit()
     conn.close()
 
@@ -328,6 +338,7 @@ def test_compression_reprice_and_runway_use_same_complete_mix_ratio(measure):
     conn = _fresh_env(tmp)
     _insert_quality_sessions(conn, tmp, n_sessions=40,
                              per_session_input=4_000_000, opus_share=0.60)
+    stamp_activity(conn)
     conn.commit()
     conn.close()
 
@@ -377,6 +388,7 @@ def test_short_sessions_without_breakdown_contribute_nothing(measure):
     _insert_quality_sessions(conn, tmp, n_sessions=40,
                              per_session_input=4_000_000, opus_share=0.30)
     _insert_short_sessions(conn, tmp, n_sessions=50, breakdown=None)
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     r = mod._estimate_before_after_savings(days=30)
@@ -396,6 +408,7 @@ def test_short_session_pool_stays_signed_when_costlier(measure):
     _insert_quality_sessions(conn, tmp, n_sessions=40,
                              per_session_input=4_000_000, opus_share=0.30)
     _insert_short_sessions(conn, tmp, n_sessions=50, breakdown=premium_bd)
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     r = mod._estimate_before_after_savings(days=30)

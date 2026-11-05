@@ -6,6 +6,7 @@ through the public `--db <tmp>` seam against a temp DB and synthetic OTLP
 capture files. The real trends.db is never touched.
 """
 
+from _activity_fixtures import stamp_activity
 import importlib.util
 import io
 import json
@@ -289,6 +290,7 @@ def test_quality_average_fold_is_not_nulled(tmp_path):
         "VALUES (?, ?, 'claude', 82, 'B', 100, 50, 'claude-uuid-1', 0.0)",
         ("/home/u/.claude/projects/p/claude-uuid-1.jsonl", LOCAL_DAY),
     )
+    stamp_activity(conn, platforms=("claude",))
     conn.commit()
     conn.close()
 
@@ -386,6 +388,7 @@ def test_later_claude_row_replaces_previously_ingested_cowork_copy(tmp_path):
             "(?, ?, 'claude', 4242, 111, 'late-claude-sid', 0.99)",
             ("/home/u/.claude/projects/p/late-claude-sid.jsonl", LOCAL_DAY),
         )
+        stamp_activity(conn, platforms=("claude",))
         conn.commit()
     finally:
         conn.close()
@@ -598,3 +601,14 @@ def test_shared_capture_directory_is_refused(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_capture_usage_is_split_by_event_activity_day(tmp_path):
+    capture = tmp_path / "capture"
+    _write_capture(capture, [_api_record("multi-day", EVENING_NANOS),
+                             _api_record("multi-day", EVENING_NANOS + 86400 * 1_000_000_000)])
+    db = tmp_path / "trends.db"
+    assert _ingest(capture, db) == 0
+    with sqlite3.connect(str(db)) as conn:
+        rows = conn.execute("SELECT total_input,total_output FROM daily_stats ORDER BY date").fetchall()
+    assert rows == [(1300, 500), (1300, 500)]

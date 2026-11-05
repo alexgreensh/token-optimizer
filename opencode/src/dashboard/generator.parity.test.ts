@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS session_log (
   compactions INTEGER DEFAULT 0,
   mode TEXT,
   duration_seconds INTEGER DEFAULT 0,
+  daily_usage_json TEXT,
   created_at REAL NOT NULL
 );
 `;
@@ -171,6 +172,8 @@ function seed(
     );
   }
 
+  db.run(`UPDATE session_log SET daily_usage_json = json_object(date, json_object(model, json_object(
+    'input',tokens_input,'output',tokens_output,'cacheRead',tokens_cache_read,'cacheWrite',tokens_cache_write,'cost',cost_usd)))`);
   db.close();
 }
 

@@ -15,6 +15,7 @@ import measure_split as split
 import measure_split_golden as golden
 from check_measure_split import check
 from check_measure_split_payload import verify, smoke
+from measure_split_artifacts import compare_candidate
 
 
 def extract(archive, target):
@@ -82,6 +83,11 @@ def main():
                    cwd=split.REPO, check=True)
     baseline = work / 'base-source'
     extract(archive, baseline)
+    candidate_archive = work / 'candidate.tar'
+    subprocess.run(['git', 'archive', '--format=tar', '-o', str(candidate_archive), 'HEAD'],
+                   cwd=split.REPO, check=True)
+    candidate = work / 'candidate-source'
+    extract(candidate_archive, candidate)
     rows = json.loads(golden.CASES.read_text())['cases']
     if args.case:
         rows = [row for row in rows if row['id'] in args.case]
@@ -91,13 +97,17 @@ def main():
     rows = rows[shard-1::total]
     if not rows:
         parser.error('empty golden selection')
-    for source, name in ((baseline, 'base-1'), (baseline, 'base-2'), (split.REPO, 'candidate')):
+    for source, name in ((baseline, 'base-1'), (baseline, 'base-2'), (candidate, 'candidate')):
         print(f'{name}: {golden.capture(source, work / "golden-path", work / name, rows)} cases', flush=True)
     for actual in ('base-2', 'candidate'):
-        errors = golden.compare(work / 'base-1', work / actual)
+        if actual == 'candidate':
+            errors, identities = compare_candidate(work / 'base-1', work / actual, baseline, candidate)
+            print(f'{len(identities)} installed-source identity artifacts independently verified')
+        else:
+            errors = golden.compare(work / 'base-1', work / actual)
         if errors:
             raise RuntimeError(actual + ':\n' + '\n'.join(errors))
-    print(f'zero byte differences in {len(rows)} cases; provisional={manifest["provisional"]}')
+    print(f'zero user-output byte differences in {len(rows)} cases; provisional={manifest["provisional"]}')
     if shard == 1:
         subprocess.run([sys.executable, str(split.REPO / 'scripts/measure_split_performance.py'),
                         '--baseline', str(baseline), '--work', str(work / 'performance')], check=True)

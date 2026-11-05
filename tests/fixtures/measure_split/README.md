@@ -37,6 +37,8 @@ browser and network boundaries are recorded fakes. Known Python children in the
 real hook and daemon chains run through the same probe. HTTP handlers use an
 in-memory transport; their raw response and server console output are separate
 artifacts. Node runs the actual statusline with a fixed clock and process boundary.
+The fake payload includes the source-layout README marker. The Claude version
+probe returns a pinned parseable version, so normal enable paths run normally.
 The driver compiles each immutable payload once and reuses those code objects
 without changing source filenames or runpy globals. A cached/uncached comparison
 guards that seam. Cold-import timing and public subprocess smoke bypass it.
@@ -46,6 +48,15 @@ paths or rounding prices. Database comparisons retain schema SQL and sorted tabl
 rows rather than comparing SQLite layout bytes. Five negative controls prove
 that a JSON field, dollar amount, statusline character, hook envelope or exit-code
 change is detected.
+
+Installed executable source is also checked against its input payload. Devin's
+required `_measure` refusal-root addition changes its installed source and that
+file's SHA commitment. Those two internal code artifacts remain in the raw
+captures. A separate check accepts only that AST change, uses the unchanged
+released installer renderer, verifies every manifest commitment, and compares
+all remaining manifest bytes exactly. User outputs, settings and errors have no
+such allowance. Negative controls reject wrong source, hashes, metadata and
+dollar figures.
 
 `measure_split_ci.py` checks the actual offline npm tarball, a read-only installed
 payload, the real CLI/hook launcher, BASE self-equality and candidate equality.

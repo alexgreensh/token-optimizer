@@ -545,9 +545,9 @@ def test_dashboard_headline_formula_matches_the_dashboard_source():
     card = card[:card.index("var tsFullSaved")]
     for field in ("s.mcp_cap_estimated", "s.hint_followed || s.hint_followed_estimated",
                   "s.verbosity_steer || s.verbosity_steer_estimated", "s.resume_lean_estimated",
-                  "Number(s.total_tokens)"):
+                  "s.checkpoint_restore_estimated", "Number(s.total_tokens)"):
         assert field in card, field
-    assert card.count("pushEst(obj, label)") == 4
+    assert card.count("pushEst(obj, label)") == 5
 
 
 def test_compactions_counted_from_transcript(sb, tmp_path):

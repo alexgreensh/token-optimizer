@@ -242,9 +242,11 @@ def test_no_double_count_with_routing(m, tmp_path, monkeypatch):
     # The routed session is untouched...
     assert s["by_category"]["tool_archive"]["cost_saved_usd"] == pytest.approx(
         tokens * sonnet / 1e6, rel=1e-6)
-    # ...while the Opus session in the SAME window IS corrected. Both assertions
+    # ...while the Opus session in the SAME window IS corrected -- and the
+    # correction survives relocation: checkpoint_restore is popped to the
+    # estimated tier, carrying its repriced dollars with it. Both assertions
     # must hold together: only the second one fails pre-change.
-    assert s["by_category"]["checkpoint_restore"]["cost_saved_usd"] == pytest.approx(
+    assert s["checkpoint_restore_estimated"]["cost_saved_usd"] == pytest.approx(
         tokens * opus / 1e6, rel=1e-6)
 
 

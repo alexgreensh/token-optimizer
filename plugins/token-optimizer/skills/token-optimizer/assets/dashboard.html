@@ -3540,6 +3540,10 @@ var DB = (function() {
       var tk = Number(obj && obj.tokens_saved) || 0;
       if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
     })(s.resume_lean_estimated, 'lean resumes');
+    (function pushEst(obj, label) {
+      var tk = Number(obj && obj.tokens_saved) || 0;
+      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
+    })(s.checkpoint_restore_estimated, 'checkpoint restores');
     var tsEstTokens = tsEstItems.reduce(function(a, b) { return a + b.tokens; }, 0);
     var tsEstLabelList = tsEstItems.map(function(it) { return it.label; }).join(', ');
     // FULL saved total = measured floor + estimated tier. The headline is
@@ -4440,11 +4444,13 @@ var DB = (function() {
     var rs = s.retrieval_serve || {};
     var rle = s.resume_lean_estimated || {};
     var vs = s.verbosity_steer || {};
+    var cr = s.checkpoint_restore_estimated || {};
     var cp = s.counted_period || {};
     var rereadMo = cp.available ? mo(cp.reread_usd) : 0;
     var hf = s.hint_followed || {};
-    // Avoided-search: prefer the deterministic observed hint->read measure
-    // (hint_followed); fall back to the cohort estimate only before any hint has
+    // Avoided-search: prefer the hint->read estimate (hint_followed; the
+    // hint->read pair is observed, the avoided-search magnitude is a fixed
+    // estimate); fall back to the cohort estimate only before any hint has
     // fired, so the two are never summed (no double-count).
     var hfHasData = (Number(hf.events) || 0) > 0;
     var avoidedSearchMo = hfHasData ? mo(hf.cost_saved_usd) : mo(rs.cost_saved_usd);
@@ -4457,7 +4463,7 @@ var DB = (function() {
     // always reconcile exactly to gettingMo (measured + estimated). Every estItems
     // entry maps to exactly one pillar: loops/sub-agent/mcp_cap -> runtime;
     // heeded/handover/avoided-search/lean-resumes -> behavioral.
-    var behavMo   = mo(mr.realized_cost_usd) + mo(beh.cost_saved_usd) + mo(ce.cost_saved_usd) + mo(hr.cost_saved_usd) + avoidedSearchMo + mo(rle.cost_saved_usd) + mo(vs.cost_saved_usd);
+    var behavMo   = mo(mr.realized_cost_usd) + mo(beh.cost_saved_usd) + mo(ce.cost_saved_usd) + mo(hr.cost_saved_usd) + avoidedSearchMo + mo(rle.cost_saved_usd) + mo(vs.cost_saved_usd) + mo(cr.cost_saved_usd);
     // ---- trust tiers: measured / estimated / opportunity. Opportunity NEVER folds into the headline. ----
     // Measured = billable events we metered (runtime compression + realized model routing).
     // Routing joins the measured tier only when its valuation is measured; the
@@ -4473,8 +4479,9 @@ var DB = (function() {
       { key: 'mcp_cap_estimated', label: 'MCP output cap',                 amt: mo(mce.cost_saved_usd), n: Number(mce.events) || 0,             unit: 'capped results' },
       { key: 'contamination_exit', label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
       { key: 'handover_rerun', label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
-      { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'observed' : rs.confidence },
+      { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'trigger observed, size estimated' : rs.confidence },
       { key: 'resume_lean_estimated', label: 'lean resumes (cold reload avoided)', amt: mo(rle.cost_saved_usd), n: Number(rle.events) || 0,           unit: 'resumes' },
+      { key: 'checkpoint_restore_estimated', label: 'checkpoint restores (working-set re-reads)', amt: mo(cr.cost_saved_usd), n: Number(cr.events) || 0, unit: 'restores' },
       { key: 'verbosity_steer', label: 'concise output nudges', amt: mo(vs.cost_saved_usd), n: Number(vs.events) || 0, unit: 'nudges' }
     ].filter(function(it){ return it.amt > 0 || it.conf; });
     var estimatedMo = estItems.reduce(function(a, b){ return a + b.amt; }, 0);

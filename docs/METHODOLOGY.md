@@ -56,8 +56,14 @@ the CLI as `ALL IN` and on the dashboard as the hero number.
 ### 3.1 Logged actions (measured)
 
 Token changes Token Optimizer metered itself: compressed command output, archived tool
-results that stayed collapsed, checkpoint restores, structure maps, quality and
-verbosity nudges with an observed before/after, loop detection, cross-turn dedup.
+results that stayed collapsed, structure maps, quality and
+verbosity nudges with an observed before/after, cross-turn dedup.
+
+"Measured" means observed token changes and observed actions only. A mechanism whose
+trigger was seen but whose token value is inferred — the working set a checkpoint
+restore would have re-read, the continuation a loop warning would have prevented, the
+search a followed hint would have replaced, the context a fresh session would have
+carried — is an estimate, and lives in section 3.4, never here.
 
 - Source: `savings_events` and `compression_events`, read through the counted views
   (`counted_savings_events`, `counted_compression_events`).
@@ -106,16 +112,27 @@ Each key below is one line in the report. All are priced at the window's input-r
 | Key | What it estimates |
 |---|---|
 | `resume_lean_estimated` | Cold resumes avoided by a lean restore (priced like its logged event) |
+| `checkpoint_restore_estimated` | Working-set re-reads a checkpoint restore let the session skip. The restore is observed; the avoided re-read is inferred from the session's own read history and capped, never metered |
 | `uncaptured_runtime` | Compression inside sub-agent runs that is never logged as an event |
 | `behavioral_estimate` | One more loop span avoided per caught loop |
 | `mcp_cap_estimated` | Large MCP results capped (priced like its logged event) |
 | `handover_rerun` | Re-work avoided by a continuity handover, from your own session cohorts |
 | `contamination_exit` | Sessions that heeded a fresh-session nudge, from your own cohorts |
 | `verbosity_steer` | Output shortened by a concise-output nudge, before an observed measurement exists |
-| `hint_followed` | Searches avoided by a followed context hint (used once any hint fires) |
+| `hint_followed` | Searches avoided by a followed context hint. The hint->read pair is observed; the avoided-search size is a fixed estimate (used once any hint fires) |
 | `retrieval_serve` | Cohort estimate for avoided searches, used only before any hint fires |
 
 `hint_followed` and `retrieval_serve` are never both counted.
+
+Loop-detection warnings log the observed loop volume as a `tier=estimated`
+compression event (it is spend that already happened, not a removal), and it never
+reaches the measured headline; the avoided continuation is `behavioral_estimate`.
+
+The fresh-session nudge's dollar figure is a separate counterfactual estimate shown
+in the nudge message itself: warm context the continued session would keep re-sending
+at the cache-read rate, minus the working set the fresh session must carry, minus the
+one-time handover write (cache-write) and rebuild re-reads (input), floored at $0 and
+labelled `est.` in the message.
 
 ---
 
@@ -140,7 +157,7 @@ recorded session.
 | Cache drops | Sessions idle past the cache window that re-wrote the prefix | Opportunity, never added |
 | Routing what-if | If about 20% of Opus work ran on the current Sonnet: fresh input and output only (`_ROUTABLE_OPUS_FRACTION`) | Assumption, never added |
 | Your transformation | Cost per unit of work now vs the old way. Within ±5% it reads "no measurable change" (`_TRANSFORMATION_FLAT_BAND`) | Cross-check, never the headline |
-| Token card | Metered tokens plus four estimate pools (MCP caps, hints, verbosity, lean resumes). Repeat reads and routing are not in it | Its own scope, labelled |
+| Token card | Metered tokens plus five estimate pools (MCP caps, hints, verbosity, lean resumes, checkpoint restores). Repeat reads and routing are not in it | Its own scope, labelled |
 | Plan card | Extra work per token from saved context, against your live rate-limit windows. Hidden below a 2% change | Its own scope, labelled |
 
 ---
@@ -186,7 +203,8 @@ them:
 ## 9. Known limits
 
 - Routing and estimates are estimates. They are labelled and kept separate from
-  measured parts.
+  measured parts. "Measured" covers observed token changes and observed actions
+  only: an observed trigger does not make a counterfactual magnitude measured.
 - Rows from before per-turn evidence was recorded use session-mix or input-rate floors,
   disclosed in the report.
 - Rows with no known price stay unpriced, so totals are priced subtotals.

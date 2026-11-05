@@ -55,6 +55,20 @@ def test_compiled_fixture_cache_preserves_runpy_and_annotation_semantics(tmp_pat
     assert golden.compare(work / 'uncached', work / 'cached') == []
 
 
+def test_expired_deadline_has_deterministic_watchdog_order():
+    import uuid
+    row = next(row for row in json.loads(golden.CASES.read_text())['cases']
+               if row['id'] == 'hook-hooks_userpromptsubmit_runner.py-UserPromptSubmit-deadline-codex')
+    work = REPO / '.scratch-u0' / ('deadline-order-test-' + uuid.uuid4().hex)
+    for name in ('first', 'second'):
+        golden.capture(REPO, work / 'fixed-path', work / name, [row])
+        result = work / name / row['id']
+        assert (result / 'exit').read_text().strip() == '0'
+        assert (result / 'stdout').read_bytes() == b''
+        assert not (result / 'files/data/userpromptsubmit_diagnostics.log').exists()
+    assert golden.compare(work / 'first', work / 'second') == []
+
+
 def test_every_dispatch_spelling_has_manifest_rows():
     import sys
     sys.path.insert(0, str(REPO / 'scripts'))

@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import tempfile
+import threading
 import uuid
 import webbrowser
 from types import ModuleType
@@ -43,12 +44,27 @@ time.gmtime = lambda seconds=None: real_gmtime(1793870400 if seconds is None els
 time.strftime = lambda fmt, value=None: real_strftime(fmt, time.localtime() if value is None else value)
 os.urandom = lambda size: bytes(random.randrange(256) for _ in range(size))
 _ticks = 0
+_deadline_threads = []
+_deadline_dispatching = False
 
 
 def monotonic():
-    global _ticks
+    global _ticks, _deadline_dispatching
     _ticks += max(1, int(float(os.environ.get('TO_SPLIT_MONOTONIC_STEP', '0.001')) * 1000))
-    return 1000.0 + _ticks / 1000.0
+    now = 1000.0 + _ticks / 1000.0
+    if not _deadline_dispatching:
+        for thread in list(_deadline_threads):
+            deadline = thread._target.__self__
+            if deadline._cancelled.is_set():
+                _deadline_threads.remove(thread)
+            elif deadline.end <= now:
+                _deadline_threads.remove(thread)
+                _deadline_dispatching = True
+                try:
+                    thread.run()
+                finally:
+                    _deadline_dispatching = False
+    return now
 
 
 def sleep(seconds):
@@ -60,6 +76,27 @@ time.monotonic = monotonic
 time.monotonic_ns = lambda: int(monotonic() * 1_000_000_000)
 time.perf_counter = monotonic
 time.sleep = sleep
+
+# An already-expired virtual deadline must fire at a fixed scheduling point,
+# rather than racing the main thread against a real OS watchdog thread.
+if float(os.environ.get('TO_SPLIT_MONOTONIC_STEP', '0.001')) >= 30:
+    class DeadlineThread(threading.Thread):
+        def start(self):
+            self._fixture_inline = self.name.startswith('token-optimizer-hook-deadline')
+            if self.name == 'token-optimizer-hook-deadline':
+                _deadline_threads.append(self)
+                monotonic()
+            elif self._fixture_inline:
+                self.run()
+            else:
+                super().start()
+
+        def join(self, timeout=None):
+            if not getattr(self, '_fixture_inline', False):
+                return super().join(timeout)
+
+    threading.Thread = DeadlineThread
+
 if hasattr(time, 'tzset'):
     time.tzset()
 real_datetime = datetime.datetime

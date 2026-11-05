@@ -17,6 +17,7 @@ import measure_split_golden as golden
 from check_measure_split import check
 from check_measure_split_payload import verify, smoke
 from measure_split_artifacts import compare_candidate
+from measure_split_crashes import normalize_known_crashes
 
 
 def extract(archive, target):
@@ -123,10 +124,15 @@ def main():
         if actual == 'candidate':
             errors, identities = compare_candidate(work / 'base-1', work / actual, baseline, candidate)
             print(f'{len(identities)} installed-source identity artifacts independently verified')
+            raw = errors + identities
+            errors, normalized = normalize_known_crashes(errors, work / 'base-1', work / actual)
+            print(f'{len(normalized)} listed BASE-crash stderr line-number differences: {normalized}')
         else:
             errors = golden.compare(work / 'base-1', work / actual)
+            raw, normalized = list(errors), []
         receipt['comparisons'][actual] = {'differences': errors, 'verified_source_artifacts': identities,
-                                          'raw_differences': sorted(errors + identities)}
+                                          'normalized_known_crashes': normalized,
+                                          'raw_differences': sorted(raw)}
         save_receipt()
         if errors:
             raise RuntimeError(actual + ':\n' + '\n'.join(errors))

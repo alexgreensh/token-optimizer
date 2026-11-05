@@ -20,6 +20,9 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import measure_split_crashes as crashes  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ROOT / 'tests/fixtures/measure_split/cases.json'
 
@@ -27,8 +30,8 @@ CASES = ROOT / 'tests/fixtures/measure_split/cases.json'
 def compare(expected, actual):
     """No path rewriting, output sorting, dollar rounding, or line stripping."""
     left, right = Path(expected), Path(actual)
-    names = {str(p.relative_to(left)) for p in left.rglob('*') if p.is_file()}
-    other = {str(p.relative_to(right)) for p in right.rglob('*') if p.is_file()}
+    names = {p.relative_to(left).as_posix() for p in left.rglob('*') if p.is_file()}
+    other = {p.relative_to(right).as_posix() for p in right.rglob('*') if p.is_file()}
     errors = [f'missing: {name}' for name in sorted(names-other)]
     errors += [f'unexpected: {name}' for name in sorted(other-names)]
     for name in sorted(names & other):
@@ -231,7 +234,8 @@ def capture(source, workspace, output, cases, *, compiled_cache=True):
                                    str(work / 'seed-effects.json'), 'seed', row['fixture']],
                                   input=b'', cwd=project, env=env, capture_output=True, timeout=60)
             if seed.returncode or seed.stdout != b'seed-ready\n':
-                raise RuntimeError('fixture preparation failed: ' + seed.stderr.decode('utf-8', 'replace'))
+                raise RuntimeError(f'fixture preparation failed: exit={seed.returncode} stdout={seed.stdout[-500:]!r} '
+                                   + seed.stderr.decode('utf-8', 'replace'))
             # Seeded checkpoints are fixture inputs too. Keep intentional stale
             # cache times; newly created files otherwise inherit the host clock.
             for path in home.rglob('*'):
@@ -286,7 +290,8 @@ def capture(source, workspace, output, cases, *, compiled_cache=True):
         (record / 'stdout').write_bytes(proc.stdout)
         (record / 'stderr').write_bytes(proc.stderr)
         (record / 'exit').write_text(str(proc.returncode) + '\n')
-        if row['entry'] == 'cli' and b'Traceback (most recent call last)' in proc.stderr:
+        if (row['entry'] == 'cli' and b'Traceback (most recent call last)' in proc.stderr
+                and crashes.known_crash(row['id'], proc.stderr) is None):
             raise RuntimeError(row['id'] + ': unexpected traceback in CLI fixture: ' + proc.stderr.decode('utf-8', 'replace'))
         if (work / 'http-console.stdout').exists():
             (record / 'server.stdout').write_bytes((work / 'http-console.stdout').read_bytes())

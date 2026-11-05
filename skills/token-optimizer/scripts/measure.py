@@ -2793,6 +2793,8 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
     server_names = []
     server_scopes = {}   # name -> "user" | "project" | "plugin"
     server_sources = {}  # name -> "<file>:<key>" that first declared it
+    mcpjson_names = set()    # names declared by the project's own .mcp.json
+    other_declared = set()   # names declared by any non-.mcp.json source
     sources_read = []
     sources_skipped = []
     project_blocks_with_servers = 0
@@ -2811,7 +2813,9 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
     claude_json_blob = blob  # reused by the per-project disable filter below
     if blob is not None:
         sources_read.append(str(claude_json))
-        for name in _mcp_servers_from_blob(blob):
+        top_names = _mcp_servers_from_blob(blob)
+        other_declared.update(top_names)
+        for name in top_names:
             _add(name, "user", f"{claude_json}:mcpServers")
         projects = blob.get("projects") if isinstance(blob, dict) else None
         if isinstance(projects, dict):
@@ -2822,10 +2826,11 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
                 if not isinstance(servers, dict) or not servers:
                     continue
                 project_blocks_with_servers += 1
-                for name in servers:
-                    if isinstance(name, str) and name:
-                        _add(name, "project",
-                             f"{claude_json}:projects[{project_path}].mcpServers")
+                proj_names = [n for n in servers if isinstance(n, str) and n]
+                other_declared.update(proj_names)
+                for name in proj_names:
+                    _add(name, "project",
+                         f"{claude_json}:projects[{project_path}].mcpServers")
 
     # --- Source 2: settings.json + project-scoped config files ---
     file_scopes = [
@@ -2833,12 +2838,18 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
         (cwd / ".mcp.json", "project"),
         (cwd / ".claude" / "settings.json", "project"),
     ]
+    project_mcp_json = cwd / ".mcp.json"
     for config_path, scope in file_scopes:
         blob = _mcp_read_json(config_path, sources_skipped)
         if blob is None:
             continue
         sources_read.append(str(config_path))
-        for name in _mcp_servers_from_blob(blob):
+        names = _mcp_servers_from_blob(blob)
+        if config_path == project_mcp_json:
+            mcpjson_names.update(names)
+        else:
+            other_declared.update(names)
+        for name in names:
             _add(name, scope, f"{config_path}:mcpServers")
 
     # --- Source 3: plugin-provided servers ---
@@ -2850,6 +2861,7 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
         if not names:
             continue  # e.g. a plugin.json with no mcpServers key
         sources_read.append(str(config_path))
+        other_declared.update(names)
         for name in names:
             _add(name, "plugin", f"{config_path}:mcpServers")
 
@@ -2862,6 +2874,8 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
     # separator-insensitively so Windows spellings (C:\ vs c:/, Git Bash
     # /c/...) still match.
     disabled_for_project = []
+    pending_project_approval = []
+    best_cfg = None
     if isinstance(claude_json_blob, dict):
         projects = claude_json_blob.get("projects")
         if isinstance(projects, dict):
@@ -2883,7 +2897,6 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
             except Exception:
                 cwd_parts = ""
             best_key = None
-            best_cfg = None
             for project_path, project_cfg in projects.items():
                 if not isinstance(project_cfg, dict):
                     continue
@@ -2904,6 +2917,64 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
                             server_scopes.pop(name, None)
                             server_sources.pop(name, None)
                             disabled_for_project.append(name)
+
+    # --- .mcp.json approval gate (settings-level keys) ---
+    # A server declared ONLY in the project's .mcp.json connects only after
+    # approval: interactive choices persist in ~/.claude.json
+    # projects.<path>.{enabled,disabled}McpjsonServers, and the settings chain
+    # (user settings.json, project settings.json, project settings.local.json)
+    # carries enabledMcpjsonServers / disabledMcpjsonServers /
+    # enableAllProjectMcpServers. A disabledMcpjsonServers entry in ANY
+    # settings file rejects the server; enableAllProjectMcpServers approves
+    # every .mcp.json server (closest scope wins for the boolean). An approved
+    # server counts; an unapproved one is pending approval and contributes no
+    # tools, so it is not counted. A name that also appears in another source
+    # has a different load path and is not gated.
+    mcpjson_only = mcpjson_names - other_declared
+    if mcpjson_only:
+        disabled_mcpjson = set()
+        enabled_mcpjson = set()
+        enable_all = None
+
+        def _collect_mcpjson_keys(blob):
+            nonlocal enable_all
+            if not isinstance(blob, dict):
+                return
+            disabled = blob.get("disabledMcpjsonServers")
+            if isinstance(disabled, list):
+                disabled_mcpjson.update(n for n in disabled if isinstance(n, str) and n)
+            enabled = blob.get("enabledMcpjsonServers")
+            if isinstance(enabled, list):
+                enabled_mcpjson.update(n for n in enabled if isinstance(n, str) and n)
+            flag = blob.get("enableAllProjectMcpServers")
+            if isinstance(flag, bool):
+                enable_all = flag
+
+        for settings_path in (
+            claude_dir / "settings.json",
+            cwd / ".claude" / "settings.json",
+            cwd / ".claude" / "settings.local.json",
+        ):
+            _collect_mcpjson_keys(_mcp_read_json(settings_path, sources_skipped))
+        # The per-project record in ~/.claude.json is the most specific scope.
+        _collect_mcpjson_keys(best_cfg)
+
+        approve_all = enable_all is True
+        for name in list(server_names):
+            if name not in mcpjson_only:
+                continue
+            if name in disabled_mcpjson:
+                seen_names.discard(name)
+                server_names.remove(name)
+                server_scopes.pop(name, None)
+                server_sources.pop(name, None)
+                disabled_for_project.append(name)
+            elif not approve_all and name not in enabled_mcpjson:
+                seen_names.discard(name)
+                server_names.remove(name)
+                server_scopes.pop(name, None)
+                server_sources.pop(name, None)
+                pending_project_approval.append(name)
 
     server_count = len(server_names)
 
@@ -2935,6 +3006,7 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
         "server_scopes": server_scopes,
         "server_sources": server_sources,
         "disabled_for_project": disabled_for_project,
+        "pending_project_approval": pending_project_approval,
         "project_blocks_with_servers": project_blocks_with_servers,
         "sources_read": sources_read,
         "sources_skipped": sources_skipped,
@@ -3469,6 +3541,7 @@ def measure_components():
         "server_scopes": mcp["server_scopes"],
         "server_sources": mcp["server_sources"],
         "disabled_for_project": mcp["disabled_for_project"],
+        "pending_project_approval": mcp["pending_project_approval"],
         "sources_read": mcp["sources_read"],
         "sources_skipped": mcp["sources_skipped"],
         "account_connectors": mcp["account_connectors"],

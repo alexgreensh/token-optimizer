@@ -39,7 +39,7 @@ What should we tackle first?
 ## Dashboard Generation
 
 ```bash
-"$PY" $MEASURE_PY dashboard --coord-path $COORD_PATH
+"$PY" "$MEASURE_PY" dashboard --coord-path "$COORD_PATH"
 ```
 
 Tell the user: "Dashboard opened in your browser. Browse findings by category, check the optimizations you want, click Copy Prompt and paste back here. Or just tell me directly what to tackle."
@@ -64,7 +64,7 @@ Your persistent dashboard (auto-updated every session):
   File:   <read from `measure.py dashboard` output, line beginning `  Dashboard: `>
 ```
 Never hardcode the file path. It is install-dependent, so cite the path the command actually printed.
-On macOS only, suggest: "Want a bookmarkable URL? Run: `"$PY" $MEASURE_PY setup-daemon`"
+On macOS only, suggest: "Want a bookmarkable URL? Run: `"$PY" "$MEASURE_PY" setup-daemon`"
 Do NOT mention `localhost:24842` if daemon is not running.
 
 For headless/remote: user can run `dashboard --serve` separately. Never use `--serve` from within the orchestrator (it blocks with `serve_forever`).

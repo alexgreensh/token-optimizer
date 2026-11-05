@@ -140,6 +140,112 @@ def test_project_override_reenables_user_disabled_plugin(tmp_path):
     assert "playwright" in result["server_names"]
 
 
+# ---------- .mcp.json approval gates (#302 follow-up) ----------
+#
+# A server declared ONLY in the project's .mcp.json connects only after
+# approval: interactive choices persist in ~/.claude.json
+# projects.<path>.{enabled,disabled}McpjsonServers, and the settings chain
+# carries enabledMcpjsonServers / disabledMcpjsonServers /
+# enableAllProjectMcpServers (user settings.json, project settings.json,
+# project settings.local.json). A disabledMcpjsonServers entry in ANY settings
+# file rejects the server; enableAllProjectMcpServers approves every .mcp.json
+# server. A pending server contributes no tools to context, so it must not be
+# counted; a rejected one must not either.
+
+def _project_mcp_json(cwd, *names):
+    return _write_json(cwd / ".mcp.json", {"mcpServers": {n: {"command": n} for n in names}})
+
+
+def test_mcpjson_pending_without_any_approval(tmp_path):
+    """Declared but never approved: a pending .mcp.json server is not in context."""
+    home, claude_dir, cwd = _rig(tmp_path)
+    _project_mcp_json(cwd, "alpha")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert "alpha" not in result["server_names"]
+    assert result["pending_project_approval"] == ["alpha"]
+
+
+def test_mcpjson_enabled_by_project_settings_local(tmp_path):
+    home, claude_dir, cwd = _rig(tmp_path)
+    _project_mcp_json(cwd, "alpha", "beta")
+    _write_json(cwd / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["alpha"]})
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert result["server_names"] == ["alpha"]
+    assert result["pending_project_approval"] == ["beta"]
+
+
+def test_mcpjson_disabled_by_user_settings_rejects(tmp_path):
+    """disabledMcpjsonServers in ANY settings file rejects, even with enable-all."""
+    home, claude_dir, cwd = _rig(tmp_path)
+    _write_json(claude_dir / "settings.json",
+                {"enableAllProjectMcpServers": True, "disabledMcpjsonServers": ["alpha"]})
+    _project_mcp_json(cwd, "alpha", "beta")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert result["server_names"] == ["beta"]
+    assert result["disabled_for_project"] == ["alpha"]
+
+
+def test_enable_all_project_mcp_servers_approves_everything(tmp_path):
+    home, claude_dir, cwd = _rig(tmp_path)
+    _write_json(claude_dir / "settings.json", {"enableAllProjectMcpServers": True})
+    _project_mcp_json(cwd, "alpha", "beta")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert sorted(result["server_names"]) == ["alpha", "beta"]
+    assert result["pending_project_approval"] == []
+
+
+def test_claude_json_project_block_approval_counts(tmp_path):
+    """Interactive approval persists per-project in ~/.claude.json."""
+    proj = tmp_path / "proj"
+    home, claude_dir, cwd = _rig(tmp_path, {
+        "projects": {str(proj): {"enabledMcpjsonServers": ["alpha"]}},
+    })
+    _project_mcp_json(cwd, "alpha", "beta")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert result["server_names"] == ["alpha"]
+    assert result["pending_project_approval"] == ["beta"]
+
+
+def test_claude_json_project_block_disable_rejects(tmp_path):
+    proj = tmp_path / "proj"
+    home, claude_dir, cwd = _rig(tmp_path, {
+        "projects": {str(proj): {"disabledMcpjsonServers": ["alpha"]}},
+    })
+    _write_json(claude_dir / "settings.json", {"enableAllProjectMcpServers": True})
+    _project_mcp_json(cwd, "alpha", "beta")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert result["server_names"] == ["beta"]
+    assert result["disabled_for_project"] == ["alpha"]
+
+
+def test_mcpjson_name_with_other_source_not_gated(tmp_path):
+    """A name also declared as a user server has another load path: not gated."""
+    home, claude_dir, cwd = _rig(tmp_path, {"mcpServers": {"alpha": {"command": "a"}}})
+    _project_mcp_json(cwd, "alpha", "beta")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert "alpha" in result["server_names"]
+    assert result["server_scopes"]["alpha"] == "user"
+    assert "beta" not in result["server_names"]
+
+
+def test_enable_all_closest_scope_wins(tmp_path):
+    """Project settings.local.json overrides user settings for the boolean."""
+    home, claude_dir, cwd = _rig(tmp_path)
+    _write_json(claude_dir / "settings.json", {"enableAllProjectMcpServers": True})
+    _write_json(cwd / ".claude" / "settings.local.json", {"enableAllProjectMcpServers": False})
+    _project_mcp_json(cwd, "alpha")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert "alpha" not in result["server_names"]
+
+
+def test_non_mcpjson_servers_unaffected_by_gate(tmp_path):
+    """User/plugin servers never needed .mcp.json approval and still count."""
+    home, claude_dir, cwd = _rig(tmp_path, {"mcpServers": {"github": {"command": "npx"}}})
+    _project_mcp_json(cwd, "alpha")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert result["server_names"] == ["github"]
+
+
 # ---------- honest labelling ----------
 
 def test_server_instructions_not_measured(tmp_path):

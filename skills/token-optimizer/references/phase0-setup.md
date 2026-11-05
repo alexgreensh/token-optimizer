@@ -21,7 +21,7 @@ Keep this quick, one question max.
 
 ## Quick Pre-Check
 
-Run `"$PY" $MEASURE_PY report`.
+Run `"$PY" "$MEASURE_PY" report`.
 If estimated controllable tokens < 1,000 and no CLAUDE.md exists, short-circuit:
 ```
 [Token Optimizer] Your setup is already minimal (~X tokens overhead).
@@ -63,7 +63,7 @@ mkdir -p "$COORD_PATH"/{audit,analysis,plan,verification}
 ## SessionEnd Hook Check
 
 ```bash
-"$PY" $MEASURE_PY check-hook
+"$PY" "$MEASURE_PY" check-hook
 ```
 - Exit 0: already installed, skip to Phase 1.
 - Exit 1 (manual/script install users only): explain and offer to install:
@@ -125,7 +125,7 @@ On Linux/BSD: skip silently, mention `file://` URL works.
 ## Smart Compaction Check
 
 ```bash
-"$PY" $MEASURE_PY setup-smart-compact --status
+"$PY" "$MEASURE_PY" setup-smart-compact --status
 ```
 - All 4 hooks installed: skip entirely.
 - Partially or not installed: explain and offer:
@@ -139,4 +139,4 @@ Remove anytime: "$PY" "$MEASURE_PY" setup-smart-compact --uninstall
 
 Ask user: 1) Install (dry-run first), 2) Show JSON first, 3) Skip
 
-Output: `[Token Optimizer Initialized] Backup: $BACKUP_DIR | Coordination: $COORD_PATH`
+Output: `[Token Optimizer Initialized] Backup: {BACKUP_DIR} | Coordination: {COORD_PATH}`

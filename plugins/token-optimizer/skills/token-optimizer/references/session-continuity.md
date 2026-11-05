@@ -13,7 +13,7 @@ work, check what we discussed last session"), the continuity hook reconstructs a
 - **Savings** are credited as a realized `resume_lean` event (avoided cold-resume
   cache-rewrite minus the lean block), idempotent per target session, shown in the
   Savings view. Realized tier, same as `checkpoint_restore`.
-- **Manual fallback**: `"$PY" $MEASURE_PY resume-lean` lists cold sessions;
+- **Manual fallback**: `"$PY" "$MEASURE_PY" resume-lean` lists cold sessions;
   `resume-lean <#|session_id> --print` emits the block for `claude "$(...)"`.
 - Ported across Claude Code, Codex, OpenClaw, opencode (checkpoint richness varies
   by platform; the lean block adapts to available fields).

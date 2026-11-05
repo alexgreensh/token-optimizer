@@ -180,7 +180,7 @@ Estimated savings: ~X tokens
 Handled in Phase 0 setup. If the user skipped it there, offer again here:
 
 ```bash
-"$PY" $MEASURE_PY check-hook
+"$PY" "$MEASURE_PY" check-hook
 ```
 
 If not installed, run `setup-hook --dry-run` to show the proposed change, then `setup-hook` after confirmation. The hook runs `measure.py collect --quiet` once per session close (~1 second, zero background processes).
@@ -324,7 +324,7 @@ Add or improve model routing instructions in CLAUDE.md.
    - opus: architecture decisions, novel debugging, cross-cutting synthesis
    ```
 3. If routing instructions exist, compare against actual model_mix usage:
-   - Run `"$PY" $MEASURE_PY trends --json --days 30` if trends DB exists
+   - Run `"$PY" "$MEASURE_PY" trends --json --days 30` if trends DB exists
    - Are subagents actually following the routing? (check model_mix percentages)
    - Is the instruction specific enough? ("default to haiku" vs detailed task-to-model table)
    - If >70% of tokens go to Opus despite routing instructions, the instructions may be too vague
@@ -348,7 +348,7 @@ Check the user's Claude Code version (`claude --version`) and apply version-spec
 **v2.1.86+: Read tool native deduplication**
 - Claude Code deduplicates unchanged re-reads natively (compact line-number format)
 - If Token Optimizer's `read_cache.py` PreToolUse hook is installed, it is redundant on v2.1.86+
-- Check: run `"$PY" $MEASURE_PY read-cache-stats --session current`. If "blocks: 0" for recent sessions, native dedup is handling it.
+- Check: run `"$PY" "$MEASURE_PY" read-cache-stats --session current`. If "blocks: 0" for recent sessions, native dedup is handling it.
 - Action: Disable the read-cache hook (`TOKEN_OPTIMIZER_READ_CACHE=0` in settings.json env block) to eliminate hook process overhead
 
 **v2.1.86+: @ file mentions no longer JSON-escaped**
@@ -413,4 +413,4 @@ Check the user's Claude Code version (`claude --version`) and apply version-spec
 | User says 'skip verification' | "Noted. Skipping verification. Recommend running /cost before and after to measure actual savings." |
 | Backup is empty/missing | "Backup directory appears empty. This could mean a fresh setup or a write failure. Proceeding without backup, but will not modify any files without explicit user confirmation for each change." |
 | File write fails mid-implementation | "Write failed for [file]. Restoring from backup. Check disk space and permissions." Present the restore command from the Restoring Backups section. |
-| Synthesis output missing | "Synthesis agent did not produce output. Showing raw audit findings instead." Present the individual audit files from `$COORD_PATH/audit/` for user review. |
+| Synthesis output missing | "Synthesis agent did not produce output. Showing raw audit findings instead." Present the individual audit files from {COORD_PATH}/audit/ for user review. |

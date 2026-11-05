@@ -71,7 +71,7 @@ export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
 
 2. Run (use the resolved `$RUNTIME` — never hardcode a runtime; under OpenCode this
    keeps measurement scoped to the OpenCode session and never writes to `~/.claude`):
-   - Claude Code plugin: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" $MEASURE_PY quick --json`
+   - Claude Code plugin: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" "$MEASURE_PY" quick --json`
    - Codex / OpenCode / standalone: `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" bash "$TO_LAUNCHER" "$MEASURE_PY" quick --json`
      (only if `$TO_LAUNCHER` is empty, fall back to `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" python3 "$MEASURE_PY" quick --json` — the bare-python3 form flashes a console window on Windows)
 

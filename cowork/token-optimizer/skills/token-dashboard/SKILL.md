@@ -9,7 +9,7 @@ Answers what a session cost from the user's own words, and opens an up-to-date d
 
 ## Instructions
 
-1. **Resolve runtime and measure.py path**:
+1. **Resolve runtime and measure.py path** (each Bash call is a fresh shell, so env vars do not persist: the block echoes the resolved values, and every later command must use them verbatim):
 ```bash
 RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
 if [ -z "$RUNTIME" ]; then
@@ -78,6 +78,11 @@ for _py in $_py_candidates; do
 done
 if [ -z "$PY" ]; then echo "[Error] Python 3.9+ not found (the Windows Store python3 stub does not count). Install Python, then retry."; exit 1; fi
 export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
+
+# Separate Bash calls do not share shell state: copy these into every later command.
+echo "RUNTIME=$RUNTIME"
+echo "MEASURE_PY=$MEASURE_PY"
+echo "PY=$PY"
 ```
 
 2. **A cost question** ("what did the Garden session yesterday cost?", "how much were my TR sync sessions?", "cost of session <id>"): run this instead of steps 3-4.
@@ -104,7 +109,7 @@ This collects the latest session data into the trends database, regenerates the 
 4. **Tell the user** the dashboard is open. Probe the daemon before mentioning any URL:
    - Probe daemon: `"$PY" "$MEASURE_PY" daemon-status 2>/dev/null`
    - If DAEMON_RUNNING: lead with `URL: http://localhost:24842/token-optimizer` (bookmarkable, auto-updates), then mention the file fallback.
-   - If DAEMON_NOT_RUNNING: do not print the `localhost:24842` URL. Tell the user the dashboard opened as a file, and suggest `"$PY" $MEASURE_PY setup-daemon` (macOS and Windows) if they want a bookmarkable URL.
+   - If DAEMON_NOT_RUNNING: do not print the `localhost:24842` URL. Tell the user the dashboard opened as a file, and suggest `"$PY" "$MEASURE_PY" setup-daemon` (macOS and Windows) if they want a bookmarkable URL.
    - File path: never hardcode it. It is install-dependent. Cite the `  Dashboard: ` line from the step-3 output.
    - For Codex when DAEMON_NOT_RUNNING: do not imply the Claude daemon is required; the generated file works, and Stop hooks refresh it when balanced hooks are installed.
 

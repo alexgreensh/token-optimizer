@@ -11,44 +11,30 @@ Token Optimizer's own skills (`token-optimizer`, `token-coach`, `token-dashboard
 
 ## 1. Collect the data
 
-Run exactly this first. It finds the newest installed copy, so a stale plugin cache never answers:
+Run exactly this first. It finds the newest installed copy, so a stale plugin cache never answers. Each Bash call is a fresh shell, so env vars do not persist: the block echoes the resolved values, and every later command must use them verbatim.
 
 ```bash
 RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
 if [ -z "$RUNTIME" ]; then
-  if [ -n "$CLAUDE_PLUGIN_ROOT" ] || [ -n "$CLAUDE_PLUGIN_DATA" ]; then
-    RUNTIME="claude"
-  elif [ -n "$OPENCODE" ] || [ -n "$OPENCODE_BIN" ] || [ -n "$OPENCODE_CONFIG_DIR" ] || [ -n "$OPENCODE_CONFIG" ]; then
-    RUNTIME="opencode"
-  elif [ -n "$CODEX_HOME" ]; then
-    RUNTIME="codex"
-  # Explicit config-dir env of another harness: same tier as Python's
-  # detect_runtime() (above CLAUDECODE, which every Claude Code child inherits).
-  elif [ -n "$HERMES_HOME" ]; then
-    RUNTIME="hermes"
-  elif [ -n "$COPILOT_HOME" ] || [ -n "$TOKEN_OPTIMIZER_COPILOT_HOME" ]; then
-    RUNTIME="copilot"
-  elif [ -n "$TOKEN_OPTIMIZER_CURSOR_HOME" ]; then
-    RUNTIME="cursor"
-  elif [ -n "$TOKEN_OPTIMIZER_ANTIGRAVITY_HOME" ]; then
-    RUNTIME="antigravity"
-  elif [ -n "$GROK_HOME" ] || [ -n "$TOKEN_OPTIMIZER_GROK_HOME" ]; then
-    RUNTIME="grok"
-  elif [ -n "$CLAUDECODE" ] || [ -n "$CLAUDE_CODE_ENTRYPOINT" ] || [ -n "$CLAUDE_CODE_SESSION_ID" ]; then
-    RUNTIME="claude"
-  elif [ -d "$HOME/.config/opencode" ] && [ ! -d "$HOME/.codex" ]; then
-    RUNTIME="opencode"
-  elif [ -d "$HOME/.codex" ]; then
-    RUNTIME="codex"
-  else
-    RUNTIME="claude"
+  # Harness config-dir env sits above CLAUDECODE, which every Claude Code child inherits.
+  if [ -n "$CLAUDE_PLUGIN_ROOT" ] || [ -n "$CLAUDE_PLUGIN_DATA" ]; then RUNTIME="claude"
+  elif [ -n "$OPENCODE" ] || [ -n "$OPENCODE_BIN" ] || [ -n "$OPENCODE_CONFIG_DIR" ] || [ -n "$OPENCODE_CONFIG" ]; then RUNTIME="opencode"
+  elif [ -n "$CODEX_HOME" ]; then RUNTIME="codex"
+  elif [ -n "$HERMES_HOME" ]; then RUNTIME="hermes"
+  elif [ -n "$COPILOT_HOME" ] || [ -n "$TOKEN_OPTIMIZER_COPILOT_HOME" ]; then RUNTIME="copilot"
+  elif [ -n "$TOKEN_OPTIMIZER_CURSOR_HOME" ]; then RUNTIME="cursor"
+  elif [ -n "$TOKEN_OPTIMIZER_ANTIGRAVITY_HOME" ]; then RUNTIME="antigravity"
+  elif [ -n "$GROK_HOME" ] || [ -n "$TOKEN_OPTIMIZER_GROK_HOME" ]; then RUNTIME="grok"
+  elif [ -n "$CLAUDECODE" ] || [ -n "$CLAUDE_CODE_ENTRYPOINT" ] || [ -n "$CLAUDE_CODE_SESSION_ID" ]; then RUNTIME="claude"
+  elif [ -d "$HOME/.config/opencode" ] && [ ! -d "$HOME/.codex" ]; then RUNTIME="opencode"
+  elif [ -d "$HOME/.codex" ]; then RUNTIME="codex"
+  else RUNTIME="claude"
   fi
 fi
 
 # Resolve measure.py to the NEWEST installed copy across channels so a stale
-# plugin-cache copy never shadows a fresh install. find -L follows the
-# install.sh symlink under ~/.claude/skills; cd -P resolves it before reading each
-# copy's plugin.json for its version. find (not bare globs) never errors under zsh.
+# plugin-cache copy never shadows a fresh install (find -L follows the
+# install.sh symlink; cd -P resolves it before reading each copy's plugin.json).
 MEASURE_PY=""; _best_ver=""
 while IFS= read -r _cand; do
   [ -f "$_cand" ] || continue
@@ -64,10 +50,8 @@ EOF
 if [ -z "$MEASURE_PY" ] || [ ! -f "$MEASURE_PY" ]; then echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; fi
 
 # Resolve an interpreter that really runs Python. On native-Windows Git Bash
-# `python3` is often the Microsoft Store alias stub, which prints "Python was
-# not found" instead of running -- and a gate piped to `head` then looks like
-# a pass (#301). Probe `python` first there, `python3` first elsewhere, and
-# accept only a clean >=3.9 version reply (same ladder install.sh uses).
+# `python3` is often the Microsoft Store alias stub, which fails silently under
+# a pipe (#301). Probe `python` first there, `python3` first elsewhere; require >=3.9.
 PY=""; _py_candidates="python3 python"
 case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) _py_candidates="python python3" ;; esac
 for _py in $_py_candidates; do
@@ -84,6 +68,12 @@ export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
 # The coach files ship beside measure.py, so they are always the same version.
 COACH_DIR="$(cd -P -- "$(dirname -- "$MEASURE_PY")/../../token-coach" 2>/dev/null && pwd)"
 [ -d "$COACH_DIR/references" ] || echo "[Error] token-coach references not found beside $MEASURE_PY. Reinstall Token Optimizer."
+
+# Separate Bash calls do not share shell state: copy these into every later command.
+echo "RUNTIME=$RUNTIME"
+echo "MEASURE_PY=$MEASURE_PY"
+echo "PY=$PY"
+echo "COACH_DIR=$COACH_DIR"
 ```
 
 Then gather, skipping any command that fails (older installs lack some):

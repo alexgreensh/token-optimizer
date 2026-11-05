@@ -71,7 +71,7 @@ export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
 
 2. Run (use the resolved `$RUNTIME` — never hardcode a runtime; under OpenCode this
    keeps the session scan scoped to OpenCode and never reaches into `~/.claude`):
-   - Claude Code plugin: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" $MEASURE_PY health`
+   - Claude Code plugin: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" "$MEASURE_PY" health`
    - Codex / OpenCode / standalone: `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" bash "$TO_LAUNCHER" "$MEASURE_PY" health`
      (only if `$TO_LAUNCHER` is empty, fall back to `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" python3 "$MEASURE_PY" health` — the bare-python3 form flashes a console window on Windows)
 
@@ -87,7 +87,7 @@ export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
    - ORPHAN (macOS and Linux only) is a fourth, explicit class: an interactive session whose terminal died. It needs exact argv, no headless flag or subcommand, no controlling TTY, init (pid 1 or `systemd --user`) as parent, and a binary that is not an Electron app; anything short of that stays UNVERIFIED. A launchd/systemd automation that carries `-p`/`--print` is DESKTOP, not ORPHAN. `kill-stale` never terminates orphans by default: it prints how many there are and the exact command. Only if the user asks to clean them up, preview with `kill-stale --include-orphans --dry-run` (same `--hours` threshold), show the list, get explicit confirmation, then run `kill-stale --include-orphans`. Each orphan is re-verified right before its kill (same pid, same start time, still orphan). Windows has no ORPHAN class. Do not suggest killing them by PID; point the user to the app itself or the operating system's process manager.
    - Let the user pick specific PIDs to terminate, or offer "terminate all ZOMBIE-flagged sessions" as a batch option.
    - Always run a dry-run first to preview what would be terminated, then ask for confirmation before running without `--dry-run`.
-   - Claude Code plugin dry-run: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" $MEASURE_PY kill-stale --dry-run`
+   - Claude Code plugin dry-run: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" "$MEASURE_PY" kill-stale --dry-run`
    - Codex / OpenCode / standalone dry-run: `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" bash "$TO_LAUNCHER" "$MEASURE_PY" kill-stale --dry-run`
      (only if `$TO_LAUNCHER` is empty, fall back to `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" python3 "$MEASURE_PY" kill-stale --dry-run`)
    - If the user says "kill all" or similar, still show the dry-run preview and confirm. No silent kills.

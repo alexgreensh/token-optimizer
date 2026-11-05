@@ -499,12 +499,18 @@ This isn't just storage. The system tracks how many results were archived vs re-
 python3 measure.py expand --list          # List archived tool results
 python3 measure.py expand <tool-use-id>   # Retrieve a specific result
 python3 measure.py expand --search <query>  # Search archived results by keyword/lineage
+python3 measure.py expand <id> --lines 50:120        # Just lines 50-120 of the archive
+python3 measure.py expand <id> --start 4000 --chars 2000  # A 2KB char window
+python3 measure.py expand <id> --match "ERROR" --context 3  # Context windows around matches
 ```
 
 `expand --search` runs a full-text search (FTS5 with a `LIKE` fallback) over
-archived tool outputs, including the full response body, tool name, command,
-source file path, language, and archive origin. Each match prints the key,
-lineage, and a snippet. Use `expand <key>` to retrieve the full content.
+the entire archived response body — not just a prefix — plus tool name,
+command, source file path, language, and archive origin. Each hit prints the
+key, lineage, capture time, content hash, total length, truncation state, and
+a snippet. `expand <key>` still returns the full stored output; the bounded
+flags above return only the requested window, print a command for the next
+window, and debit re-expansion savings only for the tokens actually returned.
 
 Some MCP tools are *documented* to return large verbatim payloads (source fetchers, doc retrievers) where a metadata preview defeats the point. Allowlist those so their full result reaches context instead of being replaced (it's still archived, so `expand` works). Set a comma-separated list of `fnmatch` globs matched against the full tool name:
 

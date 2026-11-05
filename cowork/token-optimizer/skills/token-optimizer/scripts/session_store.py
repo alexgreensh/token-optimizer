@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS tool_outputs (
     source_file_path TEXT,
     language TEXT,
     archived_from TEXT,
-    output_text TEXT
+    output_text TEXT,
+    truncated INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS command_outputs (
@@ -276,10 +277,16 @@ class SessionStore:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(tool_outputs)").fetchall()}
         except sqlite3.DatabaseError:
             return
-        for col in ("source_file_path", "language", "archived_from", "output_text"):
+        for col, decl in (
+            ("source_file_path", "TEXT"),
+            ("language", "TEXT"),
+            ("archived_from", "TEXT"),
+            ("output_text", "TEXT"),
+            ("truncated", "INTEGER"),
+        ):
             if col not in cols:
                 try:
-                    conn.execute(f"ALTER TABLE tool_outputs ADD COLUMN {col} TEXT")
+                    conn.execute(f"ALTER TABLE tool_outputs ADD COLUMN {col} {decl}")
                 except sqlite3.OperationalError:
                     pass
 
@@ -648,6 +655,7 @@ class SessionStore:
         language: Optional[str] = None,
         archived_from: Optional[str] = None,
         output_text: Optional[str] = None,
+        truncated: Optional[int] = None,
     ) -> None:
         if self._is_over_size_cap():
             return
@@ -657,14 +665,16 @@ class SessionStore:
                (tool_use_id, tool_name, tool_type, command_or_path,
                 output_hash, output_chars, output_tokens_est,
                 compressed_preview, timestamp,
-                source_file_path, language, archived_from, output_text)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_file_path, language, archived_from, output_text,
+                truncated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 tool_use_id, tool_name, tool_type, command_or_path,
                 output_hash, output_chars, output_tokens_est,
                 compressed_preview, time.time(),
                 source_file_path, language, archived_from, output_text,
+                truncated,
             ),
         )
         # fix-1: the external-content FTS mirror is maintained by the AFTER
@@ -676,9 +686,10 @@ class SessionStore:
     # ----- tool_outputs search (U6: FTS5 with LIKE fallback) -----
 
     def search_tool_outputs(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
-        """Full-text search over archived tool outputs Returns rows of (tool_use_id, tool_name, command_or_path,
-        source_file_path, language, archived_from, snippet) ranked by
-        relevance. Uses FTS5 ``bm25()`` when available; falls back to a
+        """Full-text search over archived tool outputs Returns rows carrying
+        (tool_use_id, tool_name, command_or_path, source_file_path, language,
+        archived_from, output_hash, output_chars, timestamp, truncated,
+        snippet) ranked by relevance. Uses FTS5 ``bm25()`` when available; falls back to a
         bounded ``LIKE '%term%'`` query over the lineage + output_text
         columns when FTS5 is not compiled into SQLite. Never raises: an
         empty/invalid query or a missing index returns an empty list.
@@ -692,6 +703,7 @@ class SessionStore:
                 rows = conn.execute(
                     """SELECT t.tool_use_id, t.tool_name, t.command_or_path,
                               t.source_file_path, t.language, t.archived_from,
+                              t.output_hash, t.output_chars, t.timestamp, t.truncated,
                               snippet(tool_outputs_fts, 6, '>>', '<<', '...', 16) AS snippet
                        FROM tool_outputs_fts f
                        JOIN tool_outputs t ON t.rowid = f.rowid
@@ -718,6 +730,7 @@ class SessionStore:
             rows = conn.execute(
                 r"""SELECT tool_use_id, tool_name, command_or_path,
                           source_file_path, language, archived_from,
+                          output_hash, output_chars, timestamp, truncated,
                           substr(COALESCE(output_text, compressed_preview, ''), 1, 200) AS snippet
                    FROM tool_outputs
                    WHERE tool_name LIKE ? ESCAPE '\' OR command_or_path LIKE ? ESCAPE '\'

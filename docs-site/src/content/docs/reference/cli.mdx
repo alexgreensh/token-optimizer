@@ -120,7 +120,7 @@ Compression and read-cache run automatically through hooks. These commands manag
 | `read-cache-stats` | Show read-cache hit and miss stats | `--session ID` |
 | `cohorts` | Show live edit-rate per language and size cohort, re-promote a cohort, or force re-evaluation | `status`, `promote LANG:BAND`, `evaluate`, `--force`, `--json` |
 | `archive-result` | Archive a large tool result to disk. Runs automatically via PostToolUse hook. | `--quiet` |
-| `expand` | Retrieve a full archived tool result by id, or list all archives for a session | `TOOL_USE_ID`, `--list`, `--session SID`, `--search TEXT`, `--grep TEXT` |
+| `expand` | Retrieve an archived tool result by id (full output, or a bounded `--lines`/`--start`/`--chars`/`--match` window), list all archives for a session, or search them | `TOOL_USE_ID`, `--list`, `--session SID`, `--search TEXT`, `--grep TEXT`, `--lines A:B`, `--start N`, `--chars M`, `--match TEXT`, `--context N`, `--skip K` |
 | `archive-cleanup` | Delete archived results older than 24h, or all archives for a session | `[SESSION_ID]` |
 | `structure-map` | Show the structure map (skeleton, signatures, digest) that would be generated for a file | `FILE` |
 | `structure-proof` | Replay local transcripts to simulate structure-map substitution and report would-be savings | `--json`, `--torture`, `[JSONL_PATH]` |

@@ -1658,7 +1658,11 @@ def archive_result(quiet: bool = False) -> None:
             source_file_path=lineage_source_file[:500] if lineage_source_file else None,
             language=lineage_language,
             archived_from="PostToolUse",
-            output_text=safe_response[:50000],
+            # Index the whole stored response, not a prefix: `expand --search`
+            # must find matches anywhere in the archived body (the sidecar caps
+            # at 5MB, so output_text stays bounded by _ARCHIVE_MAX_SIZE).
+            output_text=safe_response,
+            truncated=1 if truncated else 0,
         )
     except Exception:
         pass

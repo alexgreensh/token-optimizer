@@ -53,6 +53,9 @@ Usage:
     python3 measure.py cleanup-duplicate-hooks --dry-run # Preview what would be removed
     python3 measure.py archive-result                  # PostToolUse hook: archive large tool results
     python3 measure.py expand TOOL_USE_ID              # Retrieve archived tool result
+    python3 measure.py expand TOOL_USE_ID --lines A:B  # Bounded window: lines A-B
+    python3 measure.py expand TOOL_USE_ID --start N --chars M  # Bounded char window
+    python3 measure.py expand TOOL_USE_ID --match TEXT # Context windows around matches
     python3 measure.py expand --list                   # List all archived results
     python3 measure.py archive-cleanup [SESSION_ID]    # Clean up archived tool results
 
@@ -42646,6 +42649,7 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
                         # while still discoverable via search.
                         output_text=summary,
                         archived_from="codex-session-backfill",
+                        truncated=1 if over_cap else 0,
                     )
                     store.insert_intel_event(tool_name, tool_use_id, summary, char_count)
                 except Exception:
@@ -42661,38 +42665,111 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
     return archived
 
 
-def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name=""):
+_REEXPAND_RANGES_RE = re.compile(r"\bchars ((?:\d+-\d+)(?:,\d+-\d+)*)\s*$")
+
+
+def _merge_char_ranges(ranges):
+    """Sort + merge overlapping/adjacent (start, end) char ranges."""
+    if not ranges:
+        return []
+    rs = sorted((min(int(s), int(e)), max(int(s), int(e))) for s, e in ranges)
+    out = [rs[0]]
+    for s, e in rs[1:]:
+        if s <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def _reexpand_detail_ranges(detail, total_chars):
+    """Char ranges a prior re-expansion debit covered, or None for a legacy row.
+
+    Legacy rows (``key`` / ``key (tool)`` with no `` chars `` spec) re-expanded
+    the WHOLE stored response, so they count as full coverage. Bounded rows
+    carry `` chars s-e[,s-e...]`` — the ranges actually returned.
+    """
+    m = _REEXPAND_RANGES_RE.search(detail or "")
+    if not m:
+        return None
+    out = []
+    for part in m.group(1).split(","):
+        s, e = part.split("-", 1)
+        s, e = int(s), int(e)
+        s = max(0, min(s, total_chars))
+        e = max(0, min(e, total_chars))
+        if e > s:
+            out.append((s, e))
+    return _merge_char_ranges(out) or None
+
+
+def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name="",
+                        content_ranges=None):
     """Record a tool_archive re-expansion as a debit (B6 integrity).
 
     An archived tool result that gets re-popped into context did not stay
     collapsed, so its eager `tool_archive` credit must be reversed. We log the
     re-popped token estimate under `tool_archive_reexpand`; `_get_savings_summary`
     treats that category as a DEBIT against `tool_archive` (floored at 0), never
-    as its own positive savings line. Deduped per (session_id, tool_use_id) so a
-    second expand of the same item never double-debits. Never raises.
+    as its own positive savings line.
+
+    ``content_ranges`` carries the (start, end) char offsets of ``response_text``
+    that were actually returned — a bounded ``expand --lines/--chars/--match``
+    debits only those tokens, while a full expand (``None``) debits the whole
+    response as before. The debit detail records the returned range set, and an
+    identical repeat expand of the same range set is deduped per
+    (session_id, tool_use_id); overlapping-but-different ranges each debit,
+    because those tokens really did re-enter context. Never raises.
     """
     try:
-        tokens = _estimate_tokens(response_text)
-        if tokens <= 0:
+        total_chars = len(response_text or "")
+        if total_chars <= 0:
             return
+        if content_ranges is None:
+            wanted = [(0, total_chars)]
+            bounded = False
+        else:
+            wanted = []
+            for s, e in content_ranges:
+                s = max(0, min(int(s), total_chars))
+                e = max(0, min(int(e), total_chars))
+                if e > s:
+                    wanted.append((s, e))
+            wanted = _merge_char_ranges(wanted)
+            bounded = True
+        if not wanted:
+            return
+        wanted_key = tuple(wanted)
         sid = sanitize_session_id(session_id) if session_id else None
         if TRENDS_DB.exists():
             conn = _init_trends_db()
             try:
-                # Dedup: skip if this exact item was already debited.
-                row = conn.execute(
-                    "SELECT 1 FROM savings_events WHERE event_type='tool_archive_reexpand' "
-                    "AND (detail = ? OR substr(detail, 1, ?) = ?) LIMIT 1",
-                    (tool_use_id, len(tool_use_id) + 2, tool_use_id + " ("),
-                ).fetchone()
+                rows = conn.execute(
+                    "SELECT detail FROM savings_events WHERE event_type='tool_archive_reexpand' "
+                    "AND (detail = ? OR substr(detail, 1, ?) = ? OR substr(detail, 1, ?) = ?)",
+                    (tool_use_id, len(tool_use_id) + 2, tool_use_id + " (",
+                     len(tool_use_id) + 1, tool_use_id + " "),
+                ).fetchall()
             finally:
                 conn.close()
-            if row:
-                return
+            for (prior_detail,) in rows:
+                prior = _reexpand_detail_ranges(prior_detail, total_chars)
+                # A legacy row (no range spec) re-expanded everything; a bounded
+                # row covers exactly the ranges it returned.
+                prior_key = tuple(prior) if prior is not None else ((0, total_chars),)
+                if prior_key == wanted_key:
+                    return
+        fresh_text = "".join(
+            response_text[s:e] for s, e in wanted)
+        tokens = _estimate_tokens(fresh_text)
+        if tokens <= 0:
+            return
         # The tool name lets the counted views treat a media re-expansion the
         # same way as its media archive row.
         name = re.sub(r"[^A-Za-z0-9_.:-]", "", str(tool_name or ""))[:120]
         detail = f"{tool_use_id} ({name})" if name else tool_use_id
+        if bounded:
+            detail += " chars " + ",".join(f"{s}-{e}" for s, e in wanted)
         _log_savings_event("tool_archive_reexpand", tokens, session_id=sid, detail=detail)
     except Exception:
         pass
@@ -42770,11 +42847,167 @@ def _cross_runtime_archive_roots(exclude):
     return roots
 
 
-def expand_archived(tool_use_id=None, session_id=None, list_all=False):
+def _expand_window_command(tool_use_id, session_dir_name, args=""):
+    """A runnable expand command for one bounded window of an archive entry.
+
+    Built on expand_command() — the same single source the archive pointer
+    uses — with the entry's own session pinned so the command resolves the
+    same archive the current lookup found (including cross-runtime fallback).
+    The session dir name goes through shell_path(): archive roots are scanned
+    by directory, so a nonstandard dir name must not leak shell syntax into a
+    printed command.
+    """
+    from refetch_fingerprint import expand_command, shell_path
+    cmd = (expand_command(tool_use_id)
+           + f" --session {shell_path(str(session_dir_name))}")
+    return cmd + (f" {args}" if args else "")
+
+
+def _expand_hit_header(data, tool_use_id, session_dir_name, response, total_lines):
+    """One-line provenance header for a bounded expand: where the hit lives,
+    when it was captured, its hash, total length and stored-truncation state."""
+    tool_name = data.get("tool_name") or "?"
+    origin = data.get("archived_from") or "?"
+    captured = str(data.get("timestamp") or "?")
+    digest = hashlib.sha256(
+        response.encode("utf-8", errors="replace")).hexdigest()[:16]
+    stored_truncated = "yes" if data.get("truncated") else "no"
+    bits = [
+        f"expand {tool_use_id}",
+        f"session={session_dir_name}",
+        f"tool={tool_name}",
+        f"origin={origin}",
+        f"captured={captured}",
+        f"sha256:{digest}",
+        f"total={len(response)} chars / {total_lines} lines",
+        f"stored_truncated={stored_truncated}",
+    ]
+    original = data.get("original_chars")
+    if original and int(original) != len(response):
+        bits.append(f"original={original} chars")
+    src = []
+    seen_labels = set()
+    for key, label in (("file_path", "file"), ("source_file_path", "file"),
+                       ("command_or_path", "cmd")):
+        value = data.get(key)
+        if value and label not in seen_labels:
+            seen_labels.add(label)
+            src.append(f"{label}={str(value)[:80]}")
+    if src:
+        bits.append("src=" + ",".join(src))
+    return "[" + " | ".join(bits) + "]"
+
+
+def _expand_bounded(data, response, tool_use_id, session_dir_name, spec):
+    """Render a bounded window of an archived response.
+
+    Returns ``(text, ranges)``: the printable output and the (start, end) char
+    offsets of ``response`` it contains, for the re-expansion debit. SystemExit
+    on an unsatisfiable spec (bad range, no match) — nothing was returned, so
+    no debit is owed.
+    """
+    from archive_window import SpecError, char_window, line_window, match_windows
+    total_chars = len(response)
+    try:
+        if spec.kind == "chars":
+            windows = [char_window(response, spec.start, spec.chars)]
+            group_total = 0
+        elif spec.kind == "lines":
+            windows = [line_window(response, spec.lines)]
+            group_total = 0
+        else:
+            windows, group_total = match_windows(
+                response, spec.pattern, context=spec.context, skip=spec.skip)
+    except SpecError as exc:
+        print(f"[Error] {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    ranges = [(w.start, w.end) for w in windows]
+    if spec.kind == "match" and not windows:
+        if group_total == 0:
+            detail = f"[no matches for /{spec.pattern}/ in {total_chars} chars]"
+        else:
+            detail = (f"[--skip {spec.skip} is past the last match group "
+                      f"({group_total} total)]")
+        header = _expand_hit_header(data, tool_use_id, session_dir_name,
+                                    response, _aw_line_count(response))
+        full_cmd = _expand_window_command(tool_use_id, session_dir_name)
+        return f"{header}\n{detail}\n[full: {full_cmd}]\n", []
+
+    header = _expand_hit_header(data, tool_use_id, session_dir_name,
+                                response, windows[0].total_lines)
+    full_cmd = _expand_window_command(tool_use_id, session_dir_name)
+
+    if spec.kind == "match":
+        out = [header]
+        shown = spec.skip + len(windows)
+        for w in windows:
+            nav = (f"[match {w.group_index}/{group_total} | "
+                   f"chars {w.start}:{w.end} of {total_chars} | "
+                   f"lines {w.line_start}:{w.line_end} of {w.total_lines}")
+            if w.clipped:
+                nav += " | clipped=yes"
+            matched = ",".join(str(n) for n in w.matched_lines[:12])
+            if len(w.matched_lines) > 12:
+                matched += ",..."
+            nav += f" | matched lines: {matched}]"
+            out.append(nav)
+            out.append(w.text)
+            if w.clipped:
+                exact = f"--start {w.start} --chars {w.end - w.start}"
+            else:
+                exact = f"--lines {w.line_start}:{w.line_end}"
+            out.append(f"[exact: {_expand_window_command(tool_use_id, session_dir_name, exact)}]")
+        if shown < group_total:
+            out.append(f"[{group_total - shown} more match group(s) not shown — "
+                       f"narrow --match or re-run with --skip {shown}]")
+        elif spec.skip:
+            out.append(f"[first {spec.skip} match group(s) skipped by --skip]")
+        out.append(f"[full: {full_cmd}]")
+        return "\n".join(out) + "\n", ranges
+
+    w = windows[0]
+    nav = [f"window chars {w.start}:{w.end} of {total_chars}",
+           f"lines {w.line_start}:{w.line_end} of {w.total_lines}"]
+    if spec.kind == "chars":
+        length = w.end - w.start
+        if w.has_prev:
+            ps = max(0, w.start - length)
+            nav.append("prev: " + _expand_window_command(
+                tool_use_id, session_dir_name,
+                f"--start {ps} --chars {w.start - ps}"))
+        if w.has_next:
+            nav.append("next: " + _expand_window_command(
+                tool_use_id, session_dir_name,
+                f"--start {w.end} --chars {length}"))
+    else:
+        count = w.line_end - w.line_start + 1
+        if w.has_prev:
+            nav.append("prev: " + _expand_window_command(
+                tool_use_id, session_dir_name,
+                f"--lines {max(1, w.line_start - count)}:{w.line_start - 1}"))
+        if w.has_next:
+            nav.append("next: " + _expand_window_command(
+                tool_use_id, session_dir_name,
+                f"--lines {w.line_end + 1}:{min(w.total_lines, w.line_end + count)}"))
+    nav.append(f"full: {full_cmd}")
+    footer = "[" + " | ".join(nav) + "]"
+    body = w.text if w.text.endswith("\n") else w.text + "\n"
+    return f"{header}\n{body}{footer}\n", ranges
+
+
+def _aw_line_count(text):
+    from archive_window import line_count
+    return line_count(text)
+
+
+def expand_archived(tool_use_id=None, session_id=None, list_all=False, window_flags=None):
     """Retrieve an archived tool result, or list all archived results.
 
     If list_all is True, prints a summary of all archived results.
-    Otherwise, searches for tool_use_id and prints the full response.
+    Otherwise, searches for tool_use_id and prints the full response — or, when
+    window_flags carries --lines/--start/--chars/--match, only the bounded
+    window that was asked for.
     """
     archive_roots = []
     for snapshot_dir in snapshot_dir_candidates():
@@ -42828,7 +43061,7 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
 
     # Search for specific tool_use_id
     if not tool_use_id:
-        print("[Error] No tool_use_id provided. Use: expand TOOL_USE_ID or expand --list", file=sys.stderr)
+        print("[Error] No tool_use_id provided. Use: expand TOOL_USE_ID, expand --search QUERY, or expand --list", file=sys.stderr)
         sys.exit(1)
 
     # A verbatim copy of an old-format archive pointer ends with ']' (the
@@ -42864,13 +43097,31 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
             data = json.loads(entry_path.read_text(encoding="utf-8"))
             response = data.get("response", "")
             if response:
-                # B6 integrity: re-popping an archived result means it did NOT
-                # stay collapsed, so reverse its tool_archive credit. Log the
-                # re-popped tokens as a debit (netted in _get_savings_summary),
-                # deduped per item so a second expand never double-debits.
-                _log_reexpand_debit(sd.name, tool_use_id, response, data.get("tool_name") or "")
-                # No added newline: expand returns the stored text as stored.
-                sys.stdout.write(response)
+                spec = None
+                if window_flags:
+                    from archive_window import SpecError, spec_from_flags
+                    try:
+                        spec = spec_from_flags(window_flags)
+                    except SpecError as exc:
+                        print(f"[Error] {exc}", file=sys.stderr)
+                        sys.exit(1)
+                if spec is None:
+                    # B6 integrity: re-popping an archived result means it did
+                    # NOT stay collapsed, so reverse its tool_archive credit.
+                    # Log the re-popped tokens as a debit (netted in
+                    # _get_savings_summary), deduped per identical range set.
+                    _log_reexpand_debit(sd.name, tool_use_id, response,
+                                        data.get("tool_name") or "")
+                    # No added newline: expand returns the stored text as stored.
+                    sys.stdout.write(response)
+                    sys.stdout.flush()
+                    return
+                out, ranges = _expand_bounded(data, response, tool_use_id,
+                                              sd.name, spec)
+                _log_reexpand_debit(sd.name, tool_use_id, response,
+                                    data.get("tool_name") or "",
+                                    content_ranges=ranges)
+                sys.stdout.write(out)
                 sys.stdout.flush()
                 return
             else:
@@ -42924,8 +43175,23 @@ def expand_search(query, session_id=None, limit=20):
         lang = r.get("language", "") or ""
         origin = r.get("archived_from", "") or ""
         snippet = (r.get("snippet", "") or "").replace("\n", " ")[:120]
+        captured = ""
+        ts = r.get("timestamp")
+        if ts:
+            try:
+                captured = datetime.fromtimestamp(
+                    float(ts), timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            except (TypeError, ValueError, OSError):
+                captured = str(ts)
+        digest = str(r.get("output_hash") or "")[:16]
+        chars = r.get("output_chars")
+        truncated = r.get("truncated")
+        trunc_s = "yes" if truncated else ("no" if truncated == 0 else "?")
         print(f"  {key}")
         print(f"    tool: {name}  origin: {origin}  lang: {lang}")
+        print(f"    captured: {captured or '?'}  hash: {digest or '?'}  "
+              f"chars: {chars if chars is not None else '?'}  "
+              f"stored_truncated: {trunc_s}")
         if cmd:
             print(f"    cmd/path: {cmd[:120]}")
         if src:
@@ -42933,7 +43199,9 @@ def expand_search(query, session_id=None, limit=20):
         if snippet:
             print(f"    snippet: {snippet}")
         print()
-    print("  Use 'expand <key>' to retrieve the full content.")
+    print("  Use 'expand <key>' for the full content, or a bounded window:")
+    print("    expand <key> --lines A:B   expand <key> --start N --chars M   "
+          "expand <key> --match TEXT [--context N]")
 
 
 def archive_cleanup(session_id=None):
@@ -63899,21 +64167,44 @@ if __name__ == "__main__":
         search_query = None
         sid = None
         tool_id = None
-        for i, a in enumerate(args[1:], start=1):
-            if a == "--session" and i + 1 < len(args):
-                sid = args[i + 1]
-            elif a == "--search" and i + 1 < len(args):
-                search_query = args[i + 1]
-            elif a == "--grep" and i + 1 < len(args):
-                search_query = args[i + 1]
-            elif a.startswith("--"):
-                continue
+        window_flags = {}
+        expand_value_flags = {"--session", "--search", "--grep",
+                              "--lines", "--start", "--chars",
+                              "--match", "--context", "--skip"}
+        i = 1
+        while i < len(args):
+            a = args[i]
+            if a in expand_value_flags:
+                if i + 1 >= len(args):
+                    print(f"[Error] {a} requires a value")
+                    sys.exit(1)
+                val = args[i + 1]
+                i += 2
+                if a == "--session":
+                    sid = val
+                elif a in ("--search", "--grep"):
+                    search_query = val
+                else:
+                    window_flags[a[2:]] = val
+            elif a == "--list":
+                i += 1
+            elif a.startswith("-"):
+                # An unrecognized flag must not fall through to a full expand:
+                # the caller asked for a bounded read and would get the whole
+                # archived output instead.
+                print(f"[Error] Unknown expand option: {a}")
+                sys.exit(1)
             elif tool_id is None and search_query is None:
                 tool_id = a
+                i += 1
+            else:
+                print(f"[Error] Unexpected expand argument: {a}")
+                sys.exit(1)
         if search_query is not None:
             expand_search(query=search_query, session_id=sid)
         else:
-            expand_archived(tool_use_id=tool_id, session_id=sid, list_all=list_all)
+            expand_archived(tool_use_id=tool_id, session_id=sid, list_all=list_all,
+                            window_flags=window_flags or None)
     elif args[0] == "archive-cleanup":
         # Clean up archived tool results
         sid = None
@@ -64078,6 +64369,10 @@ if __name__ == "__main__":
         print("  python3 measure.py session-cost --id UUID --json          # One session by id, machine-readable")
         print("  python3 measure.py expand TOOL_USE_ID                     # Retrieve archived tool result")
         print("  python3 measure.py expand TOOL_USE_ID --session SID       # Retrieve from specific session")
+        print("  python3 measure.py expand TOOL_USE_ID --lines A:B         # Bounded window: lines A-B (1-based)")
+        print("  python3 measure.py expand TOOL_USE_ID --start N --chars M # Bounded window: M chars at offset N")
+        print("  python3 measure.py expand TOOL_USE_ID --match TEXT        # Context windows around matches")
+        print("  python3 measure.py expand --search QUERY                  # Search archived results")
         print("  python3 measure.py expand --list                          # List all archived results")
         print("  python3 measure.py expand --list --session SID            # List archived results for session")
         print("  python3 measure.py archive-cleanup                        # Clean archives older than 24h")

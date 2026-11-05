@@ -81,6 +81,9 @@ What moving work off premium models saved, compared with your own mix before ins
   `generation_price_delta_usd`, never as savings.
 - **Left out:** premium models you chose (for example Fable), models with no known price,
   and usage without a token-class split.
+- **Coverage:** unsplit usage is reported separately and stays outside comparison
+  coverage. With no comparable workload, routing is unavailable. The plan card
+  discloses the excluded unsplit token count, including when routing is unavailable.
 - **Pending:** while sessions in the window still need re-measuring, routing shows
   "pending" and is not added (R13).
 

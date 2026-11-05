@@ -4280,12 +4280,17 @@ var DB = (function() {
       var rwRoutingScope = (rwRoutingKnown && isFinite(rwRoutingCoverage) && rwRoutingCoverage > 0)
         ? ' The model mix compares ' + Math.round(rwRoutingCoverage * 100) + '% of this window&rsquo;s tokens' + (rwRoutingOut.length ? '; left out: ' + esc(rwRoutingOut.join(', ')) : '') + '.'
         : '';
+      var rwRoutingUnsplit = Number(rw.routing_unsplit_tokens);
+      if (rwRoutingUnsplit > 0) {
+        rwRoutingScope += ' Left out of the model-mix comparison: ' + fn(rwRoutingUnsplit) + ' tokens without a token-class split.';
+      }
       var rwEfficiencyDetail = rwHasCostEfficiency
         ? 'A comparable session fell from <strong>' + rwMoney(rwBeforeCost) + '</strong> to <strong>' + rwMoney(rwAfterCost) + '</strong>' + (rwCostCutDisplay !== null ? ' (about ' + rwCostCutDisplay + '% cheaper)' : '') + '.'
         : rwLeverDetail;
       var rwEfficiencyMethod = rwHasCostEfficiency
         ? 'This cost-efficiency lens combines lighter context, the cache re-read cascade, and model routing.'
-        : 'Context &times;' + rw.context_multiplier + ' and ' + rwRoutingMethod + ' give a per-token throughput multiplier, shown separately from the window headroom and dollar figures.' + rwRoutingScope;
+        : 'Context &times;' + rw.context_multiplier + ' and ' + rwRoutingMethod + ' give a per-token throughput multiplier, shown separately from the window headroom and dollar figures.';
+      rwEfficiencyMethod += rwRoutingScope;
       var rwTokenFloorDetail = (rwTokenFloorPct !== null)
         ? '<div class="plain-line">About <strong>' + fn(rwSavedTokens) + '</strong> tokens never had to be sent, roughly ' + rwTokenFloorPct + '% of what would have been.</div>'
         : '';

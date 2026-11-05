@@ -155,6 +155,67 @@ def test_heavier_mix_reports_heavier_direction(m, monkeypatch):
     assert rw["routing_direction"] == "heavier"
 
 
+@pytest.mark.parametrize("split_tokens,split_class", [
+    (0, "output"), (1_000_000, "output"), (1_000_000, "cache_read")])
+def test_unsplit_usage_is_outside_the_shared_comparison(m, monkeypatch, split_tokens, split_class):
+    usage = {SONNET: {"unsplit": 1_000_000}}
+    if split_tokens:
+        usage[OPUS] = {split_class: split_tokens}
+    _workload(m, monkeypatch, usage, {"opus": 1.0})
+    recipe = m._compute_model_routing_savings(days=30)
+    rw = m.runway_snapshot(days=30)
+    coverage = split_tokens / (split_tokens + 1_000_000)
+    assert recipe["compared_share"] == coverage
+    assert recipe["unsplit_tokens"] == rw["routing_unsplit_tokens"] == 1_000_000
+    assert rw["routing_coverage"] == coverage
+    assert recipe["realized_cost_usd"] == 0
+    if split_tokens:
+        # Only split Opus work remains, so the mix is unchanged from the baseline.
+        assert recipe["evidence"] == rw["routing_state"] == "estimated"
+        assert rw["routing_multiplier"] == 1.0
+        assert recipe["standardized_baseline_cost_usd"] == recipe["standardized_actual_cost_usd"] > 0
+    else:
+        assert recipe["evidence"] == rw["routing_state"] == "unavailable"
+        assert rw["routing_multiplier"] is None
+        assert recipe["standardized_baseline_cost_usd"] == recipe["standardized_actual_cost_usd"] == 0
+    text = _card_text(rw).lower()
+    assert "without a token-class split" in text
+    assert "100% of this window" not in text
+
+
+@pytest.mark.parametrize("context_factor,routing_factor", [(1.01, 1.0096), (1.0106, 1.0094)])
+def test_visibility_gate_uses_unrounded_routing(m, monkeypatch, context_factor, routing_factor):
+    monkeypatch.setattr(m, "_runway_saved_tokens", lambda *a, **kw: (context_factor - 1) * 1_000_000)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda **kw: {
+        "state": "estimated", "factor": routing_factor})
+    rw = m.runway_snapshot(days=30)
+    if context_factor * routing_factor < 1.02:
+        assert rw is None
+    else:
+        assert rw is not None
+        assert rw["routing_multiplier"] == round(routing_factor, 3)
+
+
+@pytest.mark.parametrize("saved_tokens", [10_000, 10_400])
+def test_headline_and_bars_use_unrounded_routing(m, monkeypatch, saved_tokens):
+    monkeypatch.setattr(m, "_runway_saved_tokens", lambda *a, **kw: saved_tokens)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda **kw: {
+        "state": "estimated", "factor": 1.0096})
+    monkeypatch.setattr(m, "_weekly_full_savings", lambda **kw: {
+        "saved_usd": 20.0, "start": datetime.now().isoformat()})
+    monkeypatch.setattr(m, "_keepwarm_read_meters", lambda **kw: {
+        "available": True, "stale": False, "seven_day_pct": 83.0})
+    rw = m.runway_snapshot(days=30)
+    product = (1 + saved_tokens / 1_000_000) * 1.0096
+    assert rw["routing_multiplier"] == 1.01
+    assert rw["multiplier"] == round(product, 2)
+    assert rw["extra_work_pct"] == round((product - 1) * 100, 1)
+    window = rw["windows"][0]
+    assert window["without_used_pct"] == round(83 * product, 1)
+    assert window["without_headroom_pct"] == round(100 - 83 * product, 1)
+    assert window["headroom_multiple"] == round(17 / (100 - 83 * product), 1)
+
+
 # ------------------------------------------------------------------ render
 
 def _card_text(rw):
@@ -203,3 +264,17 @@ def test_pending_routing_renders_pending_not_a_number():
                           routing_pending_sessions=4, extra_work_pct=8.0))
     assert "pending" in text.lower() and "4 sessions" in text
     assert "null" not in text and "NaN" not in text and "undefined" not in text
+
+
+@pytest.mark.parametrize("factor,coverage,state", [(None, 0.0, "unavailable"), (1.0, 0.5, "estimated")])
+@pytest.mark.parametrize("cost_efficiency", [None, 1.2])
+def test_unsplit_exclusion_is_disclosed_even_without_a_factor(factor, coverage, state, cost_efficiency):
+    text = _card_text(_rw(routing_multiplier=factor, routing_state=state,
+                          routing_coverage=coverage, routing_unsplit_tokens=1_000_000,
+                          cost_efficiency_multiplier=cost_efficiency)).lower()
+    assert "1000000 tokens without a token-class split" in text
+    assert "left out" in text
+    if factor is None and cost_efficiency is None:
+        assert "routing unavailable" in text
+    elif factor is not None:
+        assert "compares 50%" in text

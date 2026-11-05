@@ -179,7 +179,10 @@ def test_fresh_session_nudge_message_marks_estimate(m, monkeypatch, tmp_path):
     cache = qdir / f"quality-cache-{SID}.json"
     result = {"score": 67.7, "fill_pct": 60.0, "model_context_window": 1_000_000,
               "_nudge_previous_score": 68.0}
-    msg = m._maybe_fresh_session_nudge(result, cache, {})
+    # Size-based nudges require current-context telemetry before they can fire.
+    assert m._maybe_fresh_session_nudge(result, cache, {}) is None
+    quality_data = {"context_tokens": 600_000, "model_context_window": 1_000_000}
+    msg = m._maybe_fresh_session_nudge(result, cache, quality_data)
     assert msg and "Fresh session reclaims" in msg
     assert "est" in msg  # the dollar figure is labelled an estimate
     # Per-turn + break-even phrasing, never a one-period session total.

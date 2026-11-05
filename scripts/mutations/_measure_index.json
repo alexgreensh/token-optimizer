@@ -669,5 +669,13 @@
     ],
     "edits": 1,
     "origin": "scripts/mutations/wire.py"
+  },
+  {
+    "name": "split pricing bypasses the live same-domain helper",
+    "tests": [
+      "tests/test_measure_split_compat.py::test_moved_price_lookup_uses_live_helper_and_shared_dictionary"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
   }
 ]

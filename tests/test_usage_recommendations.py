@@ -29,6 +29,7 @@ Run: python3 -m pytest tests/test_usage_recommendations.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import inspect_source as _split_inspect_source
 from helpers.measure_split import exec_source_module as _split_exec_module
 
 import inspect
@@ -710,7 +711,7 @@ def test_ensure_fresh_never_spawns_on_foreign_runtime(m, monkeypatch):
 def test_spawn_goes_through_spawn_detached_only(m):
     mod, _s, _h = m
     for fn in (mod._recs_spawn_refresh, mod._recs_ensure_fresh):
-        body = inspect.getsource(fn)
+        body = _split_inspect_source(fn)
         assert "Popen" not in body
         assert "os.system" not in body
         assert "subprocess.run" not in body

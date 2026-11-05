@@ -62,5 +62,13 @@
     "old": "            if live:\n                answer = \"%s -> %s\" % (artifact, live[0])",
     "new": "            if paths:\n                answer = \"%s -> %s\" % (artifact, (live or paths)[0])",
     "symbol": "_scheduler_job_points_elsewhere"
+  },
+  {
+    "mutation": "split pricing bypasses the live same-domain helper",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "symbol": "_get_model_cost",
+    "old": "(_measure_facade._normalize_openai_model_name,",
+    "new": "(lambda _model: None,"
   }
 ]

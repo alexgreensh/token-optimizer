@@ -4,6 +4,7 @@ import json
 import runpy
 import importlib.util
 import sys
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,17 +17,23 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def m(tmp_path):
+def m(tmp_path, monkeypatch):
     home = tmp_path / 'home é with spaces'
     home.mkdir()
     (home / '.claude').mkdir()
+    if os.environ.get('MEASURE_SPLIT_SOURCE'):
+        # BASE has no provider dependency. These are the guard's infrastructure.
+        monkeypatch.syspath_prepend(str(REPO / 'skills/token-optimizer/scripts'))
+        __import__('_measure._compat')
     with isolated_measure(env={'HOME': home, 'USERPROFILE': home,
                                'CLAUDE_CONFIG_DIR': home / '.claude',
                                'TOKEN_OPTIMIZER_SNAPSHOT_DIR': home / 'data'}) as module:
+        if os.environ.get('MEASURE_SPLIT_SOURCE'):
+            assert Path(module._get_model_cost.__code__.co_filename) == Path(os.environ['MEASURE_SPLIT_SOURCE'])
         yield module
 
 
-def test_same_domain_and_cross_domain_price_patch_and_undo(m, monkeypatch):
+def test_same_domain_and_cross_domain_price_patch_and_undo(m, monkeypatch, tmp_path):
     fake = Mock(return_value=17.25)
     original = m._get_model_cost
     with monkeypatch.context() as patch:
@@ -38,8 +45,13 @@ def test_same_domain_and_cross_domain_price_patch_and_undo(m, monkeypatch):
                                            'total_output_tokens': 3})
         assert result['current_cost'] == 17.25
         assert fake.call_count == 2
+        fake.reset_mock()
+        savings_consumer = _moved_consumer('_cost_per_session', 'savings', tmp_path)
+        assert savings_consumer(1, 0, 0, 0, {}, 'anthropic') == 17.25
+        assert fake.call_count == 1
     assert m._get_model_cost is original
     assert m._cost_from_model_breakdown({'sonnet': {'fresh_input': 2}}) != 17.25
+    assert savings_consumer(1, 0, 0, 0, {}, 'anthropic') != 17.25
 
 
 def test_moved_price_lookup_uses_live_helper_and_shared_dictionary(m, monkeypatch):
@@ -148,7 +160,7 @@ def _moved_consumer(name, domain, tmp_path):
     from helpers.measure_split import measure_source
     sys.path.insert(0, str(REPO / 'scripts'))
     import measure_split
-    body, _ = measure_split.extract_definition(measure_source(), name, domain)
+    body, _ = measure_split.extract_definition(measure_source(Path(sys.modules['measure'].__file__)), name, domain)
     path = tmp_path / (name + '_provider.py')
     path.write_text('from _measure import _compat\n' + body, encoding='utf-8')
     spec = importlib.util.spec_from_file_location(name + '_provider', path)

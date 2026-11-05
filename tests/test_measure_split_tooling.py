@@ -63,6 +63,22 @@ def work(value):
     assert 'except (TypeError, ValueError):' in moved
 
 
+def test_explicit_global_import_writes_back_to_facade():
+    from types import SimpleNamespace
+    source = '''CACHE = None
+def work():
+    global CACHE
+    from json import loads as CACHE
+    return CACHE("123")
+'''
+    active = SimpleNamespace(CACHE=None)
+    moved, _ = tooling().extract_definition(source, 'work', 'runtime')
+    namespace = {'_compat': SimpleNamespace(facade=lambda: active)}
+    exec(moved, namespace)
+    assert namespace['work']() == 123
+    assert active.CACHE('456') == 456
+
+
 def test_defaults_and_decorators_are_bound_at_original_position():
     source = '''VALUE = 7
 def decorate(fn): return fn
@@ -141,3 +157,47 @@ def test_inventory_assigns_every_definition_and_statement():
     assert all(s['module'] in m.DOMAINS for s in manifest['symbols'])
     assert manifest['provisional'] is True
     assert manifest['statements']
+
+
+def test_inspection_view_preserves_literals_and_resolves_fstrings_and_lambdas():
+    from helpers.measure_split import _inspection_text
+    source = '''def work():
+    _measure_facade = _compat.facade()
+    return f"{_measure_facade.VALUE}", "_measure_facade.VALUE", lambda: ((_measure_facade := _compat.facade()), _measure_facade.VALUE)[1], _measure_facade.__dict__.get("VALUE")
+'''
+    resolved = _inspection_text(source)
+    assert 'f"{VALUE}"' in resolved
+    assert '"_measure_facade.VALUE"' in resolved
+    assert 'lambda: VALUE' in resolved
+    assert 'globals().get("VALUE")' in resolved
+
+
+def test_cli_move_preserves_public_bytes_and_module_globals(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    scripts = tmp_path / 'payload/skills/token-optimizer/scripts'
+    shutil.copytree(REPO / 'skills/token-optimizer/scripts', scripts,
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / '.codex').mkdir()
+    env = {**os.environ, 'HOME': str(home), 'USERPROFILE': str(home),
+           'CLAUDE_CONFIG_DIR': str(home), 'CODEX_HOME': str(home / '.codex'),
+           'TOKEN_OPTIMIZER_SNAPSHOT_DIR': str(home / 'data'),
+           'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONUTF8': '1'}
+    commands = (['--version'], ['pricing-tier'], ['--runtime', 'codex', 'codex-status-line'])
+    def run(argv):
+        result = subprocess.run([sys.executable, str(scripts / 'measure.py'), *argv], env=env,
+                                cwd=home, input=b'', capture_output=True, timeout=30)
+        return result.returncode, result.stdout, result.stderr
+    before = [run(argv) for argv in commands]
+    tooling().move_cli(scripts)
+    assert tooling().resolve_symbol(scripts, '__main__').name == 'cli.py'
+    assert [run(argv) for argv in commands] == before
+    from helpers.measure_split import measure_source
+    resolved = measure_source(scripts / 'measure.py')
+    import ast
+    ast.parse(resolved)
+    assert 'elif args[0] == "compact-restore":' in resolved
+    assert 'elif args[0] == "keepwarm-scheduler":' in resolved

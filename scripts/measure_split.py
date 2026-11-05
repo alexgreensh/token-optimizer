@@ -33,6 +33,9 @@ def read_manifest(path=MANIFEST):
 def resolve_symbol(scripts, name):
     scripts = Path(scripts)
     facade = scripts / 'measure.py'
+    if name == '__main__':
+        moved = _dispatch_moved(facade, facade.stat().st_mtime_ns, facade.stat().st_size)
+        return scripts / '_measure/cli.py' if moved else facade
     if name in _definition_names(facade, facade.stat().st_mtime_ns, facade.stat().st_size):
         return facade
     owner = next(s['module'] for s in read_manifest()['symbols'] if s['name'] == name)
@@ -46,6 +49,15 @@ def resolve_symbol(scripts, name):
 def _definition_names(path, mtime_ns, size):
     return frozenset(n.name for n in ast.parse(path.read_text(encoding='utf-8')).body
                      if isinstance(n, DEFINITION))
+
+
+@lru_cache(maxsize=32)
+def _dispatch_moved(path, mtime_ns, size):
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    guard = next(n for n in tree.body if isinstance(n, ast.If) and ast.unparse(n.test) == "__name__ == '__main__'")
+    return (len(guard.body) == 1 and isinstance(guard.body[0], ast.Expr)
+            and isinstance(guard.body[0].value, ast.Call)
+            and ast.unparse(guard.body[0].value.func) == "_measure_providers['cli'].main")
 
 
 class Qualifier(ast.NodeVisitor):
@@ -62,6 +74,9 @@ class Qualifier(ast.NodeVisitor):
         self.used_tables = set()
         self.shadow = set()
         self.in_comprehension = False
+        self.class_comprehension = False
+        self.root = None
+        self.import_counter = 0
 
     def offset(self, line, column):
         # AST columns count UTF-8 bytes, string slicing counts characters.
@@ -93,7 +108,8 @@ class Qualifier(ast.NodeVisitor):
             return
         if node.id in self.shadow:
             return
-        class_scope = self.table.get_type() == 'class'
+        class_scope = (self.table.get_type() == 'class' or self.class_comprehension and
+                       self.table.get_name() in ('listcomp', 'setcomp', 'dictcomp', 'genexpr'))
         class_comp = self.in_comprehension and class_scope
         if (symbol.is_global() or class_comp) and node.id in self.globals:
             prefix = '_compat.facade().' if class_scope else '_measure_facade.'
@@ -111,6 +127,9 @@ class Qualifier(ast.NodeVisitor):
             self.generic_visit(node)
 
     def visit_FunctionDef(self, node):
+        parent = self.table
+        global_binding = (node is not self.root and node.name in self.globals
+                          and parent.lookup(node.name).is_global())
         # Nested defaults and decorators execute in the enclosing scope.
         for value in node.decorator_list + node.args.defaults + [v for v in node.args.kw_defaults if v]:
             self.visit(value)
@@ -128,8 +147,46 @@ class Qualifier(ast.NodeVisitor):
             position = self.offset(first.lineno, first.col_offset)
             text = '_measure_facade = _compat.facade()\n' + ' ' * first.col_offset
         self.edits.append((position, position, text))
+        if global_binding:
+            position = self.offset(node.end_lineno, node.end_col_offset)
+            indent = ' ' * node.col_offset
+            binding = f'\n{indent}_measure_facade.{node.name} = _compat.bind({node.name}, _measure_facade.__name__)'
+            if parent.get_type() == 'module':
+                binding += f'\n{indent}_measure_facade.{node.name}.__qualname__ = {node.name!r}'
+            binding += f'\n{indent}del {node.name}'
+            self.edits.append((position, position, binding))
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def imports(self, node):
+        replacements = []
+        changed = False
+        for alias in node.names:
+            name = alias.asname or alias.name.split('.')[0]
+            global_binding = name in self.globals and self.table.lookup(name).is_global()
+            if not global_binding:
+                if isinstance(node, ast.Import):
+                    replacements.append('import ' + ast.unparse(alias))
+                else:
+                    replacements.append('from ' + '.' * node.level + (node.module or '') + ' import ' + ast.unparse(alias))
+                continue
+            changed = True
+            temporary = '_measure_import_' + str(self.import_counter)
+            self.import_counter += 1
+            if isinstance(node, ast.Import):
+                # An unaliased dotted import binds the root package.
+                if '.' in alias.name and alias.asname is None:
+                    replacements += ['import ' + alias.name, f'_measure_facade.{name} = {name}', 'del ' + name]
+                    continue
+                replacements.append('import ' + alias.name + ' as ' + temporary)
+            else:
+                replacements.append('from ' + '.' * node.level + (node.module or '') + ' import ' + alias.name + ' as ' + temporary)
+            replacements += [f'_measure_facade.{name} = {temporary}', 'del ' + temporary]
+        if changed:
+            self.replace(node, '; '.join(replacements))
+
+    visit_Import = imports
+    visit_ImportFrom = imports
 
     def visit_Lambda(self, node):
         for value in node.args.defaults + [v for v in node.args.kw_defaults if v]:
@@ -150,6 +207,8 @@ class Qualifier(ast.NodeVisitor):
         self.visit(node.generators[0].iter)
         previous = self.table
         previous_shadow, previous_comp = self.shadow, self.in_comprehension
+        previous_class_comp = self.class_comprehension
+        self.class_comprehension = previous_class_comp or previous.get_type() == 'class'
         try:
             self.table = self.child(node, name)
         except ValueError:
@@ -169,6 +228,7 @@ class Qualifier(ast.NodeVisitor):
                 self.visit(getattr(node, field))
         self.table = previous
         self.shadow, self.in_comprehension = previous_shadow, previous_comp
+        self.class_comprehension = previous_class_comp
 
     def visit_ListComp(self, node): self.comprehension(node, 'listcomp')
     def visit_SetComp(self, node): self.comprehension(node, 'setcomp')
@@ -186,6 +246,7 @@ def extract_definition(source, name, module, *, tree=None, table=None):
                            for name in statement.names})
     import copy
     node = copy.deepcopy(node)
+    qualifier.root = node
     decorators = node.decorator_list
     node.decorator_list = []
     defaults = list(node.args.defaults) if hasattr(node, 'args') else []
@@ -240,14 +301,47 @@ def move(scripts, names):
     path.write_text(''.join(lines), encoding='utf-8')
 
 
+def move_cli(scripts):
+    """The dispatch retains module-global assignments and conditional exports."""
+    scripts = Path(scripts)
+    path = scripts / 'measure.py'
+    source = path.read_text(encoding='utf-8')
+    tree = ast.parse(source)
+    guard = next(n for n in tree.body if isinstance(n, ast.If) and ast.unparse(n.test) == "__name__ == '__main__'")
+    top = symtable.symtable(source, str(path), 'exec')
+    qualifier = Qualifier(source, top, {s.get_name() for s in top.get_symbols() if s.is_assigned() or s.is_imported()})
+    for statement in guard.body:
+        qualifier.visit(statement)
+    start = qualifier.offsets[guard.lineno]
+    end = qualifier.offset(guard.end_lineno, guard.end_col_offset)
+    body = source[start:end]
+    for left, right, value in sorted(qualifier.edits, reverse=True):
+        if start <= left <= right <= end:
+            body = body[:left-start] + value + body[right-start:]
+    target = scripts / '_measure/cli.py'
+    existing = target.read_text(encoding='utf-8')
+    if any(isinstance(node, DEFINITION) for node in ast.parse(existing).body):
+        raise ValueError('CLI provider already has an implementation')
+    provider = existing.rstrip() + '\n\n\ndef main():\n    _measure_facade = _compat.facade()\n' + body + '\n'
+    replacement = 'if __name__ == "__main__":\n    _measure_providers[\'cli\'].main()'
+    facade = source[:qualifier.offset(guard.lineno, guard.col_offset)] + replacement + source[end:]
+    compile(provider, str(target), 'exec')
+    compile(facade, str(path), 'exec')
+    target.write_text(provider, encoding='utf-8')
+    path.write_text(facade, encoding='utf-8')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scripts', type=Path, default=SCRIPTS)
     parser.add_argument('--move', nargs='+')
     parser.add_argument('--resolve')
+    parser.add_argument('--move-cli', action='store_true')
     args = parser.parse_args()
     if args.move:
         move(args.scripts, args.move)
+    elif args.move_cli:
+        move_cli(args.scripts)
     elif args.resolve:
         print(resolve_symbol(args.scripts, args.resolve))
 

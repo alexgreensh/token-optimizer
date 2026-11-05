@@ -320,7 +320,7 @@ Per-turn token breakdowns, cost across four pricing tiers, cache analysis with T
 
 **Pricing is incomplete.** Unpriced repeat-read credits and debits are excluded; the complete net dollar value is unavailable. The four components add up to the total.
 
-The same snapshot's token card shows **24.80M tokens saved** (9,831,072 metered + 14,966,284 estimated), about **8% of spent + saved**: 286.22M spent + 24.80M saved = 311.02M. Its scope is logged tokens plus MCP caps, hint-served reads, verbosity nudges, lean resumes and checkpoint restores. Modeled repeat-read tokens and routing are outside that token-card total; the dollar subtotal has the broader scope above.
+The same snapshot's token card shows **24.80M tokens saved** (9,831,072 metered + 14,966,284 estimated), about **8% of spent + saved**: 286.22M spent + 24.80M saved = 311.02M. Its scope is logged tokens plus MCP caps, hint-served reads, verbosity nudges and lean resumes (snapshot taken under v5.13.63 rules; checkpoint restores have since moved to the estimated tier). Modeled repeat-read tokens and routing are outside that token-card total; the dollar subtotal has the broader scope above.
 
 <p align="center">
   <img src="skills/token-optimizer/assets/real-savings.svg" alt="Snapshot 2026-11-01: $597.72 priced API-rate-equivalent subtotal with incomplete pricing; 24.80M tokens saved, about 8% of spent plus saved. Logged actions $78.59, estimated routing $422.88, modeled rereads $60.69, other estimates $35.56." width="900">
@@ -522,7 +522,7 @@ When you end a session, Token Optimizer checkpoints your state to SQLite: active
 
 - **Cross-session hints**: relevance-scored checkpoints surface when you start a new session. The hint includes the prior session's task, decisions, files, and branch. All fenced as RECOVERED DATA, never instructions.
 - **Cold-resume-lean**: reopen a stale session without paying the full transcript cost. Token Optimizer reconstructs a lean context from its checkpoint. No LLM call, no full-transcript cold-resume. Token-free reconstruction from SQLite.
-- **Hint-follow measurement**: when a continuity hint surfaces file paths and the model subsequently reads one, Token Optimizer estimates an avoided exploratory search. The hint->read pair is observed; the avoided-search size is a fixed estimate, reported in the estimated tier, not the measured total.
+- **Hint-follow estimate**: when a continuity hint surfaces file paths and the model subsequently reads one, Token Optimizer estimates an avoided exploratory search. The hint->read pair is observed; the avoided-search size is a fixed estimate, reported in the estimated tier, not the measured total.
 
 ```bash
 python3 measure.py resume-lean                    # list reopenable cold sessions

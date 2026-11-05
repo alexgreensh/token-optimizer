@@ -3494,30 +3494,20 @@ var DB = (function() {
   // fresh input + every streamed assistant output record from top-level
   // transcripts, with cache read/write classes excluded. NOT sum(model_mix):
   // model_mix can omit unattributed tokens. Fail-open to that sum rather than 0.
-  // SAVED = savings.total_tokens. Fail-open: SAVED ≤ 0 → return '' (omit card
-  // entirely); SAVED > 0 but SPENT missing/zero → render hero + footer only.
+  // SAVED = savings.total_tokens. Fail-open: measured AND estimated both ≤ 0 →
+  // return '' (omit card entirely); either > 0 → render (estimates still show
+  // when the measured floor is zero). SAVED > 0 but SPENT missing/zero →
+  // render hero + footer only.
   // The model-mix "where the spent went" bar reconciles to SPENT via a trailing
   // "untracked" segment for SPENT - sum(model_mix) (tokens billed without a
   // model tag). Returns '' when the card should not render.
   function tokensSavedCardHtml(savings) {
     var s = savings || {};
     var tsSavedTokens = Number(s.total_tokens) || 0;
-    if (tsSavedTokens <= 0) return '';
-    var tsTrends = data.trends || {};
-    var tsSpentBasis = tsTrends.spent_token_basis || {};
-    var tsModelMix = tsTrends.model_mix || {};
-    var tsModelTotal = 0;
-    for (var tsMk in tsModelMix) { tsModelTotal += tsModelMix[tsMk]; }
-    var tsIsCodex = data.runtime === 'codex';
-    var tsPeriodDays = Number(tsTrends.period_days) || Number(s.period_days) || 30;
-    // SPENT = provider-stats-compatible total, fail-open to sum(model_mix).
-    var tsReportedTotal = Number(tsTrends.total_tokens) || 0;
-    var tsSpentTokens = tsReportedTotal > 0 ? tsReportedTotal : tsModelTotal;
-    // (tsWouldSendTotal / percentages are computed below, AFTER the estimated
-    // tier is summed: the card headlines the FULL saved total in every state.)
     // Estimated-tier tokens (kept OUT of the measured SAVED total by
-    // _get_savings_summary). Surfaced only in the footer as "not included
-    // here", labelled with whichever estimated categories are present.
+    // _get_savings_summary). Surfaced in the footer as the estimated slice,
+    // labelled with whichever estimated categories are present, and they keep
+    // the card alive when the measured floor is zero.
     // Field names match _get_merged_savings' re-export: mcp_cap_estimated
     // keeps its suffix; hint_followed and verbosity_steer drop the _estimated
     // suffix (the summary's *_estimated locals are re-keyed without it).
@@ -3546,6 +3536,19 @@ var DB = (function() {
     })(s.checkpoint_restore_estimated, 'checkpoint restores');
     var tsEstTokens = tsEstItems.reduce(function(a, b) { return a + b.tokens; }, 0);
     var tsEstLabelList = tsEstItems.map(function(it) { return it.label; }).join(', ');
+    if (tsSavedTokens <= 0 && tsEstTokens <= 0) return '';
+    var tsTrends = data.trends || {};
+    var tsSpentBasis = tsTrends.spent_token_basis || {};
+    var tsModelMix = tsTrends.model_mix || {};
+    var tsModelTotal = 0;
+    for (var tsMk in tsModelMix) { tsModelTotal += tsModelMix[tsMk]; }
+    var tsIsCodex = data.runtime === 'codex';
+    var tsPeriodDays = Number(tsTrends.period_days) || Number(s.period_days) || 30;
+    // SPENT = provider-stats-compatible total, fail-open to sum(model_mix).
+    var tsReportedTotal = Number(tsTrends.total_tokens) || 0;
+    var tsSpentTokens = tsReportedTotal > 0 ? tsReportedTotal : tsModelTotal;
+    // (tsWouldSendTotal / percentages are computed below, AFTER the estimated
+    // tier is summed: the card headlines the FULL saved total in every state.)
     // FULL saved total = measured floor + estimated tier. The headline is
     // ALWAYS the full number, never the floor alone; the measured-vs-estimated
     // split stays visible right under it so the honesty travels with the size,
@@ -3707,7 +3710,7 @@ var DB = (function() {
     // hoisted tokensSavedCardHtml + modelMixBodyHtml helpers). Replaces the
     // former standalone Model Mix card — the model-mix-as-usage section is
     // now inside the Tokens Saved card, reconciled to the billable SPENT.
-    // Fail-open: returns '' when SAVED ≤ 0 (no measured savings to show).
+    // Fail-open: returns '' only when measured AND estimated are both ≤ 0.
     html += tokensSavedCardHtml(data.savings || {});
 
     // Daily breakdown with date navigation

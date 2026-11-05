@@ -60,9 +60,9 @@ def _seed(m):
         # A real measured compression: output actually shrank.
         ("bash_compress_git", 20000, 5000, 1, "measured", "git log"),
         # Legacy loop row: NULL tier (predates labels) — must not count as measured.
-        ("loop_detection", 8000, 4, 1, None, "type=message_loop count=4 measured_tokens=8000"),
+        ("loop_detection", 8000, 4, 1, None, "type=message_loop count=4 observed_tokens=8000"),
         # New loop row: labelled estimated + unverified at write time.
-        ("loop_detection", 6000, 4, 0, "estimated", "type=retry_churn count=3 measured_tokens=6000"),
+        ("loop_detection", 6000, 4, 0, "estimated", "type=retry_churn count=3 observed_tokens=6000"),
     ]
     for feat, orig, comp, ver, tier, detail in ce:
         conn.execute(
@@ -140,25 +140,34 @@ def test_hint_followed_stays_estimated(m):
     assert est.get("events") == 1
 
 
-def test_fresh_session_nudge_usd_is_net_of_handover_and_rebuild(m, monkeypatch):
-    """Nudge dollars = warm-context avoided (cache-read) minus the working set
-    the fresh session must carry, minus the one-time handover write
-    (cache-write) and rebuild re-reads (input). Floored at $0, labelled est."""
+def test_fresh_session_nudge_reports_per_turn_and_break_even(m, monkeypatch):
+    """Nudge economics = recurring per-turn saving (warm context re-sent at the
+    cache-read rate, minus the working set carried anyway) vs the one-time
+    handover write (cache-write) + rebuild re-reads (input). Break-even turns
+    = ceil(one_time / per_turn); None when per_turn <= 0. No horizon assumed."""
     # sonnet rates: input 2.0, cache_read 0.2, cache_write 2.5 per MTok.
-    saved = 100_000
-    usd = m._fresh_session_savings_usd(saved, SID)
-    # No session store -> rebuild falls back to the lean-block floor (1,000).
-    rebuild = m._FRESH_NUDGE_LEAN_BLOCK_TOKENS
-    avoided = max(0, saved - rebuild) * 0.2 / 1_000_000
-    handover = rebuild * 2.5 / 1_000_000
-    rebuild_usd = rebuild * 2.0 / 1_000_000
-    expected = max(0.0, avoided - handover - rebuild_usd)
-    assert usd == pytest.approx(expected, abs=1e-6)
-    assert usd < saved * 2.0 / 1_000_000       # strictly below the old gross figure
-    # A large rebuild working set can zero the net out (honest floor at $0).
+    # Realistic working set: a 40K rebuild, 300K of warm context.
+    monkeypatch.setattr(m, "_checkpoint_restore_recovery_tokens",
+                        lambda sid, floor_tokens: 40_000)
+    econ = m._fresh_session_turn_economics(300_000, SID)
+    per_turn = (300_000 - 40_000) * 0.2 / 1_000_000          # $0.052
+    one_time = (m._FRESH_NUDGE_LEAN_BLOCK_TOKENS * 2.5
+                + 40_000 * 2.0) / 1_000_000                  # $0.0825
+    assert econ["per_turn_usd"] == pytest.approx(per_turn, abs=1e-9)
+    assert econ["one_time_usd"] == pytest.approx(one_time, abs=1e-9)
+    assert econ["breakeven_turns"] == 2                     # ceil(0.0825 / 0.052)
+    # Floor case: no session store -> rebuild = lean-block floor (1,000).
+    monkeypatch.undo()
+    econ_floor = m._fresh_session_turn_economics(300_000, SID)
+    per_floor = (300_000 - 1_000) * 0.2 / 1_000_000
+    assert econ_floor["per_turn_usd"] == pytest.approx(per_floor, abs=1e-9)
+    assert econ_floor["breakeven_turns"] >= 1
+    # Safe case: working set swallows the warm context -> no fabricated N.
     monkeypatch.setattr(m, "_checkpoint_restore_recovery_tokens",
                         lambda sid, floor_tokens: 500_000)
-    assert m._fresh_session_savings_usd(saved, SID) == 0.0
+    econ_zero = m._fresh_session_turn_economics(100_000, SID)
+    assert econ_zero["per_turn_usd"] == 0.0
+    assert econ_zero["breakeven_turns"] is None
 
 
 def test_fresh_session_nudge_message_marks_estimate(m, monkeypatch, tmp_path):
@@ -173,3 +182,36 @@ def test_fresh_session_nudge_message_marks_estimate(m, monkeypatch, tmp_path):
     msg = m._maybe_fresh_session_nudge(result, cache, {})
     assert msg and "Fresh session reclaims" in msg
     assert "est" in msg  # the dollar figure is labelled an estimate
+    # Per-turn + break-even phrasing, never a one-period session total.
+    assert "per turn" in msg
+    assert "pays back after ~" in msg
+    assert "rebuilt for free" not in msg
+
+
+def test_loop_warning_writer_stores_estimated_unverified_row(m, monkeypatch, tmp_path):
+    """F6(d): _maybe_loop_warning itself must write tier='estimated',
+    verified=0 -- the observed loop volume is not a metered saving."""
+    monkeypatch.setattr(m, "_is_v5_feature_enabled", lambda name: True)
+    msgs = []
+    for i in range(8):
+        msgs.append((i * 2, "user", 400, True))
+        msgs.append((i * 2 + 1, "assistant", 300, True))
+    quality_data = {"messages": msgs, "tool_result_meta": []}
+    result = {}
+    cache = tmp_path / f"quality-cache-{SID}.json"
+    msg = m._maybe_loop_warning(result, cache, quality_data)
+    assert msg and "Loop" in msg
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    try:
+        row = conn.execute(
+            "SELECT feature, verified, tier, detail FROM compression_events "
+            "WHERE feature='loop_detection' ORDER BY rowid DESC LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    feat, verified, tier, detail = row
+    assert feat == "loop_detection"
+    assert verified == 0
+    assert tier == "estimated"
+    assert "observed_tokens=" in detail
+    assert "measured_tokens=" not in detail

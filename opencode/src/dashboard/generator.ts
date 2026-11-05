@@ -422,7 +422,7 @@ tr:hover td { background: var(--bg-hover); }
     ${(() => {
       // Cents are allocated once so the shown parts add to the shown total.
       const logged = Math.max(0, savings.compressionMeasuredWindowUsd);
-      const other = Math.max(0, savings.verbosityMeasuredWindowUsd);
+      const other = Math.max(0, savings.verbosityMeasuredWindowUsd + savings.counterfactualEstimatedWindowUsd);
       if (savings.ready || logged + other < 0.005) return "";
       const [loggedDisplay, otherDisplay] = allocateCents(logged + other, [logged, other]);
       return `
@@ -544,7 +544,7 @@ tr:hover td { background: var(--bg-hover); }
     <!-- Selected-period savings_events: raw window sums, measured + estimated. -->
     ${(() => {
       const measuredWindow = Math.max(0, savings.compressionMeasuredWindowUsd);
-      const estimatedWindow = Math.max(0, savings.verbosityMeasuredWindowUsd);
+      const estimatedWindow = Math.max(0, savings.verbosityMeasuredWindowUsd + savings.counterfactualEstimatedWindowUsd);
       const actionTotal = measuredWindow + estimatedWindow;
       // Display cents are allocated once so the shown parts add to the shown total.
       const [measuredDisplay, estimatedDisplay] = allocateCents(actionTotal, [measuredWindow, estimatedWindow]);
@@ -568,7 +568,7 @@ tr:hover td { background: var(--bg-hover); }
       <div style="font-size:12px;color:var(--text-dim);line-height:1.6;">
         Context removals logged during this period (tool archives, delta reads, structure maps), counted once at removal time.
         Repeat-read coverage is unavailable on OpenCode; logged actions are still included.
-        ${estimatedWindow > 0 ? "Other estimates are lean-output nudges (trigger observed, magnitude estimated)." : ""}
+        ${estimatedWindow > 0 ? "Other estimates are counterfactual credits and nudges (triggers observed, magnitudes estimated)." : ""}
         ${savings.inputRateFloorWindowUsd > 0 ? `${fmtCost(savings.inputRateFloorWindowUsd)} of logged actions is priced at the input rate, a minimum &mdash; the billed token class was not recorded for those events.` : ""}
       </div>
       <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-2);">${BILLING_CAPTION}</div>

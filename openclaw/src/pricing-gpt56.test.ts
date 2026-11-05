@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { TokenBreakdown } from "./models";
 import { calculateCost, claudePricingKey, DEFAULT_PRICING, normalizeModelName, resetPricingCache, tierMultiplier } from "./pricing";
-import { contextWindowForModel, freshSessionSavingsUsd } from "./quality";
+import { contextWindowForModel, freshSessionTurnEconomics } from "./quality";
 import {
   GENERATED_ANTHROPIC_LONG_CONTEXT_PRICING,
   GENERATED_GEMINI_LONG_CONTEXT_PRICING,
@@ -53,9 +53,21 @@ test("GPT-5.6 pricing applies base and long-context API-equivalent rates", () =>
 });
 
 test("GPT-5.6 feeds OpenClaw savings and context-window helpers", () => {
-  expect(freshSessionSavingsUsd(1_000_000, "GPT-5.6 Sol Pro")).toBeCloseTo(GENERATED_PRICING["gpt-5.6-sol"].input * 1e6);
-  expect(freshSessionSavingsUsd(1_000_000, "openai:gpt-5.6-terra-2026-07-09")).toBeCloseTo(GENERATED_PRICING["gpt-5.6-terra"].input * 1e6);
-  expect(freshSessionSavingsUsd(1_000_000, "gpt-5.6_luna")).toBeCloseTo(GENERATED_PRICING["gpt-5.6-luna"].input * 1e6);
+  // freshSessionTurnEconomics resolves the same rate card; cache classes with
+  // no card fall back to the input rate (mirrors modelClassRatePerToken).
+  const fallback = (v: number, input: number) => (v > 0 ? v : input);
+  for (const [model, key] of [
+    ["GPT-5.6 Sol Pro", "gpt-5.6-sol"],
+    ["openai:gpt-5.6-terra-2026-07-09", "gpt-5.6-terra"],
+    ["gpt-5.6_luna", "gpt-5.6-luna"],
+  ] as const) {
+    const rates = GENERATED_PRICING[key];
+    const econ = freshSessionTurnEconomics(1_000_000, model);
+    // rebuild defaults to the 1K lean block.
+    expect(econ.perTurnUsd).toBeCloseTo((1_000_000 - 1_000) * fallback(rates.cacheRead, rates.input));
+    expect(econ.oneTimeUsd).toBeCloseTo(1_000 * fallback(rates.cacheWrite, rates.input) + 1_000 * rates.input);
+    expect(econ.breakevenTurns).not.toBeNull();
+  }
   expect(contextWindowForModel("gpt-5.6")).toBe(1_050_000);
   expect(contextWindowForModel("openrouter/openai/gpt-5.6-terra-2026-07-09")).toBe(1_050_000);
 });

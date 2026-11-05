@@ -32,7 +32,10 @@ def m(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "QUALITY_CACHE_DIR", qdir)
     monkeypatch.setattr(mod, "_is_v5_feature_enabled", lambda name: True)
     monkeypatch.setattr(mod, "_log_compression_event", lambda **kw: None)
-    monkeypatch.setattr(mod, "_fresh_session_savings_usd", lambda saved, sid=None: 3.0)
+    monkeypatch.setattr(mod, "_fresh_session_turn_economics",
+                        lambda saved, sid=None: {"per_turn_usd": 0.05,
+                                                 "one_time_usd": 0.04,
+                                                 "breakeven_turns": 1})
     yield mod
     sys.modules.pop("measure", None)
 

@@ -103,6 +103,15 @@ Removed context that the next calls would otherwise have re-read from cache.
 - Attribution is by removal date: a removal on day D counts in D's window even if the
   re-reads it avoided happened later.
 - The first call's removal is already in logged actions and is not added again.
+- The counted card (`counted_cumulative`) only follows removal classes whose
+  magnitude was metered (`_COUNTED_SE_EVENT_TYPES`). Counterfactual classes are
+  deliberately excluded so an inferred size never compounds into repeat-read
+  dollars: `resume_lean`, `checkpoint_restore`, `mcp_cap` and `hint_followed`
+  (plus the output-side `verbosity_*` nudges, which are generated once and never
+  re-read). Their estimated-tier values still appear in section 3.4; they just do
+  not ride the counted annuity. Removing `checkpoint_restore` from the counted
+  set is why `counted_cumulative` / `reread_usd` can visibly drop for installs
+  that used restores — the credit moved tiers, it was not deleted.
 
 ### 3.4 Other estimates (estimated)
 
@@ -124,15 +133,28 @@ Each key below is one line in the report. All are priced at the window's input-r
 
 `hint_followed` and `retrieval_serve` are never both counted.
 
+Overlap note: `handover_rerun` (B7) estimates re-work avoided *beyond* a
+continuity handover's restored context — stale re-reads of material the
+handover did not carry — while `checkpoint_restore_estimated` estimates the
+working-set re-reads a checkpoint restore let the session skip. On installs
+that use both mechanisms the two pools can describe adjacent slices of the
+same avoided re-read; they are summed as separate estimates and are not netted
+against each other.
+
 Loop-detection warnings log the observed loop volume as a `tier=estimated`
 compression event (it is spend that already happened, not a removal), and it never
 reaches the measured headline; the avoided continuation is `behavioral_estimate`.
 
 The fresh-session nudge's dollar figure is a separate counterfactual estimate shown
-in the nudge message itself: warm context the continued session would keep re-sending
-at the cache-read rate, minus the working set the fresh session must carry, minus the
-one-time handover write (cache-write) and rebuild re-reads (input), floored at $0 and
-labelled `est.` in the message.
+in the nudge message itself. It reports the recurring per-turn saving — warm
+context the continued session would keep re-sending at the cache-read rate,
+minus the working set the fresh session must carry anyway — against the one-time
+costs of starting fresh (the lean block's cache-write handover plus rebuild
+re-reads at the input rate). The message states the per-turn saving and the
+break-even turns (`ceil(one_time / per_turn)`), labelled `est.`; no horizon is
+assumed, so no session-total dollar figure is claimed. When the per-turn saving
+is zero or negative the message omits the dollar clause rather than inventing a
+payback period.
 
 ---
 

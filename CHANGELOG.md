@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Savings labels, round 2: checkpoint restores and lean resumes now sit in the estimated tier on every surface (they were still counted as measured in the OpenCode and OpenClaw ports). The counted card no longer compounds their inferred size into repeat-read dollars, so `counted_cumulative` can visibly drop for installs that used restores — the credit moved tiers, it was not deleted. The fresh-session nudge now says what it saves per turn and after how many turns it pays back, instead of one net dollar figure.
+
 ## [5.13.63] - 2026-11-01
 
 - One monthly savings number. Logged savings, routing you actually used, repeat reads avoided and estimates are added up once, with nothing counted twice. The CLI and dashboard show the same figure.

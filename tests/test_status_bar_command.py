@@ -618,8 +618,12 @@ def test_compactions_count_resumes_where_it_stopped_and_finds_split_markers(sb, 
     assert sb._status_bar_compactions(tool) == 0
 
 
-def test_dashboard_headline_is_zero_when_nothing_was_measured(sb):
-    assert sb._dashboard_saved_tokens({"total_tokens": 0, "hint_followed": {"tokens_saved": 500}}) == (0, 0)
+def test_dashboard_headline_shows_estimates_when_nothing_was_measured(sb):
+    # Estimates still surface on their own: measured=0 no longer zeroes the card.
+    assert sb._dashboard_saved_tokens({"total_tokens": 0, "hint_followed": {"tokens_saved": 500}}) == (500, 0)
+    assert sb._dashboard_saved_tokens({"total_tokens": 0, "checkpoint_restore_estimated": {"tokens_saved": 700}}) == (700, 0)
+    # Nothing measured AND nothing estimated -> the card stays hidden.
+    assert sb._dashboard_saved_tokens({"total_tokens": 0}) == (0, 0)
     assert sb._dashboard_saved_tokens({"total_tokens": "1e3", "mcp_cap_estimated": {"tokens_saved": "12.5"}}) == (1012, 1000)
 
 

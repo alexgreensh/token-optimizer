@@ -48,6 +48,7 @@ import {
   freshSessionSavingsEstimate,
   FRESH_NUDGE_QUALITY_THRESHOLD,
   FRESH_NUDGE_MIN_FILL,
+  FRESH_NUDGE_LEAN_BLOCK_TOKENS,
 } from "./quality";
 import {
   buildRuntimeSnapshot,
@@ -718,9 +719,17 @@ export default definePluginEntry({
           );
           if (nudgeSnapshot) {
             const hasPriorScore = _freshNudgePriorScores.has(sessionId);
+            // Rebuild working set for the nudge economics: the session's active
+            // read tokens, floored at the lean block and capped at 200K --
+            // mirrors Python _checkpoint_restore_recovery_tokens.
+            let rebuildTokens = FRESH_NUDGE_LEAN_BLOCK_TOKENS;
+            try {
+              const active = getActiveReadTokens(context?.agentId ?? "unknown", sessionId);
+              rebuildTokens = Math.min(200_000, Math.max(FRESH_NUDGE_LEAN_BLOCK_TOKENS, active));
+            } catch { /* floor stands */ }
             const nudgeMsg = buildFreshSessionNudgeMessage(
               nudgeSnapshot.qualityScore, nudgeSnapshot.fillPct, hasPriorScore,
-              nudgeSnapshot.model, nudgeSnapshot.contextWindow
+              nudgeSnapshot.model, nudgeSnapshot.contextWindow, rebuildTokens
             );
             boundedMapSet(_freshNudgePriorScores, sessionId, nudgeSnapshot.qualityScore);
             if (nudgeMsg) {

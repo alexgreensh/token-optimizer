@@ -25513,8 +25513,9 @@ def _get_savings_summary(days=30, since=None):
             # _estimate_before_after_savings can add it to the transformation
             # headline as a separate estimated addback.
             "verbosity_steer_estimated": verbosity_steer_est,
-            # Cold-resume avoided (counterfactual trigger, measured
-            # magnitude since v5.13.1). Estimated tier, never in the realized total.
+            # Cold-resume avoided (counterfactual trigger AND inferred
+            # magnitude from the target's last-turn context). Estimated
+            # tier, never in the realized total.
             "resume_lean_estimated": resume_lean_est,
             # Checkpoint-restore avoided re-reads: the trigger (a restore
             # happened) is observed, but the credited working set is inferred
@@ -49082,24 +49083,30 @@ def _fresh_session_savings_estimate(fill_pct, window=None):
     return saved, window
 
 
-def _fresh_session_savings_usd(saved_tokens, session_id=None):
-    """NET estimated dollar value of starting a fresh session now.
+def _fresh_session_turn_economics(saved_tokens, session_id=None):
+    """Per-turn saving and break-even turns for starting a fresh session now.
 
     saved_tokens is the warm context (current fill minus the lean block) a
-    continued session keeps re-sending. The restart is not free, so the figure
-    is net of its costs -- a counterfactual ESTIMATE, never a meter:
+    continued session keeps re-sending. The restart is not free, so the
+    figure reports the RECURRING per-turn benefit and the turns needed to
+    repay the one-time costs -- a counterfactual ESTIMATE, never a meter,
+    and no horizon is assumed:
 
-      avoided  = (saved - rebuild) * cache_read   -- warm context the continued
-                 session would keep re-sending each turn, minus the working
-                 set the fresh session must carry anyway (same estimate the
-                 checkpoint-restore credit uses);
-      handover = lean block * cache_write        -- the checkpoint/lean block
-                 written once so the new session can pick up;
-      rebuild  = working set * input             -- first reads are uncached.
+      per_turn   = max(0, saved - rebuild) * cache_read
+                   -- warm context the continued session re-sends each
+                      turn, minus the working set the fresh session carries
+                      anyway (same estimate the checkpoint-restore credit
+                      uses);
+      one_time   = lean block * cache_write + rebuild * input
+                   -- the checkpoint/lean block written once so the new
+                      session can pick up, plus first reads that are
+                      uncached;
+      breakeven  = ceil(one_time / per_turn) turns, None when per_turn <= 0.
 
-    Floored at $0. Priced at the session's own model rates. Best-effort -> 0.0
-    on any error.
+    Priced at the session's own model rates. Best-effort -> zeroed dict on
+    any error.
     """
+    zero = {"per_turn_usd": 0.0, "one_time_usd": 0.0, "breakeven_turns": None}
     try:
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
@@ -49112,12 +49119,15 @@ def _fresh_session_savings_usd(saved_tokens, session_id=None):
         saved = max(0, int(saved_tokens or 0))
         rebuild = _checkpoint_restore_recovery_tokens(
             session_id, _FRESH_NUDGE_LEAN_BLOCK_TOKENS)
-        avoided_usd = max(0, saved - rebuild) * cr_rate / 1_000_000
-        handover_usd = _FRESH_NUDGE_LEAN_BLOCK_TOKENS * cw_rate / 1_000_000
-        rebuild_usd = rebuild * in_rate / 1_000_000
-        return max(0.0, avoided_usd - handover_usd - rebuild_usd)
+        per_turn = max(0.0, (saved - rebuild) * cr_rate / 1_000_000)
+        one_time = (_FRESH_NUDGE_LEAN_BLOCK_TOKENS * cw_rate
+                    + rebuild * in_rate) / 1_000_000
+        breakeven = (max(1, math.ceil(one_time / per_turn))
+                     if per_turn > 0 else None)
+        return {"per_turn_usd": per_turn, "one_time_usd": one_time,
+                "breakeven_turns": breakeven}
     except Exception:
-        return 0.0
+        return dict(zero)
 
 
 def _maybe_fresh_session_nudge(result, cache_path, quality_data, quiet=False):
@@ -49164,10 +49174,18 @@ def _maybe_fresh_session_nudge(result, cache_path, quality_data, quiet=False):
         verified=False,
     )
     saved_str = f"~{saved // 1000}K" if saved >= 1000 else f"~{saved}"
-    usd = _fresh_session_savings_usd(saved, session_id)
-    # The dollar figure is a counterfactual net estimate (warm-context avoided
-    # minus handover write and rebuild re-reads), labelled as such.
-    cost_str = f" (~${usd:.2f} est.)" if usd >= 0.01 else ""
+    econ = _fresh_session_turn_economics(saved, session_id)
+    per_turn = econ["per_turn_usd"]
+    # The dollar figure is a counterfactual estimate: the recurring per-turn
+    # saving plus the turns that repay the one-time handover/rebuild cost.
+    # No horizon is assumed, so the message never claims a session-total.
+    cost_str = ""
+    if per_turn >= 0.001:
+        per_str = f"${per_turn:.2f}" if per_turn >= 0.01 else "<$0.01"
+        breakeven = econ["breakeven_turns"]
+        be_str = (f", pays back after ~{breakeven} turn"
+                  f"{'s' if breakeven != 1 else ''}" if breakeven else "")
+        cost_str = f" (saves ~{per_str} per turn{be_str}, est.)"
     # Share of the model window: what the user's meter shows (see _format_context_fill).
     shown = _model_window_fill(result)
     shown = shown if isinstance(shown, (int, float)) else fill_pct
@@ -57195,8 +57213,9 @@ def _dashboard_saved_tokens(summary):
                  + tok(s.get("resume_lean_estimated"))
                  + tok(s.get("checkpoint_restore_estimated")))
     measured = num(s.get("total_tokens", 0))
-    # The dashboard draws no Tokens Saved card at all when nothing was measured.
-    return (measured + estimated if measured > 0 else 0), measured
+    # The dashboard draws no Tokens Saved card only when nothing was measured
+    # AND nothing estimated exists -- estimates still surface on their own.
+    return measured + estimated, measured
 
 
 def _status_bar_savings_or_reason(session_id, _retried=False):

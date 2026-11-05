@@ -59,7 +59,7 @@ for _py in $_py_candidates; do
   PY="$_py"; break
 done
 if [ -z "$PY" ]; then echo "[Error] Python 3.9+ not found (the Windows Store python3 stub does not count). Install Python, then retry."; exit 1; fi
-echo "Using: $MEASURE_PY"
+echo "Using: $MEASURE_PY" >&2
 ```
 
 Use `TOKEN_OPTIMIZER_RUNTIME=codex "$PY" "$MEASURE_PY" ...` for Codex commands.

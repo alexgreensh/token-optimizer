@@ -32,7 +32,7 @@ PATH_VARS = (
     "MEASURE_PY", "PY", "COORD_PATH", "COACH_DIR", "BACKUP_DIR",
     "TO_LAUNCHER", "FLEET_PY", "PULL_PY", "CLAUDE_PLUGIN_ROOT", "PWD",
 )
-_VAR_RE = re.compile(r"\$(" + "|".join(PATH_VARS) + r")\b")
+_VAR_RE = re.compile(r"\$\{?(" + "|".join(PATH_VARS) + r")\}?\b")
 _SPAN_RE = re.compile(r"`([^`\n]+)`")
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
@@ -136,3 +136,17 @@ def test_path_vars_are_quoted_in_commands(path):
         for var in _unquoted_vars(segment):
             findings.append(f"{path.relative_to(REPO)}:{lineno}: unquoted ${var} in `{segment.strip()[:100]}`")
     assert not findings, "Unquoted path variable in a command line (word-splits on spaced paths):\n" + "\n".join(findings)
+
+
+@pytest.mark.parametrize("segment,expected", [
+    ("${MEASURE_PY} report", ["MEASURE_PY"]),
+    ("${PY} -c pass", ["PY"]),
+    ("${COORD_PATH}/state.json --json", ["COORD_PATH"]),
+    ('"${MEASURE_PY}" report --json', []),
+    ("echo '${COORD_PATH}/state.json'", []),
+    ("${PYTHONPATH:-/x} tool", []),
+])
+def test_brace_form_vars_follow_the_same_quote_rules(segment, expected):
+    """${VAR} word-splits exactly like $VAR, so the guard must check both
+    forms (gate-2 review 2-4)."""
+    assert _unquoted_vars(segment) == expected

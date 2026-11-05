@@ -80,9 +80,10 @@ if [ -z "$PY" ]; then echo "[Error] Python 3.9+ not found (the Windows Store pyt
 export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
 
 # Separate Bash calls do not share shell state: copy these into every later command.
-echo "RUNTIME=$RUNTIME"
-echo "MEASURE_PY=$MEASURE_PY"
-echo "PY=$PY"
+# They print to stderr so a --json command chained in the same call keeps stdout parseable.
+printf 'RUNTIME=%q\n' "$RUNTIME" >&2
+printf 'MEASURE_PY=%q\n' "$MEASURE_PY" >&2
+printf 'PY=%q\n' "$PY" >&2
 ```
 
 2. **A cost question** ("what did the Garden session yesterday cost?", "how much were my TR sync sessions?", "cost of session <id>"): run this instead of steps 3-4.

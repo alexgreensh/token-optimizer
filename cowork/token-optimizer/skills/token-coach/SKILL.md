@@ -67,13 +67,14 @@ if [ -z "$PY" ]; then echo "[Error] Python 3.9+ not found (the Windows Store pyt
 export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
 # The coach files ship beside measure.py, so they are always the same version.
 COACH_DIR="$(cd -P -- "$(dirname -- "$MEASURE_PY")/../../token-coach" 2>/dev/null && pwd)"
-[ -d "$COACH_DIR/references" ] || echo "[Error] token-coach references not found beside $MEASURE_PY. Reinstall Token Optimizer."
+[ -d "$COACH_DIR/references" ] || echo "[Error] token-coach references not found beside $MEASURE_PY. Reinstall Token Optimizer." >&2
 
 # Separate Bash calls do not share shell state: copy these into every later command.
-echo "RUNTIME=$RUNTIME"
-echo "MEASURE_PY=$MEASURE_PY"
-echo "PY=$PY"
-echo "COACH_DIR=$COACH_DIR"
+# They print to stderr so a --json command chained in the same call keeps stdout parseable.
+printf 'RUNTIME=%q\n' "$RUNTIME" >&2
+printf 'MEASURE_PY=%q\n' "$MEASURE_PY" >&2
+printf 'PY=%q\n' "$PY" >&2
+printf 'COACH_DIR=%q\n' "$COACH_DIR" >&2
 ```
 
 Then gather, skipping any command that fails (older installs lack some):

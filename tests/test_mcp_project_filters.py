@@ -238,12 +238,68 @@ def test_enable_all_closest_scope_wins(tmp_path):
     assert "alpha" not in result["server_names"]
 
 
+def test_mcpjson_managed_settings_approval_counts(tmp_path, monkeypatch):
+    """Enterprise managed-settings.json carries the same approval keys, so a
+    server it approves is not pending (gate-2 review 2-2)."""
+    home, claude_dir, cwd = _rig(tmp_path)
+    managed = _write_json(tmp_path / "managed-settings.json",
+                          {"enableAllProjectMcpServers": True})
+    monkeypatch.setattr(measure, "_subagent_cache_managed_settings_path",
+                        lambda: managed)
+    _project_mcp_json(cwd, "alpha")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert result["server_names"] == ["alpha"]
+    assert result["pending_project_approval"] == []
+
+
+def test_mcpjson_managed_settings_outranks_project_scope(tmp_path, monkeypatch):
+    """Managed settings are admin policy: their enable-all answer wins over
+    every user/project scope."""
+    home, claude_dir, cwd = _rig(tmp_path)
+    _write_json(claude_dir / "settings.json", {"enableAllProjectMcpServers": True})
+    managed = _write_json(tmp_path / "managed-settings.json",
+                          {"enableAllProjectMcpServers": False})
+    monkeypatch.setattr(measure, "_subagent_cache_managed_settings_path",
+                        lambda: managed)
+    _project_mcp_json(cwd, "alpha")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert "alpha" not in result["server_names"]
+    assert result["pending_project_approval"] == ["alpha"]
+
+
 def test_non_mcpjson_servers_unaffected_by_gate(tmp_path):
     """User/plugin servers never needed .mcp.json approval and still count."""
     home, claude_dir, cwd = _rig(tmp_path, {"mcpServers": {"github": {"command": "npx"}}})
     _project_mcp_json(cwd, "alpha")
     result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
     assert result["server_names"] == ["github"]
+
+
+def test_mcpjson_name_matching_unrelated_project_server_still_gated(tmp_path):
+    """A .mcp.json name that collides with a server declared only under an
+    UNRELATED project's ~/.claude.json mcpServers block is still a
+    .mcp.json-only server here: that block is not loaded in this project, so
+    the approval gate must apply (gate-2 review 2-3)."""
+    home, claude_dir, cwd = _rig(tmp_path, {
+        "projects": {"/unrelated/project": {"mcpServers": {"alpha": {"command": "a"}}}},
+    })
+    _project_mcp_json(cwd, "alpha")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert "alpha" not in result["server_names"]
+    assert result["pending_project_approval"] == ["alpha"]
+
+
+def test_mcpjson_name_matching_cwd_project_server_not_gated(tmp_path):
+    """A name also declared in THIS project's ~/.claude.json mcpServers block
+    has another load path here, so the gate must not apply."""
+    proj = tmp_path / "proj"
+    home, claude_dir, cwd = _rig(tmp_path, {
+        "projects": {str(proj): {"mcpServers": {"alpha": {"command": "a"}}}},
+    })
+    _project_mcp_json(cwd, "alpha")
+    result = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
+    assert "alpha" in result["server_names"]
+    assert result["pending_project_approval"] == []
 
 
 # ---------- honest labelling ----------
@@ -269,6 +325,32 @@ def test_tokens_drop_when_server_disabled(tmp_path):
     before = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=tmp_path)
     after = measure.count_mcp_tools_and_servers(home=home, claude_dir=claude_dir, cwd=cwd)
     assert after["tokens"] < before["tokens"]
+
+
+def test_snapshot_summary_discloses_pending_mcp_approval(capsys):
+    """Pending-approval .mcp.json servers leave the counted total; the report
+    must say so next to the disabled count instead of silently under-counting
+    (gate-2 review 2-2)."""
+    snapshot = {
+        "label": "t",
+        "timestamp": "2026-01-01T00:00:00",
+        "components": {
+            "mcp_tools": {
+                "server_count": 2,
+                "tool_count_estimate": 20,
+                "tokens": 300,
+                "loading_mode": "deferred",
+                "disabled_for_project": ["old-server"],
+                "pending_project_approval": ["alpha", "beta"],
+            },
+            "core_system": {"tokens": 12900},
+        },
+        "totals": {"estimated_total": 13200},
+    }
+    measure.print_snapshot_summary(snapshot)
+    out = capsys.readouterr().out
+    assert "2 pending approval" in out
+    assert "1 disabled for this project" in out
 
 
 def test_git_bash_spelled_cwd_matches_windows_key(tmp_path):

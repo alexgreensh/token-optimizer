@@ -2529,7 +2529,16 @@ function getComponentDetails(data) {
     {
       key: 'mcp_tools', name: 'MCP Tools',
       tokens: c.mcp_tools ? c.mcp_tools.tokens : 0,
-      sub: (c.mcp_tools ? c.mcp_tools.server_count : '?') + ' servers, ~' + (c.mcp_tools ? c.mcp_tools.tool_count_estimate : '?') + ' tools',
+      sub: (function() {
+        var m = c.mcp_tools;
+        var s = (m ? m.server_count : '?') + ' servers, ~' + (m ? m.tool_count_estimate : '?') + ' tools';
+        if (m) {
+          var dis = m.disabled_for_project || [], pen = m.pending_project_approval || [];
+          if (dis.length) s += ', ' + dis.length + ' disabled for this project';
+          if (pen.length) s += ', ' + pen.length + ' pending approval';
+        }
+        return s;
+      })(),
       what: isCodex
         ? 'Codex MCP servers can expand the active tool surface with names, descriptions, and schemas. The dashboard counts configured servers and uses conservative metadata estimates when exact schemas are not exposed.'
         : "MCP server tool definitions are loaded when servers connect. Each tool's name, description, and parameter schema contribute to token cost.",

@@ -76,8 +76,9 @@ done
 if [ -z "$PY" ]; then echo "[Error] Python 3.9+ not found (the Windows Store python3 stub does not count). Install Python, then retry."; exit 1; fi
 
 # Separate Bash calls do not share shell state: copy these into every later command.
-echo "MEASURE_PY=$MEASURE_PY"
-echo "PY=$PY"
+# They print to stderr so a --json command chained in the same call keeps stdout parseable.
+printf 'MEASURE_PY=%q\n' "$MEASURE_PY" >&2
+printf 'PY=%q\n' "$PY" >&2
 ```
 
 **c. The authoritative gate.** The environment check cannot see an OpenCode started without its variables; this one scans the process tree: `"$PY" "$MEASURE_PY" report 2>&1 | head -1`

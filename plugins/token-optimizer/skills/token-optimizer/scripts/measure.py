@@ -2827,7 +2827,6 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
                     continue
                 project_blocks_with_servers += 1
                 proj_names = [n for n in servers if isinstance(n, str) and n]
-                other_declared.update(proj_names)
                 for name in proj_names:
                     _add(name, "project",
                          f"{claude_json}:projects[{project_path}].mcpServers")
@@ -2908,6 +2907,14 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
                         best_key = norm_key
                         best_cfg = project_cfg
             if isinstance(best_cfg, dict):
+                # Only the matched project's mcpServers count as another load
+                # path for the .mcp.json gate: a name declared under an
+                # unrelated project block is not loaded here, so a .mcp.json
+                # server with that name is still gated (gate-2 review 2-3).
+                matched_servers = best_cfg.get("mcpServers")
+                if isinstance(matched_servers, dict):
+                    other_declared.update(
+                        n for n in matched_servers if isinstance(n, str) and n)
                 disabled = best_cfg.get("disabledMcpServers")
                 if isinstance(disabled, list):
                     for name in disabled:
@@ -2958,6 +2965,10 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
             _collect_mcpjson_keys(_mcp_read_json(settings_path, sources_skipped))
         # The per-project record in ~/.claude.json is the most specific scope.
         _collect_mcpjson_keys(best_cfg)
+        # Enterprise managed-settings.json carries the same keys and outranks
+        # every user/project scope, so it is read last (gate-2 review 2-2).
+        _collect_mcpjson_keys(_mcp_read_json(
+            _subagent_cache_managed_settings_path(), sources_skipped))
 
         approve_all = enable_all is True
         for name in list(server_names):
@@ -6363,7 +6374,9 @@ def print_snapshot_summary(snapshot):
     mcp_label = f"MCP tools ({loading_mode}, tool surface)"
     disabled_proj = mcp.get("disabled_for_project") or []
     disabled_suffix = f", {len(disabled_proj)} disabled for this project" if disabled_proj else ""
-    print(f"  {mcp_label:<35s} {mcp_tokens:>6,} tokens  [{srv_count} servers, ~{tool_est} tools{disabled_suffix}]")
+    pending_appr = mcp.get("pending_project_approval") or []
+    pending_suffix = f", {len(pending_appr)} pending approval" if pending_appr else ""
+    print(f"  {mcp_label:<35s} {mcp_tokens:>6,} tokens  [{srv_count} servers, ~{tool_est} tools{disabled_suffix}{pending_suffix}]")
     connectors = mcp.get("account_connectors") or {}
     if connectors.get("status") == "NOT MEASURED":
         print(f"    {'+ Account connectors':<33s} {'NOT MEASURED':>12s}  [server-side at claude.ai, no local config]")

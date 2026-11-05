@@ -4,9 +4,11 @@
 modes, native adapters, dashboard handlers, Node statusline, and the three hook
 manifests. Its expectations must come from the unsplit BASE tree.
 
-The current manifest is **provisional**. Re-freeze it from the orchestrator's
-final BASE and recapture before accepting any extraction lane. Candidate code
-must never overwrite expected captures. The driver refuses an existing capture
+The final BASE is **55da0b1179afa98455fa1b1c6e3dd372afa8ec3f** (5.13.64).
+The source and case manifests are frozen with `provisional: false`. Accepted
+evidence still requires two equal BASE captures and candidate equality before
+any extraction lane starts. Candidate code must never overwrite expected
+captures. The driver refuses an existing capture
 directory and confines disposable payloads to `.scratch-u0/`.
 
 For one bounded case:

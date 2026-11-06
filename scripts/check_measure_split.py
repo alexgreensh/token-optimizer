@@ -8,6 +8,8 @@ import sys
 import measure_split as split
 
 
+PASS1_PROVIDER_CEILING = 9000
+
 def check(root=split.REPO):
     root = Path(root)
     scripts = root / 'skills/token-optimizer/scripts'
@@ -45,7 +47,9 @@ def check(root=split.REPO):
     moved = set()
     for path in sorted(package.glob('*.py')):
         text = path.read_text(encoding='utf-8')
-        limit = 200 if path.name == '_compat.py' else 1000
+        # FILE-SIZE-POLICY.md pass 1: _measure/ domain modules may reach the 9,000-line plan
+        # ceiling until pass 2 brings each under 1,000. _compat stays small.
+        limit = 200 if path.name == '_compat.py' else PASS1_PROVIDER_CEILING
         if len(text.splitlines()) > limit:
             errors.append(f'{path.name}: exceeds {limit} lines')
         if path.name.startswith('_'):

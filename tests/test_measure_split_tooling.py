@@ -240,7 +240,9 @@ def test_guard_rejects_a_binding_to_the_wrong_provider(tmp_path):
     assert any('wrong facade binding' in error for error in errors), errors
 
 
-def test_guard_enforces_the_global_size_limit_for_new_providers(tmp_path):
+@pytest.mark.parametrize('lines, rejected', [(9000, False), (9001, True)])
+def test_guard_applies_the_pass1_provider_ceiling(tmp_path, lines, rejected):
+    """FILE-SIZE-POLICY.md pass 1: _measure/*.py may reach 9,000 lines, never 9,001."""
     import shutil
     import check_measure_split
     root = tmp_path / 'root'
@@ -250,9 +252,13 @@ def test_guard_enforces_the_global_size_limit_for_new_providers(tmp_path):
     (root / 'scripts').mkdir()
     shutil.copy2(REPO / 'scripts/measure_split_manifest.json', root / 'scripts')
     path = scripts / '_measure/runtime.py'
-    path.write_text(path.read_text(encoding='utf-8') + '\n' * 1001, encoding='utf-8')
+    text = path.read_text(encoding='utf-8')
+    text += '\n' * (lines - len(text.splitlines()))
+    path.write_text(text, encoding='utf-8')
+    assert len(path.read_text(encoding='utf-8').splitlines()) == lines
     errors, _ = check_measure_split.check(root)
-    assert any('runtime.py: exceeds 1000 lines' in error for error in errors), errors
+    assert any('runtime.py: exceeds 9000 lines' in error for error in errors) is rejected, errors
+    assert not any('exceeds 1000 lines' in error for error in errors), errors
 
 
 def test_inspection_view_preserves_literals_and_resolves_fstrings_and_lambdas():
@@ -306,3 +312,17 @@ def test_cli_move_preserves_public_bytes_and_module_globals(tmp_path):
     ast.parse(resolved)
     assert 'elif args[0] == "compact-restore":' in resolved
     assert 'elif args[0] == "keepwarm-scheduler":' in resolved
+
+
+def test_mover_writes_lf_on_every_platform():
+    """Windows text mode would write CRLF into facade and providers; every write pins LF."""
+    import ast
+    tree = ast.parse((REPO / 'scripts/measure_split.py').read_text(encoding='utf-8'))
+    writes = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+              and isinstance(node.func, ast.Attribute) and node.func.attr == 'write_text']
+    assert len(writes) >= 4
+    for node in writes:
+        newline = {kw.arg: kw.value for kw in node.keywords}.get('newline')
+        assert isinstance(newline, ast.Constant) and newline.value == '\n', f'line {node.lineno}'
+    opened = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'open']
+    assert all('w' not in ast.unparse(node.args[1]) for node in opened if len(node.args) > 1), 'text open() for writing'

@@ -423,7 +423,11 @@ def test_restore_prefers_latest_valid_checkpoint(m):
               "## Active Task\nold rich state\n",
               sidecar={"version": 2, "decisions": ["old decision"],
                        "task_state": {"version": 2, "dead_ends": [
-                           {"text": "dead end: tried approach A", "source": None}]}})
+                           {"text": "dead end: tried approach A", "source": None}]}},
+              # Restore orders by mtime. Two back-to-back time.time() calls can tie on
+              # Windows before Python 3.13 (~15 ms clock); NTFS then lists the older
+              # file first and it wins. State the order the test means.
+              age_s=60)
     _write_cp(cp_dir, SID, "20261004-110000", "stop",
               "## Active Task\nnewest state wins\n",
               sidecar={"version": 2, "decisions": ["new decision"],

@@ -51,7 +51,7 @@ import { canKeepWarm, initialClock, reduceClock, view, type ClockEvent, type Clo
 import { LIGHT, clawdSvg, type Gaze, type Palette } from '../src/clawd.ts'
 import type { Snapshot } from '../src/contracts.ts'
 import { ICONS, ICON_ALT, iconSvg, type IconName } from '../src/icons.ts'
-import { COMPACT_HEAVY, QUALITY_FLOOR, moodOf, sentence, type ActionId, type Run } from '../src/ladder.ts'
+import { QUALITY_FLOOR, moodOf, sentence, type ActionId, type Run } from '../src/ladder.ts'
 import { cards, marks, row, type Card, type Mark, type MarkTone } from '../src/marks.ts'
 import { envSize, slimSide, storedSize, type BandSize } from '../src/size.ts'
 import { DEBOUNCE_MS, initialPose, reducePose, type PoseEvent, type PoseState } from '../src/pose.ts'
@@ -1136,7 +1136,7 @@ function detailRow(D: Desktop, m: Model, on: Handlers, size: BandSize) {
   // A card action joins the row only when the moment calls for it (quality sagging, the cache
   // about to drop) and the sentence's own button is not already offering it.
   const q = snap.quality
-  const sagging = q !== null && (q.score < QUALITY_FLOOR || q.compactions >= COMPACT_HEAVY)
+  const sagging = q !== null && (q.score < QUALITY_FLOOR || q.recoveryStatus === 'needs_attention')
   const rowActions = [
     ...(sagging ? cardList.find(c => c.id === 'quality')?.actions ?? [] : []),
     ...(m.canWarm && snap.cache.state === 'warning' ? [{ id: 'warm' as const, label: 'Keep warm' }] : []),

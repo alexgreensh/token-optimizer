@@ -56,7 +56,9 @@ jobs:
         with:
           node-version: '22'
       - name: Verify split, candidate npm payload, and raw golden bytes
-        run: python scripts/measure_split_ci.py --work .scratch-u0/ci --shard ${{ matrix.shard }}/4
+        # Linux uses the root-owned system interpreter: setup-python's toolcache copy is
+        # world-writable, so devin-install refuses it and the Devin delta never runs.
+        run: ${{ matrix.os == 'ubuntu-latest' && '/usr/bin/python3' || 'python' }} scripts/measure_split_ci.py --work .scratch-u0/ci --shard ${{ matrix.shard }}/4
 
   pytest:
     runs-on: ubuntu-latest

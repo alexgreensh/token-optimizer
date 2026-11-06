@@ -16,7 +16,7 @@ import measure_split as split
 import measure_split_golden as golden
 from check_measure_split import check
 from check_measure_split_payload import verify, smoke
-from measure_split_artifacts import compare_candidate
+from measure_split_artifacts import compare_candidate, devin_install_proof_error
 from measure_split_crashes import normalize_known_crashes
 
 
@@ -124,6 +124,9 @@ def main():
         if actual == 'candidate':
             errors, identities = compare_candidate(work / 'base-1', work / actual, baseline, candidate)
             print(f'{len(identities)} installed-source identity artifacts independently verified')
+            proof = devin_install_proof_error([row['id'] for row in rows], identities)
+            if proof:
+                raise RuntimeError(proof)
             raw = errors + identities
             errors, normalized = normalize_known_crashes(errors, work / 'base-1', work / actual)
             print(f'{len(normalized)} listed BASE-crash stderr line-number differences: {normalized}')

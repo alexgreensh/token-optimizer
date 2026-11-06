@@ -89,3 +89,18 @@ def compare_candidate(expected, actual, baseline_source, candidate_source):
     except (AssertionError, OSError, ValueError, KeyError, TypeError, StopIteration, SyntaxError):
         return raw, []
     return [error for error in raw if error not in identities], identities
+
+
+def devin_install_proof_error(case_ids, identities, platform=None):
+    """Why a capture failed to exercise the split's Devin code delta, or None.
+
+    POSIX devin-install refuses an untrusted interpreter (hosted-CI toolcache Python is
+    world-writable). Then BASE and candidate refuse alike, compare equal, and the one changed
+    installed artifact is never produced. Native Windows refusal is the product's behavior.
+    """
+    import os
+    platform = os.name if platform is None else platform
+    if platform != 'posix' or CASE not in case_ids or identities:
+        return None
+    return (CASE + ' produced no verified Devin artifacts: run the capture with a trusted '
+            'interpreter (root- or self-owned, not world-writable), e.g. /usr/bin/python3')

@@ -111,3 +111,19 @@ def test_changed_installer_transform_is_not_exempted(pair):
     installer = pair[1][1] / 'skills/token-optimizer/scripts/devin_install.py'
     installer.write_text(installer.read_text().replace('read_bytes()', 'read_bytes() + b"changed"'))
     assert compare(pair)[0] and compare(pair)[1] == []
+
+
+@pytest.mark.parametrize('platform, ids, identities, refused', [
+    ('posix', ['cli-devin-install', 'cli---version'], [], True),
+    ('posix', ['cli-devin-install'], ['a', 'b'], False),
+    ('posix', ['cli---version'], [], False),
+    ('nt', ['cli-devin-install'], [], False),
+])
+def test_posix_capture_must_prove_the_devin_install_delta(platform, ids, identities, refused):
+    """CI 42144651071 was green while every Linux shard verified 0 Devin artifacts: the hosted
+    interpreter is world-writable, so devin-install refused in BASE and candidate alike and the
+    split's one code change never ran. A POSIX run that selects the case must verify both."""
+    error = artifacts.devin_install_proof_error(ids, identities, platform=platform)
+    assert (error is not None) is refused
+    if refused:
+        assert 'trusted' in error

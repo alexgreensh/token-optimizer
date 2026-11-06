@@ -243,6 +243,63 @@ def test_handle_invalidate_rewrites_normally_without_reset(rc):
     assert int(entry["mtime_ns"]) == target.stat().st_mtime_ns
 
 
+def _invalidate_message(rc, capsys, monkeypatch, race=False, corrupt=False, legacy_none=False):
+    """Run handle_invalidate with output enabled; return (stderr, stored entry)."""
+    read_cache, session_store, tmp_path = rc
+    target = tmp_path / "big.py"
+    target.write_text("# comment\n" + "x = 1\n" * 4000, encoding="utf-8")
+    _seed_redundant_entry(session_store.SessionStore(SESSION), target)
+    original = session_store.SessionStore.upsert_file_entry
+    if race:
+        def racing_upsert(self, file_path, entry, expected_reset_epoch=None):
+            session_store.SessionStore(SESSION).reset_context_state()
+            return original(self, file_path, entry, expected_reset_epoch=expected_reset_epoch)
+
+        monkeypatch.setattr(session_store.SessionStore, "upsert_file_entry", racing_upsert)
+    if corrupt:
+        # Corrupt AFTER the hook snapshotted a clean epoch, so the guarded write sees an unreadable one.
+        def corrupting_upsert(self, file_path, entry, expected_reset_epoch=None):
+            conn = session_store.SessionStore(SESSION)._connect()
+            conn.execute("INSERT OR REPLACE INTO session_meta(key, value) VALUES ('reset_epoch', 'garbage')")
+            conn.commit()
+            return original(self, file_path, entry, expected_reset_epoch=expected_reset_epoch)
+
+        monkeypatch.setattr(session_store.SessionStore, "upsert_file_entry", corrupting_upsert)
+    if legacy_none:
+        def none_upsert(self, *args, **kwargs):
+            original(self, *args, **kwargs)  # a legacy store that returns None
+
+        monkeypatch.setattr(session_store.SessionStore, "upsert_file_entry", none_upsert)
+    capsys.readouterr()
+    read_cache.handle_invalidate(
+        {"session_id": SESSION, "tool_name": "Edit", "tool_input": {"file_path": str(target)}}, False)
+    return capsys.readouterr().err, session_store.SessionStore(SESSION).get_file_entry(str(target))
+
+
+def test_invalidate_message_reports_a_dropped_refresh_truthfully(rc, capsys, monkeypatch):
+    err, entry = _invalidate_message(rc, capsys, monkeypatch, race=True)
+    assert entry is None, "precondition: the reset dropped the write"
+    assert "Refresh skipped" in err and "Refreshed after edit" not in err
+
+
+def test_invalidate_message_reports_a_corrupt_epoch_drop_without_claiming_a_reset_only(rc, capsys, monkeypatch):
+    err, entry = _invalidate_message(rc, capsys, monkeypatch, corrupt=True)
+    assert entry is not None and entry["last_access"] == 1.0, "precondition: the seeded row was NOT refreshed"
+    assert "Refresh skipped" in err and "unreadable epoch" in err and "Refreshed after edit" not in err
+
+
+def test_invalidate_message_says_refreshed_when_the_write_landed(rc, capsys, monkeypatch):
+    err, entry = _invalidate_message(rc, capsys, monkeypatch)
+    assert entry is not None
+    assert "Refreshed after edit" in err and "Refresh skipped" not in err
+
+
+def test_invalidate_message_keeps_legacy_none_return_wording(rc, capsys, monkeypatch):
+    err, entry = _invalidate_message(rc, capsys, monkeypatch, legacy_none=True)
+    assert entry is not None
+    assert "Refreshed after edit" in err and "Refresh skipped" not in err
+
+
 def test_handle_read_escape_hatch_eligible_branch_write_dropped(rc, monkeypatch):
     """Real-path F3, eligible-structure branch (the other production
     `_check_escape_hatch` call site): a structure-eligible redundant read that

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import shutil
 import sys
+import time
 import zipfile
 
 import pytest
@@ -187,17 +188,41 @@ def test_original_manifest_shell_launcher_recovers_root_and_runs_guidance(tmp_pa
                 'PYTHONPYCACHEPREFIX': str(tmp_path / 'pycache'), 'XDG_CACHE_HOME': str(home / '.cache')})
     env.pop('PYTHONDONTWRITEBYTECODE', None)
 
+    timing = {}
+
     def launch(root, cache):
         run_env = {**env, 'CLAUDE_PLUGIN_ROOT': root, 'PYTHONPYCACHEPREFIX': str(cache)}
         warm = 'import sys; sys.path.insert(0, sys.argv[1]); import measure, read_cache'
+        warm_started = time.monotonic()
         proc = subprocess.run([sys.executable, '-c', warm, str(version / 'skills/token-optimizer/scripts')],
                               cwd=home, env=run_env, capture_output=True, timeout=45)
+        timing['warm_s'] = round(time.monotonic() - warm_started, 2)
         assert proc.returncode == 0 and not proc.stderr, proc.stderr
         # The warm-up compiles read_cache too; drop it so only the real entry can recreate it.
         for compiled in cache.rglob('read_cache.*.pyc'):
             compiled.unlink()
-        return subprocess.run([bash, '-c', command], cwd=home, env=run_env,
-                              input=b'{}', capture_output=True, timeout=45)
+        started = time.monotonic()
+        result = subprocess.run([bash, '-c', command], cwd=home, env=run_env,
+                                input=b'{}', capture_output=True, timeout=45)
+        timing['launch_s'] = round(time.monotonic() - started, 2)
+        return result
+
+    def diagnostics(root, index, proc):
+        # Failure-only context for flaky Windows launcher runs. No env dump, no secrets: the
+        # launcher inputs are the test's own tmp paths. Does not change any pass condition.
+        probe = ''
+        try:
+            listing = subprocess.run(
+                [bash, '-c', 'for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash '
+                             '/opt/homebrew/bin/bash; do printf "%s=" "$b"; command -v "$b" || echo -; done'],
+                capture_output=True, timeout=20)
+            probe = listing.stdout.decode('utf-8', 'replace')[-600:]
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never mask the real failure
+            probe = 'probe failed: %s' % type(exc).__name__
+        return ('launcher diagnostics: root_index=%d root=%s returncode=%s launch_s=%s warm_s=%s '
+                'selected_bash=%s stdout=%r stderr=%r candidates=[%s]' % (
+                    index, root, proc.returncode, timing.get('launch_s'), timing.get('warm_s'),
+                    bash, proc.stdout[-400:], proc.stderr[-400:], probe.strip().replace('\n', ' ')))
 
     stale = version.with_name('5.13.63-missing')
     # Pinned BASE 5.13.64 behavior on Windows, unchanged by the split (diag runs
@@ -213,13 +238,13 @@ def test_original_manifest_shell_launcher_recovers_root_and_runs_guidance(tmp_pa
     for index, root in enumerate(roots):
         cache = tmp_path / ('entry-cache-' + str(index))
         proc = launch(root, cache)
-        assert proc.returncode == 0 and not proc.stderr, proc.stderr
+        assert proc.returncode == 0 and not proc.stderr, (proc.stderr, diagnostics(root, index, proc))
         if root.endswith('5.13.63-missing') and not recovers:
-            assert proc.stdout == b''
+            assert proc.stdout == b'', diagnostics(root, index, proc)
             assert not list(cache.rglob('read_cache.*.pyc'))
             continue
         if guidance:
-            assert b'COMPACTION GUIDANCE:' in proc.stdout
+            assert b'COMPACTION GUIDANCE:' in proc.stdout, diagnostics(root, index, proc)
         else:
             assert b'Traceback' not in proc.stderr
             assert list(cache.rglob('read_cache.*.pyc')), 'the Cowork entry never loaded its real target'

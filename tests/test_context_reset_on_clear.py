@@ -98,11 +98,14 @@ def _read(root: Path, path: Path, session: str = SESSION, agent: str | None = No
     return hook.get("permissionDecision", "allow"), hook.get("permissionDecisionReason", "")
 
 
-def _session_start(root: Path, source: str, session: str = SESSION) -> None:
-    _run(SESSIONSTART_RUNNER, root, {
+def _session_start(root: Path, source: str, session: str = SESSION):
+    started = time.monotonic()
+    proc = _run(SESSIONSTART_RUNNER, root, {
         "session_id": session, "hook_event_name": "SessionStart",
         "source": source, "transcript_path": "",
     })
+    proc.elapsed_s = round(time.monotonic() - started, 2)  # diagnostics only
+    return proc
 
 
 def _store(root: Path, session: str = SESSION):
@@ -255,9 +258,16 @@ def test_refetch_guard_allows_a_call_whose_result_was_cleared(tmp_path):
     assert _refetch(tmp_path, tool, args) == "deny", "precondition: guard is live"
 
     time.sleep(1.1)  # manifest timestamps have one-second resolution
-    _session_start(tmp_path, "clear")
+    start = _session_start(tmp_path, "clear")
 
-    assert _refetch(tmp_path, tool, args) == "allow"
+    decision = _refetch(tmp_path, tool, args)
+    # Failure-only context (does not change the pass condition): was the clear marker written, how
+    # long did the SessionStart runner take against its shared 18s deadline, and what did it say.
+    marker = tmp_path / "snap" / "tool-archive" / SESSION / "context_reset_at"
+    markers = [marker.read_text(encoding="utf-8").strip()] if marker.exists() else []
+    assert decision == "allow", (
+        "SessionStart clear diagnostics: rc=%s elapsed_s=%s (runner budget 18s) reset_marker_value=%s "
+        "stderr=%r stdout=%r" % (start.returncode, start.elapsed_s, markers, start.stderr[-600:], start.stdout[-300:]))
 
 
 def test_reset_waits_out_a_short_write_lock(tmp_path):

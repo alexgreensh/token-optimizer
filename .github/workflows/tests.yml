@@ -72,7 +72,9 @@ jobs:
       # One red interpreter should not hide the result on the others.
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # 3.9 is the floor the README promises (python-3.9+ badge); hooks run under whatever
+        # python3 a user has, so the floor must be tested, not assumed.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
         # The suite runs in 4 slices on 4 machines (tests/conftest.py splits it
         # by measured file times in tests/shard_weights.json): ~20 min -> ~5.
         shard: [1, 2, 3, 4]

@@ -80,14 +80,28 @@ _UNSAFE_WRITE_SUBCMDS = frozenset({
 })
 _DANGEROUS_CHARS = frozenset(";|&`$(){}><\n\r\x00")
 
-# git subcommands that write. Mirrors bash_whitelist._GIT_WRITE_SUBCMDS (a
-# test pins this set to be a superset of it; importing it here would create a
-# circular dependency on the hot path).
+# git subcommands that write. Superset of bash_whitelist._GIT_WRITE_SUBCMDS
+# (a test pins the superset relation; importing it here would create a
+# circular dependency on the hot path). Bounded, not a full git grammar:
+# ambiguous subcommands that can write with the right flag (``branch -D``,
+# ``config``, ``reflog delete``) are treated as writes outright.
 _GIT_WRITE_SUBCMDS = frozenset({
     "commit", "push", "pull", "merge", "rebase", "reset", "checkout",
     "switch", "stash", "tag", "cherry-pick", "revert", "am", "apply",
     "add", "rm", "mv", "restore", "bisect", "clean", "fetch", "clone",
     "init", "remote", "submodule", "worktree",
+    "branch", "config", "gc", "prune", "reflog", "notes", "replace",
+    "filter-branch", "update-ref", "symbolic-ref", "repack", "write-tree",
+    "commit-tree", "update-index", "read-tree", "hash-object",
+})
+# git subcommands treated as read-only. Anything outside
+# _GIT_WRITE_SUBCMDS | _GIT_READONLY_SUBCMDS (aliases, plumbing, new
+# subcommands) is refused, matching the compress hook's own stance that an
+# unknown git invocation is not provably read-only.
+_GIT_READONLY_SUBCMDS = frozenset({
+    "status", "log", "diff", "show", "ls-files", "ls-tree", "blame",
+    "annotate", "grep", "rev-parse", "rev-list", "describe", "shortlog",
+    "show-ref", "cat-file", "count-objects", "var", "version", "whatchanged",
 })
 # find flags that delete, write or run another program.
 _FIND_DESTRUCTIVE_FLAGS = frozenset({
@@ -294,11 +308,29 @@ def is_destructive_command(command_str: str) -> bool:
 
     Used at match time so a glob in a user ``add`` entry can never make such
     a command eligible for compression, whatever the glob expands to.
-    Fails closed: an unparseable command counts as destructive.
+    Fails closed: an unparseable command counts as destructive, and unknown
+    git subcommands (possible aliases) count as writes.
+
+    Bounded by design: this module ships inside the Devin payload closed
+    set, so it cannot depend on the hook's read-only classifier
+    (pipeline_analyzer); the closed-set policy test forbids that import.
+    The checks are self-contained denylists, not a full shell parser;
+    commands they do not recognize stay eligible for user ``add`` entries,
+    as before.
     """
+    # Multi-line input hides extra commands (``mytool --flag\nrm -rf x``)
+    # and command/process substitution executes whatever it nests
+    # (``echo $(rm -rf x)``, ``cat <(rm -rf x)``): refuse on the raw string.
+    if any(c in command_str for c in ("\n", "\r")):
+        return True
+    if "$(" in command_str or "`" in command_str or "<(" in command_str:
+        return True
     import shlex
     try:
-        tokens = shlex.split(command_str)
+        # punctuation_chars splits glued shell operators (``cat;rm -rf x``)
+        # into real separator tokens so the per-stage checks below see them.
+        tokens = list(shlex.shlex(command_str, posix=True,
+                                  punctuation_chars="|&;<>(){}"))
     except ValueError:
         return True
     # POSIX shlex eats backslashes (``C:\\bin\\rm.exe`` -> ``C:binrm.exe``), so
@@ -306,44 +338,79 @@ def is_destructive_command(command_str: str) -> bool:
     raw = command_str.split()
     if raw != tokens and _tokens_destructive(raw):
         return True
-    if _tokens_destructive(tokens):
-        return True
-    # Align with the read-only classifier the compress hook uses as its
-    # approval gate: any verdict other than "unknown command" (sed -i, git
-    # write subcommands, file redirects, env/xargs launchers, ...) is a
-    # refusal. "not-whitelisted" alone stays allowed so a user can still opt
-    # a custom read-only command in.
-    # The pipeline-analyzer stage is a backstop for writers outside the
-    # bounded denylists above (sed -i, redirects, ...). The denylist checks
-    # in _tokens_destructive do NOT depend on it. If the import or the
-    # classifier itself fails, fail open ONLY for commands the denylists
-    # already passed (unknown custom commands stay opt-inable).
-    try:
-        from pipeline_analyzer import is_read_only_pipeline
-        ok, reason = is_read_only_pipeline(command_str)
-    except Exception:
-        return False
-    return (not ok) and "not-whitelisted" not in reason
+    return _tokens_destructive(tokens)
 
 
-def _tokens_destructive(tokens: List[str]) -> bool:
+def _segment_destructive(tokens: List[str]) -> bool:
     # Skip leading VAR=val assignments; _effective_cmd0 then resolves env.
     start = 0
     while start < len(tokens) and "=" in tokens[start] and not tokens[start].startswith("-"):
         start += 1
     tokens = tokens[start:]
+    # A bare ``--`` ends option parsing for wrapper commands (``env -- rm``).
+    tokens = [t for t in tokens if t != "--"]
+    if not tokens:
+        return False
     cmd0 = _effective_cmd0(tokens)
     if cmd0 is None or cmd0 in _NEVER_COMPRESS_CMD0:
+        return True
+    if tokens and tokens[0] in _SHELL_STRUCT_TOKENS:
         return True
     if cmd0 == "git":
         if _git_has_config_options(tokens):
             return True
         sub = _git_subcommand_tokens(tokens)
-        if not sub or sub[0].lower() in _GIT_WRITE_SUBCMDS:
+        if not sub:
+            return True
+        name = sub[0].lower()
+        if name in _GIT_WRITE_SUBCMDS:
+            return True
+        if name not in _GIT_READONLY_SUBCMDS:
+            # Unknown subcommand: could be an alias defined in repo config.
             return True
     if cmd0 == "find" and any(t in _FIND_DESTRUCTIVE_FLAGS for t in tokens):
         return True
+    if cmd0 == "sed" and any(t == "-i" or t.startswith("-i")
+                             or t.startswith("--in-place") for t in tokens):
+        return True
     return False
+
+
+_PIPELINE_SEPARATORS = frozenset({
+    "|", "||", "&", "&&", ";", ";;", ";&", ";;&", "|&", "(", ")", "{", "}",
+})
+_PUNCT_CHARS = frozenset("|&;<>(){}")
+# Shell grammar keywords and groupers: a segment LED by one of these hides
+# the real command behind it (``if true; then rm x; fi``, ``{ rm x; }``).
+# Refused outright (fail closed on recognized grammar) rather than
+# mini-interpreting the shell.
+_SHELL_STRUCT_TOKENS = frozenset({
+    "if", "then", "else", "elif", "fi", "for", "while", "until", "do",
+    "done", "case", "esac", "select", "coproc", "!", "{", "}", "(", ")",
+})
+
+
+def _tokens_destructive(tokens: List[str]) -> bool:
+    # shlex splits runs of punctuation into single tokens (``|&``, ``;;``).
+    # Only the exact recognized separators split a stage; ANY other
+    # all-punctuation run (every redirect, fd dup, glued or invalid grammar)
+    # fails closed rather than risking an exception that hides a writer.
+    segments = [[]]
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t and all(c in _PUNCT_CHARS for c in t):
+            if t in _PIPELINE_SEPARATORS:
+                segments.append([])
+                i += 1
+                continue
+            # Unrecognized punctuation run (incl. all redirects): fail closed.
+            return True
+        segments[-1].append(t)
+        i += 1
+    # Check every pipeline stage, not just argv[0]: ``ls | tee out`` writes
+    # through the second stage.
+    return any(_segment_destructive(seg) for seg in segments if seg)
 
 
 def _glob_can_match_unsafe(token: str, names) -> bool:
@@ -396,6 +463,10 @@ def _is_safe_add(command: str, handler: str) -> bool:
     # backslash path, so one glob check against the dangerous names suffices.
     raw0 = _raw_cmd_word(tokens)
     if raw0 and _glob_can_match_unsafe(raw0, _GLOB_NAMES):
+        return False
+    if cmd0 in _SHELL_STRUCT_TOKENS or _glob_can_match_unsafe(cmd0, _SHELL_STRUCT_TOKENS):
+        return False
+    if raw0 and _glob_can_match_unsafe(raw0, _SHELL_STRUCT_TOKENS):
         return False
     if cmd0 in _UNSAFE_INTERPRETERS:
         return False

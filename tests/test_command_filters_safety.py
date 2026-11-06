@@ -230,16 +230,136 @@ def test_rm_via_wildcard_not_compressed_end_to_end(tmp_path, monkeypatch):
     assert len(list(target.iterdir())) == 60
 
 
-def test_destructive_verdict_follows_pipeline_analyzer():
-    """The match-time guard refuses whatever the compress hook's read-only
-    classifier refuses for a reason other than "unknown command"."""
-    import pipeline_analyzer as pa
+@pytest.mark.skipif(sys.version_info < (3, 11),
+                    reason="tomllib absent pre-3.11 (pre-existing, #312 scope)")
+@pytest.mark.parametrize("entry_cmd,argv", [
+    ("2*", ["2>/dev/null", "rm"]),
+    ("2*", ["2>&1", "rm"]),
+    ("1*", ["1>&2", "rm"]),
+    ("0*", ["0<", "/dev/null", "rm"]),
+    ("<*", ["<", "/dev/null", "rm"]),
+    ("ls *", ["ls", "2>&1", "3>&2", "rm"]),
+])
+def test_redirect_prefix_camouflage_not_compressed_end_to_end(tmp_path, monkeypatch, entry_cmd, argv):
+    """HOLD 4: redirect-prefixed commands hiding a writer are refused end to
+    end - the TOML-loaded glob entry matches the prefix by fnmatch, but the
+    match-time guard fails closed before anything executes. The fixture
+    (harmless /dev/null operand, isolated target dir) must survive."""
+    import subprocess
+    import bash_compress
+    import bash_whitelist
+    _glob_config(tmp_path, monkeypatch, entry_cmd)
+    target = tmp_path / "target"
+    target.mkdir()
+    for i in range(60):
+        (target / f"f{i}.txt").write_text("x")
+    env = {**__import__("os").environ, cf.ENV_FILTERS_PATH: str(tmp_path / "command-filters.toml")}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "bash_compress.py"), *argv, str(target)],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert proc.returncode == 1, (argv, proc.stdout, proc.stderr)
+    assert "not eligible for compression" in proc.stderr
+    assert len(list(target.iterdir())) == 60
+
+
+def test_destructive_verdict_is_self_contained():
+    """The match-time guard refuses the destructive classes the hook's
+    read-only classifier would refuse - but WITHOUT importing it: this
+    module ships in the Devin payload closed set, where pipeline_analyzer
+    is not allowed (test_v3_repo_name_policy enforces that)."""
+    import inspect
+    module_src = inspect.getsource(cf)
+    assert "import pipeline_analyzer" not in module_src
+    assert "from pipeline_analyzer" not in module_src
     for cmd in ["sed -i s/a/b/ f", "git branch -D x", "xargs rm", "find . -delete",
-                "ls > out.txt", "rm.exe x"]:
-        ok, reason = pa.is_read_only_pipeline(cmd)
-        assert not ok
-        assert cf.is_destructive_command(cmd) is True, (cmd, reason)
-    assert cf.is_destructive_command("my-custom-runner --flag") is False
+                "ls > out.txt", "echo hi >> f", "ls | tee out.txt", "rm.exe x",
+                "git st", "git config user.name x", "echo $(rm -rf x)",
+                "echo `rm -rf x`",
+                # Adversarial parity cases (previously only caught via the
+                # pipeline-analyzer backstop; now self-contained):
+                "cat; rm -rf x", "cat;rm -rf x", "ls|rm -rf x",
+                "mytool --flag\nrm -rf x", "cat <(rm -rf x)",
+                "echo a > b | cat", "FOO=1 ls && rm x",
+                "if true; then rm x; fi", "for f in *; do rm $f; done",
+                "while read l; do rm $l; done < files",
+                "until false; do rm x; done", "{ rm x; }", "(rm x)",
+                "case x in x) rm x;; esac",
+                "ls |& rm x", "ls|&rm x", "f(){ :;};rm x", "f(){ rm x;}",
+                "echo hi;;rm x", "echo hi;& rm x", "echo a &> f", "echo a |& tee f",
+                # redirect-prefix camouflage (judge HOLD 4): every redirect
+                # token fails closed, the hidden writer is never reached
+                "< /etc/passwd rm x", "0< /etc/passwd rm x",
+                "2>&1 rm x", "1>&2 rm x", "2>&1 sudo rm x",
+                "2>/dev/null rm x", "2>>/dev/null rm x", "ls 2>&1 3>&2 rm x"]:
+        assert cf.is_destructive_command(cmd) is True, cmd
+    # Read-only git, read-only pipelines and unknown custom commands stay
+    # eligible for user adds.
+    for cmd in ["git status", "git log --oneline -3", "ls | head -5",
+                "git log --oneline | head", "echo a | grep a",
+                "cat f | sort | uniq", "my-custom-runner --flag"]:
+        assert cf.is_destructive_command(cmd) is False, cmd
+    # Redirects and fd dups fail closed (conservative; the old module's
+    # pipeline_analyzer backstop allowed some of these - no exception here
+    # can hide a writer).
+    for cmd in ["ls 2>&1 | head", "cat < /dev/null", "grep x f 2>/dev/null"]:
+        assert cf.is_destructive_command(cmd) is True, cmd
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11),
+                    reason="tomllib absent pre-3.11 (pre-existing, #312 scope)")
+@pytest.mark.parametrize("entry_cmd,attack", [
+    ("cat*", "cat; rm -rf x"),
+    ("cat*", "cat <(rm -rf x)"),
+    ("mytool*", "mytool --flag\nrm -rf x"),
+    ("ls *", "ls | tee out.txt"),
+    ("git status *", "git status $(rm -rf x)"),
+    ("cat*", "{ rm x; }"),
+    ("cat*", "(rm x)"),
+    ("ls *", "ls |& rm x"),
+    ("ls *", "ls|&rm x"),
+    ("echo*", "echo hi;;rm x"),
+    # redirect-prefix camouflage (judge HOLD 4), entries with valid handlers
+    ("2*", "2>&1 rm x"),
+    ("1*", "1>&2 rm x"),
+    ("2*", "2>&1 sudo rm x"),
+    ("2*", "2>/dev/null rm x"),
+    ("2*", "2>>/dev/null rm x"),
+    ("0*", "0< /etc/passwd rm x"),
+    ("ls *", "ls 2>&1 3>&2 rm x"),
+    ("ls *", "ls |& rm -rf /"),
+])
+def test_toml_entry_never_matches_destructive_command(tmp_path, monkeypatch, entry_cmd, attack):
+    """Loader-accepted glob entry must never match a destructive executed
+    command, even via glued operators, newlines or substitution."""
+    _glob_config(tmp_path, monkeypatch, entry_cmd)
+    config = cf.load_filters()
+    assert len(config.adds) == 1, "the benign glob entry itself must load"
+    eff = cf.EffectiveFilters(user_adds=config.adds)
+    assert eff.find_user_add(attack) is None, attack
+    assert config.find_add(attack) is None, attack
+    cf.reset_cache()
+
+
+@pytest.mark.parametrize("command", [
+    "if*", "if true; then rm x; fi", "for*", "while*", "until*", "[{] rm *",
+    "{ rm x; }", "case*", "do*",
+])
+def test_gate_rejects_shell_keyword_entries(command):
+    assert cf._is_safe_add(command, "disk_stats") is False, command
+
+
+def test_gated_entry_still_refused_if_hand_built():
+    """Gate-refused entries must not match destructive commands even when
+    hand-built past the loader."""
+    for entry_cmd, attack in [
+        ("r*", "rm -rf target"),
+        ("if*", "if true; then rm x; fi"),
+        ("[{] rm *", "{ rm x; }"),
+    ]:
+        entry = cf.AddEntry(name="x", command=entry_cmd, handler="disk_stats")
+        assert cf.EffectiveFilters(user_adds=(entry,)).find_user_add(attack) is None, attack
+        assert cf.CommandFilterConfig(adds=(entry,)).find_add(attack) is None, attack
 
 
 # ---------------------------------------------------------------------------
@@ -283,29 +403,16 @@ def test_git_config_injection_refused_at_token_level():
     assert cf._tokens_destructive("git -C x status".split()) is False
     assert cf._tokens_destructive("git --no-pager log".split()) is False
     assert cf._tokens_destructive("git --no-optional-locks status".split()) is False
-    # The pipeline-analyzer backstop still refuses compression for ANY git
-    # global option (it gates "git-forbidden-subcmd:-C"), matching the
-    # compress hook's own approval behavior; only the token-level check
-    # distinguishes benign options from config/exec injection.
-    assert cf.is_destructive_command("git -C x status") is True
+    assert cf.is_destructive_command("git -C x status") is False
 
 
-def test_token_level_denylists_hold_without_pipeline_analyzer(monkeypatch):
-    """If the pipeline_analyzer import ever fails, the denylist checks in
-    _tokens_destructive must still refuse (the analyzer stage is only a
-    backstop for writers outside the bounded denylists)."""
-    import builtins
-    real_import = builtins.__import__
-    def no_analyzer(name, *args, **kwargs):
-        if name == "pipeline_analyzer":
-            raise ImportError("simulated missing analyzer")
-        return real_import(name, *args, **kwargs)
-    monkeypatch.setattr(builtins, "__import__", no_analyzer)
+def test_token_level_denylists_are_self_sufficient():
+    """The denylist checks refuse the known destructive classes on their
+    own; unknown custom commands fail open (stay opt-inable)."""
     for cmd in ["rm -rf target", "git -c alias.st=!rm st", "git push",
                 "timeout 5 rm -rf t", "tee out.txt", "rm.exe x",
-                "find . -delete"]:
+                "find . -delete", "sed -i s/a/b/ f", "ls > out.txt"]:
         assert cf.is_destructive_command(cmd) is True, cmd
-    # Unknown custom commands fail open (stay opt-inable), as documented.
     assert cf.is_destructive_command("my-custom-runner --flag") is False
 
 

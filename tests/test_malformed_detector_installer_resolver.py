@@ -448,14 +448,15 @@ def test_healer_ignores_root_in_argument_e2e(m, installed):
     assert any("/opt/vendor/measure.py" in c for c in remaining), "root-in-argument foreign hook deleted"
 
 
-def test_windows_style_path_on_posix_is_unprovable_preserved(m):
-    """A drive-letter token on a POSIX healer names no install this process
-    runs from: unprovable, preserved (fail-safe). The reverse direction
-    (Windows healer, its own drive-letter install paths) is covered by the
-    platform-aware absolute/separator handling and verified by the Windows
-    CI shard."""
+def test_drive_letter_foreign_path_is_unprovable_preserved(m):
+    """A drive-letter token naming a FOREIGN root is preserved on every
+    platform: on POSIX the form is unprovable (fail-safe); on Windows it is
+    absolute-classified but does not resolve under either runtime-proven
+    root. (Must not name a real CI checkout root - the first version of
+    this test used D:\\a\\token-optimizer\\token-optimizer, which IS
+    the GitHub Windows runner checkout, so on Windows it proved ours.)"""
     assert m._is_malformed_to_hook(
-        "python3 $(which python3) D:\\a\\token-optimizer\\token-optimizer"
+        "python3 $(which python3) C:\\ci-foreign\\token-optimizer"
         "/skills/token-optimizer/scripts/read_cache.py --quiet"
     ) is False
 

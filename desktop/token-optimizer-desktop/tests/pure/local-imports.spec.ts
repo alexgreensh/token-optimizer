@@ -16,12 +16,14 @@ const IMPORT_RE = /import\s*\{([^}]*)\}\s*from\s*['"](\.{1,2}\/[^'"]+)['"]/g
 export function namedValueImports(source: string): { names: string[]; spec: string }[] {
   const out: { names: string[]; spec: string }[] = []
   for (const m of source.matchAll(IMPORT_RE)) {
-    const names = m[1]
+    const list = m[1] ?? ''
+    const spec = m[2] ?? ''
+    const names = list
       .split(',')
       .map((s) => s.trim())
       .filter((s) => s && !s.startsWith('type '))
-      .map((s) => s.split(/\s+as\s+/)[0].trim())
-    out.push({ names, spec: m[2] })
+      .map((s) => (s.split(/\s+as\s+/)[0] ?? '').trim())
+    out.push({ names, spec })
   }
   return out
 }
@@ -29,10 +31,10 @@ export function namedValueImports(source: string): { names: string[]; spec: stri
 export function exportsOf(source: string): Set<string> {
   const names = new Set<string>()
   for (const m of source.matchAll(/export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function\*?|class|enum)\s+([A-Za-z_$][\w$]*)/g)) {
-    names.add(m[1])
+    if (m[1]) names.add(m[1])
   }
   for (const m of source.matchAll(/export\s*\{([^}]*)\}/g)) {
-    for (const part of m[1].split(',')) {
+    for (const part of (m[1] ?? '').split(',')) {
       const name = part.trim().split(/\s+as\s+/).pop()?.trim()
       if (name && !name.startsWith('type ')) names.add(name)
     }

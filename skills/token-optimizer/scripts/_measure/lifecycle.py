@@ -3585,6 +3585,13 @@ def _fix_malformed_hook_commands():
     return removed
 
 
+# The exact version-resolver assignment every installer-written hook command
+# carries (hooks/hooks.json, bash-loop wrapper). Treated as plumbing by both
+# _hook_command_identity and _is_malformed_to_hook; the regression test
+# asserts it matches the resolver substring in every hooks.json entry.
+_TO_VERSION_RESOLVER = 'D="$(ls -d "${D%[/\\\\]*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"'
+
+
 def _is_malformed_to_hook(cmd):
     """Check if a hook command is a malformed token-optimizer entry.
 
@@ -3600,7 +3607,18 @@ def _is_malformed_to_hook(cmd):
     )
     if not has_to_script:
         return False
-    has_subshell = "$(" in cmd or "`" in cmd
+    # The installer's version resolver is recognized plumbing, not
+    # malformation. Recognize the EXACT template hooks/hooks.json writes
+    # (_TO_VERSION_RESOLVER, kept in sync with hooks.json by
+    # tests/test_malformed_detector_installer_resolver.py) and remove ONE
+    # occurrence before the subshell check. A character-class regex is not
+    # acceptable here: this predicate is a rejection gate, and a loose match
+    # would let crafted content hide a real subshell inside a resolver-shaped
+    # string. Any deviation from the template, any second resolver-shaped
+    # subshell, and any other subshell or backtick (Claude-written shapes)
+    # leaves "$(" or "`" in the probe and is still rejected.
+    probe = cmd.replace(_TO_VERSION_RESOLVER, 'D=""', 1)
+    has_subshell = "$(" in probe or "`" in probe
     has_double_home = False
     if _measure_facade.platform.system() == "Darwin":
         has_double_home = (

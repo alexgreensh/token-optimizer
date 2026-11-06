@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [5.13.65] - 2026-11-06
+
+- Fixes the desktop band failing to load after 5.13.64 ("Export named 'COMPACT_HEAVY' not found"). The quality card now appears only when quality is low or recovery after a compaction needs attention (#307).
+
 ## [5.13.64] - 2026-11-05
 
 - A truer "more work per token" figure. Usage is now dated by the day it actually happened, not by when a session file was last touched, so old sessions no longer pile into this month and drag the number down. Upgrading re-dates your history once; the change is reversible and figures are labelled as estimates.

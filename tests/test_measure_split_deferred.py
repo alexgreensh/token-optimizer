@@ -54,6 +54,17 @@ def _env(tmp_path):
             'TOKEN_OPTIMIZER_SNAPSHOT_DIR': home / 'data'}
 
 
+def _copied_scripts(tmp_path):
+    """A plugin-shaped copy: the facade's upward .claude-plugin/plugin.json walk
+    stops at this root instead of reaching the real home (Windows temp is under it)."""
+    root = tmp_path / 'plugin'
+    tree = root / 'skills/token-optimizer/scripts'
+    shutil.copytree(SCRIPTS, tree, ignore=shutil.ignore_patterns('__pycache__'))
+    (root / '.claude-plugin').mkdir()
+    shutil.copy2(REPO / '.claude-plugin/plugin.json', root / '.claude-plugin/plugin.json')
+    return tree
+
+
 @contextmanager
 def _measure_for(tmp_path, mode, path=None):
     """The facade as a library caller (default) or the UPS runner (hook) imports it:
@@ -112,8 +123,7 @@ def test_review_default_namespace_keeps_every_name(tmp_path):
 @pytest.mark.parametrize('mode', MODES)
 def test_review_cached_provider_that_disappears_fails_the_reload(tmp_path, mode):
     """Finding 3: a removed provider fails the facade reload even when cached."""
-    tree = tmp_path / 'scripts'
-    shutil.copytree(SCRIPTS, tree, ignore=shutil.ignore_patterns('__pycache__'))
+    tree = _copied_scripts(tmp_path)
     with _measure_for(tmp_path, mode, tree / 'measure.py') as m:
         m._codex_config_model()
         assert '_measure.audit' in sys.modules
@@ -175,8 +185,7 @@ def test_hook_import_defers_and_binds_like_eager(tmp_path):
 
 @pytest.mark.parametrize('mode', MODES)
 def test_missing_deferred_provider_still_fails_the_facade_import(tmp_path, mode):
-    tree = tmp_path / 'scripts'
-    shutil.copytree(SCRIPTS, tree, ignore=shutil.ignore_patterns('__pycache__'))
+    tree = _copied_scripts(tmp_path)
     (tree / '_measure/audit.py').unlink()
     with pytest.raises(ModuleNotFoundError, match=r"_measure\.audit"):
         with _measure_for(tmp_path, mode, tree / 'measure.py'):

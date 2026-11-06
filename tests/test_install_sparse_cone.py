@@ -179,3 +179,73 @@ def test_sparse_probe_execution_error_is_not_a_caught_mutation():
     broken = assignment.split('#', 1)[0] + '; ARG_LOG="$INSTALL_DIR/missing-parent/argv"'
     with pytest.raises(RuntimeError, match="stderr:"):
         assert_sparse_paths(source.replace(assignment, broken, 1))
+
+
+@pytest.mark.parametrize('candidate', [
+    r'C:\Program Files\Git\bin\bash.exe',
+    r'C:\Program Files\Git\usr\bin\bash.exe',
+    r'C:\Program Files (x86)\Git\bin\bash.exe',
+])
+def test_sparse_probe_uses_git_bash_instead_of_windows_wsl(monkeypatch, candidate):
+    from types import SimpleNamespace
+    from helpers import install_sparse
+    monkeypatch.setattr(install_sparse, 'os', SimpleNamespace(name='nt', environ={}))
+    monkeypatch.setattr(install_sparse.Path, 'is_file', lambda path: str(path) == candidate)
+    monkeypatch.setattr(install_sparse.shutil, 'which', lambda name: r'C:\Windows\System32\bash.exe')
+    assert install_sparse.install_bash() == candidate
+
+
+@pytest.mark.parametrize('path', [None, r'C:\Windows\System32\bash.exe', r'C:\WINDOWS\SYSTEM32\bash.exe'])
+def test_sparse_probe_refuses_missing_or_wsl_only_windows_shell(monkeypatch, path):
+    from types import SimpleNamespace
+    from helpers import install_sparse
+    monkeypatch.setattr(install_sparse, 'os', SimpleNamespace(name='nt', environ={}))
+    monkeypatch.setattr(install_sparse.Path, 'is_file', lambda _: False)
+    monkeypatch.setattr(install_sparse.shutil, 'which', lambda _: path)
+    with pytest.raises(RuntimeError, match='Git Bash is required'):
+        install_sparse.install_bash()
+
+
+@pytest.mark.parametrize('path', [r'D:\Portable Git\bin\bash.exe', '/usr/bin/bash'])
+def test_sparse_probe_honors_explicit_git_bash_override(monkeypatch, path):
+    from types import SimpleNamespace
+    from helpers import install_sparse
+    monkeypatch.setattr(install_sparse, 'os', SimpleNamespace(name='nt', environ={'GIT_BASH': path}))
+    monkeypatch.setattr(install_sparse.Path, 'is_file', lambda candidate: str(candidate) == path)
+    monkeypatch.setattr(install_sparse.shutil, 'which', lambda _: r'C:\Windows\System32\bash.exe')
+    assert install_sparse.install_bash() == path
+
+
+def test_sparse_probe_both_execution_paths_use_selected_shell():
+    import ast
+    from helpers import install_sparse
+    tree = ast.parse(Path(install_sparse.__file__).read_text(encoding='utf-8'))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute) and node.func.attr == 'run']
+    assert len(calls) == 2
+    assert all(isinstance(call.args[0].elts[0], ast.Call)
+               and call.args[0].elts[0].func.id == 'install_bash' for call in calls)
+
+
+@pytest.mark.parametrize('name,path,expected', [
+    ('posix', '/usr/bin/bash', '/usr/bin/bash'),
+    ('posix', None, 'bash'),
+    ('nt', r'D:\Portable Git\bin\bash.exe', r'D:\Portable Git\bin\bash.exe'),
+])
+def test_sparse_probe_platform_path_fallback(monkeypatch, name, path, expected):
+    from types import SimpleNamespace
+    from helpers import install_sparse
+    monkeypatch.setattr(install_sparse, 'os', SimpleNamespace(name=name, environ={}))
+    monkeypatch.setattr(install_sparse.Path, 'is_file', lambda _: False)
+    monkeypatch.setattr(install_sparse.shutil, 'which', lambda _: path)
+    assert install_sparse.install_bash() == expected
+
+
+def test_sparse_probe_does_not_accept_wsl_even_as_override(monkeypatch):
+    from types import SimpleNamespace
+    from helpers import install_sparse
+    wsl = r'C:\WINDOWS\SYSTEM32\bash.exe'
+    monkeypatch.setattr(install_sparse, 'os', SimpleNamespace(name='nt', environ={'GIT_BASH': wsl}))
+    monkeypatch.setattr(install_sparse.Path, 'is_file', lambda _: True)
+    monkeypatch.setattr(install_sparse.shutil, 'which', lambda _: wsl)
+    assert install_sparse.install_bash() == r'C:\Program Files\Git\bin\bash.exe'

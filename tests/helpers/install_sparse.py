@@ -3,6 +3,25 @@ import re
 import os
 from pathlib import Path
 import subprocess
+import shutil
+
+
+def install_bash():
+    """Match the install-sh test runtime, never Windows' WSL launcher."""
+    if os.name != 'nt':
+        return shutil.which('bash') or 'bash'
+    for candidate in (
+        os.environ.get('GIT_BASH'),
+        r'C:\Program Files\Git\bin\bash.exe',
+        r'C:\Program Files\Git\usr\bin\bash.exe',
+        r'C:\Program Files (x86)\Git\bin\bash.exe',
+    ):
+        if candidate and 'system32' not in candidate.lower() and Path(candidate).is_file():
+            return candidate
+    candidate = shutil.which('bash')
+    if candidate and 'system32' not in candidate.lower():
+        return candidate
+    raise RuntimeError('Git Bash is required for sparse installer probes; WSL bash.exe is not supported')
 
 
 def sparse_assignment(source):
@@ -33,7 +52,7 @@ def assert_sparse_paths(script):
         env = dict(os.environ, ARG_LOG=str(log), INSTALL_DIR=work, candidate_dir=work, clone_log=str(Path(work)/'clone.log'))
         probe = ('git() { printf "%s\\0" "$@" >> "$ARG_LOG"; printf "\n" >> "$ARG_LOG"; };\n'
                  + sparse_assignment(script) + '\n' + '\n'.join(commands))
-        run = subprocess.run(['bash', '-c', 'set -ex\n: > "$ARG_LOG"\n: > "$clone_log"\n'
+        run = subprocess.run([install_bash(), '-c', 'set -ex\n: > "$ARG_LOG"\n: > "$clone_log"\n'
                               'test -d "$INSTALL_DIR"\ntest -d "$candidate_dir"\n' + probe], env=env,
                              cwd=work, capture_output=True, text=True)
         if run.returncode:
@@ -59,7 +78,7 @@ def verify_sparse_clone(source, repo, manifest, tmp_path, mode):
              REPO_HTTPS=repo.as_uri(), INSTALL_DIR=str(target), GIT_CONFIG_COUNT='1',
              GIT_CONFIG_KEY_0='core.autocrlf', GIT_CONFIG_VALUE_0='false')
     action = 'clone_repo; verify_checksums_in_dir "$INSTALL_DIR"' if mode == 'fresh' else 'verify_release_candidate_before_live_update'
-    run=subprocess.run(['bash','-e','-c','source "$1"; '+action,'test',str(functions)],env=env,capture_output=True)
+    run=subprocess.run([install_bash(),'-e','-c','source "$1"; '+action,'test',str(functions)],env=env,capture_output=True)
     assert run.returncode==0,run.stderr
     checked = target if mode == 'fresh' else tmp_path/'release-candidate'
     assert (checked/'install.sh').is_file() and (checked/'devin/SKILL.md').is_file()

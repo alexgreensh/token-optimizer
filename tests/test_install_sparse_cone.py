@@ -19,7 +19,7 @@ Run: python3 -m pytest tests/test_install_sparse_cone.py -v
 import hashlib
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -207,11 +207,13 @@ def test_sparse_probe_refuses_missing_or_wsl_only_windows_shell(monkeypatch, pat
 
 
 @pytest.mark.parametrize('path', [r'D:\Portable Git\bin\bash.exe', '/usr/bin/bash'])
-def test_sparse_probe_honors_explicit_git_bash_override(monkeypatch, path):
+@pytest.mark.parametrize('path_type', [Path, PureWindowsPath])
+def test_sparse_probe_honors_explicit_git_bash_override(monkeypatch, path, path_type):
     from types import SimpleNamespace
     from helpers import install_sparse
     monkeypatch.setattr(install_sparse, 'os', SimpleNamespace(name='nt', environ={'GIT_BASH': path}))
-    monkeypatch.setattr(install_sparse.Path, 'is_file', lambda candidate: str(candidate) == path)
+    monkeypatch.setattr(install_sparse, 'Path', path_type)
+    monkeypatch.setattr(path_type, 'is_file', lambda candidate: candidate == path_type(path), raising=False)
     monkeypatch.setattr(install_sparse.shutil, 'which', lambda _: r'C:\Windows\System32\bash.exe')
     assert install_sparse.install_bash() == path
 

@@ -177,7 +177,7 @@ def test_pinned_rows_come_from_the_installed_config():
     install = {'root': REPO, 'events': a.CLAUDE_EVENTS, 'runtime': 'claude', 'host': 'claude'}
     rows = l4_installed.pinned_rows(install)
     assert len({row['id'] for row in rows}) == len(rows)
-    assert {'cli-quick', 'cli-dashboard'} <= {row['id'] for row in rows}
+    assert set(l4_installed.CLI_ROWS) <= {row['id'] for row in rows}  # OS-specific dashboard row
     assert all(row['input_variant'] == 'success' for row in rows if row['entry'] == 'hook')
 
 
@@ -222,7 +222,7 @@ def test_liveness_probe_is_silent_without_its_variable(tmp_path):
     env = {**os.environ, 'PYTHONPATH': str(c.PROBE_SITE)}
     env.pop('TO_SPLIT_VERIFY_LIVENESS', None)
     proc = subprocess.run([sys.executable, '-c', 'print(1)'], cwd=tmp_path, env=env, capture_output=True, timeout=60)
-    assert proc.stdout == b'1\n' and proc.stderr == b''
+    assert proc.stdout.replace(b'\r\n', b'\n') == b'1\n' and proc.stderr == b''
     assert list(tmp_path.iterdir()) == []
 
 

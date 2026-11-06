@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import sys
+import threading
 from types import ModuleType
+
+_LOCK = threading.RLock()
+_UNSWEPT = []  # deferred bindings a facade statement assigned; the next bind() sweeps them
 
 
 def facade():
@@ -30,22 +35,134 @@ def prepare(module):
 
     Ordinary reload creates fresh functions without changing functions already
     exported by a previous facade. Providers carry no business state.
+    DEFERRED_MODULES load on first use, still fresh for this initialization.
     """
-    from . import DOMAIN_MODULES
+    from . import DEFERRED_MODULES, DOMAIN_MODULES, MAIN_MODULES
     sys.modules['measure'] = module
-    providers = {}
+    main = getattr(module, '__name__', None) == '__main__'
+    providers = Providers(n for n in DOMAIN_MODULES if n in DEFERRED_MODULES and not (main and n in MAIN_MODULES))
     for name in DOMAIN_MODULES:
-        qualified = __package__ + '.' + name
-        if qualified in sys.modules:
-            provider = importlib.reload(sys.modules[qualified])
+        if name in providers.deferred:
+            _require(name)
         else:
-            provider = importlib.import_module(qualified)
-        providers[name] = provider
+            providers[name] = _fresh(name)
     return providers
 
 
+def _fresh(name):
+    qualified = __package__ + '.' + name
+    if qualified in sys.modules:
+        return importlib.reload(sys.modules[qualified])
+    return importlib.import_module(qualified)
+
+
+def _require(name):
+    """A deferred provider that is missing still fails the facade import."""
+    qualified = __package__ + '.' + name
+    if qualified not in sys.modules and importlib.util.find_spec(qualified) is None:
+        raise ModuleNotFoundError(f'No module named {qualified!r}', name=qualified)
+
+
+class Providers(dict):
+    """Provider modules by domain. A deferred domain loads on first use and then
+    binds all of its facade names at once, as eager initialization did."""
+    def __init__(self, deferred):
+        super().__init__()
+        self.deferred = frozenset(deferred)
+        self.pending, self.namespace = {}, None
+
+    def __missing__(self, name):
+        if name not in self.deferred:
+            raise KeyError(name)
+        return _Domain(self, name)
+
+    def load(self, name):
+        with _LOCK:
+            if dict.__contains__(self, name):
+                return dict.__getitem__(self, name)
+            provider = self[name] = _fresh(name)
+            for key, binding in list(self.pending.items()):
+                if binding.domain == name:
+                    self.namespace[key] = binding.resolve()
+                    del self.pending[key]
+            return provider
+
+
+class _Domain:
+    """A deferred domain not loaded yet: attributes name its definitions."""
+    __slots__ = ('providers', 'domain')
+
+    def __init__(self, providers, domain):
+        self.providers, self.domain = providers, domain
+
+    def __getattr__(self, attr):
+        return _Binding(self.providers, self.domain, attr)
+
+
+class _Binding:
+    """One definition of a deferred domain, resolved on first use."""
+    __slots__ = ('providers', 'domain', 'attr', 'options', 'value', 'namespace')
+
+    def __init__(self, providers, domain, attr):
+        self.providers, self.domain, self.attr, self.options, self.value, self.namespace = providers, domain, attr, None, None, None
+
+    def resolve(self):
+        if self.value is None:
+            module_name, options = self.options
+            self.value = bind(getattr(self.providers.load(self.domain), self.attr), module_name, **options)
+        return self.value
+
+    def __call__(self, *args, **kwargs):  # only before its sweep; adds a traceback frame
+        if self.options is None:  # a direct provider call outside __main__
+            return getattr(self.providers.load(self.domain), self.attr)(*args, **kwargs)
+        return self.resolve()(*args, **kwargs)
+
+
+def _sweep():
+    """Move assigned deferred bindings out of their facade namespace. A lookup
+    then misses and module __getattr__ (PEP 562) loads the domain."""
+    with _LOCK:
+        waiting = []
+        while _UNSWEPT:
+            binding = _UNSWEPT.pop()
+            namespace, providers = binding.namespace, binding.providers
+            if namespace.get(binding.attr) is not binding:
+                waiting.append(binding)  # its statement has not assigned it yet
+            elif binding.value is not None or dict.__contains__(providers, binding.domain):
+                namespace[binding.attr] = binding.resolve()
+            else:
+                del namespace[binding.attr]
+                providers.pending[binding.attr] = binding
+                if providers.namespace is None:
+                    providers.namespace = namespace
+                    namespace['__getattr__'], namespace['__dir__'] = _lookups(namespace, providers)
+        _UNSWEPT[:] = waiting
+
+
+def _lookups(namespace, providers):
+    def __getattr__(name):
+        binding = providers.pending.get(name)
+        if binding is not None:
+            providers.load(binding.domain)
+            if name in namespace:
+                return namespace[name]
+        raise AttributeError(f"module {namespace.get('__name__')!r} has no attribute {name!r}", name=name)
+
+    def __dir__():
+        return sorted(set(namespace) | set(providers.pending))
+    return __getattr__, __dir__
+
+
 def bind(value, module_name, *, defaults=None, kwdefaults=None, decorators=()):
-    """Bind captured defaults, identity and decorators at the old source site."""
+    """Bind captured defaults, identity and decorators at the old source site.
+    A deferred definition is recorded for its facade (the caller's globals)."""
+    if _UNSWEPT:
+        _sweep()
+    if isinstance(value, _Binding):
+        value.options = (module_name, {'defaults': defaults, 'kwdefaults': kwdefaults, 'decorators': decorators})
+        value.namespace = sys._getframe(1).f_globals
+        _UNSWEPT.append(value)
+        return value
     value.__module__ = module_name
     if defaults is not None:
         value.__defaults__ = defaults

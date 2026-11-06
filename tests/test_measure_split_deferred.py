@@ -69,8 +69,9 @@ def test_deferred_domains_load_on_first_use_and_bind_like_eager(tmp_path):
     deferred, domains = _deferred()
     _tree, bindings = _bindings()
     with isolated_measure(env=_env(tmp_path)) as m:
+        providers = m._measure_providers  # this facade's own; sys.modules is shared across tests
         for domain in domains:
-            assert (('_measure.' + domain) in sys.modules) == (domain not in deferred), domain
+            assert dict.__contains__(providers, domain) == (domain not in deferred), domain
         savings = [name for name, (domain, _n) in bindings.items() if domain == 'savings']
         assert savings[0] not in vars(m) and savings[0] in dir(m)
         live = getattr(m, savings[0])
@@ -79,11 +80,11 @@ def test_deferred_domains_load_on_first_use_and_bind_like_eager(tmp_path):
             assert vars(m)[name] is getattr(provider, name)
             assert getattr(m, name).__module__ == m.__name__
         assert live is getattr(provider, savings[0])
-        assert '_measure.audit' not in sys.modules
+        assert not dict.__contains__(providers, 'audit')
         with pytest.raises(AttributeError, match=r"module 'measure' has no attribute 'no_such_name'"):
             m.no_such_name
-        assert '_measure.cli' not in sys.modules
-        assert m._measure_providers.load('cli') is sys.modules['_measure.cli']
+        assert not dict.__contains__(providers, 'cli')
+        assert providers.load('cli') is sys.modules['_measure.cli']
         assert '__getattr__' in vars(m) and not any(type(v).__name__ == '_Binding' for v in vars(m).values())
         assert sorted(set(dir(m))) == dir(m)
 
@@ -105,3 +106,27 @@ def test_missing_deferred_provider_still_fails_the_facade_import(tmp_path):
     with pytest.raises(ModuleNotFoundError, match=r"_measure\.audit"):
         with isolated_measure(tree / 'measure.py', env=_env(tmp_path)):
             pass
+
+
+def test_cli_is_eager_when_the_facade_runs_as_main(tmp_path):
+    """The __main__ guard then calls the real cli.main: no extra traceback frame."""
+    from types import ModuleType
+    sys.path.insert(0, str(SCRIPTS))
+    previous = sys.modules.get('measure')
+    providers_before = {k: v for k, v in sys.modules.items() if k == '_measure' or k.startswith('_measure.')}
+    try:
+        from _measure import _compat
+        for name, eager in (('__main__', True), ('measure', False)):
+            module = ModuleType(name)
+            providers = _compat.prepare(module)
+            assert dict.__contains__(providers, 'cli') is eager, name
+            assert not dict.__contains__(providers, 'savings')
+    finally:
+        sys.path.remove(str(SCRIPTS))
+        for key in [k for k in sys.modules if k == '_measure' or k.startswith('_measure.')]:
+            sys.modules.pop(key)
+        sys.modules.update(providers_before)
+        if previous is None:
+            sys.modules.pop('measure', None)
+        else:
+            sys.modules['measure'] = previous

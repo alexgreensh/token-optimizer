@@ -6,4 +6,10 @@ DOMAIN_MODULES = (
     'trends', 'cache_policy', 'daemon', 'quality_archive', 'continuity',
     'savings', 'cli',
 )
+# Loaded on first use instead of at facade import. No module-level facade code
+# and no UserPromptSubmit handler uses them (perf attribution, 2026-11-06).
+DEFERRED_MODULES = ('audit', 'dashboard', 'sessions', 'savings', 'cli')
+# Eager when the facade runs as __main__: its guard calls cli directly, so a
+# CLI crash traceback keeps exactly the frames it had.
+MAIN_MODULES = ('cli',)
 RUNTIME_SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAIN_MODULES)

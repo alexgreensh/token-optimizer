@@ -37,9 +37,10 @@ def prepare(module):
     exported by a previous facade. Providers carry no business state.
     DEFERRED_MODULES load on first use, still fresh for this initialization.
     """
-    from . import DEFERRED_MODULES, DOMAIN_MODULES
+    from . import DEFERRED_MODULES, DOMAIN_MODULES, MAIN_MODULES
     sys.modules['measure'] = module
-    providers = Providers(name for name in DOMAIN_MODULES if name in DEFERRED_MODULES)
+    main = getattr(module, '__name__', None) == '__main__'
+    providers = Providers(n for n in DOMAIN_MODULES if n in DEFERRED_MODULES and not (main and n in MAIN_MODULES))
     for name in DOMAIN_MODULES:
         if name in providers.deferred:
             _require(name)
@@ -111,8 +112,8 @@ class _Binding:
             self.value = bind(getattr(self.providers.load(self.domain), self.attr), module_name, **options)
         return self.value
 
-    def __call__(self, *args, **kwargs):
-        if self.options is None:  # a direct provider call, as the facade's __main__ guard makes
+    def __call__(self, *args, **kwargs):  # only before its sweep; adds a traceback frame
+        if self.options is None:  # a direct provider call outside __main__
             return getattr(self.providers.load(self.domain), self.attr)(*args, **kwargs)
         return self.resolve()(*args, **kwargs)
 

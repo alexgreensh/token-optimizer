@@ -104,8 +104,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
 try:
     import tomllib
-except ImportError:  # pragma: no cover - Python < 3.11 fallback
-    tomllib = None
+except ImportError:  # Python 3.9/3.10, without runtime pip dependencies
+    from _measure._vendor import tomli as tomllib
 
 
 def _redirect_bytecode_out_of_repo():

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Read full Codex TOML configuration and validate compact-prompt placement on Python 3.9 and 3.10 without installing an extra dependency. Python 3.11+ keeps its standard-library parser.
+
 ## [5.13.66] - 2026-11-06
 
 - Token Optimizer's engine is now split into smaller modules, so it loads faster and is easier to keep reliable. Same results, same savings.

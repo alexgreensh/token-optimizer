@@ -26,6 +26,17 @@ KNOWN_BASE_CRASHES = (
                'SIGPIPE, so measure.py devin-filter crashes on Windows in BASE and candidate alike. '
                'Product bug, reported separately; the split must not change it.',
     },
+    {
+        'name': 'devin-doctor-o-nonblock-windows',
+        'platform': 'nt',
+        'case_prefix': 'cli-devin-doctor',
+        'frame_file': 'devin_doctor.py',
+        'frame_source': b'fd = os.open(product, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)',
+        'final_prefix': b"AttributeError: module 'os' has no attribute 'O_NONBLOCK'",
+        'why': 'BASE 5.13.64 devin_doctor.local_agent_surfaces opens with os.O_NONBLOCK and '
+               'os.O_NOFOLLOW, which Windows lacks, so measure.py devin-doctor crashes on Windows in '
+               'BASE and candidate alike (CI 42138301440). Product bug, reported separately.',
+    },
 )
 
 _FRAME = re.compile(rb'^\s*File "([^"]+)", line \d+, in ')

@@ -36,6 +36,24 @@ SIGPIPE_STDERR = (
     b"AttributeError: module 'signal' has no attribute 'SIGPIPE'. Did you mean: 'SIGFPE'?\r\n")
 
 
+O_NONBLOCK_STDERR = (
+    b'Traceback (most recent call last):\r\n'
+    b'  File "D:\\a\\x\\payload\\skills\\token-optimizer\\scripts\\measure.py", line %d, in <module>\r\n'
+    b'    sys.exit(devin_doctor.main(args[1:]))\r\n'
+    b'  File "D:\\a\\x\\payload\\skills\\token-optimizer\\scripts\\devin_doctor.py", line 107, in local_agent_surfaces\r\n'
+    b'    fd = os.open(product, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)\r\n'
+    b'                                        ^^^^^^^^^^^^^\r\n'
+    b"AttributeError: module 'os' has no attribute 'O_NONBLOCK'\r\n")
+
+
+def test_devin_doctor_crash_is_listed_only_for_its_cases_and_platform():
+    stderr = O_NONBLOCK_STDERR % 64088
+    assert crashes.known_crash('cli-devin-doctor---json', stderr, platform='nt')['name'] == 'devin-doctor-o-nonblock-windows'
+    assert crashes.known_crash('cli-devin-doctor---json', stderr, platform='posix') is None
+    assert crashes.known_crash('cli-devin-filter---quiet', stderr, platform='nt') is None
+    assert crashes.known_crash('cli-devin-doctor', stderr.replace(b'O_NONBLOCK\'', b'O_BINARY\''), platform='nt') is None
+    assert [entry['name'] for entry in crashes.KNOWN_BASE_CRASHES] == ['devin-sigpipe-windows', 'devin-doctor-o-nonblock-windows']
+
 def test_seed_marker_survives_text_mode_newline_translation(monkeypatch):
     """Windows stdout writes '\\r\\n' for '\\n'; the seed handshake must not care."""
     site = REPO / '.scratch-u0' / ('crlf-site-' + uuid.uuid4().hex)

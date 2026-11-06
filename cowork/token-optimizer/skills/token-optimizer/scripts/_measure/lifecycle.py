@@ -3592,6 +3592,166 @@ def _fix_malformed_hook_commands():
 _TO_VERSION_RESOLVER = 'D="$(ls -d "${D%[/\\\\]*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"'
 
 
+def _to_owned_hook_roots():
+    """Runtime-grounded install roots of THIS token-optimizer install, used
+    to prove a settings.json hook command executes our script rather than a
+    foreign tool sharing a script basename.
+
+    Sources: the running install tree (the facade lives at
+    <root>/skills/token-optimizer/scripts/measure.py, so parents[3] is the
+    install root the installer writes into hook commands), and the plugin
+    root when running under one. These are the only runtime-proven roots:
+    the payload the healer itself is executing from, and the plugin root
+    the host authorized for this process. The Claude config dir is
+    deliberately NOT a root: it is a shared container other plugins and
+    skills also live under, and a same-named directory or a matching
+    cache layout inside it proves nothing about which install a hook
+    belongs to. Best-effort: a root that cannot be resolved is skipped,
+    so a broken environment narrows removal scope instead of widening it.
+    """
+    _measure_facade = _compat.facade()
+    roots = []
+    try:
+        roots.append(
+            _measure_facade.Path(_measure_facade.__file__).resolve().parents[3]
+        )
+    except Exception:
+        pass
+    try:
+        plugin_root = _measure_facade.os.environ.get("CLAUDE_PLUGIN_ROOT")
+        if plugin_root:
+            roots.append(
+                _measure_facade.Path(plugin_root).expanduser().resolve()
+            )
+    except Exception:
+        pass
+    return [str(r).replace("\\", "/").rstrip("/") for r in roots]
+
+
+def _owned_script_path(resolved_script):
+    """True when an absolute script path IS this install's payload:
+    <root>/skills/token-optimizer/scripts/<name> where <root> is a
+    runtime-proven root (_to_owned_hook_roots). The running cache version
+    of a plugin install is covered because the install root IS that cache
+    version directory; any other cache entry - including a same-named
+    plugin from another marketplace, or a stale version of this plugin -
+    is not provably ours and is preserved.
+    """
+    _measure_facade = _compat.facade()
+    resolved_script = resolved_script.replace("\\", "/")
+    name = resolved_script.rsplit("/", 1)[-1]
+    if name not in _measure_facade._TO_SCRIPT_NAMES:
+        return False
+    suffix = "skills/token-optimizer/scripts/" + name
+    for root in _to_owned_hook_roots():
+        if len(root) >= 4 and resolved_script == root + "/" + suffix:
+            return True
+    return False
+
+
+# Doubled-home prefix written by Claude on macOS when it expands $HOME and
+# then prepends it again ($HOME/Users/<u>/<abs path>). Stripping this known
+# corruption yields the intended absolute path, which still has to pass the
+# full ownership proof below.
+_DOUBLED_HOME_RE = None  # built lazily (facade re) in _command_references_our_install
+
+
+def _command_references_our_install(cmd):
+    """Positive proof the command EXECUTES this install's script.
+
+    Anchors on the actual path token carrying a known TO script basename
+    (the script the hook will run), never on an install root string
+    appearing anywhere in the command text: a root inside an argument,
+    comment, env assignment, or redirect says nothing about which script
+    runs. Comments are stripped before tokenizing. Home-relative spellings
+    (~, $HOME, ${HOME}) expand against the real home; a literal
+    $CLAUDE_PLUGIN_ROOT resolves through the environment when set, and when
+    it is not set the hook is unprovable and preserved (fail-safe). A
+    relative script argument resolves only against a literal D="<root>"
+    assignment in the same command (the installer's written form). Every
+    basename-carrying token must resolve to our payload: a command mixing
+    our script with a foreign one is ambiguous and preserved. Unknown
+    ownership means leave the hook alone.
+    """
+    _measure_facade = _compat.facade()
+    re_mod = _measure_facade.re
+    try:
+        home = str(_measure_facade.Path.home())
+    except Exception:
+        home = ""
+    try:
+        plugin_root = _measure_facade.os.environ.get("CLAUDE_PLUGIN_ROOT") or ""
+    except Exception:
+        plugin_root = ""
+
+    # Shell comments never execute: drop "..."  # ..." tails so a root or
+    # script path mentioned only in a comment cannot prove (or veto)
+    # ownership.
+    probe = re_mod.sub(r'(?m)(^|[\s;|&])#.*$', r'\1', cmd)
+
+    def _expand(path):
+        if home and home != "~":
+            for prefix in ("${HOME}/", "$HOME/", "~/"):
+                if path.startswith(prefix):
+                    return home.rstrip("/") + "/" + path[len(prefix):]
+        if plugin_root:
+            for prefix in ("${CLAUDE_PLUGIN_ROOT}/", "$CLAUDE_PLUGIN_ROOT/"):
+                if path.startswith(prefix):
+                    return plugin_root.rstrip("/") + "/" + path[len(prefix):]
+        return path
+
+    d_roots = [
+        _expand(m.group(1)).rstrip("/")
+        for m in re_mod.finditer(r'(?:^|[;\s])D="([^"]+)"', probe)
+    ]
+
+    doubled = re_mod.compile(
+        r'^(?:\$HOME|\$\{HOME\}|~)/(?:Users|home)/[^/]+(?=/)'
+        r'|^/(?:Users|home)/[^/]+(?=/(?:Users|home)/)'
+    )
+
+    anchors = []
+    for tok in probe.split():
+        tok = tok.strip('"').strip("'").rstrip(";")
+        for name in _measure_facade._TO_SCRIPT_NAMES:
+            if tok == name or tok.endswith("/" + name):
+                anchors.append(tok)
+                break
+    if not anchors:
+        return False
+
+    def _resolve_candidates(tok):
+        if tok.startswith("$D/"):
+            tok = tok[len("$D/"):]
+        candidates = []
+        expanded = _expand(tok)
+        if expanded.startswith("/"):
+            candidates.append(expanded)
+        # Doubled-home correction applies to the RAW token ($HOME/Users/...)
+        # and to its expansion (/Users/u/Users/u/... on macOS).
+        for variant in (tok, expanded):
+            stripped = doubled.sub("", variant)
+            if stripped != variant and stripped.startswith("/"):
+                candidates.append(stripped)
+        if not candidates and d_roots:
+            candidates.append(d_roots[0] + "/" + expanded)
+        return candidates
+
+    for tok in anchors:
+        owned = False
+        for candidate in _resolve_candidates(tok):
+            try:
+                candidate = str(_measure_facade.Path(candidate).resolve())
+            except Exception:
+                candidate = _measure_facade.os.path.normpath(candidate)
+            if _owned_script_path(candidate):
+                owned = True
+                break
+        if not owned:
+            return False
+    return True
+
+
 def _is_malformed_to_hook(cmd):
     """Check if a hook command is a malformed token-optimizer entry.
 
@@ -3606,6 +3766,12 @@ def _is_malformed_to_hook(cmd):
         for name in _measure_facade._TO_SCRIPT_NAMES
     )
     if not has_to_script:
+        return False
+    # Ownership must be proven against this install's actual roots, never
+    # inferred from a script basename or a "token-optimizer" substring: a
+    # foreign tool can share both, and deleting the user's own hook is
+    # irreversible. Unknown ownership means leave it alone.
+    if not _command_references_our_install(cmd):
         return False
     # The installer's version resolver is recognized plumbing, not
     # malformation. Recognize the EXACT template hooks/hooks.json writes

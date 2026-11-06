@@ -231,10 +231,45 @@ def inspect_source(value):
     if path.name != 'measure.py':
         return inspect.getsource(value)
     source = measure_source(path)
-    node = next(node for node in ast.parse(source).body
-                if isinstance(node, _tool().DEFINITION) and node.name == value.__name__)
-    first = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list])
-    return '\n'.join(source.splitlines()[first-1:node.end_lineno]) + '\n'
+    span = _definition_spans(source).get(value.__name__)
+    if span is None:
+        raise StopIteration  # what the uncached next() lookup raised
+    first, last = span
+    return '\n'.join(source.splitlines()[first-1:last]) + '\n'
+
+
+@lru_cache(maxsize=4)
+def _definition_spans(source):
+    """First top-level definition of each name: (first line incl. decorators, end line).
+
+    Spans, not the tree: an AST of the whole 66k-line view is large to keep."""
+    spans = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, _tool().DEFINITION) and node.name not in spans:
+            spans[node.name] = (min([node.lineno] + [d.lineno for d in node.decorator_list]), node.end_lineno)
+    return spans
+
+
+# Built views, keyed by the facade path and the content of every file a view
+# is built from. One build parses ~1,250 bodies (~50 s on a fast Mac), and 54
+# test files ask for the view, three of them at import, so without this every
+# pytest process paid minutes per call. Content-keyed, so an edited fixture
+# tree gets a fresh view. Bounded: a few trees per session at ~3 MB each.
+_VIEWS = {}
+_VIEW_LIMIT = 4
+
+
+def _view_key(path):
+    import hashlib
+    digest = hashlib.sha256()
+    for file in (path, *sorted((path.parent / '_measure').glob('*.py')), Path(_tool().MANIFEST)):
+        digest.update(str(file).encode('utf-8') + b'\0')
+        try:
+            digest.update(file.read_bytes())
+        except OSError:
+            digest.update(b'\0<missing>')
+        digest.update(b'\0')
+    return str(path), digest.hexdigest()
 
 
 def measure_source(path=None):
@@ -244,10 +279,23 @@ def measure_source(path=None):
     literal forbidden-pattern checks continue to inspect every implementation.
     """
     path = Path(path or SCRIPTS / 'measure.py')
-    source = path.read_text(encoding='utf-8')
     if path.name != 'measure.py':
-        return source
+        return path.read_text(encoding='utf-8')
+    key = _view_key(path)
+    view = _VIEWS.get(key)
+    if view is None:
+        view = _build_measure_source(path)
+        while len(_VIEWS) >= _VIEW_LIMIT:
+            _VIEWS.pop(next(iter(_VIEWS)))
+        _VIEWS[key] = view
+    return view
+
+
+def _build_measure_source(path):
+    source = path.read_text(encoding='utf-8')
     tool = _tool()
+    # Each provider is read and parsed once per build, not once per symbol.
+    provider_spans = {}
     records = {row['name']: row for row in tool.read_manifest()['symbols']}
     lines = source.splitlines(keepends=True)
     changes = []
@@ -264,9 +312,18 @@ def measure_source(path=None):
             continue
         name = node.targets[0].id
         origin = source_path(name, path)
-        body = origin.read_text(encoding='utf-8')
-        impl = next(n for n in ast.parse(body).body if isinstance(n, tool.DEFINITION) and n.name == name)
-        text = '\n'.join(body.splitlines()[impl.lineno-1:impl.end_lineno])
+        if origin not in provider_spans:
+            body = origin.read_text(encoding='utf-8')
+            spans = {}
+            for n in ast.parse(body).body:
+                if isinstance(n, tool.DEFINITION) and n.name not in spans:
+                    spans[n.name] = (n.lineno, n.end_lineno)
+            provider_spans[origin] = (body.splitlines(), spans)
+        body_lines, spans = provider_spans[origin]
+        if name not in spans:
+            raise StopIteration  # what the per-symbol next() lookup raised
+        first, last = spans[name]
+        text = '\n'.join(body_lines[first-1:last])
         text = _inspection_text(text)
         # Restore definition-time signatures for textual inspection.
         first_body = ast.parse(text).body[0].body[0].lineno - 1

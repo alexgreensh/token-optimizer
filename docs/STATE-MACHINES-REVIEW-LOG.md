@@ -154,3 +154,59 @@ Rounds below run against the final v2 artifact.
     writer. Recorded as an explicit corruption residual in the doc, not a
     universal safety claim; widening the design (e.g., monotonic tokens) is out
     of scope for K2.
+
+## New-base (2c3412ca) standalone variant rounds
+
+Executed after rebasing onto main 2c3412ca (#316: tests.yml-only delta) and the
+file-size refactor. Runtime clearance of the previous K2/K3 code is retained only
+for the unchanged K3 files; K2 runtime CHANGED (guard moved into `reset_epoch.py`),
+so rounds 38-41 re-test it fresh.
+
+36. **File-size gate (CI "File size")** — FOUND A REAL FAILURE, FIXED.
+    `scripts/check_file_size.py --base 86d9374b` failed on the pre-refactor K2 tree:
+    `read_cache.py` 2514 -> 2533 and `session_store.py` 1097 -> 1175 (legacy files
+    over 1000 lines may only shrink; 6 failures across 3 mirrors). The prior judge
+    clearance did not run this gate. Fix: new `reset_epoch.py`; after the fix
+    `read_cache.py` 2514 -> 2513, `session_store.py` 1097 -> 1060 (both shrink),
+    `reset_epoch.py` 163 lines, and the gate reports OK against base 2c3412ca
+    (17 files checked at K2, 26 at K1 head). No exemption written.
+37. **Refactor defect caught by tests** — PASS after fix. The first extraction
+    omitted `import time` in `reset_epoch.py` (NameError in the legacy insert);
+    26 tests failed immediately (`53 passed` after the fix). AST undefined-name
+    scan of all three touched modules afterwards: clean (only `__file__`).
+38. **Mutation re-check at the new location** — PASS. Four asserted mutations of
+    `reset_epoch.py` (drop the epoch compare; normalize corrupt to 0; no bump; snapshot
+    always None) each killed by the race/integration suites (M1-M4 KILLED).
+39. **Install closure** — PASS for what is enforced. New
+    `tests/test_reset_epoch_module_closure.py` (3 tests): `reset_epoch.py` byte-identical
+    in skills/, plugins/ and cowork/ trees; only `read_cache.py` and `session_store.py`
+    import it; Devin's closed-set loader lists it in `REPO_MODULES` (Devin PAYLOAD does
+    not ship read_cache/session_store, so the module is correctly not added there).
+    Hermes runs `read_cache.py` from the checkout (not copied). Mirror sync green;
+    `tests/test_devin_closedset.py` 226 passed.
+40. **Adjacent suites at the K2 refactor** — PASS. 53 passed (race, integration,
+    clear-compacted, first-read-retarget, marker-key-redaction); 140 passed / 5 skipped
+    across release-installable, measure-split-packaging, desktop packaging,
+    no-window, session-store FTS, double-fire, hook budgets, antigravity.
+41. **Legacy-write parity** — PASS. `expected_reset_epoch=None` still takes the
+    unconditional insert + commit; the moved `_insert_file_entry` body is verbatim
+    (the K2 doc/code diff vs the cleared tree is the move only).
+42. **Split/doc gates** — PASS. `check_measure_split` 1258 defs / 0 remaining;
+    `check_docs_claims` OK; `check_readme_integrity` OK; measure-split
+    artifacts/compat/deferred/golden/packaging 99 passed at the K1 head.
+43. **Lane replays (frozen lane 4)** — K1 HEAD ONLY. `test_measure_split_lane4_replay.py`:
+    26 passed, 15 failed at the K1 head (the known frozen-body proof, F1). Per #316
+    those jobs run only for cloud/split-* branches or by hand, and normal CI pytest
+    ignores `tests/test_measure_split_lane*.py` (tests.yml line 101). K2/K3 heads: 41
+    passed. No proof file touched.
+44. **Regression-guards (check_regression_guards.py)** — PARTIAL. Shards 1-3 of 4 at
+    the K1 head: failures only in `tests/test_hook_wire_contract.py` (sandbox
+    `PermissionError: /root/.cargo/bin/schtasks`); the same test file's shim test
+    fails identically on a pristine 2c3412ca worktree (3 failed), so it is
+    environmental, not caused by this change. Shard 4 and a full base comparison of
+    `test_hooks_run_when_path_has_no_bash` were NOT completed (run timed out):
+    UNVERIFIED, left for CI.
+45. **Provenance / identity** — PASS. K1 `_measure/cache_policy.py` (x3) and
+    `tests/test_keepwarm_arm_dedup.py` byte-identical to the cleared K1 branch
+    `93e78486`; K3 antigravity bridge + tests byte-identical to `955fa4aa`'s;
+    docs pending/implemented wording flips only at the K1 head.

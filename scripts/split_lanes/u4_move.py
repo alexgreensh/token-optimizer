@@ -536,10 +536,10 @@ PIN = {
         'sha256': 'e675f01b22b12923f412c0404e102faaba94e55fe616987f385b61e5c696bcfc',
     },
     'input': {
-        'commit': '8aa1464db203b78bded10b87f8ecbd2b497f7fad',
+        'commit': 'aa356ec654a1f6fa2e736f1269a412ef5422069b',
         'files': {
             'scripts/measure_split.py':
-                'a25e3b66514ffdcc1ed640f7e763af38db1b8b4518b6917dd1295f1a5c11cd73',
+                '53398444aa02f9eecc09137953d6d13e7b1f97a47c3c724090885ba96dc666e8',
             'scripts/measure_split_manifest.json':
                 'e2708beba9bbd5671b6e492b564ba19006c4e0b27ba7b9fe38eda8d06e73e73f',
             'scripts/measure_split_ownership.json':

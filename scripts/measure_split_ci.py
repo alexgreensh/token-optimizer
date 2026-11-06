@@ -90,6 +90,10 @@ def main():
                    cwd=split.REPO, check=True)
     candidate = work / 'candidate-source'
     extract(candidate_archive, candidate)
+    # A version bump is not a behaviour change: re-stamp the candidate's release
+    # surfaces to BASE's version, then compare byte-exact (Sol audit F1 rev2).
+    golden.restamp(candidate, json.loads(
+        (baseline / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version'])
     rows = json.loads(golden.CASES.read_text())['cases']
     if args.case:
         rows = [row for row in rows if row['id'] in args.case]

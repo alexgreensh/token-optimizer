@@ -27,7 +27,6 @@ import argparse
 import json
 import os
 import platform
-import re
 import sys
 import traceback
 from pathlib import Path
@@ -84,7 +83,7 @@ class Arm:
         return env
 
 
-def install(artifact, arm, sha, npm_cache):
+def install(artifact, arm, sha, npm_cache, restamp_to=None):
     plain = c.product_env(arm.home, arm.case, arm.case)  # installer env: no plugin root yet
     if artifact in ('claude-plugin', 'devin'):
         result = a.install_claude_plugin(arm.tree, arm.home)
@@ -95,7 +94,7 @@ def install(artifact, arm, sha, npm_cache):
                                  arm.project)
     else:
         if sha not in npm_cache:
-            npm_cache[sha] = a.build_npm_tarball(sha, arm.work / 'build')
+            npm_cache[sha] = a.build_npm_tarball(sha, arm.work / 'build', restamp_to=restamp_to)
         tarball, package = npm_cache[sha]
         result = a.install_npm(package, arm.home, plain, arm.project)
         result['tarball'] = tarball.name
@@ -137,63 +136,11 @@ def real_runs(arm, inst, artifact):
     return runs, live_dir
 
 
-def _release_token(install):
-    """The installed payload's own release string; hook argv bakes the versioned
-    cache path, so a version bump alone must not read as a behaviour change."""
-    for rel in ('.claude-plugin/plugin.json', '.codex-plugin/plugin.json'):
-        path = Path(install['root']) / rel
-        if path.is_file():
-            return json.loads(path.read_text(encoding='utf-8'))['version']
-    return None
-
-
-# Only the versioned component of the installed cache path may ever normalize:
-# '<sep>token-optimizer*<sep><release><sep>'. A bare release string anywhere
-# else -- a topic, a session id, a non-path argv value -- stays byte-exact.
-_SEGMENT = r'(?:^|[/\\])token-optimizer[^/\\]*[/\\]'
-
-
-def _unversion(text, version):
-    if not version:
-        return text
-    return re.sub(_SEGMENT + re.escape(version) + r'(?=[/\\])', '\x00release\x00', text)
-
-
-def _unversioned_rows(rows, version):
-    if not version:
-        return rows
-    return [{**row, 'argv': [_unversion(a, version) for a in (row['argv'] or [])]}
-            for row in rows]
-
-
-def _unversioned_errors(errors, before, after, before_version, after_version):
-    """Drop capture diffs whose only change is the install-path version segment.
-    Anything else in the file still fails: normalization is that one component."""
-    real = []
-    for entry in errors:
-        marker = 'bytes differ: '
-        if not entry.startswith(marker):
-            real.append(entry)
-            continue
-        rel = entry[len(marker):]
-        left = _unversion((before / rel).read_bytes().decode('utf-8', 'surrogateescape'),
-                          before_version)
-        right = _unversion((after / rel).read_bytes().decode('utf-8', 'surrogateescape'),
-                           after_version)
-        if left != right:
-            real.append(entry)
-    return real
-
-
 def pinned(arms, insts, artifact, work):
     """U0 golden capture over each installed tree, BASE twice then candidate."""
     rows = golden_rows(DEVIN_ROWS) if artifact == 'devin' else pinned_rows(insts['base'])
-    versions = {}
-    if artifact != 'devin':
-        versions = {label: _release_token(insts[label]) for label in ('base', 'candidate')}
-        if (_unversioned_rows(rows, versions['base'])
-                != _unversioned_rows(pinned_rows(insts['candidate']), versions['candidate'])):
-            return c.check('pinned-equivalence', c.FAIL, 'configured hook entries differ from BASE')
+    if artifact != 'devin' and rows != pinned_rows(insts['candidate']):
+        return c.check('pinned-equivalence', c.FAIL, 'configured hook entries differ from BASE')
     out = work / 'pinned'
     c.remove_tree(out)
     for label, name in (('base', 'base-1'), ('base', 'base-2'), ('candidate', 'candidate')):
@@ -214,18 +161,26 @@ def pinned(arms, insts, artifact, work):
                                                arms['candidate'].tree)
     else:
         errors, identities = c.golden.compare(out / 'base-1', out / 'candidate'), []
-        if versions.get('base') and versions.get('candidate'):
-            errors = _unversioned_errors(errors, out / 'base-1', out / 'candidate',
-                                         versions['base'], versions['candidate'])
     return c.check('pinned-equivalence', c.FAIL if errors else c.PASS, errors[:40] or f'{len(rows)} cases identical',
                    cases=len(rows), verified_source_artifacts=identities)
 
 
 def evaluate(artifact, arms, sha_for, npm_cache, work):
     checks, insts, runs, live = [], {}, {}, {}
+    restamp_to = None
+    if artifact != 'devin':
+        # A version bump is not a behaviour change: install the candidate from a
+        # scratch copy whose release surfaces are re-stamped to BASE's version,
+        # then every compare is byte-exact with no normalization (Sol F1 rev2).
+        restamp_to = c.plugin_version(arms['base'].tree)
+        cand_tree = work / 'candidate-restamped'
+        c.copy_tree(arms['candidate'].tree, cand_tree)
+        c.golden.restamp(cand_tree, restamp_to)
+        arms['candidate'].tree = cand_tree
     for label, arm in arms.items():
         try:
-            insts[label] = install(artifact, arm, sha_for[label], npm_cache)
+            insts[label] = install(artifact, arm, sha_for[label], npm_cache,
+                                   restamp_to=restamp_to if label == 'candidate' else None)
         except a.ArtifactUnavailable as error:
             return {'checks': [c.check('install', c.CANNOT, f'{label}: {error}')], 'live': None}
         except Exception as error:

@@ -257,11 +257,13 @@ def _sandbox_roots():
     roots = [WORK_BASE.resolve()]
     # real_base() creates the base as a side effect of answering -- and walks
     # parents for .git. A read-only check must not touch paths under the real
-    # home, so the same location is resolved here without creating it.
+    # home at all, so the same location is computed as pure path math: no
+    # resolve(), no mkdir, no stat (Path.resolve() calls os.path.realpath,
+    # which lstat's every component and tripped the home guard on CI).
     raw = os.environ.get('TO_SPLIT_VERIFY_HOMES') or (
         os.environ.get('RUNNER_TEMP') and str(Path(os.environ['RUNNER_TEMP']) / 'split-verify-homes'))
     if raw:
-        roots.append(Path(raw).resolve())
+        roots.append(Path(os.path.normpath(raw)))
     return roots
 
 

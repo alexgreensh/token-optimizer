@@ -63,7 +63,7 @@ def install_codex(tree, home, env, cwd):
             'host': 'codex', 'mode': 'committed mirror + codex-install', 'install': c.brief(result)}
 
 
-def build_npm_tarball(sha, work):
+def build_npm_tarball(sha, work, restamp_to=None):
     """The subject commit's own packaging/npm/build.py and `npm pack`, from a
     real checkout so build.py's tracked-file filter sees that commit."""
     npm = shutil.which('npm')
@@ -72,6 +72,8 @@ def build_npm_tarball(sha, work):
     checkout = work / 'npm-checkout'
     c.git('worktree', 'add', '--detach', '--force', str(checkout), sha)
     try:
+        if restamp_to:
+            c.golden.restamp(checkout, restamp_to)
         stage = work / 'npm-stage'
         subprocess.run([sys.executable, str(checkout / 'packaging/npm/build.py'), '--out', str(stage)],
                        cwd=checkout, check=True, capture_output=True)

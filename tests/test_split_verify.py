@@ -264,43 +264,45 @@ def test_next_patch():
     assert c.next_patch('5.13.64') == '5.13.65'
 
 
-def test_pinned_version_normalization_keeps_real_differences(tmp_path):
-    """L4 normalizes ONLY the versioned install-path segment (Sol audit F1).
-    (a) the release in a topic/id/non-path arg still FAILS; (b) the
-    install-path segment alone PASSES; (c) any other diff still FAILS."""
-    import l4_installed as l4
+def test_restamp_rewrites_surfaces_and_keeps_everything_else(tmp_path):
+    """The candidate tree is re-stamped to BASE's release, then compared
+    byte-exact with NO normalization (Sol audit F1 rev2):
+    (b) a discovered surface file IS rewritten;
+    (a) the release string in a non-surface file (topic/id/arg) is NOT;
+    (c) a non-version diff in a surface file makes the self-check fail loudly."""
+    import measure_split_golden as golden  # noqa: E402  (sys.path: scripts/)
+    cand = tmp_path / 'cand'
+    (cand / '.claude-plugin').mkdir(parents=True)
+    (cand / '.claude-plugin' / 'plugin.json').write_text('{"version": "5.13.66"}\n')
+    (cand / 'package.json').write_text('{"name": "x", "version": "5.13.66"}\n')
+    (cand / 'data.json').write_text('{"session_id": "job-5.13.66-x"}\n')
+    surfaces = ['.claude-plugin/plugin.json', 'package.json']
+
+    changed = golden.restamp(cand, '5.13.64', surfaces=surfaces)
+    assert sorted(changed) == surfaces
+    assert '"version": "5.13.64"' in (cand / '.claude-plugin' / 'plugin.json').read_text()
+    assert '"version": "5.13.64"' in (cand / 'package.json').read_text()
+    # (a) a release string outside the surface set is never touched.
+    assert 'job-5.13.66-x' in (cand / 'data.json').read_text()
+
+    # (c) self-check: a surface file whose rewrite is not pure version swap
+    # (a pre-existing BASE token elsewhere) fails loudly instead of normalizing.
+    (cand / '.claude-plugin' / 'plugin.json').write_text('{"version": "5.13.66"}\n')
+    (cand / 'package.json').write_text('{"version": "5.13.66", "note": "was 5.13.64"}\n')
+    with pytest.raises(RuntimeError, match='non-version'):
+        golden.restamp(cand, '5.13.64', surfaces=['package.json'])
+
+
+def test_compare_has_no_normalization_left(tmp_path):
+    """Known-bad for the byte gate itself: identical versioned output passes,
+    any other planted difference still fails (no _unversioned_* anywhere)."""
+    import measure_split_golden as golden  # noqa: E402
     base, cand = tmp_path / 'base', tmp_path / 'cand'
-    (base / 'case-a').mkdir(parents=True)
-    (cand / 'case-a').mkdir(parents=True)
-    roots = ('/home/u/.claude/plugins/cache/mkt/token-optimizer/',
-             'C:\\Users\\u\\.claude\\plugins\\cache\\mkt\\token-optimizer-cowork\\')
-
-    # (b) install-path segment only: normalized on both separators.
-    for root in roots:
-        (base / 'case-a' / 'stdout').write_bytes(('run ' + root + '5.13.64/hooks/run.py\n').encode())
-        (cand / 'case-a' / 'stdout').write_bytes(('run ' + root + '5.13.66/hooks/run.py\n').encode())
-        assert l4._unversioned_errors(
-            ['bytes differ: case-a/stdout'], base, cand, '5.13.64', '5.13.66') == []
-    assert l4._unversioned_rows(
-        [{'argv': [roots[0] + '5.13.64/hooks/run.py']}], '5.13.64'
-    ) == l4._unversioned_rows([{'argv': [roots[0] + '5.13.66/hooks/run.py']}], '5.13.66')
-
-    # (a) release-shaped data outside the install path: still a real diff.
-    (base / 'case-a' / 'stdout').write_bytes(b'{"session_id": "job-5.13.64-x"}')
-    (cand / 'case-a' / 'stdout').write_bytes(b'{"session_id": "job-5.13.66-x"}')
-    (base / 'case-a' / 'exit').write_bytes(b'topic 5.13.640\n')
-    (cand / 'case-a' / 'exit').write_bytes(b'topic 5.13.660\n')
-    errors = ['bytes differ: case-a/stdout', 'bytes differ: case-a/exit', 'missing: case-b']
-    assert l4._unversioned_errors(errors, base, cand, '5.13.64', '5.13.66') == errors
-    assert l4._unversioned_rows([{'argv': ['--session-id', '5.13.64']}], '5.13.64'
-                              ) != l4._unversioned_rows([{'argv': ['--session-id', '5.13.66']}], '5.13.66')
-
-    # (c) a planted non-version change: still a real diff.
-    (base / 'case-a' / 'stdout').write_bytes(b'{"cost": 18}')
-    (cand / 'case-a' / 'stdout').write_bytes(b'{"cost": 19}')
-    assert l4._unversioned_errors(
-        ['bytes differ: case-a/stdout'], base, cand, '5.13.64', '5.13.66'
-    ) == ['bytes differ: case-a/stdout']
+    for side, versioned, other in ((base, 'v5.13.64\n', '0\n'), (cand, 'v5.13.64\n', '1\n')):
+        (side / 'case-a').mkdir(parents=True)
+        (side / 'case-a' / 'stdout').write_bytes(versioned.encode())
+        (side / 'case-a' / 'exit').write_bytes(other.encode())
+    assert golden.compare(base, cand) == ['bytes differ: case-a/exit']
 
 
 # ----------------------------------------------------------------- report

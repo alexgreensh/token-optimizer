@@ -27,6 +27,50 @@ ROOT = Path(__file__).resolve().parents[1]
 CASES = ROOT / 'tests/fixtures/measure_split/cases.json'
 
 
+def version_surfaces(repo):
+    """Files the release bumps touched, discovered from the bump and merge
+    diffs -- never hand-listed, so a new surface is picked up on the next bump."""
+    files = set()
+    for old, new in (('afab5255^', 'afab5255'), ('184df97d^1', '184df97d')):
+        out = subprocess.run(['git', '-C', str(repo), 'diff', '--name-only', old, new],
+                             capture_output=True, text=True, check=True).stdout
+        files.update(line.strip() for line in out.splitlines() if line.strip())
+    return sorted(files)
+
+
+def restamp(tree, base_version, surfaces=None):
+    """Rewrite the candidate tree's release surfaces to BASE's version in place.
+
+    A version bump must not read as a behaviour change: every surface the bump
+    touched is swapped cand_version -> base_version so the byte-exact compare
+    sees identical output. Self-check: a rewritten file may differ only on
+    lines carrying a version token -- anything else means the surface set
+    drifted, and the run fails loudly rather than silently normalizing."""
+    tree = Path(tree)
+    cand_version = json.loads(
+        (tree / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version']
+    if cand_version == base_version:
+        return []
+    if surfaces is None:
+        surfaces = version_surfaces(ROOT)
+    changed = []
+    for rel in surfaces:
+        path = tree / rel
+        if not path.is_file():
+            continue
+        old = path.read_bytes()
+        if cand_version.encode() not in old:
+            continue
+        new = old.replace(cand_version.encode(), base_version.encode())
+        # Round-trip proof: applying the reverse swap must return the input
+        # byte-for-byte -- anything else is a non-version difference.
+        if new.replace(base_version.encode(), cand_version.encode()) != old:
+            raise RuntimeError(f'restamp touched non-version bytes in {rel}')
+        path.write_bytes(new)
+        changed.append(rel)
+    return changed
+
+
 def compare(expected, actual):
     """No path rewriting, output sorting, dollar rounding, or line stripping."""
     left, right = Path(expected), Path(actual)

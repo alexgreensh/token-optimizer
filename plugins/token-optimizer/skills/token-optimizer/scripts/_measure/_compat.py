@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
+import importlib.machinery
 import sys
 import threading
 from types import ModuleType
@@ -34,13 +34,15 @@ def prepare(module):
     """Select the active facade and give this initialization fresh definitions.
 
     Ordinary reload creates fresh functions without changing functions already
-    exported by a previous facade. Providers carry no business state.
-    DEFERRED_MODULES load on first use, still fresh for this initialization.
+    exported by a previous facade. Providers carry no business state. Only an
+    initialization the UserPromptSubmit runner flags (HOOK_IMPORT, consumed
+    here) loads DEFERRED_MODULES on first use; every other one is eager.
     """
-    from . import DEFERRED_MODULES, DOMAIN_MODULES, MAIN_MODULES
+    from . import DEFERRED_MODULES, DOMAIN_MODULES
+    package = sys.modules[__package__]
+    hook, package.HOOK_IMPORT = getattr(package, 'HOOK_IMPORT', False) is True, False
     sys.modules['measure'] = module
-    main = getattr(module, '__name__', None) == '__main__'
-    providers = Providers(n for n in DOMAIN_MODULES if n in DEFERRED_MODULES and not (main and n in MAIN_MODULES))
+    providers = Providers(n for n in DOMAIN_MODULES if hook and n in DEFERRED_MODULES)
     for name in DOMAIN_MODULES:
         if name in providers.deferred:
             _require(name)
@@ -51,15 +53,14 @@ def prepare(module):
 
 def _fresh(name):
     qualified = __package__ + '.' + name
-    if qualified in sys.modules:
-        return importlib.reload(sys.modules[qualified])
-    return importlib.import_module(qualified)
+    return importlib.reload(sys.modules[qualified]) if qualified in sys.modules else importlib.import_module(qualified)
 
 
 def _require(name):
-    """A deferred provider that is missing still fails the facade import."""
+    """A deferred provider that is missing still fails the facade import, also
+    when an earlier one is cached: search the package path, not sys.modules."""
     qualified = __package__ + '.' + name
-    if qualified not in sys.modules and importlib.util.find_spec(qualified) is None:
+    if importlib.machinery.PathFinder.find_spec(qualified, sys.modules[__package__].__path__) is None:
         raise ModuleNotFoundError(f'No module named {qualified!r}', name=qualified)
 
 
@@ -72,9 +73,9 @@ class Providers(dict):
         self.pending, self.namespace = {}, None
 
     def __missing__(self, name):
-        if name not in self.deferred:
-            raise KeyError(name)
-        return _Domain(self, name)
+        if name in self.deferred:
+            return _Domain(self, name)
+        raise KeyError(name)
 
     def load(self, name):
         with _LOCK:
@@ -83,15 +84,15 @@ class Providers(dict):
             provider = self[name] = _fresh(name)
             for key, binding in list(self.pending.items()):
                 if binding.domain == name:
-                    self.namespace[key] = binding.resolve()
+                    value = binding.resolve()
+                    if key not in self.namespace:  # a caller's assignment wins
+                        self.namespace[key] = value
                     del self.pending[key]
             return provider
 
 
 class _Domain:
     """A deferred domain not loaded yet: attributes name its definitions."""
-    __slots__ = ('providers', 'domain')
-
     def __init__(self, providers, domain):
         self.providers, self.domain = providers, domain
 
@@ -113,7 +114,7 @@ class _Binding:
         return self.value
 
     def __call__(self, *args, **kwargs):  # only before its sweep; adds a traceback frame
-        if self.options is None:  # a direct provider call outside __main__
+        if self.options is None:  # a direct provider call, e.g. the facade's __main__ guard
             return getattr(self.providers.load(self.domain), self.attr)(*args, **kwargs)
         return self.resolve()(*args, **kwargs)
 
@@ -122,12 +123,12 @@ def _sweep():
     """Move assigned deferred bindings out of their facade namespace. A lookup
     then misses and module __getattr__ (PEP 562) loads the domain."""
     with _LOCK:
-        waiting = []
+        waiting = []  # bindings whose statement has not assigned them yet
         while _UNSWEPT:
             binding = _UNSWEPT.pop()
             namespace, providers = binding.namespace, binding.providers
             if namespace.get(binding.attr) is not binding:
-                waiting.append(binding)  # its statement has not assigned it yet
+                waiting.append(binding)
             elif binding.value is not None or dict.__contains__(providers, binding.domain):
                 namespace[binding.attr] = binding.resolve()
             else:
@@ -154,8 +155,8 @@ def _lookups(namespace, providers):
 
 
 def bind(value, module_name, *, defaults=None, kwdefaults=None, decorators=()):
-    """Bind captured defaults, identity and decorators at the old source site.
-    A deferred definition is recorded for its facade (the caller's globals)."""
+    """Bind captured defaults, identity and decorators at the old source site;
+    a deferred definition is recorded for its facade (the caller's globals)."""
     if _UNSWEPT:
         _sweep()
     if isinstance(value, _Binding):

@@ -294,7 +294,7 @@ def test_context_window_cache_is_written_and_read_on_the_facade(m, monkeypatch):
     assert m.detect_context_window() == (150000, 'cli: --context-size')
     assert m._context_window_cache[1] == (150000, 'cli: --context-size')
     if not os.environ.get('MEASURE_SPLIT_SOURCE'):
-        provider = m._measure_providers.load('audit')  # deferred: loads on first lookup
+        provider = sys.modules['_measure.audit']
         assert not [n for n in vars(provider) if 'cache' in n.lower() and not n.startswith('__')], 'the provider holds no cache'
 
 

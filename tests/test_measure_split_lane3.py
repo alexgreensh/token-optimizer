@@ -97,7 +97,7 @@ def test_provider_is_definition_only_with_no_copied_state():
 
 
 def test_facade_exports_are_fresh_provider_functions_with_frozen_signatures(m):
-    provider = m._measure_providers.load('savings')  # deferred: loads on first lookup
+    provider = sys.modules['_measure.savings']
     for row in _packet()['symbols']:
         live = getattr(m, row['name'])
         assert Path(live.__code__.co_filename).resolve() == PROVIDER.resolve(), row['name']
@@ -112,7 +112,7 @@ def test_facade_exports_are_fresh_provider_functions_with_frozen_signatures(m):
 
 
 def test_provider_module_holds_no_business_attributes(m):
-    provider = m._measure_providers.load('savings')  # deferred: loads on first lookup
+    provider = sys.modules['_measure.savings']
     extra = {name for name, value in vars(provider).items()
              if not name.startswith('__') and name != '_compat' and not inspect.isfunction(value)}
     assert extra == {'annotations'} or not extra

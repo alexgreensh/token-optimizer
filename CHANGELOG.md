@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fix the installer failing its own integrity check on older git. On git versions where `sparse-checkout set` does not default to cone mode (verified on git 2.34.1), the sparse checkout silently dropped root files including install.sh, so the release checksums did not match and every verified install aborted with "Your install may be compromised". Cone mode is now enabled explicitly for new clones, update candidates and existing non-cone installs.
+
 ## [5.13.66] - 2026-11-06
 
 - Token Optimizer's engine is now split into smaller modules, so it loads faster and is easier to keep reliable. Same results, same savings.

@@ -127,3 +127,175 @@ def test_posix_capture_must_prove_the_devin_install_delta(platform, ids, identit
     assert (error is not None) is refused
     if refused:
         assert 'trusted' in error
+
+
+# ---- Generic verbatim-copy faithfulness (declared-module adapters) ----
+
+VERBATIM_INSTALLER = '"""fixture installer"""\n_PAYLOAD_MODULES = (\n    "mod_one.py",\n    "mod_two.py",\n)\n'
+VCASE = 'cli-antigravity-install'
+VPLUGIN = VCASE + '/files/.gemini/config/plugins/token-optimizer'
+
+
+@pytest.fixture
+def vpair(tmp_path):
+    roots = [tmp_path / name for name in ('base-source', 'candidate-source')]
+    captures = [tmp_path / name for name in ('expected', 'actual')]
+    for root, capture in zip(roots, captures):
+        scripts = root / 'skills/token-optimizer/scripts'
+        scripts.mkdir(parents=True)
+        (scripts / 'antigravity_install.py').write_text(VERBATIM_INSTALLER)
+        (scripts / 'mod_one.py').write_text('VALUE = 1\n')
+        (scripts / 'mod_two.py').write_text('OTHER = 2\n')
+        plugin = capture / VPLUGIN
+        plugin.mkdir(parents=True)
+        for name in ('mod_one.py', 'mod_two.py'):
+            (plugin / name).write_bytes((scripts / name).read_bytes())
+        (plugin / 'hooks.json').write_text('{"hooks": true}\n')
+        (capture / VCASE / 'stdout').write_bytes(b'installed\n')
+    return captures, roots
+
+
+def _change_module(vpair, name, text):
+    captures, roots = vpair
+    source = roots[1] / 'skills/token-optimizer/scripts' / name
+    source.write_text(text)
+    (captures[1] / VPLUGIN / name).write_bytes(source.read_bytes())
+
+
+def test_verbatim_module_change_is_verified(vpair):
+    _change_module(vpair, 'mod_one.py', 'VALUE = 2\n')
+    errors, identities = artifacts.compare_candidate(*vpair[0], *vpair[1])
+    assert errors == []
+    assert identities == ['bytes differ: ' + VPLUGIN + '/mod_one.py']
+
+
+def test_unrelated_faithful_copies_are_verified(vpair):
+    _change_module(vpair, 'mod_one.py', 'VALUE = 2\n')
+    _change_module(vpair, 'mod_two.py', 'OTHER = 3\n')
+    errors, identities = artifacts.compare_candidate(*vpair[0], *vpair[1])
+    assert errors == [] and len(identities) == 2
+
+
+def test_installer_list_edit_fails_acceptance(vpair):
+    _change_module(vpair, 'mod_one.py', 'VALUE = 2\n')
+    installer = vpair[1][1] / 'skills/token-optimizer/scripts/antigravity_install.py'
+    installer.write_text(installer.read_text().replace('"mod_two.py",', '"mod_two.py",\n    "mod_three.py",'))
+    errors, identities = artifacts.compare_candidate(*vpair[0], *vpair[1])
+    assert errors and identities == []
+
+
+def test_corrupt_copy_is_not_exempted(vpair):
+    _change_module(vpair, 'mod_one.py', 'VALUE = 2\n')
+    (vpair[0][1] / VPLUGIN / 'mod_one.py').write_text('VALUE = 2  # corrupted copy\n')
+    errors, identities = artifacts.compare_candidate(*vpair[0], *vpair[1])
+    assert errors and identities == []
+
+
+def test_unmapped_neighbor_difference_stands(vpair):
+    _change_module(vpair, 'mod_one.py', 'VALUE = 2\n')
+    (vpair[0][1] / VPLUGIN / 'hooks.json').write_text('{"hooks": false}\n')
+    errors, identities = artifacts.compare_candidate(*vpair[0], *vpair[1])
+    assert errors == ['bytes differ: ' + VPLUGIN + '/hooks.json']
+    assert identities == ['bytes differ: ' + VPLUGIN + '/mod_one.py']
+
+
+def test_observed_difference_without_source_change_fails(vpair):
+    (vpair[0][1] / VPLUGIN / 'mod_one.py').write_text('VALUE = 9\n')
+    errors, identities = artifacts.compare_candidate(*vpair[0], *vpair[1])
+    assert errors and identities == []
+
+
+def test_user_output_difference_still_fails(vpair):
+    _change_module(vpair, 'mod_one.py', 'VALUE = 2\n')
+    (vpair[0][1] / VCASE / 'stdout').write_bytes(b'tampered\n')
+    errors, identities = artifacts.compare_candidate(*vpair[0], *vpair[1])
+    assert errors == ['bytes differ: ' + VCASE + '/stdout']
+    assert identities == ['bytes differ: ' + VPLUGIN + '/mod_one.py']
+
+
+# ---- Per-shard installed-source accounting ----
+
+def _guard(vpair, ids, raw, identities, platform, expected=None):
+    return artifacts.installed_source_proof_error(ids, raw, identities, *vpair[1],
+                                                  expected or vpair[0][0], platform=platform)
+
+
+def test_posix_vacuous_install_case_is_an_error(vpair):
+    _ = vpair[0]
+    source = vpair[1][1] / 'skills/token-optimizer/scripts/mod_one.py'
+    source.write_text('VALUE = 2\n')
+    error = _guard(vpair, [VCASE], [], [], 'posix')
+    assert error and 'trusted' in error and VCASE in error
+
+
+def test_windows_native_refusal_is_accepted(vpair):
+    source = vpair[1][1] / 'skills/token-optimizer/scripts/mod_one.py'
+    source.write_text('VALUE = 2\n')
+    assert _guard(vpair, [VCASE], [], [], 'nt') is None
+
+
+def test_verified_delta_satisfies_accounting(vpair):
+    _change_module(vpair, 'mod_one.py', 'VALUE = 2\n')
+    _, identities = artifacts.compare_candidate(*vpair[0], *vpair[1])
+    assert _guard(vpair, [VCASE], identities, identities, 'posix') is None
+
+
+def test_raw_difference_speaks_for_itself(vpair):
+    source = vpair[1][1] / 'skills/token-optimizer/scripts/mod_one.py'
+    source.write_text('VALUE = 2\n')
+    raw = ['bytes differ: ' + VPLUGIN + '/mod_one.py']
+    assert _guard(vpair, [VCASE], raw, [], 'posix') is None
+
+
+def test_unselected_case_needs_no_accounting(vpair):
+    source = vpair[1][1] / 'skills/token-optimizer/scripts/mod_one.py'
+    source.write_text('VALUE = 2\n')
+    assert _guard(vpair, ['cli---version'], [], [], 'posix') is None
+
+
+def test_unchanged_sources_need_no_accounting(vpair):
+    assert _guard(vpair, [VCASE], [], [], 'posix') is None
+
+
+def test_changed_installer_still_accounts_for_vacuity(vpair, tmp_path):
+    """An installer edit forbids blessing AND makes the delta unpredictable:
+    a case that then left no artifacts (POSIX refusal) must error, even when
+    no module changed - the edit needs a trusted capture, not a silent pass."""
+    installer = vpair[1][1] / 'skills/token-optimizer/scripts/antigravity_install.py'
+    installer.write_text(installer.read_text().replace('"mod_two.py",', '"mod_two.py",\n    "mod_three.py",'))
+    error = _guard(vpair, [VCASE], [], [], 'posix', expected=tmp_path / 'empty')
+    assert error and VCASE in error and 'trusted' in error
+
+
+def test_changed_installer_with_artifacts_and_no_difference_is_fine(vpair):
+    """Equal captures from a changed installer are ordinary frozen behavior."""
+    installer = vpair[1][1] / 'skills/token-optimizer/scripts/antigravity_install.py'
+    installer.write_text(installer.read_text().replace('"mod_two.py",', '"mod_two.py",\n    "mod_three.py",'))
+    assert _guard(vpair, [VCASE], [], [], 'posix') is None
+
+
+def test_changed_installer_with_observed_difference_speaks(vpair):
+    installer = vpair[1][1] / 'skills/token-optimizer/scripts/antigravity_install.py'
+    installer.write_text(installer.read_text().replace('"mod_two.py",', '"mod_two.py",\n    "mod_three.py",'))
+    source = vpair[1][1] / 'skills/token-optimizer/scripts/mod_one.py'
+    source.write_text('VALUE = 2\n')
+    raw = ['bytes differ: ' + VPLUGIN + '/mod_one.py']
+    assert _guard(vpair, [VCASE], raw, [], 'posix') is None
+
+
+def test_judge_repro_installer_edit_plus_module_change_plus_refusal(vpair, tmp_path):
+    """Exact HOLD repro: candidate edits the installer AND a module, POSIX
+    refusal makes both captures identical - this must never be silent green."""
+    installer = vpair[1][1] / 'skills/token-optimizer/scripts/antigravity_install.py'
+    installer.write_text(installer.read_text().replace('"mod_two.py",', '"mod_two.py",\n    "mod_three.py",'))
+    (vpair[1][1] / 'skills/token-optimizer/scripts/mod_one.py').write_text('VALUE = 2\n')
+    error = _guard(vpair, [VCASE], [], [], 'posix', expected=tmp_path / 'empty')
+    assert error and VCASE in error
+
+
+def test_changed_devin_renderer_plus_refusal_is_an_error(pair, tmp_path):
+    installer = pair[1][1] / 'skills/token-optimizer/scripts/devin_install.py'
+    installer.write_text(installer.read_text().replace('read_bytes()', 'read_bytes() + b"x"'))
+    error = artifacts.installed_source_proof_error(['cli-devin-install'], [], [], *pair[1],
+                                                   tmp_path / 'empty', platform='posix')
+    assert error and 'cli-devin-install' in error

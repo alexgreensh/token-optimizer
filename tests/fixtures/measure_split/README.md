@@ -53,14 +53,24 @@ rows rather than comparing SQLite layout bytes. Five end-to-end planted mutation
 that a JSON field, dollar amount, statusline character, hook envelope or exit-code
 change is detected.
 
-Installed executable source is also checked against its input payload. Devin's
-required `_measure` refusal-root addition changes its installed source and that
-file's SHA commitment. Those two internal code artifacts remain in the raw
-captures. A separate check accepts only that AST change, uses the unchanged
-released installer renderer, verifies every manifest commitment, and compares
-all remaining manifest bytes exactly. User outputs, settings and errors have no
-such allowance. Negative controls reject wrong source, hashes, metadata and
-dollar figures.
+Installed executable source is NOT frozen byte-for-byte: adapters install the
+tree's own modules, so a deliberate source fix changes those installed bytes.
+The frozen guarantee is source-copy FAITHFULNESS, proven independently of the
+captures. Devin's closed payload must re-render from both trees with an
+AST-identical released renderer, a differing `devin_source.py` is still
+AST-limited to the mandated `_measure` refusal-root addition, and the install
+manifest is re-verified commitment by commitment with only the proven modules'
+digests masked. The verbatim adapters (antigravity, copilot, cursor, grok,
+hermes) must have an AST-identical installer whose BASE-declared module list
+predicts exactly the observed differences, two ways, with every differing
+installed file hashing to exactly its tree's source bytes. An installer or
+renderer edit, an unmapped file, a changed destination, a corrupt copy, or a
+missing/extra difference fails closed. User outputs, settings and errors have
+no allowance. On POSIX a changed, selected install case must leave verified
+artifacts: a silent pass means the installer refused the sandbox interpreter
+and the proof is vacuous. Negative controls reject wrong source, hashes,
+metadata, installer edits and dollar figures. Not yet mapped (fail closed):
+the Codex Windows-only launcher copy and the Hermes `hermes/` payload tree.
 
 `measure_split_ci.py` checks the actual offline npm tarball, a read-only installed
 payload, the real CLI/hook launcher, BASE self-equality and candidate equality.

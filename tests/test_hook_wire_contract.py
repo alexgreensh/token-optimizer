@@ -695,11 +695,11 @@ def test_hooks_run_when_path_has_no_bash(harness, sandbox):
     path = scheduler_shim_dirs()
     entries = harness_entries(harness, sandbox)
     failures = []
-    for event, mp in (("SessionStart", None), ("PreToolUse", "Read"), ("PostToolUse", None)):
-        try:
-            e = pick(entries, event, matcher_prefix=mp)
-        except AssertionError:
-            continue  # codex-global has no SessionStart-less variant; cowork has no SessionStart
+    # Codex global exposes Bash-only PreToolUse; plugin manifests expose Read.
+    pre_matcher = "Bash" if harness == "codex-global" else "Read"
+    required = [("UserPromptSubmit", None), ("PreToolUse", pre_matcher), ("PostToolUse", None)]
+    for event, mp in required:
+        e = pick(entries, event, matcher_prefix=mp)
         r = fire_entry(sandbox, e, harness_env(harness, sandbox, path=path))
         if r.rc != 0 or not r.ran(*e.expected_handler()) or stdout_problem(harness, e.event, r.out):
             failures.append(f"{e.id}\n{r}")

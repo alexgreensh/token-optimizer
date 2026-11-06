@@ -255,8 +255,13 @@ def case_dir(work):
 
 def _sandbox_roots():
     roots = [WORK_BASE.resolve()]
-    if os.environ.get('TO_SPLIT_VERIFY_HOMES') or os.environ.get('RUNNER_TEMP'):
-        roots.append(real_base())
+    # real_base() creates the base as a side effect of answering -- and walks
+    # parents for .git. A read-only check must not touch paths under the real
+    # home, so the same location is resolved here without creating it.
+    raw = os.environ.get('TO_SPLIT_VERIFY_HOMES') or (
+        os.environ.get('RUNNER_TEMP') and str(Path(os.environ['RUNNER_TEMP']) / 'split-verify-homes'))
+    if raw:
+        roots.append(Path(raw).resolve())
     return roots
 
 

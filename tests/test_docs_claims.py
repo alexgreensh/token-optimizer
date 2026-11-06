@@ -31,6 +31,27 @@ def test_docs_claims_match_code():
     )
 
 
+def test_ground_truth_covers_the_split_modules_and_still_refuses_a_miss():
+    """The facade delegates to _measure/* after the split: a pattern that moved
+    there must be found, and a pattern that exists nowhere must still fail."""
+    import importlib.util
+    import re
+
+    spec = importlib.util.spec_from_file_location("check_docs_claims_under_test", CHECKER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    pattern = r'best\["confidence"\] < ([0-9]+(?:\.[0-9]+)?)'
+    facade = (REPO / module._MEASURE).read_text(encoding="utf-8")
+    assert not re.search(pattern, facade), "the firing floor moved out of the facade"
+    assert module._source_value(module._MEASURE, pattern, "loop-warning firing floor") > 0
+
+    import pytest
+    with pytest.raises(RuntimeError, match="ground truth for planted-miss"):
+        module._source_value(
+            module._MEASURE, r"planted_miss_9z9z\( (\d+) \)", "planted-miss")
+
+
 def test_docs_claim_exclusions_match_windows_separators(monkeypatch):
     import importlib.util
 

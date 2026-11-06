@@ -176,15 +176,43 @@ CLAIMS = [
 # --------------------------------------------------------------------------
 
 def _source_value(relpath: str, pattern: str, what: str) -> float:
-    src = (REPO / relpath).read_text(encoding="utf-8")
-    m = re.search(pattern, src)
-    if not m:
-        raise RuntimeError(f"ground truth for {what} not found in {relpath} "
+    if relpath == _MEASURE:
+        src = _measure_source()
+        where = "measure.py + _measure/*.py (+ mirror copies)"
+        values = {float(v) for v in re.findall(pattern, src)}
+    else:
+        src = (REPO / relpath).read_text(encoding="utf-8")
+        where = relpath
+        values = {float(v) for v in re.findall(pattern, src)}
+    if not values:
+        raise RuntimeError(f"ground truth for {what} not found in {where} "
                            f"(pattern {pattern!r})")
-    return float(m.group(1))
+    if len(values) > 1:
+        raise RuntimeError(f"ground truth for {what} disagrees across {where}: {sorted(values)}")
+    return values.pop()
 
 
 _MEASURE = "skills/token-optimizer/scripts/measure.py"
+# After the split the facade delegates to _measure/*.py, so its ground truth is
+# the facade plus every provider -- and the Codex and Cowork mirror copies of the
+# same files (check-mirror-sync keeps them byte-identical). One combined source,
+# and copies disagreeing on a value fail loudly rather than passing on whichever
+# file the regex happened to hit first.
+_MEASURE_TREES = (
+    "skills/token-optimizer/scripts",
+    "plugins/token-optimizer/skills/token-optimizer/scripts",
+    "cowork/token-optimizer/skills/token-optimizer/scripts",
+)
+
+
+def _measure_source() -> str:
+    parts = []
+    for tree in _MEASURE_TREES:
+        base = REPO / tree
+        parts.append((base / "measure.py").read_text(encoding="utf-8"))
+        for path in sorted((base / "_measure").glob("*.py")):
+            parts.append(path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 _ARCHIVER = "skills/token-optimizer/scripts/archive_result.py"
 _REGISTRY = "skills/token-optimizer/scripts/detectors/registry.py"
 _FLEET = "skills/fleet-auditor/scripts/fleet.py"

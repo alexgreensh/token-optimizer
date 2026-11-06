@@ -254,12 +254,12 @@ def case_dir(work):
 
 
 def _sandbox_roots():
-    roots = [WORK_BASE.resolve()]
-    # real_base() creates the base as a side effect of answering -- and walks
-    # parents for .git. A read-only check must not touch paths under the real
-    # home at all, so the same location is computed as pure path math: no
-    # resolve(), no mkdir, no stat (Path.resolve() calls os.path.realpath,
-    # which lstat's every component and tripped the home guard on CI).
+    # Lexical path math only: no resolve(), no mkdir, no stat. WORK_BASE is
+    # already an absolute canonical path built at import; real_base() creates
+    # the install base lazily where installs happen, so a read-only check must
+    # not touch any path under the real home (Path.resolve() realpaths and
+    # lstat's components, which the home guard flagged on CI).
+    roots = [WORK_BASE]
     raw = os.environ.get('TO_SPLIT_VERIFY_HOMES') or (
         os.environ.get('RUNNER_TEMP') and str(Path(os.environ['RUNNER_TEMP']) / 'split-verify-homes'))
     if raw:

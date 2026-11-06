@@ -264,45 +264,74 @@ def test_next_patch():
     assert c.next_patch('5.13.64') == '5.13.65'
 
 
-def test_restamp_rewrites_surfaces_and_keeps_everything_else(tmp_path):
-    """The candidate tree is re-stamped to BASE's release, then compared
-    byte-exact with NO normalization (Sol audit F1 rev2):
-    (b) a discovered surface file IS rewritten;
-    (a) the release string in a non-surface file (topic/id/arg) is NOT;
-    (c) a non-version diff in a surface file makes the self-check fail loudly."""
-    import measure_split_golden as golden  # noqa: E402  (sys.path: scripts/)
+def test_restamp_edits_exact_version_fields_only(tmp_path):
+    """Exact-field restamp (Sol audit F1 rev3): JSON "version" fields and
+    *VERSION* assignment literals are rewritten; release-shaped text anywhere
+    else -- a description, an id, a longer token -- is byte-preserved."""
+    import measure_split_golden as golden  # noqa: E402
     cand = tmp_path / 'cand'
     (cand / '.claude-plugin').mkdir(parents=True)
-    (cand / '.claude-plugin' / 'plugin.json').write_text('{"version": "5.13.66"}\n')
-    (cand / 'package.json').write_text('{"name": "x", "version": "5.13.66"}\n')
-    (cand / 'data.json').write_text('{"session_id": "job-5.13.66-x"}\n')
-    surfaces = ['.claude-plugin/plugin.json', 'package.json']
+    (cand / '.claude-plugin' / 'plugin.json').write_text('{\n  "version": "5.13.66"\n}\n')
+    (cand / 'package.json').write_text(
+        '{\n  "name": "x",\n  "version": "5.13.66",\n'
+        '  "description": "job-5.13.66-x",\n  "other": "5.13.660"\n}\n')
+    (cand / 'code.ts').write_text(
+        "export const CORE_VERSION = '5.13.66';\nconst NOTE = 'uses 5.13.66 inline';\n")
+    (cand / 'CHANGELOG.md').write_text('## [5.13.66] - today\n')
 
-    changed = golden.restamp(cand, '5.13.64', surfaces=surfaces)
-    assert sorted(changed) == surfaces
-    assert '"version": "5.13.64"' in (cand / '.claude-plugin' / 'plugin.json').read_text()
-    assert '"version": "5.13.64"' in (cand / 'package.json').read_text()
-    # (a) a release string outside the surface set is never touched.
-    assert 'job-5.13.66-x' in (cand / 'data.json').read_text()
-
-    # (c) self-check: a surface file whose rewrite is not pure version swap
-    # (a pre-existing BASE token elsewhere) fails loudly instead of normalizing.
-    (cand / '.claude-plugin' / 'plugin.json').write_text('{"version": "5.13.66"}\n')
-    (cand / 'package.json').write_text('{"version": "5.13.66", "note": "was 5.13.64"}\n')
-    with pytest.raises(RuntimeError, match='non-version'):
-        golden.restamp(cand, '5.13.64', surfaces=['package.json'])
+    changed = golden.restamp(cand, '5.13.64',
+                             surfaces=['.claude-plugin/plugin.json', 'package.json', 'code.ts'])
+    assert sorted(changed) == ['.claude-plugin/plugin.json', 'code.ts', 'package.json']
+    text = (cand / 'package.json').read_text()
+    assert '"version": "5.13.64"' in text
+    assert 'job-5.13.66-x' in text, 'a description is not a version field'
+    assert '5.13.660' in text, 'a longer token is not an exact match'
+    code = (cand / 'code.ts').read_text()
+    assert "CORE_VERSION = '5.13.64'" in code
+    assert "uses 5.13.66 inline" in code, 'a non-assignment literal is untouched'
+    assert '[5.13.66]' in (cand / 'CHANGELOG.md').read_text(), 'markdown is never restamped'
 
 
-def test_compare_has_no_normalization_left(tmp_path):
-    """Known-bad for the byte gate itself: identical versioned output passes,
-    any other planted difference still fails (no _unversioned_* anywhere)."""
+def test_restamp_keeps_a_planted_non_version_change_failing(tmp_path):
+    """Sol's planted description survives restamp and still fails the byte
+    compare: job-5.13.64-x -> job-5.13.66-x is a real product change."""
     import measure_split_golden as golden  # noqa: E402
     base, cand = tmp_path / 'base', tmp_path / 'cand'
-    for side, versioned, other in ((base, 'v5.13.64\n', '0\n'), (cand, 'v5.13.64\n', '1\n')):
-        (side / 'case-a').mkdir(parents=True)
-        (side / 'case-a' / 'stdout').write_bytes(versioned.encode())
-        (side / 'case-a' / 'exit').write_bytes(other.encode())
-    assert golden.compare(base, cand) == ['bytes differ: case-a/exit']
+    for side, version, desc in ((base, '5.13.64', 'job-5.13.64-x'),
+                                (cand, '5.13.66', 'job-5.13.66-x')):
+        (side / '.claude-plugin').mkdir(parents=True)
+        (side / 'package.json').parent.mkdir(parents=True, exist_ok=True)
+        (side / '.claude-plugin' / 'plugin.json').write_text(f'{{\n  "version": "{version}"\n}}\n')
+        (side / 'package.json').write_text(
+            f'{{\n  "version": "{version}",\n  "description": "{desc}"\n}}\n')
+    golden.restamp(cand, '5.13.64', surfaces=['package.json'])
+    assert '"version": "5.13.64"' in (cand / 'package.json').read_text()
+    assert 'job-5.13.66-x' in (cand / 'package.json').read_text()
+    assert golden.compare(base, cand) != [], 'the planted non-version change must still fail'
+
+
+def test_real_tree_restamp_plan_equals_the_bump_fields():
+    """Actual default discovery on THIS tree: every planned edit equals exactly
+    a version-field line the release bump changed (N edits == N bump fields)."""
+    import measure_split_golden as golden  # noqa: E402
+    fields = golden.bump_version_fields(REPO)
+    assert len(fields) >= 9, fields
+    cand = json.loads((REPO / '.claude-plugin' / 'plugin.json').read_text())['version']
+    planned = golden._plan(REPO, fields, cand)
+    assert set(planned) == fields, (sorted(set(planned) - fields), sorted(fields - set(planned)))
+
+
+def test_sandbox_roots_are_lexical_only(monkeypatch):
+    """_sandbox_roots must not touch the filesystem: Path.resolve, os.stat and
+    os.lstat are patched to raise for the whole call (Sol A2 finding 3)."""
+    def boom(*args, **kwargs):
+        raise AssertionError('filesystem access in _sandbox_roots')
+    monkeypatch.setattr(Path, 'resolve', boom)
+    monkeypatch.setattr(os, 'stat', boom)
+    monkeypatch.setattr(os, 'lstat', boom)
+    monkeypatch.setenv('RUNNER_TEMP', '/home/runner/work/_temp')
+    roots = c._sandbox_roots()
+    assert roots == [c.WORK_BASE, Path('/home/runner/work/_temp/split-verify-homes')]
 
 
 # ----------------------------------------------------------------- report

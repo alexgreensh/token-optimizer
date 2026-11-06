@@ -13,6 +13,7 @@ import hashlib
 import json
 import marshal
 import os
+import re
 from pathlib import Path
 import shutil
 import sqlite3
@@ -27,48 +28,90 @@ ROOT = Path(__file__).resolve().parents[1]
 CASES = ROOT / 'tests/fixtures/measure_split/cases.json'
 
 
-def version_surfaces(repo):
-    """Files the release bumps touched, discovered from the bump and merge
-    diffs -- never hand-listed, so a new surface is picked up on the next bump."""
-    files = set()
+# Exact version fields only, never a blanket replace: JSON `"version": "x.y.z"`
+# lines and code assignment lines whose identifier matches [A-Z_]*VERSION[A-Z_]*
+# with the release as the whole quoted literal. Markdown is never touched.
+_MD = ('.md', '.mdx', '.markdown')
+_JSON_FIELD = re.compile(r'^\s*"version"\s*:\s*"([^"]+)"\s*,?\s*$')
+_CODE_FIELD = re.compile(r'^\s*(?:export\s+)?(?:const|var|let)?\s*'
+                         r'([A-Z_]*VERSION[A-Z_]*)\s*[:=]\s*[\'"]([^\'"]+)[\'"]')
+
+
+def _version_field(line):
+    """(field-key, value) when the line is an exact version field, else None."""
+    match = _JSON_FIELD.match(line)
+    if match:
+        return 'version', match.group(1)
+    match = _CODE_FIELD.match(line)
+    if match:
+        return match.group(1), match.group(2)
+    return None
+
+
+def bump_version_fields(repo):
+    """(file, field-key) pairs the release bumps changed, derived from the
+    afab5255 bump diff and the 184df97d merge diff -- never hand-listed."""
+    fields = set()
     for old, new in (('afab5255^', 'afab5255'), ('184df97d^1', '184df97d')):
-        out = subprocess.run(['git', '-C', str(repo), 'diff', '--name-only', old, new],
+        out = subprocess.run(['git', '-C', str(repo), 'diff', '--unified=0', old, new],
                              capture_output=True, text=True, check=True).stdout
-        files.update(line.strip() for line in out.splitlines() if line.strip())
-    return sorted(files)
+        rel = None
+        for line in out.splitlines():
+            if line.startswith('+++'):
+                rel = line[4:].lstrip('b/')
+            elif line.startswith('+') and rel and not rel.endswith(_MD):
+                field = _version_field(line[1:])
+                if field:
+                    fields.add((rel, field[0]))
+    return fields
+
+
+def _plan(tree, fields, cand_version):
+    """(file, field-key) -> lineno of every exact version field whose value is
+    the candidate release, inside the expected files only."""
+    planned = {}
+    for rel in sorted({r for r, _ in fields}):
+        path = Path(tree) / rel
+        if not path.is_file():
+            continue
+        for lineno, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+            field = _version_field(line)
+            if field and field[1] == cand_version:
+                planned[(rel, field[0])] = lineno
+    return planned
 
 
 def restamp(tree, base_version, surfaces=None):
-    """Rewrite the candidate tree's release surfaces to BASE's version in place.
+    """Re-stamp only exact version fields to BASE's release, nothing else.
 
-    A version bump must not read as a behaviour change: every surface the bump
-    touched is swapped cand_version -> base_version so the byte-exact compare
-    sees identical output. Self-check: a rewritten file may differ only on
-    lines carrying a version token -- anything else means the surface set
-    drifted, and the run fails loudly rather than silently normalizing."""
+    Validates BEFORE any write: the planned (file, field) edits must equal the
+    version-field set the release bumps changed; a drifted surface set raises.
+    With an explicit ``surfaces`` list (tests), those files are edited under the
+    same field rule and the bump-set validation is the caller's."""
     tree = Path(tree)
     cand_version = json.loads(
         (tree / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version']
     if cand_version == base_version:
         return []
-    if surfaces is None:
-        surfaces = version_surfaces(ROOT)
+    expected = bump_version_fields(ROOT) if surfaces is None else None
+    fields = expected if expected is not None else {
+        (rel, 'version') for rel in surfaces}
+    planned = _plan(tree, fields, cand_version)
+    if expected is not None and set(planned) != expected:
+        raise RuntimeError('restamp plan != release-bump fields: '
+                           f'expected {sorted(expected)}, planned {sorted(planned)}')
     changed = []
-    for rel in surfaces:
+    for rel in sorted({r for r, _ in planned}):
         path = tree / rel
-        if not path.is_file():
-            continue
-        old = path.read_bytes()
-        if cand_version.encode() not in old:
-            continue
-        new = old.replace(cand_version.encode(), base_version.encode())
-        # Round-trip proof: applying the reverse swap must return the input
-        # byte-for-byte -- anything else is a non-version difference.
-        if new.replace(base_version.encode(), cand_version.encode()) != old:
-            raise RuntimeError(f'restamp touched non-version bytes in {rel}')
-        path.write_bytes(new)
+        lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+        for index, line in enumerate(lines):
+            field = _version_field(line)
+            if field and field[1] == cand_version:
+                lines[index] = (line.replace(f'"{cand_version}"', f'"{base_version}"')
+                                .replace(f"'{cand_version}'", f"'{base_version}'"))
+        path.write_text(''.join(lines), encoding='utf-8')
         changed.append(rel)
-    return changed
+    return sorted(changed)
 
 
 def compare(expected, actual):

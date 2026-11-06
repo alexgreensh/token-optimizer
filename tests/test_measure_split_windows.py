@@ -123,7 +123,7 @@ def _case(root, name, stderr, stdout=b'', exit_code=b'1\n'):
     (case / 'exit').write_bytes(exit_code)
 
 
-def test_known_crash_normalizes_only_measure_line_numbers(tmp_path):
+def test_known_crash_normalizes_measure_line_numbers(tmp_path):
     name = 'cli-devin-filter---quiet'
     _case(tmp_path / 'base', name, SIGPIPE_STDERR % 64099)
     _case(tmp_path / 'candidate', name, SIGPIPE_STDERR % 63813)
@@ -140,7 +140,7 @@ def test_known_crash_never_hides_other_differences(tmp_path, change):
     _case(tmp_path / 'base', name, SIGPIPE_STDERR % 64099)
     stderr = SIGPIPE_STDERR % 63813
     if change == 'frame':
-        stderr = stderr.replace(b'runpy.run_path(str(path)', b'runpy.run_module(str(path)')
+        stderr = stderr.replace(b'signal.signal(signal.SIGPIPE, signal.SIG_IGN)', b'signal.signal(signal.SIGTERM, signal.SIG_IGN)')
     _case(tmp_path / 'candidate', name, stderr, stdout=b'x' if change == 'stdout' else b'',
           exit_code=b'2\n' if change == 'exit' else b'1\n')
     raw = golden.compare(tmp_path / 'base', tmp_path / 'candidate')
@@ -271,10 +271,10 @@ def test_blocked_socket_records_never_carry_the_descriptor(tmp_path):
 _PREFIX_DIAGNOSTIC = b'diagnostic: File "D:\\payload\\measure.py", line %d\r\n'
 
 
-@pytest.mark.parametrize('variant', ['diagnostic', 'source', 'message'])
+@pytest.mark.parametrize('variant', ['diagnostic', 'message'])
 def test_known_crash_normalizes_only_traceback_frame_headers(tmp_path, variant):
-    """Astra U0-final2 #1: frame-shaped text outside a real traceback frame header must stay
-    raw. Every traceback frame is identical on both sides; only that text differs."""
+    """Astra U0-final2 #1: frame-shaped text outside the traceback frames (a diagnostic line
+    before the block, the final exception line) must stay raw. Every frame is identical."""
     name = 'cli-devin-filter---quiet'
     frames = SIGPIPE_STDERR % 64099
 
@@ -297,7 +297,7 @@ def test_known_crash_normalizes_only_traceback_frame_headers(tmp_path, variant):
 
 
 def test_known_crash_normalizes_every_measure_frame_in_chained_tracebacks(tmp_path):
-    """Genuine-frame positive across a chained traceback; non-measure frames stay raw."""
+    """Frames normalize in both blocks of a chained traceback; its exception lines stay exact."""
     name = 'cli-devin-filter---quiet'
     chained = (b'Traceback (most recent call last):\r\n'
                b'  File "D:\\a\\x\\payload\\skills\\token-optimizer\\scripts\\measure.py", line %d, in helper\r\n'
@@ -309,6 +309,70 @@ def test_known_crash_normalizes_every_measure_frame_in_chained_tracebacks(tmp_pa
     raw = golden.compare(tmp_path / 'base', tmp_path / 'candidate')
     remaining, normalized = crashes.normalize_known_crashes(raw, tmp_path / 'base', tmp_path / 'candidate', platform='nt')
     assert remaining == [] and normalized == [name + '/stderr: devin-sigpipe-windows']
-    _case(tmp_path / 'other', name, chained % 10 + (SIGPIPE_STDERR % 64099).replace(b'line 707', b'line 708'))
+    # The intermediate exception line of a chained traceback is outside every frame: exact.
+    _case(tmp_path / 'other', name, (chained % 10).replace(b'KeyError: 1', b'KeyError: 2') + SIGPIPE_STDERR % 64099)
     raw = golden.compare(tmp_path / 'base', tmp_path / 'other')
     assert crashes.normalize_known_crashes(raw, tmp_path / 'base', tmp_path / 'other', platform='nt') == (raw, [])
+
+
+_CLI_FRAME = (b'  File "D:\\a\\x\\payload\\skills\\token-optimizer\\scripts\\_measure\\cli.py", line 412, in main\r\n'
+              b'    return devin_compress.main(args[1:])\r\n'
+              b'           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\r\n')
+_DEVIN_FRAME = b'  File "D:\\a\\x\\payload\\skills\\token-optimizer\\scripts\\devin_compress.py"'
+
+
+def _with_cli_frame(stderr):
+    """Candidate shape after the CLI move: one more frame (cli.py) before devin_compress."""
+    assert stderr.count(_DEVIN_FRAME) == 1
+    return stderr.replace(_DEVIN_FRAME, _CLI_FRAME + _DEVIN_FRAME)
+
+
+def _normalize(tmp_path, name, before, after, platform='nt'):
+    _case(tmp_path / 'base', name, before)
+    _case(tmp_path / 'candidate', name, after)
+    raw = golden.compare(tmp_path / 'base', tmp_path / 'candidate')
+    assert raw == ['bytes differ: ' + name + '/stderr']
+    return raw, crashes.normalize_known_crashes(raw, tmp_path / 'base', tmp_path / 'candidate', platform=platform)
+
+
+def test_listed_crash_ignores_an_extra_traceback_frame(tmp_path):
+    """decisions-U9 F2: the CLI move adds a cli.py frame to the listed SIGPIPE traceback."""
+    name = 'cli-devin-filter---quiet'
+    after = _with_cli_frame(SIGPIPE_STDERR % 63813)
+    raw, result = _normalize(tmp_path, name, SIGPIPE_STDERR % 64099, after)
+    assert result == ([], [name + '/stderr: devin-sigpipe-windows'])
+
+
+def test_listed_crash_ignores_changed_frame_source_lines(tmp_path):
+    """Source lines belong to the ignored frame pairs (formerly a negative under the
+    line-number-only policy; the F2 decision ignores whole frames)."""
+    name = 'cli-devin-filter---quiet'
+    stderr = SIGPIPE_STDERR % 64099
+    after = stderr.replace(b'    sys.exit(devin_compress.main(args[1:]))\r\n',
+                           b'    sys.exit(_measure_cli.main(args))\r\n')
+    raw, result = _normalize(tmp_path, name, stderr, after)
+    assert result == ([], [name + '/stderr: devin-sigpipe-windows'])
+
+
+def test_listed_crash_with_a_changed_exception_message_stays_a_difference(tmp_path):
+    name = 'cli-devin-filter---quiet'
+    after = _with_cli_frame(SIGPIPE_STDERR % 63813).replace(b"Did you mean: 'SIGFPE'?", b"Did you mean: 'SIGINT'?")
+    assert crashes.known_crash(name, after, platform='nt') is not None
+    raw, result = _normalize(tmp_path, name, SIGPIPE_STDERR % 64099, after)
+    assert result == (raw, [])
+
+
+@pytest.mark.parametrize('name, platform', [('cli-dashboard', 'nt'), ('cli-devin-filter---quiet', 'posix')])
+def test_unlisted_crash_with_an_extra_frame_stays_a_difference(tmp_path, name, platform):
+    """Frames are ignored only for a listed crash on its platform."""
+    stderr = SIGPIPE_STDERR % 64099
+    raw, result = _normalize(tmp_path, name, stderr, _with_cli_frame(stderr), platform=platform)
+    assert result == (raw, [])
+
+
+def test_listed_crash_bytes_outside_the_traceback_block_stay_exact(tmp_path):
+    name = 'cli-devin-filter---quiet'
+    before = b'warning: fixture\r\n' + SIGPIPE_STDERR % 64099
+    after = b'warning: fixturE\r\n' + _with_cli_frame(SIGPIPE_STDERR % 63813)
+    raw, result = _normalize(tmp_path, name, before, after)
+    assert result == (raw, [])

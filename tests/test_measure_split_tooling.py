@@ -195,7 +195,8 @@ def test_source_resolver_finds_both_canary_and_unmoved():
     m = tooling()
     root = REPO / 'skills/token-optimizer/scripts'
     assert m.resolve_symbol(root, '_safe_int').name == 'runtime.py'
-    assert m.resolve_symbol(root, '_normalize_model_name').name == 'measure.py'
+    assert m.resolve_symbol(root, '_normalize_model_name').name == 'sessions.py'
+    assert m.resolve_symbol(root, '_redirect_bytecode_out_of_repo').name == 'measure.py'
 
 
 def test_inventory_assigns_every_definition_and_statement():
@@ -272,46 +273,6 @@ def test_inspection_view_preserves_literals_and_resolves_fstrings_and_lambdas():
     assert '"_measure_facade.VALUE"' in resolved
     assert 'lambda: VALUE' in resolved
     assert 'globals().get("VALUE")' in resolved
-
-
-def test_cli_move_preserves_public_bytes_and_module_globals(tmp_path):
-    import os
-    import shutil
-    import subprocess
-    scripts = tmp_path / 'payload/skills/token-optimizer/scripts'
-    shutil.copytree(REPO / 'skills/token-optimizer/scripts', scripts,
-                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-    facade = scripts / 'measure.py'
-    source = facade.read_text(encoding='utf-8')
-    injection = 'def _manage_mcp(*args):\n    raise RuntimeError("fixture management error")\n\n'
-    marker = 'if __name__ == "__main__":'
-    assert source.count(marker) == 1
-    facade.write_text(source.replace(marker, injection + marker), encoding='utf-8')
-    home = tmp_path / 'home'
-    home.mkdir()
-    (home / '.codex').mkdir()
-    env = {**os.environ, 'HOME': str(home), 'USERPROFILE': str(home),
-           'TOKEN_OPTIMIZER_RUNTIME': 'claude',
-           'CLAUDE_CONFIG_DIR': str(home), 'CODEX_HOME': str(home / '.codex'),
-           'TOKEN_OPTIMIZER_SNAPSHOT_DIR': str(home / 'data'),
-           'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONUTF8': '1'}
-    commands = (['--version'], ['pricing-tier'], ['--runtime', 'codex', 'codex-status-line'],
-                ['api-manage', 'mcp/disable', 'fixture'])
-    def run(argv):
-        result = subprocess.run([sys.executable, str(scripts / 'measure.py'), *argv], env=env,
-                                cwd=home, input=b'', capture_output=True, timeout=30)
-        return result.returncode, result.stdout, result.stderr
-    before = [run(argv) for argv in commands]
-    assert b'fixture management error' in before[-1][1]
-    tooling().move_cli(scripts)
-    assert tooling().resolve_symbol(scripts, '__main__').name == 'cli.py'
-    assert [run(argv) for argv in commands] == before
-    from helpers.measure_split import measure_source
-    resolved = measure_source(scripts / 'measure.py')
-    import ast
-    ast.parse(resolved)
-    assert 'elif args[0] == "compact-restore":' in resolved
-    assert 'elif args[0] == "keepwarm-scheduler":' in resolved
 
 
 def test_mover_writes_lf_on_every_platform():

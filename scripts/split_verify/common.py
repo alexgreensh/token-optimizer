@@ -12,6 +12,7 @@ check, is refused unless it runs on a GitHub Actions runner.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -469,12 +470,25 @@ def liveness_summary(records, install_root):
 
 
 def expected_modules(tree):
-    """The facade imports every provider eagerly, so all of them must load."""
+    """Every provider the facade imports eagerly must load: all package modules
+    except the commit's own DEFERRED_MODULES, which load on first use."""
+    deferred = {'_measure.' + name for name in deferred_modules(tree)}
     names = set()
     for relative in split_sources(tree):
         parts = Path(relative).relative_to('skills/token-optimizer/scripts').with_suffix('').parts
         names.add('.'.join(parts[:-1]) if parts[-1] == '__init__' else '.'.join(parts))
-    return names
+    return names - deferred
+
+
+def deferred_modules(tree):
+    """`_measure.DEFERRED_MODULES` as the tree's own commit declares it."""
+    init = Path(tree) / SPLIT_PACKAGE / '__init__.py'
+    if not init.is_file():
+        return ()
+    for node in ast.parse(init.read_text(encoding='utf-8')).body:
+        if isinstance(node, ast.Assign) and [ast.unparse(t) for t in node.targets] == ['DEFERRED_MODULES']:
+            return tuple(ast.literal_eval(node.value))
+    return ()
 
 
 def candidate_live(summary, expected=None):

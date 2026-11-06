@@ -391,8 +391,10 @@ elif entry == 'script':
     runpy.run_path(path, run_name='__main__')
 elif entry == 'exports':
     measure = importlib.import_module('measure')
-    exports = {key: export_value(value) for key, value in vars(measure).items()
-               if key not in ('__builtins__', '_measure_compat', '_measure_providers')}
+    # dir() plus getattr reaches names a lazy facade binds on first lookup;
+    # on a plain module it is exactly vars(). Its PEP 562 hooks are not exports.
+    exports = {key: export_value(getattr(measure, key)) for key in dir(measure)
+               if key not in ('__builtins__', '_measure_compat', '_measure_providers', '__getattr__', '__dir__')}
     print(json.dumps(exports, ensure_ascii=False, sort_keys=True))
 elif entry == 'adapter':
     name = arguments[0]

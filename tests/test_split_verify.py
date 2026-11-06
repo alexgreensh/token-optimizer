@@ -142,6 +142,14 @@ def test_expected_modules_and_complete_liveness(tmp_path):
     assert not c.base_is_base(summary)
 
 
+def test_deferred_providers_are_not_required_for_liveness(tmp_path):
+    files = dict(PACKAGE)
+    files[c.SPLIT_PACKAGE + '/__init__.py'] = "DEFERRED_MODULES = ('pricing',)\n"
+    tree = _tree(tmp_path / 'tree', files)
+    assert c.deferred_modules(tree) == ('pricing',)
+    assert c.expected_modules(tree) == {'_measure', '_measure._compat'}
+
+
 # ----------------------------------------------------------- hook configs
 
 def test_configured_hooks_reads_the_real_canonical_config():

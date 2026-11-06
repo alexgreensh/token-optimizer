@@ -206,66 +206,13 @@ from spawn_utils import spawn_detached
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _windows_stdio_kwargs():
-    """Usable std streams to hand a console-less child on Windows, else {}.
-
-    With creationflags=CREATE_NO_WINDOW and no std streams, a Windows child gets
-    a hidden console (python.exe) or NULL handles (pythonw.exe), so everything
-    it prints is lost. Passing the parent's streams makes CPython hand the child
-    the parent's own handles. Same guard as hooks/run.py (kept as a copy: this
-    script must not import from hooks/). Off Windows the child inherits the
-    streams anyway, so nothing is added.
-    """
-    if sys.platform != "win32":
-        return {}
-    kwargs = {}
-    missing = []
-    for name in ("stdin", "stdout", "stderr"):
-        stream = getattr(sys, name, None)
-        if stream is None:
-            missing.append(name)
-            continue
-        try:
-            stream.fileno()
-        except (AttributeError, OSError, ValueError):
-            missing.append(name)
-            continue
-        kwargs[name] = stream
-    # Same rule as hooks/run.py: a stream left out falls back to a possibly
-    # stale handle and the spawn fails, so an unusable one gets DEVNULL.
-    if kwargs:
-        for name in missing:
-            kwargs[name] = subprocess.DEVNULL
-    return kwargs
+_windows_stdio_kwargs = _measure_compat.bind(_measure_providers['runtime']._windows_stdio_kwargs, __name__)
 
 
-def _run_script_child(script, extra_args=(), **run_kwargs):
-    """Run a sibling script under this interpreter with its output visible."""
-    return subprocess.run(
-        [sys.executable, str(script), *extra_args],
-        creationflags=_NO_WINDOW,
-        **_windows_stdio_kwargs(),
-        **run_kwargs,
-    )
+_run_script_child = _measure_compat.bind(_measure_providers['runtime']._run_script_child, __name__, defaults=((),))
 
 
-def _detached_python_exe():
-    """Interpreter to use for FIRE-AND-FORGET python children.
-
-    Belt-and-suspenders on top of the detach flags: on Windows,
-    prefer the GUI-subsystem ``pythonw.exe`` twin next to ``sys.executable`` so
-    the child cannot allocate a console even if a future edit drops
-    ``DETACHED_PROCESS``/``CREATE_NO_WINDOW``, or a host launches us in a way we
-    do not control. Falls back to ``sys.executable`` when no usable twin exists
-    (MS Store alias, no twin) and is a pure no-op off Windows -- POSIX behaviour
-    is byte-identical.
-
-    ONLY for children whose stdio is DEVNULL. Do NOT use it for
-    ``capture_output=True`` runs: those already suppress the window via
-    ``creationflags=_NO_WINDOW``, and swapping the interpreter there would trade
-    a solved problem for pythonw's None-stdio semantics.
-    """
-    return _windows_gui_python() or sys.executable or "python3"
+_detached_python_exe = _measure_compat.bind(_measure_providers['runtime']._detached_python_exe, __name__)
 
 
 import antigravity_session
@@ -390,159 +337,31 @@ _FOREIGN_RUNTIME_EXEMPTIONS: dict[str, frozenset[str]] = {
 }
 
 
-def _is_foreign_runtime() -> bool:
-    """True when running under a runtime whose audit target is NOT ~/.claude."""
-    return detect_runtime() in _FOREIGN_RUNTIMES
+_is_foreign_runtime = _measure_compat.bind(_measure_providers['runtime']._is_foreign_runtime, __name__)
 
 
-def _copilot_audit_notice() -> None:
-    """Explain why the Claude audit does not run under Copilot, and where to go."""
-    print("Token Optimizer — GitHub Copilot runtime detected.")
-    print()
-    print("This audit targets a Claude Code / Codex setup (it scans ~/.claude), so it")
-    print("will not run here and will not modify ~/.claude or your Copilot config.")
-    print()
-    print("On GitHub Copilot, use the Copilot-native commands instead:")
-    print("  measure.py copilot-summary   — session cost/quality summary")
-    print("  measure.py copilot-rollup    — collect sessions into trends")
-    print("  measure.py copilot-doctor    — readiness + hook capability probe")
-    print("  measure.py copilot-install   — wire Token Optimizer into ~/.copilot")
-    print("  measure.py copilot-home      — print resolved Copilot home (auto-detects WSL; override via TOKEN_OPTIMIZER_COPILOT_HOME)")
-    print()
-    print("To force this skill onto a specific runtime, set TOKEN_OPTIMIZER_RUNTIME.")
+_copilot_audit_notice = _measure_compat.bind(_measure_providers['runtime']._copilot_audit_notice, __name__)
 
 
-def _cursor_audit_notice() -> None:
-    """Explain why the Claude audit does not run under Cursor, and where to go."""
-    print("Token Optimizer — Cursor runtime detected.")
-    print()
-    print("This audit targets a Claude Code / Codex setup (it scans ~/.claude), so it")
-    print("will not run here and will not modify ~/.claude or your Cursor config.")
-    print()
-    print("On Cursor, use the Cursor-native commands instead:")
-    print("  measure.py cursor-summary    — session token/quality summary")
-    print("  measure.py cursor-rollup     — collect sessions into trends")
-    print("  measure.py cursor-doctor     — readiness + hook firing probe")
-    print("  measure.py cursor-install    — wire Token Optimizer into ~/.cursor/hooks.json")
-    print("  measure.py cursor-uninstall  — remove Token Optimizer's Cursor entries")
+_cursor_audit_notice = _measure_compat.bind(_measure_providers['runtime']._cursor_audit_notice, __name__)
 
 
-def _grok_audit_notice() -> None:
-    """Explain why the Claude audit does not run under Grok Build, and where to go."""
-    print("Token Optimizer — Grok Build runtime detected.")
-    print()
-    print("This audit targets a Claude Code / Codex setup (it scans ~/.claude), so it")
-    print("will not run here and will not modify ~/.claude or your Grok config.")
-    print()
-    print("On Grok Build, use the Grok-native commands instead:")
-    print("  measure.py grok-summary   — session token/cost summary")
-    print("  measure.py grok-rollup    — collect sessions into trends")
-    print("  measure.py grok-doctor    — readiness + hook probe")
-    print("  measure.py grok-install   — wire Token Optimizer into $GROK_HOME/hooks/")
-    print("  measure.py grok-home      — print resolved Grok home (override via TOKEN_OPTIMIZER_GROK_HOME)")
-    print()
-    print("To force this skill onto a specific runtime, set TOKEN_OPTIMIZER_RUNTIME.")
+_grok_audit_notice = _measure_compat.bind(_measure_providers['runtime']._grok_audit_notice, __name__)
 
 
-def _foreign_audit_notice() -> None:
-    """Route to the right per-runtime notice for blocked Claude-target commands.
-
-    Dispatch is table-driven so adding a foreign runtime means one entry here
-    plus _FOREIGN_RUNTIMES — never a fall-through to another runtime's notice.
-    """
-    notices = {
-        "opencode": _opencode_audit_notice,
-        "copilot": _copilot_audit_notice,
-        "hermes": _hermes_audit_notice,
-        "cursor": _cursor_audit_notice,
-        "antigravity": _antigravity_audit_notice,
-        "grok": _grok_audit_notice,
-        "devin": _devin_audit_notice,
-    }
-    handler = notices.get(detect_runtime())
-    if handler is not None:
-        handler()
-    else:  # future foreign runtime without a notice yet: generic, never wrong
-        print(f"Token Optimizer — {runtime_name_for_humans()} runtime detected.")
-        print("Claude-targeting commands are disabled here; they scan/modify ~/.claude.")
-        print("Set TOKEN_OPTIMIZER_RUNTIME to force a specific runtime.")
+_foreign_audit_notice = _measure_compat.bind(_measure_providers['runtime']._foreign_audit_notice, __name__)
 
 
-def _devin_audit_notice() -> None:
-    print("Token Optimizer - Devin CLI runtime detected.")
-    print("Claude-targeting commands will not run here or modify ~/.claude.")
-    print("Use devin-install, devin-doctor, devin-summary or devin-filter.")
-    print("No native dashboard, quality, savings or provider collector is available.")
+_devin_audit_notice = _measure_compat.bind(_measure_providers['runtime']._devin_audit_notice, __name__)
 
 
-def _opencode_audit_notice() -> None:
-    """Explain why the Claude audit does not run under OpenCode, and where to go.
-
-    Printed instead of scanning/mutating ~/.claude when OpenCode is detected.
-    """
-    print("Token Optimizer — OpenCode runtime detected.")
-    print()
-    print("This audit targets a Claude Code / Codex setup (it scans ~/.claude), so it")
-    print("will not run here and will not modify ~/.claude or your OpenCode config.")
-    print()
-    print("On OpenCode, Token Optimizer runs automatically as a plugin:")
-    print("  - Live context-quality, savings, and continuity tracking via session hooks")
-    print("  - Dashboard / status: run the `token_dashboard` or `token_status` tool")
-    print()
-    print("Install or refresh the OpenCode plugin (builds the native TS plugin")
-    print("into ~/.config/opencode/plugins/, NOT the ~/.claude skill tree):")
-    print("  install.sh --opencode")
-    print("  or via npm:  opencode plugin token-optimizer-opencode")
-    print()
-    print("To force this skill onto a specific runtime, set TOKEN_OPTIMIZER_RUNTIME.")
+_opencode_audit_notice = _measure_compat.bind(_measure_providers['runtime']._opencode_audit_notice, __name__)
 
 
-def _hermes_audit_notice() -> None:
-    """Explain why the Claude audit does not run under Hermes, and where to go.
-
-    Printed instead of scanning/mutating ~/.claude when Hermes is detected.
-    Hermes sessions live in ~/.hermes/state.db (read via the hermes_session
-    adapter), not ~/.claude/projects JSONL, so the Claude-targeting scan
-    commands would scan the wrong tree and produce empty output.
-    """
-    print("Token Optimizer — Hermes runtime detected.")
-    print()
-    print("This audit targets a Claude Code / Codex setup (it scans ~/.claude), so it")
-    print("will not run here and will not modify ~/.claude or your Hermes config.")
-    print()
-    print("On Hermes, use the Hermes-native commands instead:")
-    print("  measure.py hermes-summary    — session cost/quality summary")
-    print("  measure.py hermes-rollup     — collect sessions into trends")
-    print("  measure.py hermes-doctor     — readiness + hook capability probe")
-    print("  measure.py hermes-install    — wire Token Optimizer into ~/.hermes/plugins/")
-    print("  measure.py dashboard         — open the Hermes dashboard (port 24844)")
-    print()
-    print("To force this skill onto a specific runtime, set TOKEN_OPTIMIZER_RUNTIME.")
+_hermes_audit_notice = _measure_compat.bind(_measure_providers['runtime']._hermes_audit_notice, __name__)
 
 
-def _antigravity_audit_notice() -> None:
-    """Explain why the Claude audit does not run under Antigravity, and where to go.
-
-    Printed instead of scanning/mutating ~/.claude when Antigravity is detected.
-    Antigravity sessions live in the read-only conversation store under
-    ~/.gemini (read via the antigravity_state adapter), not ~/.claude/projects
-    JSONL, so the Claude-targeting scan commands would scan the wrong tree and
-    produce empty output.
-    """
-    print("Token Optimizer — Google Antigravity runtime detected.")
-    print()
-    print("This audit targets a Claude Code / Codex setup (it scans ~/.claude), so it")
-    print("will not run here and will not modify ~/.claude or your Antigravity config.")
-    print()
-    print("On Antigravity, use the Antigravity-native commands instead:")
-    print("  measure.py antigravity-summary    — session cost/quality summary")
-    print("  measure.py antigravity-rollup     — collect sessions into trends")
-    print("  measure.py antigravity-doctor     — readiness + hook capability probe")
-    print("  measure.py antigravity-install    — wire Token Optimizer into ~/.gemini/config/plugins/")
-    print("  measure.py antigravity-home       — print resolved Antigravity home (override via TOKEN_OPTIMIZER_ANTIGRAVITY_HOME)")
-    print("  measure.py dashboard              — open the Antigravity dashboard (port 24847)")
-    print()
-    print("To force this skill onto a specific runtime, set TOKEN_OPTIMIZER_RUNTIME.")
+_antigravity_audit_notice = _measure_compat.bind(_measure_providers['runtime']._antigravity_audit_notice, __name__)
 
 # Sentinel file written inside an archived symlinked skill, recording the
 # original link target so restore can recreate the symlink. A dir
@@ -576,164 +395,38 @@ else:
     _CONFIG_BASE = None  # resolved below after constants
 
 
-def _windows_profile_dir():
-    """The Windows account's profile dir as the OS records it, independent of
-    the USERPROFILE / HOME environment variables (Path.home() reads those):
-    SHGetKnownFolderPath(FOLDERID_Profile). None off Windows or on any failure,
-    never a guess such as %SystemDrive%\\Users\\%USERNAME% (profiles can live
-    on another drive, and a wrong guess would refuse a real user's scheduler)."""
-    if os.name != "nt":
-        return None
-    try:
-        import ctypes
-        import uuid
-        from ctypes import wintypes
-
-        class _GUID(ctypes.Structure):
-            _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
-                        ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
-
-        raw = uuid.UUID("{5E6C858F-0E22-4760-9AFE-EA3317B67173}").bytes_le  # FOLDERID_Profile
-        guid = _GUID.from_buffer_copy(raw)
-        out = ctypes.c_wchar_p()
-        shell32 = ctypes.windll.shell32
-        hr = shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(out))
-        try:
-            value = out.value if hr == 0 else None
-        finally:
-            ctypes.windll.ole32.CoTaskMemFree(out)
-        return Path(value) if value else None
-    except Exception:
-        return None
+_windows_profile_dir = _measure_compat.bind(_measure_providers['runtime']._windows_profile_dir, __name__)
 
 
 _ACCOUNT_HOME_IS_WINDOWS = os.name == "nt"  # module attr so tests can drive both branches
 
 
-def _real_account_home():
-    """The OS account's own home directory, never read from HOME/USERPROFILE:
-    the pwd entry for this uid on POSIX, the profile folder the OS records on
-    Windows. None where it cannot be known (no pwd entry, API failure)."""
-    if _ACCOUNT_HOME_IS_WINDOWS:
-        return _windows_profile_dir()
-    try:
-        import pwd  # POSIX only
-        raw = pwd.getpwuid(os.getuid()).pw_dir
-        return Path(raw) if raw else None
-    except Exception:
-        return None
+_real_account_home = _measure_compat.bind(_measure_providers['runtime']._real_account_home, __name__)
 
 
-def _same_path(a, b):
-    """True when two paths name the same directory: equal as typed (case-folded
-    on Windows), equal once symlinks resolve, or the same inode. HPC/NFS homes
-    often reach one directory through an automount symlink and a real mount
-    path, so no single comparison is enough on its own."""
-    try:
-        if os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(os.path.abspath(str(b))):
-            return True
-    except (OSError, ValueError, TypeError):
-        pass
-    try:
-        if Path(a).resolve() == Path(b).resolve():
-            return True
-    except (OSError, RuntimeError, ValueError):
-        pass
-    try:
-        return os.path.samefile(str(a), str(b))
-    except (OSError, ValueError, TypeError):
-        return False
+_same_path = _measure_compat.bind(_measure_providers['runtime']._same_path, __name__)
 
 
-def _is_under(child, parent):
-    """``child`` is ``parent`` or inside it, compared resolved and as typed."""
-    try:
-        Path(child).resolve().relative_to(Path(parent).resolve())
-        return True
-    except (ValueError, OSError, RuntimeError):
-        pass
-    try:
-        Path(os.path.normcase(os.path.abspath(str(child)))).relative_to(
-            os.path.normcase(os.path.abspath(str(parent))))
-        return True
-    except (ValueError, OSError, RuntimeError, TypeError):
-        return False
+_is_under = _measure_compat.bind(_measure_providers['runtime']._is_under, __name__)
 
 
 _FOREIGN_HOME_OVERRIDE_ENV = "TOKEN_OPTIMIZER_ALLOW_FOREIGN_HOME_SCHEDULER"
 
 
-def _foreign_home_override():
-    return os.environ.get(_FOREIGN_HOME_OVERRIDE_ENV, "").strip() == "1"
+_foreign_home_override = _measure_compat.bind(_measure_providers['runtime']._foreign_home_override, __name__)
 
 
-def _compute_home_redirected():
-    """True when the home this process derives its paths from (HOME on POSIX,
-    USERPROFILE on Windows, via Path.home()) is not the account's own home: a
-    test sandbox, a scratch e2e run, a second HOME on one account.
-
-    launchd / systemd --user / Task Scheduler jobs are per ACCOUNT, not per
-    HOME, and TO's labels are fixed (com.token-optimizer.dashboard, ...). A
-    redirected-HOME run that installs or restarts one of them re-points the
-    user's LIVE job at the throwaway home (seen 2026-10-19: an e2e run's
-    SessionStart re-bootstrapped the real dashboard agent to a scratch dir).
-
-    The Claude home is NOT compared: Claude Code supports CLAUDE_CONFIG_DIR
-    anywhere (claude_home()), and a real user with HOME at home and the config
-    on /opt or a volume must keep their dashboard, keep-warm, restart and
-    uninstall. The case that guard used to cover (real HOME, scratch
-    CLAUDE_CONFIG_DIR) is caught instead by _scheduler_job_points_elsewhere():
-    refuse only when an existing job belongs to a different install.
-
-    TOKEN_OPTIMIZER_ALLOW_FOREIGN_HOME_SCHEDULER=1 is the explicit escape hatch
-    for a setup that really does run the daemon from a relocated home."""
-    if _foreign_home_override():
-        return False
-    real = _real_account_home()
-    if real is None:
-        return False
-    try:
-        return not _same_path(HOME, real)
-    except Exception:
-        return False
+_compute_home_redirected = _measure_compat.bind(_measure_providers['runtime']._compute_home_redirected, __name__)
 
 
 # Frozen at import, like _SNAPSHOT_DIR_OVERRIDE, so later env drift cannot
 # separate the guard from the paths it protects.
 _HOME_REDIRECTED = _compute_home_redirected()
 
-def _daemon_snapshot_sandboxed():
-    """True when this process must not touch the per-account scheduler jobs
-    (dashboard daemon, keep-warm agent) AT ALL, uninstall included:
-
-      * an explicit TOKEN_OPTIMIZER_SNAPSHOT_DIR override (tests, sandboxes);
-      * HOME / USERPROFILE is not the account's real home (see
-        _compute_home_redirected). Removal goes by fixed label
-        (``launchctl bootout gui/<uid>/<label>``, ``schtasks /Delete /TN``,
-        ``systemctl --user disable``), so a scratch-HOME "uninstall" would kill
-        the user's live job just as surely as an install re-points it.
-
-    Uninstall and status paths check only this. Every path that writes,
-    reloads or restarts a job checks _scheduler_install_refused(), which adds
-    the existing-job check. Both inputs are frozen at import so later env
-    drift cannot separate the guard from the paths it protects.
-    """
-    return bool(_SNAPSHOT_DIR_OVERRIDE) or _HOME_REDIRECTED
+_daemon_snapshot_sandboxed = _measure_compat.bind(_measure_providers['runtime']._daemon_snapshot_sandboxed, __name__)
 
 
-def _scheduler_install_refused():
-    """True when an install / restart / revive / repair must not run: the
-    process is sandboxed (above), or, from the account's real home, a job
-    already registered for this account points at a different install than
-    this process (another CLAUDE_CONFIG_DIR or data dir), so writing ours would
-    re-point it. A CLAUDE_CONFIG_DIR outside the home is fine on its own: with
-    no job, or with a job that is this install's, nothing is refused.
-    TOKEN_OPTIMIZER_ALLOW_FOREIGN_HOME_SCHEDULER=1 lifts the job check."""
-    if _daemon_snapshot_sandboxed():
-        return True
-    if _foreign_home_override():
-        return False
-    return bool(_scheduler_job_points_elsewhere())
+_scheduler_install_refused = _measure_compat.bind(_measure_providers['runtime']._scheduler_install_refused, __name__)
 
 
 _SCHEDULER_REFUSAL = (
@@ -752,135 +445,28 @@ _WINDOWS_TASK_PATHS_CACHE = {}
 _WINDOWS_TASK_PATHS_TTL_S = 30.0
 
 
-def _reset_job_guard_cache():
-    _WINDOWS_TASK_PATHS_CACHE.clear()
+_reset_job_guard_cache = _measure_compat.bind(_measure_providers['runtime']._reset_job_guard_cache, __name__)
 
 
-def _windows_task_job_paths_cached():
-    key = (_windows_task_job_paths, WINDOWS_TASK_NAME)
-    hit = _WINDOWS_TASK_PATHS_CACHE.get(key)
-    now = time.monotonic()
-    if hit and now - hit[0] < _WINDOWS_TASK_PATHS_TTL_S:
-        return hit[1]
-    paths = _windows_task_job_paths()
-    _WINDOWS_TASK_PATHS_CACHE.clear()
-    _WINDOWS_TASK_PATHS_CACHE[key] = (now, paths)
-    return paths
+_windows_task_job_paths_cached = _measure_compat.bind(_measure_providers['runtime']._windows_task_job_paths_cached, __name__)
 
 
-def _this_install_roots():
-    roots = []
-    for value in (CLAUDE_DIR, RUNTIME_DIR, SNAPSHOT_DIR, _RESOLVED_PLUGIN_DATA,
-                  Path(__file__).resolve().parents[3]):
-        if value:
-            roots.append(Path(value))
-    return roots
+_this_install_roots = _measure_compat.bind(_measure_providers['runtime']._this_install_roots, __name__)
 
 
-def _plist_job_paths(path):
-    import plistlib
-    try:
-        with open(path, "rb") as fh:
-            data = plistlib.load(fh)
-    except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
-    out = [a for a in (data.get("ProgramArguments") or [])[1:] if isinstance(a, str)]
-    out += [data.get(k) for k in ("StandardOutPath", "StandardErrorPath", "WorkingDirectory")
-            if isinstance(data.get(k), str)]
-    return out
+_plist_job_paths = _measure_compat.bind(_measure_providers['runtime']._plist_job_paths, __name__)
 
 
-def _systemd_unit_job_paths(path):
-    try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    out = []
-    for line in text.splitlines():
-        key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip()
-        if key in ("ExecStart", "WorkingDirectory"):
-            out.append(value.strip('"').split('" ', 1)[0].strip('"'))
-        elif key in ("StandardOutput", "StandardError") and value.startswith(("append:", "file:")):
-            out.append(value.split(":", 1)[1])
-    return out
+_systemd_unit_job_paths = _measure_compat.bind(_measure_providers['runtime']._systemd_unit_job_paths, __name__)
 
 
-def _windows_task_job_paths():
-    """<Command> (when it is not just an interpreter), <Arguments> tokens and
-    <WorkingDirectory> of this runtime's registered task. Read-only query."""
-    try:
-        query = subprocess.run(
-            ["schtasks", "/Query", "/TN", WINDOWS_TASK_NAME, "/XML", "ONE"],
-            capture_output=True, text=True, errors="replace", timeout=10,
-            creationflags=_NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError, NameError):
-        return []
-    if query.returncode != 0:
-        return []
-    raw = (query.stdout or "").replace("\x00", "")
-    out = []
-    for tag in ("Command", "Arguments", "WorkingDirectory"):
-        m = re.search(r"<%s>(.*?)</%s>" % (tag, tag), raw, re.S | re.I)
-        if not m:
-            continue
-        value = m.group(1).strip()
-        if tag == "Command" and re.split(r"[\\/]", value.strip('"'))[-1].lower().startswith("python"):
-            continue
-        out += [t.strip('"') for t in re.findall(r'"[^"]*"|\S+', value)] if tag == "Arguments" \
-            else [value.strip('"')]
-    return [p for p in out if re.match(r"^([A-Za-z]:[\\/]|[\\/])", p)]
+_windows_task_job_paths = _measure_compat.bind(_measure_providers['runtime']._windows_task_job_paths, __name__)
 
 
-def _scheduler_job_paths():
-    """{artifact: [absolute paths it runs or writes]} for every per-account job
-    this process could touch, read from where this process would write them."""
-    jobs = {}
-    system = _normalized_platform()
-    if system == "Darwin":
-        for plist in (PLIST_PATH, _keepwarm_scheduler_plist_path()):
-            if plist.is_file():
-                jobs[str(plist)] = _plist_job_paths(plist)
-    elif system == "Linux":
-        unit = _systemd_user_unit_path()
-        if unit.is_file():
-            jobs[str(unit)] = _systemd_unit_job_paths(unit)
-    elif system == "Windows":
-        paths = _windows_task_job_paths_cached()
-        if paths:
-            jobs["task:" + WINDOWS_TASK_NAME] = paths
-    return jobs
+_scheduler_job_paths = _measure_compat.bind(_measure_providers['runtime']._scheduler_job_paths, __name__)
 
 
-def _scheduler_job_points_elsewhere():
-    """The first per-account job that belongs to a different install (none of
-    its paths sit under this process's Claude home, runtime home, data dirs or
-    plugin root) while at least one of them still exists, as
-    ``"<artifact> -> <existing path>"``; '' when there is none, when no job
-    exists, when the job only points at paths that are gone (a stale job is
-    repaired, not protected), or when it cannot be read (fail open)."""
-    answer = ""
-    try:
-        roots = _this_install_roots()
-        for artifact, paths in _scheduler_job_paths().items():
-            paths = [p for p in paths if p]
-            if not paths or any(_is_under(p, r) for p in paths for r in roots):
-                continue
-            # A job is another install's only while that install still exists:
-            # at least one path it runs or writes is on disk. A dead job (account
-            # renamed by Migration Assistant, CLAUDE_CONFIG_DIR moved, old data
-            # dir deleted) points at nothing, and refusing to repair it would
-            # leave the dashboard broken forever with nobody to own it.
-            live = [p for p in paths if os.path.exists(p)]
-            if live:
-                answer = "%s -> %s" % (artifact, live[0])
-                break
-    except Exception:
-        answer = ""
-    return answer
+_scheduler_job_points_elsewhere = _measure_compat.bind(_measure_providers['runtime']._scheduler_job_points_elsewhere, __name__)
 
 
 # Cowork dual-write: the per-session state dirs -- QUALITY_CACHE_DIR
@@ -906,30 +492,7 @@ else:
     _STATE_BASE = RUNTIME_DIR
 
 
-def _remote_lean_profile():
-    """True when this process runs in a Claude Code cloud VM and should skip
-    the work that cannot help there.
-
-    A cloud session is an ephemeral Ubuntu VM (root, no status line, no browser,
-    no launchd/systemd user bus, thrown away when the session is reclaimed). In
-    that host TO skips: the dashboard daemon install/revive/auto-update and the
-    background dashboard regen, keep-warm arm + scheduler repair, the status
-    line and hook self-heal writes into ~/.claude/settings.json, the
-    cleanupPeriodDays write, the script-install auto-updater, the marketplace
-    auto-update tip and the first-run welcome (a fresh VM is a "first run" every
-    session). The session-end flush runs inline instead of detached so the data
-    lands before the VM can go away. In-session features (compression, read
-    dedup, archive/expand, checkpoints, trends.db) are untouched.
-
-    ``TOKEN_OPTIMIZER_REMOTE_LEAN=0`` turns the profile off (debugging, or a
-    long-lived self-hosted VM that does have a desktop). Never raises.
-    """
-    try:
-        if os.environ.get("TOKEN_OPTIMIZER_REMOTE_LEAN", "").strip().lower() in ("0", "false", "no", "off"):
-            return False
-        return is_claude_code_cloud()
-    except Exception:
-        return False
+_remote_lean_profile = _measure_compat.bind(_measure_providers['runtime']._remote_lean_profile, __name__)
 
 
 DASHBOARD_PATH = SNAPSHOT_DIR / "dashboard.html"
@@ -938,24 +501,10 @@ DASHBOARD_PATH = SNAPSHOT_DIR / "dashboard.html"
 _DASHBOARD_SHAPE_MARKER = "estimated_volume_transformation_usd"
 
 
-def _dashboard_meta_path(html_path):
-    """Tiny sidecar recording the (version, shape) a dashboard HTML was generated
-    with, so the SessionStart staleness check reads a ~40-byte JSON file instead
-    of scanning the 4-5MB HTML every session (the marker can sit megabytes deep
-    in __TOKEN_DATA__)."""
-    return Path(html_path).with_suffix(".meta.json")
+_dashboard_meta_path = _measure_compat.bind(_measure_providers['runtime']._dashboard_meta_path, __name__)
 
 
-def _parse_semver(v):
-    """(major, minor, patch) ints for a version string, or None if unparseable.
-    Tolerant: strips a leading 'v' and any -pre / +build suffix, pads missing
-    components with 0. Used only for precedence comparison, never display."""
-    try:
-        core = str(v).strip().lstrip("vV").split("+", 1)[0].split("-", 1)[0]
-        parts = (core.split(".") + ["0", "0", "0"])[:3]
-        return tuple(int(x) for x in parts)
-    except (ValueError, AttributeError, TypeError):
-        return None
+_parse_semver = _measure_compat.bind(_measure_providers['runtime']._parse_semver, __name__)
 
 
 # A dashboard HTML smaller than this is treated as absent/corrupt, so the version
@@ -967,156 +516,34 @@ def _parse_semver(v):
 _DASHBOARD_MIN_VALID_BYTES = 4096
 
 
-def _write_dashboard_meta(html_path):
-    """Write the (version, shape) sidecar next to a dashboard HTML we just wrote,
-    so the sidecar always names the build that produced the on-disk HTML. Every
-    writer of a shared dashboard MUST call this after writing, or the downgrade
-    guard reads a stale version and can be bypassed. Fail-soft; never raises.
-
-    atomic meta write: mkstemp + fchmod + os.replace, matching the HTML
-    write. A plain Path.write_text truncates-then-writes in place, so a concurrent
-    reader between the truncate and the final byte reads a torn/empty sidecar, and
-    an interleave of two writers can leave an (html_new, meta_old) pairing that
-    lets an OLDER concurrent build's downgrade guard misfire and clobber a NEWER
-    dashboard. os.replace makes each reader see one complete sidecar or the prior
-    one, never a partial. Callers MUST write this AFTER the HTML os.replace so the
-    sidecar never advertises a version whose HTML is not yet on disk."""
-    _write_dashboard_meta_atomic(_dashboard_meta_path(html_path))
+_write_dashboard_meta = _measure_compat.bind(_measure_providers['runtime']._write_dashboard_meta, __name__)
 
 
-def _write_dashboard_meta_atomic(meta_path):
-    """Atomically write the current (version, shape) sidecar to ``meta_path``.
-    Shared by ``_write_dashboard_meta`` and the inline post-HTML write in
-    ``generate_standalone_dashboard`` so both take the identical torn-write-proof
-    path. Fail-soft; never raises (a failed sidecar must not break generation)."""
-    meta_path = Path(meta_path)
-    blob = json.dumps({"version": TOKEN_OPTIMIZER_VERSION, "shape": _DASHBOARD_SHAPE_MARKER})
-    try:
-        meta_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(meta_path.parent), prefix=".dashmeta-", suffix=".tmp")
-        fd_owned = False  # True once fdopen's file object owns (and will close) tmp_fd
-        try:
-            if hasattr(os, "fchmod"):  # POSIX only (os.fchmod is absent on Windows)
-                os.fchmod(tmp_fd, 0o600)
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                fd_owned = True
-                f.write(blob)
-            os.replace(tmp_name, str(meta_path))
-        except BaseException:
-            # BaseException, not OSError: writers under a hook budget can raise
-            # _HookTimeout mid-write; clean up the temp then re-raise so the
-            # timeout still propagates (same contract as the HTML write).
-            # If we failed BEFORE fdopen took ownership (e.g. fchmod raised, or a
-            # budget fired between mkstemp and fdopen), the raw fd would leak;
-            # close it here. Once fdopen owns it, its `with` already closed it.
-            if not fd_owned:
-                try:
-                    os.close(tmp_fd)
-                except OSError:
-                    pass
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
-    except OSError:
-        pass
+_write_dashboard_meta_atomic = _measure_compat.bind(_measure_providers['runtime']._write_dashboard_meta_atomic, __name__)
 
 
-def _dashboard_on_disk_is_newer(html_path):
-    """True iff a REAL dashboard already on disk was written by a STRICTLY NEWER
-    Token Optimizer version than this process.
-
-    An older build must never overwrite a newer dashboard. Without this guard a
-    stale long-lived daemon or a still-running pre-upgrade session regenerates
-    the shared dashboard with pre-fix code and clobbers a just-shipped fix -- the
-    "fixed but still broken" report, where the fix ships but an old
-    in-memory process keeps overwriting the corrected file.
-
-    Fail-OPEN by design: a missing sidecar, an unparseable/dev version on either
-    side, or an absent/undersized (corrupt) HTML returns False (allow the write).
-    The HTML-integrity floor is the anti-wedge: the guard only protects a REAL
-    on-disk dashboard, so a lying/corrupt sidecar next to a broken HTML can never
-    permanently block regeneration -- the next writer repairs it and rewrites the
-    sidecar. Reads only the ~40-byte sidecar plus a cheap stat. Never raises.
-    Equal versions are NOT "newer", so same-version regen and legitimate upgrades
-    both proceed; only a strictly-older writer is blocked.
-
-    Residual (documented, not auto-recovered): a *valid* newer sidecar beside a
-    *valid* HTML always blocks older writers -- correct when a real newer build
-    wrote it; on the rare chance the version was corrupted upward next to intact
-    HTML, recovery is deleting the .meta.json sidecar."""
-    try:
-        mine = _parse_semver(TOKEN_OPTIMIZER_VERSION)
-        if mine is None:
-            return False
-        # Only guard a real, non-trivial dashboard. A missing/tiny HTML means
-        # there is nothing worth protecting -- allow the write so a broken file
-        # (even next to a lying sidecar) always self-heals.
-        try:
-            if Path(html_path).stat().st_size < _DASHBOARD_MIN_VALID_BYTES:
-                return False
-        except OSError:
-            return False
-        meta_path = _dashboard_meta_path(html_path)
-        if not meta_path.exists():
-            return False
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        if not isinstance(meta, dict):
-            return False
-        existing = _parse_semver(meta.get("version"))
-        if existing is None:
-            return False
-        return existing > mine
-    except Exception:
-        return False
+_dashboard_on_disk_is_newer = _measure_compat.bind(_measure_providers['runtime']._dashboard_on_disk_is_newer, __name__)
 
 
-def _dashboard_meta_is_fresh(meta):
-    """Freshness decision for the SessionStart staleness check, factored out so it
-    is directly testable. `meta` is the parsed sidecar dict. Fresh (no regen) iff:
-      - the on-disk build is STRICTLY NEWER than ours (an older session must not
-        regenerate/clobber a newer dashboard -- leave it to the newer build), OR
-      - version AND shape marker match ours exactly.
-    Anything else (older on disk, or a shape change) is stale -> regenerate."""
-    if not isinstance(meta, dict):
-        return False
-    existing = _parse_semver(meta.get("version"))
-    mine = _parse_semver(TOKEN_OPTIMIZER_VERSION)
-    if existing is not None and mine is not None and existing > mine:
-        return True
-    return (meta.get("version") == TOKEN_OPTIMIZER_VERSION
-            and meta.get("shape") == _DASHBOARD_SHAPE_MARKER)
+_dashboard_meta_is_fresh = _measure_compat.bind(_measure_providers['runtime']._dashboard_meta_is_fresh, __name__)
 
 
-def _use_codex_session_adapter(filepath=None):
-    """True when session JSONL should be parsed with the Codex adapter."""
-    return detect_runtime() == "codex" or (filepath is not None and codex_session.is_codex_session_path(filepath))
+_use_codex_session_adapter = _measure_compat.bind(_measure_providers['runtime']._use_codex_session_adapter, __name__, defaults=(None,))
 
 
-def _use_hermes_session_adapter():
-    """True when sessions should be loaded from the Hermes state.db adapter."""
-    return detect_runtime() == "hermes"
+_use_hermes_session_adapter = _measure_compat.bind(_measure_providers['runtime']._use_hermes_session_adapter, __name__)
 
 
-def _use_copilot_session_adapter():
-    """True when sessions should be loaded from the Copilot adapters."""
-    return detect_runtime() == "copilot"
+_use_copilot_session_adapter = _measure_compat.bind(_measure_providers['runtime']._use_copilot_session_adapter, __name__)
 
 
-def _use_cursor_session_adapter():
-    """True when sessions should be loaded from the Cursor adapters."""
-    return detect_runtime() == "cursor"
+_use_cursor_session_adapter = _measure_compat.bind(_measure_providers['runtime']._use_cursor_session_adapter, __name__)
 
 
-def _use_antigravity_session_adapter():
-    """True when sessions should be loaded from the Antigravity store adapter."""
-    return detect_runtime() == "antigravity"
+_use_antigravity_session_adapter = _measure_compat.bind(_measure_providers['runtime']._use_antigravity_session_adapter, __name__)
 
 
-def _use_grok_session_adapter():
-    """True when sessions should be loaded from the Grok Build adapter."""
-    return detect_runtime() == "grok"
+_use_grok_session_adapter = _measure_compat.bind(_measure_providers['runtime']._use_grok_session_adapter, __name__)
 
 # Tokens per skill frontmatter (loaded at startup)
 TOKENS_PER_SKILL_APPROX = 100
@@ -1211,9 +638,7 @@ _FALLBACK_CLAUDE_MODELS_LC = {
 }
 
 
-def _claude_cards(table, mult=1.0):
-    """Tier-adjusted copy of a fallback card table (vertex-regional is +10%)."""
-    return {key: {f: round(v * mult, 6) for f, v in card.items()} for key, card in table.items()}
+_claude_cards = _measure_compat.bind(_measure_providers['pricing']._claude_cards, __name__, defaults=(1.0,))
 
 
 PRICING_TIERS = {
@@ -1264,40 +689,10 @@ _SONNET_INTRO_RATES = {"input": 2.0, "output": 10.0, "cache_read": 0.2,
 _SONNET_INTRO_PRICING_UNTIL = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
 
-def _pricing_as_of():
-    """Date that pricing is resolved against: the wall clock in production, or a pinned date
-    from TOKEN_OPTIMIZER_PRICING_AS_OF (YYYY-MM-DD) so the test suite stays regime-stable across
-    the 2026-09-01 Sonnet flip. Falls back to now() on an unparseable override."""
-    override = os.environ.get("TOKEN_OPTIMIZER_PRICING_AS_OF")
-    if override:
-        try:
-            return datetime.strptime(override, "%Y-%m-%d")  # naive; treated as UTC downstream
-        except ValueError:
-            pass
-    return datetime.now(timezone.utc)
+_pricing_as_of = _measure_compat.bind(_measure_providers['pricing']._pricing_as_of, __name__)
 
 
-def _apply_sonnet_intro_pricing(as_of=None):
-    """Swap the Anthropic-tier sonnet card to the introductory rate while it is in effect.
-    Idempotent (always recomputes from the canonical standard card, so repeated calls / a
-    date change are safe). Returns True when the introductory rate is active. A naive `as_of`
-    (or env date) is interpreted as UTC so the boundary compares apples to apples."""
-    d = as_of or _pricing_as_of()
-    if d.tzinfo is None:
-        d = d.replace(tzinfo=timezone.utc)
-    # 2026-08-29: the launch "introductory" rate became the STANDARD Sonnet 5 price and
-    # the scheduled 2026-09-01 increase was cancelled. Verbatim from
-    # platform.claude.com/docs/en/about-claude/pricing: "The $2/$10 per million
-    # input/output token pricing for Claude Sonnet 5, announced at launch as
-    # introductory pricing through August 31, 2026, is now the standard price. The
-    # previously scheduled increase to $3/$15 per million input/output tokens on
-    # September 1, 2026 will not occur."
-    # The date gate is therefore retired: $2/$10 applies at every `as_of`. The old
-    # gate would have silently repriced EVERY Sonnet-5 dollar in every card by +50%
-    # on 2026-09-01. `_SONNET_STANDARD_RATES` is retained as the Sonnet 4.6/4.5 card,
-    # which is what the `sonnet_legacy` bucket prices against.
-    PRICING_TIERS["anthropic"]["claude_models"]["sonnet"] = dict(_SONNET_INTRO_RATES)
-    return True
+_apply_sonnet_intro_pricing = _measure_compat.bind(_measure_providers['pricing']._apply_sonnet_intro_pricing, __name__, defaults=(None,))
 
 
 _apply_sonnet_intro_pricing()
@@ -1361,24 +756,7 @@ _GPT56_SOL_LC_PROMO = {"input": 8.0, "cache_read": 0.80, "cache_write": 10.0, "o
 _GPT56_SOL_PROMO_UNTIL = datetime(2026, 11, 21, tzinfo=timezone.utc)
 
 
-def _apply_gpt56_sol_promo_pricing(as_of=None):
-    """Swap the gpt-5.6-sol card to the promotional rate while it is in effect.
-
-    Idempotent (always recomputes from the canonical standard card, so repeated
-    calls / a date change are safe). Returns True when the promotional rate is
-    active. A naive `as_of` (or env date) is interpreted as UTC so the boundary
-    compares apples to apples.
-    """
-    d = as_of or _pricing_as_of()
-    if d.tzinfo is None:
-        d = d.replace(tzinfo=timezone.utc)
-    if d < _GPT56_SOL_PROMO_UNTIL:
-        OPENAI_MODEL_PRICING["gpt-5.6-sol"] = dict(_GPT56_SOL_PROMO)
-        OPENAI_LONG_CONTEXT_PRICING["gpt-5.6-sol"] = dict(_GPT56_SOL_LC_PROMO)
-        return True
-    OPENAI_MODEL_PRICING["gpt-5.6-sol"] = dict(_GPT56_SOL_STANDARD)
-    OPENAI_LONG_CONTEXT_PRICING["gpt-5.6-sol"] = dict(_GPT56_SOL_LC_STANDARD)
-    return False
+_apply_gpt56_sol_promo_pricing = _measure_compat.bind(_measure_providers['pricing']._apply_gpt56_sol_promo_pricing, __name__, defaults=(None,))
 
 
 _apply_gpt56_sol_promo_pricing()
@@ -1421,84 +799,13 @@ BUNDLED_PRICES_STATUS = {"loaded": False, "path": None, "generated_at": None, "e
 _bundled_prices_path = _measure_compat.bind(_measure_providers['pricing']._bundled_prices_path, __name__)
 
 
-def _clean_price_cards(section):
-    """Keep only well-formed cards: safe key, finite non-negative rates, input+output present."""
-    out = {}
-    if not isinstance(section, dict):
-        return out
-    for key, card in section.items():
-        if not isinstance(key, str) or not _PRICE_KEY_RE.match(key) or not isinstance(card, dict):
-            continue
-        clean = {}
-        for field in _PRICE_FIELDS:
-            value = card.get(field)
-            if value is None:
-                continue
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                clean = None
-                break
-            value = float(value)
-            if not math.isfinite(value) or value < 0 or value > 1000:
-                clean = None
-                break
-            clean[field] = value
-        if clean and "input" in clean and "output" in clean:
-            out[key] = clean
-    return out
+_clean_price_cards = _measure_compat.bind(_measure_providers['pricing']._clean_price_cards, __name__)
 
 
 _PROMO_MANAGED_OPENAI_KEYS = frozenset({"gpt-5.6-sol"})
 
 
-def _apply_bundled_prices(path=None):
-    """Merge pricing/prices.json over the built-in rate tables. Returns True when applied."""
-    path = Path(path) if path else _bundled_prices_path()
-    BUNDLED_PRICES_STATUS.update(loaded=False, path=str(path), generated_at=None, error=None)
-    if os.environ.get("TOKEN_OPTIMIZER_BUNDLED_PRICES", "1").strip() == "0":
-        BUNDLED_PRICES_STATUS["error"] = "disabled by TOKEN_OPTIMIZER_BUNDLED_PRICES=0"
-        return False
-    try:
-        if path.stat().st_size > _PRICES_FILE_MAX_BYTES:
-            raise ValueError("prices file too large")
-        doc = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(doc, dict) or doc.get("schema") != 1:
-            raise ValueError("unsupported prices schema")
-    except (OSError, ValueError) as exc:
-        BUNDLED_PRICES_STATUS["error"] = str(exc)
-        return False
-
-    claude = _clean_price_cards(doc.get("anthropic"))
-    for card in claude.values():
-        card.setdefault("cache_read", round(card["input"] * 0.1, 6))
-        card.setdefault("cache_write", round(card["input"] * 1.25, 6))
-        card.setdefault("cache_write_1h", round(card["input"] * 2, 6))
-    claude_lc = _clean_price_cards(doc.get("anthropic_long_context"))
-    for card in claude_lc.values():
-        card.setdefault("cache_read", round(card["input"] * 0.1, 6))
-        card.setdefault("cache_write", round(card["input"] * 1.25, 6))
-        card.setdefault("cache_write_1h", round(card["input"] * 2, 6))
-    # First-party rates apply on Vertex global and Bedrock; Vertex regional is +10%.
-    for tier_name, tier in PRICING_TIERS.items():
-        mult = 1.1 if tier_name == "vertex-regional" else 1.0
-        for key, card in claude.items():
-            tier["claude_models"][key] = {f: round(v * mult, 6) for f, v in card.items()}
-        lc_table = tier.setdefault("claude_models_lc", {})
-        for key, card in claude_lc.items():
-            lc_table[key] = {f: round(v * mult, 6) for f, v in card.items()}
-    for table, section in ((OPENAI_MODEL_PRICING, "openai"),
-                           (OPENAI_LONG_CONTEXT_PRICING, "openai_long_context"),
-                           (GEMINI_MODEL_PRICING, "gemini"),
-                           (GEMINI_LONG_CONTEXT_PRICING, "gemini_long_context")):
-        for key, card in _clean_price_cards(doc.get(section)).items():
-            # The dated promo switch owns this card, so the swap back to the
-            # standard rate still happens on its date whatever the feed says.
-            if key in _PROMO_MANAGED_OPENAI_KEYS:
-                continue
-            card.setdefault("cache_read", card["input"])
-            card.pop("cache_write_1h", None)
-            table[key] = card
-    BUNDLED_PRICES_STATUS.update(loaded=True, generated_at=doc.get("generated_at"))
-    return True
+_apply_bundled_prices = _measure_compat.bind(_measure_providers['pricing']._apply_bundled_prices, __name__, defaults=(None,))
 
 
 # Tests pin a pricing regime with TOKEN_OPTIMIZER_PRICING_AS_OF; the bundled file
@@ -1618,29 +925,7 @@ PROVIDER_CACHE_PROFILES = {
 }
 
 
-def _resolve_cache_profile(model, runtime=None):
-    """Resolve a model id (+ runtime) to its provider cache profile.
-
-    Returns the (profile_key, profile_dict). Pure lookup, never raises.
-    Resolution: OpenAI/Gemini/code review model families first (provider-specific
-    rate cards already recognize these), then Claude (Claude Code vs raw API by
-    runtime), else the honest "unknown/none" profile.
-    """
-    if _normalize_openai_model_name(model):
-        return "openai", PROVIDER_CACHE_PROFILES["openai"]
-    if _normalize_gemini_model_name(model):
-        return "gemini", PROVIDER_CACHE_PROFILES["gemini"]
-    value = _strip_provider_prefixes(model) if model else ""
-    if value.startswith("deepseek"):
-        return "deepseek", PROVIDER_CACHE_PROFILES["deepseek"]
-    if _normalize_model_name(model) in ("fable", "opus", "sonnet", "haiku"):
-        if runtime == "claude":
-            # Claude Code: the platform requests a 1h cache (no user knob).
-            return "claude_code", PROVIDER_CACHE_PROFILES["claude_code"]
-        # Raw Anthropic API/SDK/harness session (e.g. Hermes -> Anthropic): the
-        # 5-min default applies and the user can set a 1h cache_control.
-        return "anthropic_api", PROVIDER_CACHE_PROFILES["anthropic_api"]
-    return "unknown", PROVIDER_CACHE_PROFILES["unknown"]
+_resolve_cache_profile = _measure_compat.bind(_measure_providers['pricing']._resolve_cache_profile, __name__, defaults=(None,))
 
 
 _KNOWN_PROVIDER_PREFIXES = {
@@ -1661,31 +946,7 @@ _DOTTED_PROVIDER_PREFIX_RE = re.compile(
     r"^(?:(?:" + "|".join(sorted(_DOTTED_PROVIDER_TOKENS)) + r")\.)+")
 
 
-def _strip_provider_prefixes(model):
-    value = str(model).strip().lower()
-    while True:
-        dotted = _DOTTED_PROVIDER_PREFIX_RE.match(value)
-        if dotted:
-            value = value[dotted.end():]
-            continue
-        slash = value.find("/")
-        colon = value.find(":")
-        if slash == -1 and colon == -1:
-            return value
-        if slash != -1 and (colon == -1 or slash < colon):
-            idx = slash
-            delimiter = "/"
-        else:
-            idx = colon
-            delimiter = ":"
-        prefix = value[:idx]
-        rest = value[idx + 1:]
-        if not rest or not re.search(r"[a-z]", rest):
-            return value
-        if delimiter == "/" or prefix in _KNOWN_PROVIDER_PREFIXES:
-            value = rest
-            continue
-        return value
+_strip_provider_prefixes = _measure_compat.bind(_measure_providers['pricing']._strip_provider_prefixes, __name__)
 
 CODEX_DEFAULT_EFFECTIVE_CONTEXT_WINDOW = 258_400
 _context_window_cache = None
@@ -1694,44 +955,19 @@ CONFIG_DIR = _CONFIG_BASE if _CONFIG_BASE else RUNTIME_DIR / "token-optimizer"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 
-def _load_pricing_tier():
-    """Load pricing tier preference from config (user, then the project
-    layer via _read_config_flag). Defaults to 'anthropic'."""
-    try:
-        tier = _read_config_flag("pricing_tier", "anthropic")
-        if isinstance(tier, str) and tier in PRICING_TIERS:
-            return tier
-    except Exception:
-        pass
-    return "anthropic"
+_load_pricing_tier = _measure_compat.bind(_measure_providers['pricing']._load_pricing_tier, __name__)
 
 
-def _pricing_tier_label(tier):
-    if detect_runtime() == "codex":
-        return "OpenAI API pricing for recognized Codex models"
-    return PRICING_TIERS.get(tier, {}).get("label", "Anthropic API")
+_pricing_tier_label = _measure_compat.bind(_measure_providers['pricing']._pricing_tier_label, __name__)
 
 
-def _save_pricing_tier(tier):
-    """Persist pricing tier preference via the atomic+locked config writer."""
-    _write_config_flag("pricing_tier", tier)
+_save_pricing_tier = _measure_compat.bind(_measure_providers['pricing']._save_pricing_tier, __name__)
 
 
 _get_model_cost = _measure_compat.bind(_measure_providers['pricing']._get_model_cost, __name__, defaults=(0, 0, None, None, None, False,))
 
 
-def _is_priced_model(model, tier=None):
-    """True when Token Optimizer has an exact rate card for this model id."""
-    if _normalize_openai_model_name(model):
-        return True
-    if _normalize_gemini_model_name(model):
-        return True
-    if tier is None:
-        tier = _load_pricing_tier()
-    tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
-    claude_models = tier_data.get("claude_models", {})
-    normalized = _claude_price_key(model, claude_models) if model else None
-    return bool(normalized and normalized in claude_models)
+_is_priced_model = _measure_compat.bind(_measure_providers['pricing']._is_priced_model, __name__, defaults=(None,))
 
 
 _PRICE_ALIAS_CACHE = {}
@@ -1739,16 +975,7 @@ _PRICE_MATCH_MEMO = {}
 _MISSING = object()
 
 
-def _price_aliases(table):
-    """Priced ids of a rate table, longest first; cached until the table changes."""
-    sig = (id(table), len(table))
-    cached = _PRICE_ALIAS_CACHE.get(sig)
-    # keys() == frozenset compares in C without building sets: this runs once
-    # per priced request, so a per-call copy of the table showed up in profiles.
-    if cached is None or table.keys() != cached[1]:
-        cached = (tuple(sorted(table, key=len, reverse=True)), frozenset(table))
-        _PRICE_ALIAS_CACHE[sig] = cached
-    return cached[0]
+_price_aliases = _measure_compat.bind(_measure_providers['pricing']._price_aliases, __name__)
 
 
 # A dated or numbered snapshot of a priced id: -2026-01-01, -20260101, -0613,
@@ -1756,68 +983,15 @@ def _price_aliases(table):
 _PRICE_SNAPSHOT_RE = re.compile(r"(?:-\d{4}-\d{2}-\d{2}|-\d{8}|-\d{3,4}|@\d{8})")
 
 
-def _match_price_alias(value, table):
-    """Longest priced id that `value` equals or that `value` is a snapshot of
-    (the id plus a date or number suffix). A different variant (-mini, -lite,
-    -image, a later generation) has its own price and never matches a shorter
-    card. Memoized per alias set so repeated model ids resolve with one lookup."""
-    aliases = _price_aliases(table)
-    memo = _PRICE_MATCH_MEMO.get(id(table))
-    if memo is None or memo[0] is not aliases:
-        memo = (aliases, {})
-        _PRICE_MATCH_MEMO[id(table)] = memo
-    hit = memo[1].get(value, _MISSING)
-    if hit is _MISSING:
-        hit = next((a for a in aliases
-                    if value == a or (value.startswith(a)
-                                      and _PRICE_SNAPSHOT_RE.fullmatch(value, len(a)))), None)
-        if len(memo[1]) < 4096:
-            memo[1][value] = hit
-    return hit
+_match_price_alias = _measure_compat.bind(_measure_providers['pricing']._match_price_alias, __name__)
 
 
-def _normalize_openai_model_name(model):
-    """Return a priced OpenAI model id, or None when we cannot price exactly."""
-    if not model:
-        return None
-    value = re.sub(r"[\s_]+", "-", _strip_provider_prefixes(model))
-    if not value or value in {"codex", "openai", "unknown"}:
-        return None
-    if value in ("gpt-5.6", "gpt-5.6-sol-pro"):
-        return "gpt-5.6-sol"  # bare alias: OpenAI's docs name Sol the default 5.6; "Sol Pro" is its marketing name
-    # Every priced id is an alias, longest first so "gpt-5.4-mini" wins over
-    # "gpt-5.4" and dated snapshots ("gpt-5.4-2026-03-05") map to their base.
-    alias = _match_price_alias(value, OPENAI_MODEL_PRICING)
-    if alias == "gpt-5.6":
-        return "gpt-5.6-sol"  # dated bare-5.6 ids follow the same Sol default
-    if alias:
-        return alias
-    if re.fullmatch(r"gpt-5\.6(?:" + _PRICE_SNAPSHOT_RE.pattern + ")", value):
-        return "gpt-5.6-sol"
-    return None
+_normalize_openai_model_name = _measure_compat.bind(_measure_providers['pricing']._normalize_openai_model_name, __name__)
 
 
 _GEMINI_DEPRECATION_WARNED = set()
 
-def _normalize_gemini_model_name(model):
-    """Return a priced Gemini model id, or None when we cannot price exactly."""
-    if not model:
-        return None
-    value = _strip_provider_prefixes(model)
-    if not value.startswith("gemini-"):
-        return None
-    if value.startswith("gemini-2.0"):
-        if value not in _GEMINI_DEPRECATION_WARNED:
-            _GEMINI_DEPRECATION_WARNED.add(value)
-            print(f"[Token Optimizer] WARNING: {value} was deprecated June 1, 2026. Migrate to gemini-2.5-flash or gemini-3.5-flash.", file=sys.stderr)
-        return None
-    hit = _match_price_alias(value, GEMINI_MODEL_PRICING)
-    if hit:
-        return hit
-    # A preview build of a priced model ("-preview", "-preview-05-20",
-    # "-preview-09-2025") is the same model; any other variant is not.
-    base = re.sub(r"-preview(?:-\d{2}-\d{2,4})?$", "", value)
-    return _match_price_alias(base, GEMINI_MODEL_PRICING) if base != value else None
+_normalize_gemini_model_name = _measure_compat.bind(_measure_providers['pricing']._normalize_gemini_model_name, __name__)
 
 
 # Process-local cache for _resolve_session_model to avoid re-reading JSONL
@@ -1825,192 +999,16 @@ def _normalize_gemini_model_name(model):
 _RESOLVED_MODEL_CACHE = {}
 
 
-def _resolve_session_model(session_id=None):
-    """Return the dominant normalized model name for cost attribution.
-
-    Resolution order:
-      1. Explicit session_id → most frequent `message.model` in that JSONL
-      2. CLAUDE_MODEL environment variable (set by Claude Code hook runner)
-      3. Most recent session's dominant model from trends DB
-      4. Fall back to "sonnet"
-
-    Never raises. Always returns a normalized name ("opus"|"sonnet"|"haiku"|"sonnet" default).
-    """
-    if detect_runtime() == 'codex':
-        # Claude message.model/environment/defaults are not Codex telemetry.
-        # Do not cache across model switches, or borrow another task's model.
-        path = codex_session.find_session_jsonl_by_id(session_id) if session_id else None
-        model = None
-        if path:
-            for record in codex_session._iter_json_records(path):
-                candidate = codex_session._extract_model(codex_session._payload(record))
-                if candidate:
-                    model = candidate
-        return model or (None if session_id else _codex_config_model()) or 'unknown'
-    cache_key = session_id or "__env_or_recent__"
-    if cache_key in _RESOLVED_MODEL_CACHE:
-        return _RESOLVED_MODEL_CACHE[cache_key]
-
-    result = None
-
-    # 1. Try session JSONL
-    if session_id:
-        session_id = sanitize_session_id(session_id)
-        try:
-            # The session id names its transcript exactly; find it wherever it
-            # lives rather than trusting a cwd lookup that can guess another
-            # project's dir (#265).
-            candidate = next(iter(sorted((CLAUDE_DIR / "projects").glob(f"*/{session_id}.jsonl"))), None)
-            if candidate is None:
-                projects_dir = find_projects_dir()
-                candidate = projects_dir / f"{session_id}.jsonl" if projects_dir else None
-            if candidate is not None:
-                if candidate.exists():
-                    counts = {}
-                    with open(candidate, "r", encoding="utf-8", errors="replace") as f:
-                        for line in f:
-                            try:
-                                data = json.loads(line)
-                                msg = data.get("message") if isinstance(data, dict) else None
-                                if isinstance(msg, dict):
-                                    m = msg.get("model")
-                                    norm = _normalize_model_name(m) if m else None
-                                    if norm:
-                                        counts[norm] = counts.get(norm, 0) + 1
-                            except (json.JSONDecodeError, KeyError, TypeError):
-                                continue
-                    if counts:
-                        result = max(counts, key=counts.get)
-        except (OSError, PermissionError):
-            pass
-
-    # 2. Try CLAUDE_MODEL env var — but only for Claude-family runtimes. A
-    # foreign runtime (cursor, grok, opencode, copilot, antigravity) running
-    # on a host that also has CLAUDE_MODEL set would otherwise be priced at
-    # Claude model rates, the exact cross-runtime leak the isolation pass
-    # closes for detect_context_window() and quick_scan().
-    if not result:
-        _rt = detect_runtime()
-        if _rt in ("claude", "hermes"):
-            env_model = os.environ.get("CLAUDE_MODEL") or os.environ.get("ANTHROPIC_MODEL")
-            if env_model:
-                norm = _normalize_model_name(env_model)
-                if norm in ("opus", "sonnet", "haiku"):
-                    result = norm
-
-    # 3. Try trends DB for most-recent dominant model
-    if not result:
-        try:
-            if TRENDS_DB.exists():
-                conn = _init_trends_db()
-                ensure_activity_view(conn)
-                try:
-                    row = conn.execute(
-                        "SELECT model_usage_json FROM session_activity "
-                        "WHERE model_usage_json IS NOT NULL AND model_usage_json != '' "
-                        "ORDER BY date DESC LIMIT 1"
-                    ).fetchone()
-                    if row and row[0]:
-                        mu = json.loads(row[0])
-                        if isinstance(mu, dict) and mu:
-                            # normalize keys and sum
-                            norm_counts = {}
-                            for k, v in mu.items():
-                                nk = _normalize_model_name(k) or k
-                                try:
-                                    norm_counts[nk] = norm_counts.get(nk, 0) + int(v)
-                                except (TypeError, ValueError):
-                                    continue
-                            if norm_counts:
-                                result = max(norm_counts, key=norm_counts.get)
-                finally:
-                    conn.close()
-        except (sqlite3.Error, json.JSONDecodeError, OSError):
-            pass
-
-    if not result or result not in ("opus", "sonnet", "haiku"):
-        result = "sonnet"
-
-    _RESOLVED_MODEL_CACHE[cache_key] = result
-    return result
+_resolve_session_model = _measure_compat.bind(_measure_providers['pricing']._resolve_session_model, __name__, defaults=(None,))
 
 
-def _simulate_model_switch(session_data, target_model="sonnet"):
-    """Estimate cost delta if target_model was used instead of the dominant model.
-
-    Returns dict with: current_cost, target_cost, savings_usd, savings_pct.
-    """
-    model_usage = session_data.get("model_usage", {})
-    total_input = session_data.get("total_input_tokens", 0)
-    total_output = session_data.get("total_output_tokens", 0)
-    cache_hit = session_data.get("cache_hit_rate", 0)
-    cache_read = _safe_int(total_input * cache_hit)
-    uncached = max(0, total_input - cache_read)
-
-    dom_model = max(model_usage, key=model_usage.get) if model_usage else "unknown"
-    current_cost = _get_model_cost(dom_model, uncached, total_output, cache_read, 0)
-    target_cost = _get_model_cost(target_model, uncached, total_output, cache_read, 0)
-    savings = current_cost - target_cost
-
-    return {
-        "current_cost": round(current_cost, 4),
-        "target_cost": round(target_cost, 4),
-        "savings_usd": round(max(0, savings), 4),
-        "savings_pct": round(savings / current_cost * 100, 1) if current_cost > 0 else 0,
-    }
+_simulate_model_switch = _measure_compat.bind(_measure_providers['pricing']._simulate_model_switch, __name__, defaults=("sonnet",))
 
 
-def _cost_from_model_breakdown(model_usage_breakdown, tier=None, cache_create_1h=None, cache_create_5m=None):
-    """Calculate exact known cost from per-model token buckets."""
-    if not isinstance(model_usage_breakdown, dict):
-        return 0.0
-    total = 0.0
-    for model, parts in model_usage_breakdown.items():
-        if not isinstance(parts, dict):
-            continue
-        # Long-context pricing applies per request, never to a session sum.
-        requests = parts.get('requests')
-        if isinstance(requests, list) and requests:
-            total += sum(_cost_from_model_breakdown({model: request}, tier=tier)
-                         for request in requests if isinstance(request, dict))
-            # Bucket totals include deltas from records that were never
-            # appended to requests (e.g. a cache-read-only turn with zero
-            # input/output, or cache_create which requests never carry).
-            # Price the unpriced remainder at the aggregate rate instead of
-            # silently dropping those tokens from the cost.
-            remainder = {
-                key: max(0, int(parts.get(key) or 0) - sum(
-                    int(request.get(key) or 0) for request in requests
-                    if isinstance(request, dict)))
-                for key in ('fresh_input', 'cache_read', 'output',
-                            'cache_create', 'cache_create_1h', 'cache_create_5m')
-            }
-            if any(remainder.values()):
-                total += _cost_from_model_breakdown({model: remainder}, tier=tier)
-            continue
-        part_1h = parts.get("cache_create_1h")
-        part_5m = parts.get("cache_create_5m")
-        if part_1h is None and part_5m is None and len(model_usage_breakdown) == 1:
-            part_1h = cache_create_1h
-            part_5m = cache_create_5m
-        total += _get_model_cost(
-            model,
-            int(parts.get("fresh_input") or 0),
-            int(parts.get("output") or 0),
-            int(parts.get("cache_read") or 0),
-            int(parts.get("cache_create") or 0),
-            tier=tier,
-            cache_create_1h=part_1h,
-            cache_create_5m=part_5m,
-        )
-    return total
+_cost_from_model_breakdown = _measure_compat.bind(_measure_providers['pricing']._cost_from_model_breakdown, __name__, defaults=(None, None, None,))
 
 
-def _fmt_context_window(size):
-    """Format context window size for display (e.g., '200K', '1M')."""
-    if size >= 1_000_000:
-        return f"{size / 1_000_000:.0f}M" if size % 1_000_000 == 0 else f"{size / 1_000_000:.1f}M"
-    return f"{size // 1000}K"
+_fmt_context_window = _measure_compat.bind(_measure_providers['runtime']._fmt_context_window, __name__)
 
 
 # ANSI/VT escape sequences: CSI (\x1b[ ... final byte), OSC (\x1b] ... BEL or
@@ -2028,307 +1026,64 @@ _ANSI_ESCAPE_RE = re.compile(
 _BEL_RE = re.compile(r"\x07")
 
 
-def _strip_ansi(text):
-    """Remove ANSI/VT escape sequences from text destined for the terminal."""
-    if not isinstance(text, str):
-        text = str(text) if text is not None else ""
-    text = _ANSI_ESCAPE_RE.sub("", text)
-    # Strip stray BEL characters left by malformed OSC sequences whose
-    # terminator survived the OSC branch (embedded ESC broke the match).
-    return _BEL_RE.sub("", text)
+_strip_ansi = _measure_compat.bind(_measure_providers['runtime']._strip_ansi, __name__)
 
 
 _safe_int = _measure_compat.bind(_measure_providers['runtime']._safe_int, __name__)
 
 
-def _context_usage(usage):
-    """Select live executor usage, leaving aggregate usage for billing.
-
-    Advisor/server-tool responses can sum several executor reads in the
-    top-level usage. Only the final message iteration describes occupancy.
-    An unusable final executor falls back to the aggregate, never an older
-    executor (which may describe a different context). Ignore advisor tails.
-    """
-    if isinstance(usage, dict) and isinstance(usage.get("iterations"), list):
-        for iteration in reversed(usage["iterations"]):
-            if isinstance(iteration, dict) and iteration.get("type") == "message":
-                if (_valid_context_usage(iteration)
-                        and _context_token_count(iteration) > 0):
-                    return iteration
-                break
-    return usage
+_context_usage = _measure_compat.bind(_measure_providers['runtime']._context_usage, __name__)
 
 
-def _valid_context_usage(usage):
-    """Reject corrupt present executor buckets before lossy int coercion.
-
-    Missing buckets are optional. TTL splits matter only when the flat
-    cache-write count is absent or zero, matching _context_token_count.
-    """
-    values = [usage[key] for key in ("input_tokens", "cache_read_input_tokens",
-              "cache_creation_input_tokens") if key in usage]
-    if not _safe_int(usage.get("cache_creation_input_tokens")):
-        nested = usage.get("cache_creation", {})
-        if not isinstance(nested, dict):
-            return False
-        for key in ("ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"):
-            if key in nested:
-                values.append(nested[key])
-            if not nested.get(key) and key in usage:
-                values.append(usage[key])
-    try:
-        return all(math.isfinite(float(value)) and float(value) >= 0
-                   for value in values)
-    except (TypeError, ValueError, OverflowError):
-        return False
+_valid_context_usage = _measure_compat.bind(_measure_providers['runtime']._valid_context_usage, __name__)
 
 
-def _resume_usage(usage):
-    """The first executor tests whether the cache survived the pause.
-
-    Later executors may read cache written earlier in this same response;
-    that is not evidence that a keep-warm ping avoided the initial rewrite.
-    Unusable first-executor data keeps the aggregate comparison, not a later
-    executor that could hide a paid rewrite.
-    """
-    if isinstance(usage, dict) and isinstance(usage.get("iterations"), list):
-        for iteration in usage["iterations"]:
-            if isinstance(iteration, dict) and iteration.get("type") == "message":
-                if (_valid_context_usage(iteration)
-                        and _context_token_count(iteration) > 0):
-                    return iteration
-                break
-    return usage
+_resume_usage = _measure_compat.bind(_measure_providers['runtime']._resume_usage, __name__)
 
 
 _USAGE_BUCKET_KEYS = ("inp", "out", "cr", "cc", "cc_1h", "cc_5m")
 
 
-def _usage_buckets(usage):
-    """Billing buckets of one usage dict (or iteration), never raising."""
-    if not isinstance(usage, dict):
-        return dict.fromkeys(_USAGE_BUCKET_KEYS, 0)
-    nested = usage.get("cache_creation", {})
-    if not isinstance(nested, dict):
-        nested = {}
-    cc_1h = _safe_int(nested.get("ephemeral_1h_input_tokens", 0)
-                      or usage.get("ephemeral_1h_input_tokens", 0))
-    cc_5m = _safe_int(nested.get("ephemeral_5m_input_tokens", 0)
-                      or usage.get("ephemeral_5m_input_tokens", 0))
-    return {
-        "inp": max(0, _safe_int(usage.get("input_tokens", 0))),
-        "out": max(0, _safe_int(usage.get("output_tokens", 0))),
-        "cr": max(0, _safe_int(usage.get("cache_read_input_tokens", 0))),
-        "cc": max(0, _safe_int(usage.get("cache_creation_input_tokens", 0))
-                  or (cc_1h + cc_5m)),
-        "cc_1h": max(0, cc_1h),
-        "cc_5m": max(0, cc_5m),
-    }
+_usage_buckets = _measure_compat.bind(_measure_providers['runtime']._usage_buckets, __name__)
 
 
-def _billed_usage_parts(usage, model, tier=None):
-    """Split one response's usage into [(price_model, buckets), ...].
-
-    The first part is the executor (priced at the response model). Advisor
-    iterations (type "advisor_message") run on the advisor's own model, so
-    each becomes its own part priced at that model when the rate card knows
-    it, else at the executor model. Tokens are never dropped: when the
-    top-level usage already covers the advisor tokens they are moved out of
-    the executor part, otherwise (the documented shape, top-level is the
-    executor sum only) they are added on top.
-    """
-    agg = _usage_buckets(usage)
-    iterations = usage.get("iterations") if isinstance(usage, dict) else None
-    if not isinstance(iterations, list):
-        return [(model, agg)]
-    executor_sum = dict.fromkeys(_USAGE_BUCKET_KEYS, 0)
-    advisor_sum = dict.fromkeys(_USAGE_BUCKET_KEYS, 0)
-    advisors = []
-    for iteration in iterations:
-        if not isinstance(iteration, dict):
-            continue
-        kind = iteration.get("type")
-        if kind == "message":
-            for k, v in _usage_buckets(iteration).items():
-                executor_sum[k] += v
-        elif kind == "advisor_message":
-            buckets = _usage_buckets(iteration)
-            if not any(buckets.values()):
-                continue
-            adv_model = iteration.get("model")
-            if not (isinstance(adv_model, str) and adv_model
-                    and _is_priced_model(adv_model, tier)):
-                adv_model = model
-            advisors.append((adv_model, buckets))
-            for k, v in buckets.items():
-                advisor_sum[k] += v
-    if not advisors:
-        return [(model, agg)]
-    executor = dict(agg)
-    if all(agg[k] >= executor_sum[k] + advisor_sum[k] for k in _USAGE_BUCKET_KEYS):
-        executor = {k: agg[k] - advisor_sum[k] for k in _USAGE_BUCKET_KEYS}
-    return [(model, executor)] + advisors
+_billed_usage_parts = _measure_compat.bind(_measure_providers['runtime']._billed_usage_parts, __name__, defaults=(None,))
 
 
-def _price_usage_parts(parts, tier=None, per_request=False, ttl_split=True):
-    """USD for _billed_usage_parts output; cache writes priced by TTL split."""
-    total = 0.0
-    for part_model, b in parts:
-        if ttl_split and (b["cc_1h"] or b["cc_5m"]):
-            total += _get_model_cost(part_model, b["inp"], b["out"], b["cr"], b["cc"],
-                                     tier=tier, cache_create_1h=b["cc_1h"],
-                                     cache_create_5m=b["cc_5m"], per_request=per_request)
-        else:
-            total += _get_model_cost(part_model, b["inp"], b["out"], b["cr"], b["cc"],
-                                     tier=tier, per_request=per_request)
-    return total
+_price_usage_parts = _measure_compat.bind(_measure_providers['runtime']._price_usage_parts, __name__, defaults=(None, False, True,))
 
 
-def _turn_prefix_cached(turn):
-    """Cached prefix a turn leaves behind: final executor when known (#287)."""
-    if "ctx_cache" in turn:
-        return max(0, _safe_int(turn.get("ctx_cache")))
-    return _safe_int(turn.get("cache_read")) + _safe_int(turn.get("cache_creation"))
+_turn_prefix_cached = _measure_compat.bind(_measure_providers['runtime']._turn_prefix_cached, __name__)
 
 
-def _turn_resume_write(turn):
-    """Cache written when a turn starts: first executor when known (#287)."""
-    if "resume_cache_creation" in turn:
-        return max(0, _safe_int(turn.get("resume_cache_creation")))
-    return _safe_int(turn.get("cache_creation"))
+_turn_resume_write = _measure_compat.bind(_measure_providers['runtime']._turn_resume_write, __name__)
 
 
-def _context_token_count(usage):
-    """Input footprint, including flat or TTL-split cache writes."""
-    if not isinstance(usage, dict):
-        return 0
-    creation = _safe_int(usage.get("cache_creation_input_tokens"))
-    if not creation:
-        nested = usage.get("cache_creation")
-        if not isinstance(nested, dict):
-            nested = {}
-        creation = sum(_safe_int(nested.get(key) or usage.get(key)) for key in (
-            "ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"))
-    return (_safe_int(usage.get("input_tokens"))
-            + _safe_int(usage.get("cache_read_input_tokens")) + creation)
+_context_token_count = _measure_compat.bind(_measure_providers['runtime']._context_token_count, __name__)
 
 
-def estimate_tokens_from_file(filepath):
-    """Estimate tokens by reading file content (character count / 4)."""
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        return int(len(content) / CHARS_PER_TOKEN)
-    except (FileNotFoundError, PermissionError, OSError):
-        return 0
+estimate_tokens_from_file = _measure_compat.bind(_measure_providers['runtime'].estimate_tokens_from_file, __name__)
 
 
-def _project_claude_dir():
-    """`<cwd>/.claude` when it exists and is a real directory, else None.
-
-    Never follows a symlink out of the tree and never raises: a cwd that has
-    been deleted underneath us (a stale shell) must degrade to "no project
-    scope", not blow up a report.
-    """
-    try:
-        p = Path.cwd() / ".claude"
-        if p.is_dir() and not p.is_symlink():
-            return p
-    except OSError:
-        pass
-    return None
+_project_claude_dir = _measure_compat.bind(_measure_providers['runtime']._project_claude_dir, __name__)
 
 
-def _skill_scan_dirs():
-    """Every directory Claude Code loads skills from for THIS session, in order.
-
-    Project-scoped skills (`<cwd>/.claude/skills`) are injected into the
-    skill listing for every session in that cwd, exactly like `~/.claude/skills`,
-    but measure.py only ever scanned the global dir. Any project using them was
-    under-reported (~5-7% on a measured real project) and the shortfall was
-    absorbed by the calibration-gap line as if it were unmeasurable overhead.
-
-    GLOBAL FIRST, deliberately: name maps built from this order let a global
-    skill win a name collision, and the dashboard ordering stays stable. The
-    project dir is skipped when it IS the global dir (running from `~`), so a
-    skill is never counted twice.
-    """
-    dirs = [CLAUDE_DIR / "skills"]
-    proj = _project_claude_dir()
-    if proj is not None:
-        try:
-            if proj.resolve() != CLAUDE_DIR.resolve():
-                dirs.append(proj / "skills")
-        except OSError:
-            pass
-    return dirs
+_skill_scan_dirs = _measure_compat.bind(_measure_providers['runtime']._skill_scan_dirs, __name__)
 
 
-def _agent_scan_dirs():
-    """Same idea for agents: `~/.claude/agents` plus `<cwd>/.claude/agents`."""
-    dirs = [CLAUDE_DIR / "agents"]
-    proj = _project_claude_dir()
-    if proj is not None:
-        try:
-            if proj.resolve() != CLAUDE_DIR.resolve():
-                dirs.append(proj / "agents")
-        except OSError:
-            pass
-    return dirs
+_agent_scan_dirs = _measure_compat.bind(_measure_providers['runtime']._agent_scan_dirs, __name__)
 
 
-def estimate_tokens_from_frontmatter(filepath):
-    """Estimate tokens from YAML frontmatter only (between --- delimiters).
-
-    Parallel implementation exists in fleet-auditor/scripts/fleet.py
-    (_estimate_skill_frontmatter_tokens). Both must stay in sync.
-    """
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        # Strip UTF-8 BOM that Windows editors may insert
-        content = content.lstrip('\ufeff')
-        # Extract frontmatter between first pair of ---
-        if content.startswith("---"):
-            end = content.find("---", 3)
-            if end > 0:
-                frontmatter = content[3:end]
-                return max(int(len(frontmatter) / CHARS_PER_TOKEN) + SKILL_WRAPPER_OVERHEAD, 50)
-        # No frontmatter found, use rough estimate
-        return TOKENS_PER_SKILL_APPROX
-    except (FileNotFoundError, PermissionError, OSError):
-        return TOKENS_PER_SKILL_APPROX
+estimate_tokens_from_frontmatter = _measure_compat.bind(_measure_providers['runtime'].estimate_tokens_from_frontmatter, __name__)
 
 
-def count_lines(filepath):
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            return sum(1 for _ in f)
-    except (FileNotFoundError, PermissionError, OSError):
-        return 0
+count_lines = _measure_compat.bind(_measure_providers['runtime'].count_lines, __name__)
 
 
-def resolve_real_path(filepath):
-    """Resolve symlinks to avoid double-counting."""
-    try:
-        return filepath.resolve()
-    except OSError:
-        return filepath
+resolve_real_path = _measure_compat.bind(_measure_providers['runtime'].resolve_real_path, __name__)
 
 
-def _encode_project_dir_name(path_str):
-    """Encode an absolute path the way Claude Code names its project dirs.
-
-    Claude Code replaces EVERY non-alphanumeric character with '-' (no collapsing
-    of consecutive dashes). This matters on Windows, where a path like
-    `D:\\Code\\my app` must become `D--Code-my-app` -- the old `/`-and-`_`-only
-    replacement left the drive colon, backslashes, and spaces intact, so the
-    encoded name never matched and `find_projects_dir` fell back to the most
-    recently modified project across ALL projects (cross-project
-    leak). A leading separator still yields the leading '-' on POSIX, and POSIX
-    paths with spaces now encode correctly too.
-    """
-    return re.sub(r"[^A-Za-z0-9]", "-", str(path_str))
+_encode_project_dir_name = _measure_compat.bind(_measure_providers['runtime']._encode_project_dir_name, __name__)
 
 
 # MSIX-packaged apps (the Claude desktop app on Windows) get a virtualized
@@ -2342,151 +1097,19 @@ _MSIX_REDIRECT_RE = re.compile(
 )
 
 
-def _unvirtualize_msix_path(path_str):
-    """Map an MSIX physical LocalCache path back to the logical AppData path."""
-    text = str(path_str)
-    m = _MSIX_REDIRECT_RE.match(text)
-    if not m:
-        return text
-    sep = "\\" if "\\" in text else "/"
-    return f"{m.group('home')}{sep}AppData{sep}{m.group('kind')}{m.group('rest')}"
+_unvirtualize_msix_path = _measure_compat.bind(_measure_providers['runtime']._unvirtualize_msix_path, __name__)
 
 
-def cwd_to_project_dir_name():
-    """Convert cwd to Claude Code project directory name format.
-
-    e.g. /Users/alex/my project -> -Users-alex-my-project
-         D:\\Code\\my app       -> D--Code-my-app  (Windows)
-    """
-    return _encode_project_dir_name(_unvirtualize_msix_path(Path.cwd()))
+cwd_to_project_dir_name = _measure_compat.bind(_measure_providers['runtime'].cwd_to_project_dir_name, __name__)
 
 
-def _project_dir_from_transcript(projects_base, transcript_path):
-    """The project dir holding a transcript, when it lives under projects_base."""
-    if not transcript_path:
-        return None
-    try:
-        rel = Path(transcript_path).resolve().relative_to(projects_base.resolve())
-    except (OSError, ValueError, RuntimeError):
-        return None
-    if len(rel.parts) < 2:
-        return None
-    candidate = projects_base / rel.parts[0]
-    return candidate if candidate.is_dir() else None
+_project_dir_from_transcript = _measure_compat.bind(_measure_providers['runtime']._project_dir_from_transcript, __name__)
 
 
-def find_projects_dir(cwd=None, transcript_path=None, allow_mtime_guess=True):
-    """Find the Claude Code projects directory for this session.
-
-    Most reliable first: the hook payload's transcript_path (its parent is the
-    project dir by construction), then the payload cwd, then the process cwd,
-    then $CLAUDE_PROJECT_DIR, each with MSIX paths mapped back to the logical
-    AppData path (#265). Only then the most-recently-modified guess.
-
-    allow_mtime_guess=False skips that final guess and returns None instead:
-    callers resolving a file Claude Code only loads from the CURRENT project
-    (MEMORY.md, #301) must not be handed some other project's directory.
-    """
-    projects_base = CLAUDE_DIR / "projects"
-    if not projects_base.exists():
-        return None
-
-    from_transcript = _project_dir_from_transcript(projects_base, transcript_path)
-    if from_transcript is not None:
-        return from_transcript
-
-    bases = []
-    if cwd:
-        bases.append(cwd)
-    try:
-        bases.append(Path.cwd())
-    except OSError:
-        pass
-    if os.environ.get("CLAUDE_PROJECT_DIR"):
-        bases.append(os.environ["CLAUDE_PROJECT_DIR"])
-
-    for base in bases:
-        for text in dict.fromkeys((_unvirtualize_msix_path(base), str(base))):
-            expected_dir = projects_base / _encode_project_dir_name(text)
-            if expected_dir.exists():
-                return expected_dir
-            # The user may be in a subdirectory of the project.
-            path_cls = PureWindowsPath if re.match(r"^[A-Za-z]:[\\/]", text) else Path
-            for parent in list(path_cls(text).parents)[:5]:
-                parent_dir = projects_base / _encode_project_dir_name(parent)
-                if parent_dir.exists():
-                    return parent_dir
-
-    # Last resort: most recently modified (with warning)
-    if not allow_mtime_guess:
-        return None
-    dirs = [d for d in projects_base.iterdir() if d.is_dir()]
-    if not dirs:
-        return None
-
-    def _safe_mtime(d):
-        try:
-            return d.stat().st_mtime
-        except OSError:
-            return 0
-
-    result = max(dirs, key=_safe_mtime)
-    # stderr, never stdout: this runs inside hooks (SessionStart's ensure-health
-    # path among them), where stdout becomes the model's additionalContext.
-    print(f"  [Warning] Could not match cwd to project dir. Using most recent: {result.name}",
-          file=sys.stderr)
-    return result
+find_projects_dir = _measure_compat.bind(_measure_providers['runtime'].find_projects_dir, __name__, defaults=(None, None, True,))
 
 
-def get_session_baselines(limit=10):
-    """Extract first-message token counts from recent JSONL session logs."""
-    # Hermes: sessions live in ~/.hermes/state.db, not
-    # ~/.claude/projects/*.jsonl. Return [] so the dashboard's baselines
-    # row renders empty without scanning CLAUDE_DIR.
-    if _use_hermes_session_adapter():
-        return []
-    # Antigravity: sessions live in the read-only conversation
-    # store under ~/.gemini, not ~/.claude/projects/*.jsonl.
-    if _use_antigravity_session_adapter():
-        return []
-    projects_dir = find_projects_dir()
-    if not projects_dir:
-        return []
-
-    jsonl_files = sorted(
-        glob.glob(str(projects_dir / "*.jsonl")),
-        key=os.path.getmtime,
-        reverse=True,
-    )
-
-    baselines = []
-    for jf in jsonl_files[:limit]:
-        try:
-            mtime = os.path.getmtime(jf)
-            first_usage = None
-            with open(jf, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    try:
-                        data = json.loads(line)
-                        if "message" in data and isinstance(data["message"], dict):
-                            msg = data["message"]
-                            if "usage" in msg:
-                                # Context size, not the advisor-summed bill (#287).
-                                first_usage = _context_token_count(
-                                    _context_usage(msg["usage"]))
-                                break
-                    except (json.JSONDecodeError, KeyError, TypeError):
-                        continue
-
-            if first_usage:
-                baselines.append({
-                    "date": datetime.fromtimestamp(mtime).isoformat(),
-                    "baseline_tokens": first_usage,
-                })
-        except (PermissionError, OSError):
-            continue
-
-    return baselines
+get_session_baselines = _measure_compat.bind(_measure_providers['runtime'].get_session_baselines, __name__, defaults=(10,))
 
 
 # ========== MCP server discovery ==========
@@ -11960,149 +10583,13 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
     return result
 
 
-def _resolve_platform_models(runtime):
-    """Resolve a platform's real tier->model ladder from ITS OWN config, or None.
-
-    Only user-configured platforms need this; None means "use the routing table".
-    - opencode: reads opencode.json (`model` / `small_model`, provider-qualified).
-      small_model -> budget, model -> mid/capable/frontier. Absent field or
-      unreadable config -> None (table fallback).
-    - hermes: a Claude runtime with no per-tier model config, so the Claude ladder
-      in the table is already correct -> None.
-    Never raises.
-    """
-    try:
-        if runtime != "opencode":
-            return None
-        from runtime_env import opencode_config_home
-        cfg_path = opencode_config_home() / "opencode.json"
-        if not cfg_path.is_file():
-            return None
-        with cfg_path.open("r", encoding="utf-8") as handle:
-            cfg = json.load(handle)
-        if not isinstance(cfg, dict):
-            return None
-
-        def _leaf(value):
-            # "anthropic/claude-sonnet-4" -> "claude-sonnet-4"; keep advisory-friendly.
-            if not (isinstance(value, str) and value.strip()):
-                return None
-            return value.strip().rsplit("/", 1)[-1]
-
-        main = _leaf(cfg.get("model"))
-        small = _leaf(cfg.get("small_model")) or main
-        main = main or small
-        if not main:
-            return None
-        return {"budget": small, "mid": main, "capable": main, "frontier": main}
-    except Exception:
-        return None
+_resolve_platform_models = _measure_compat.bind(_measure_providers['pricing']._resolve_platform_models, __name__)
 
 
-def _cmd_route(args):
-    """Recommend a model and reasoning effort for a task on the CURRENT platform.
-
-    Works on every supported runtime (it reads only the task text and the
-    detected platform, never the Claude tree), so it is intentionally NOT a
-    Claude-targeting command. Fails open to a safe middle recommendation.
-    """
-    import json as _json
-    as_json = "--json" in args
-    task = ""
-    _eq = [a for a in args if a.startswith("--task=")]
-    if "--task" in args:
-        i = args.index("--task")
-        if i + 1 < len(args):
-            task = args[i + 1]
-    elif _eq:
-        task = _eq[-1][len("--task="):]
-    else:
-        # Positional task: keep every token except the recognized --json flag so
-        # task words that happen to start with "--" are not silently dropped.
-        task = " ".join(a for a in args[1:] if a != "--json")
-    _rt = detect_runtime()
-    try:
-        import routing_advisor
-        rec = routing_advisor.recommend(task, _rt, models=_resolve_platform_models(_rt))
-    except Exception as _e:
-        # Router module unavailable: a real, non-cheap default with the same
-        # keys as a normal recommendation so JSON consumers never KeyError.
-        # Model name comes from the platform's own ladder, never a hardcoded
-        # Claude tier under a non-Claude runtime.
-        _mid = "sonnet"
-        try:
-            _row = routing_advisor.ROUTING_TABLES.get(_rt) or routing_advisor._GENERIC_ROW
-            _mid = _row["models"]["mid"]
-        except Exception:
-            if _rt == "codex":
-                _mid = "gpt-5.6-terra"
-        rec = {
-            "model": _mid, "effort": "medium", "significance": "standard",
-            "confidence": "low", "category": "simple", "tier": "mid",
-            "effort_kind": "advisory", "effort_knob": "effort",
-            "floor": {"min_tier": "mid", "min_effort": "medium"},
-            "why": f"router unavailable ({type(_e).__name__}); safe default",
-        }
-    if as_json:
-        print(_json.dumps(rec))
-        return
-    print(f"  model:  {rec.get('model')}")
-    print(f"  effort: {rec.get('effort')}  ({rec.get('effort_knob', 'effort')})")
-    print(f"  why:    {rec.get('why')}")
+_cmd_route = _measure_compat.bind(_measure_providers['pricing']._cmd_route, __name__)
 
 
-def generate_model_routing_block(trends=None):
-    """Generate the model + effort routing block for the CURRENT platform.
-
-    Renders the current platform's own model ladder and effort control, states
-    the easy-only rule for the cheapest models and lowest efforts, and points at
-    the live `route` command. Recent model-mix stats are added as evidence when
-    available. Returns markdown suitable for instruction-file injection.
-    """
-    try:
-        import routing_advisor
-    except Exception:
-        return None
-
-    runtime = detect_runtime()
-    row = routing_advisor.platform_row(runtime)
-    resolved = _resolve_platform_models(runtime)
-    models = resolved if isinstance(resolved, dict) else row["models"]
-
-    easy_m, easy_e = routing_advisor.baseline("easy", runtime, models=resolved)
-    std_m, std_e = routing_advisor.baseline("standard", runtime, models=resolved)
-    hard_m, hard_e = routing_advisor.baseline("hard", runtime, models=resolved)
-    knob = row["effort_knob"]
-
-    lines = [
-        "## Model & Effort Routing (by Token Optimizer)",
-        f"For each task pick both a model and an effort level. Effort maps to this "
-        f"platform's {knob}.",
-        f"- Easy (typo, rename, format, grep, single-file): {easy_m} at {easy_e} effort.",
-        f"- Standard (a bounded feature or fix): {std_m} at {std_e} effort.",
-        f"- Hard (security, migrations, concurrency, architecture): {hard_m} at {hard_e} effort.",
-        f"- The cheapest models ({models.get('budget')}) and the lowest efforts are for "
-        f"easy work only. Never route a significant task there.",
-        "- For a specific task, run: `measure.py route --task \"...\"`.",
-    ]
-
-    if trends is None:
-        try:
-            trends = _collect_trends_data(days=30)
-        except Exception:
-            trends = None
-    try:
-        model_mix = (trends or {}).get("model_mix", {})
-        total = sum(model_mix.values()) if isinstance(model_mix, dict) else 0
-        if total:
-            top = ", ".join(f"{round(v / total * 100)}% {k}"
-                            for k, v in sorted(model_mix.items(), key=lambda kv: -kv[1])[:3])
-            lines.append(f"- Your last 30 days: {top}.")
-    except Exception:
-        # Malformed trends never break the routing policy block.
-        pass
-
-    return "\n".join(lines)
+generate_model_routing_block = _measure_compat.bind(_measure_providers['pricing'].generate_model_routing_block, __name__, defaults=(None,))
 
 
 def generate_coach_block(components=None, trends=None):
@@ -13708,456 +12195,37 @@ CREATE INDEX IF NOT EXISTS idx_compression_events_ts ON compression_events (time
 """
 
 
-def _classify_jsonl_is_sidechain(filepath, max_lines=200):
-    """Return ``(is_sidechain, reason)`` using only authoritative signals."""
-    path_reason = _sidechain_path_reason(filepath)
-    if path_reason:
-        return (True, path_reason)
-    try:
-        parsed = 0
-        first_user_record_seen = False
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                # Cap on parsed records, not raw lines, so blank/garbage lines
-                # do not consume the scan budget before a real record is seen.
-                if parsed >= max_lines:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                parsed += 1
-                if rec.get("isSidechain") is True:
-                    return (True, "isSidechain")
-                # The OSRC protocol is meaningful only in the first real user
-                # prompt. Tool-result transport and later assistant/user echoes
-                # are orchestrator activity, not proof of a delegated worker.
-                if rec.get("type") == "user" and not first_user_record_seen:
-                    prompt = _osrc_prompt_text(rec)
-                    if prompt:
-                        first_user_record_seen = True
-                    if prompt and ("OSRC::PROGRESS" in prompt or "OSRC::DONE" in prompt):
-                        return (True, "osrc_prompt")
-        return (False, None)
-    except (OSError, ValueError):
-        return (None, None)
+_classify_jsonl_is_sidechain = _measure_compat.bind(_measure_providers['trends']._classify_jsonl_is_sidechain, __name__, defaults=(200,))
 
 
-def _scan_jsonl_is_sidechain(filepath, max_lines=200):
-    """Return True/False for a readable transcript, otherwise None."""
-    verdict, _reason = _classify_jsonl_is_sidechain(filepath, max_lines=max_lines)
-    return verdict
+_scan_jsonl_is_sidechain = _measure_compat.bind(_measure_providers['trends']._scan_jsonl_is_sidechain, __name__, defaults=(200,))
 
 
-def _backfill_is_sidechain(conn, batch_limit=500):
-    """Reclassify legacy rows once with the corrected classifier.
-
-    The persistent gate is required because ``sidechain_reason`` is NULL for a
-    legitimate human row after repair, so NULL alone cannot be a durable
-    unclassified sentinel. Missing transcripts remain unchanged and are counted
-    rather than guessed.
-
-    Batched with a resume cursor: if the process is killed mid-backfill (hook
-    timeout), the next _init_trends_db resumes from the last-processed id
-    instead of re-reading every row from scratch. The done-marker is only
-    written when the cursor reaches the end.
-    """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS token_optimizer_meta "
-        "(key TEXT PRIMARY KEY, value TEXT)"
-    )
-    if conn.execute(
-        "SELECT 1 FROM token_optimizer_meta WHERE key = 'sidechain_classifier_v2_done'"
-    ).fetchone() is not None:
-        return (0, 0)
-
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
-    has_reason = "sidechain_reason" in cols
-    # Resume from the last-processed id if a prior pass was interrupted.
-    cursor_row = conn.execute(
-        "SELECT value FROM token_optimizer_meta WHERE key = 'sidechain_classifier_v2_cursor'"
-    ).fetchone()
-    cursor_id = int(cursor_row[0]) if cursor_row else 0
-    rows = conn.execute(
-        "SELECT id, jsonl_path FROM session_log "
-        "WHERE jsonl_path IS NOT NULL AND id > ? "
-        "ORDER BY id LIMIT ?",
-        (cursor_id, batch_limit),
-    ).fetchall()
-    if not rows:
-        # No more rows to process: mark done and clear the cursor.
-        conn.execute(
-            "INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
-            "VALUES ('sidechain_classifier_v2_done', datetime('now'))"
-        )
-        conn.execute(
-            "DELETE FROM token_optimizer_meta WHERE key = 'sidechain_classifier_v2_cursor'"
-        )
-        conn.commit()
-        return (0, 0)
-    updates = []
-    missing = 0
-    last_id = cursor_id
-    for row_id, jpath in rows:
-        verdict, reason = _classify_jsonl_is_sidechain(jpath)
-        last_id = row_id
-        if verdict is None:
-            missing += 1
-            continue
-        if has_reason:
-            updates.append((1 if verdict else 0, reason, row_id))
-        else:
-            updates.append((1 if verdict else 0, row_id))
-    if updates:
-        if has_reason:
-            conn.executemany(
-                "UPDATE session_log SET is_sidechain = ?, sidechain_reason = ? WHERE id = ?",
-                updates,
-            )
-        else:
-            conn.executemany(
-                "UPDATE session_log SET is_sidechain = ? WHERE id = ?", updates
-            )
-    # Persist the cursor so a killed process resumes here next time.
-    conn.execute(
-        "INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
-        "VALUES ('sidechain_classifier_v2_cursor', ?)",
-        (str(last_id),),
-    )
-    # If we processed fewer than batch_limit rows, we've reached the end.
-    if len(rows) < batch_limit:
-        conn.execute(
-            "INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
-            "VALUES ('sidechain_classifier_v2_done', datetime('now'))"
-        )
-        conn.execute(
-            "DELETE FROM token_optimizer_meta WHERE key = 'sidechain_classifier_v2_cursor'"
-        )
-    conn.commit()
-    return (len(updates), missing)
+_backfill_is_sidechain = _measure_compat.bind(_measure_providers['trends']._backfill_is_sidechain, __name__, defaults=(500,))
 
 
-def _backfill_reported_token_usage(conn, batch_limit=500):
-    """Persist the official-compatible, non-deduped usage basis for old rows.
-
-    Batched with a resume cursor (see _backfill_is_sidechain for rationale).
-    """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS token_optimizer_meta "
-        "(key TEXT PRIMARY KEY, value TEXT)"
-    )
-    if conn.execute(
-        "SELECT 1 FROM token_optimizer_meta WHERE key = 'reported_token_backfill_done'"
-    ).fetchone() is not None:
-        return 0
-
-    cursor_row = conn.execute(
-        "SELECT value FROM token_optimizer_meta WHERE key = 'reported_token_backfill_cursor'"
-    ).fetchone()
-    cursor_id = int(cursor_row[0]) if cursor_row else 0
-    rows = conn.execute(
-        "SELECT id, jsonl_path FROM session_log "
-        "WHERE jsonl_path IS NOT NULL AND id > ? "
-        "ORDER BY id LIMIT ?",
-        (cursor_id, batch_limit),
-    ).fetchall()
-    if not rows:
-        conn.execute(
-            "INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
-            "VALUES ('reported_token_backfill_done', datetime('now'))"
-        )
-        conn.execute(
-            "DELETE FROM token_optimizer_meta WHERE key = 'reported_token_backfill_cursor'"
-        )
-        conn.commit()
-        return 0
-    updates = []
-    last_id = cursor_id
-    for row_id, jpath in rows:
-        parsed = _parse_session_jsonl(jpath)
-        last_id = row_id
-        if not parsed:
-            continue
-        updates.append((
-            int(parsed.get("reported_input_tokens", 0) or 0),
-            int(parsed.get("reported_output_tokens", 0) or 0),
-            json.dumps(parsed.get("reported_model_usage", {})),
-            row_id,
-        ))
-    if updates:
-        conn.executemany(
-            "UPDATE session_log SET reported_input_tokens = ?, "
-            "reported_output_tokens = ?, reported_model_usage_json = ? WHERE id = ?",
-            updates,
-        )
-    conn.execute(
-        "INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
-        "VALUES ('reported_token_backfill_cursor', ?)",
-        (str(last_id),),
-    )
-    if len(rows) < batch_limit:
-        conn.execute(
-            "INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
-            "VALUES ('reported_token_backfill_done', datetime('now'))"
-        )
-        conn.execute(
-            "DELETE FROM token_optimizer_meta WHERE key = 'reported_token_backfill_cursor'"
-        )
-    conn.commit()
-    return len(updates)
+_backfill_reported_token_usage = _measure_compat.bind(_measure_providers['trends']._backfill_reported_token_usage, __name__, defaults=(500,))
 
 
-def _backfill_outsourcerer_sidechain(conn):
-    """Reclassify existing outsourcerer delegation sessions as is_sidechain=1.
-
-    One-time migration for rows collected before content-based detection existed.
-    Scans each already-human (is_sidechain=0) row's JSONL for the OSRC::PROGRESS
-    marker injected by the outsourcerer skill and flips true matches to 1.
-
-    Gated by a persistent completion marker so it content-scans transcripts at
-    most ONCE. Without the gate the `is_sidechain = 0` predicate matches every
-    human session forever (non-matches are never updated, so they never drain),
-    which re-opened and re-read up to 200 lines of every human transcript on
-    every _init_trends_db() call (~38 call sites; twice per SessionEnd). New
-    sessions are classified at collect time, so a single pass over the
-    pre-existing rows is sufficient. Returns count of reclassified rows.
-    """
-    # One-time gate. On any error establishing it, skip the scan entirely rather
-    # than risk re-reading the whole history (fail toward NOT rescanning).
-    try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS token_optimizer_meta "
-            "(key TEXT PRIMARY KEY, value TEXT)"
-        )
-        if conn.execute(
-            "SELECT 1 FROM token_optimizer_meta WHERE key = 'osrc_backfill_done'"
-        ).fetchone() is not None:
-            return 0
-    except sqlite3.Error:
-        return 0
-
-    rows = conn.execute(
-        "SELECT id, jsonl_path FROM session_log "
-        "WHERE is_sidechain = 0 AND jsonl_path IS NOT NULL"
-    ).fetchall()
-    updates = []
-    for row_id, jpath in rows:
-        verdict = _scan_jsonl_is_sidechain(jpath)
-        if verdict is True:
-            updates.append((1, row_id))
-    if updates:
-        conn.executemany(
-            "UPDATE session_log SET is_sidechain = ? WHERE id = ?", updates
-        )
-    # Mark the pass complete regardless of match count so it never re-scans.
-    conn.execute(
-        "INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
-        "VALUES ('osrc_backfill_done', datetime('now'))"
-    )
-    conn.commit()
-    return len(updates)
+_backfill_outsourcerer_sidechain = _measure_compat.bind(_measure_providers['trends']._backfill_outsourcerer_sidechain, __name__)
 
 
-def _repair_osrc_sidechain_misflag(conn):
-    """Undo rows the OLD, over-broad OSRC marker test wrongly flagged.
-
-    Until this fix, both marker tests searched the WHOLE record (and the raw
-    line) for OSRC::PROGRESS / OSRC::DONE. The marker therefore matched inside
-    tool RESULTS, so a human session that merely *watched* a delegate (running
-    `outsourcerer.sh status/watch/result`, whose output echoes the marker)
-    classified itself as the delegation it was watching. On the author's own
-    machine that mislabelled 234 of 3,312 30-day rows holding 8.87B of 15.5B
-    input tokens (57%) -- the longest genuine working sessions -- and removed
-    them from the human pool every cost comparison runs on.
-
-    Fixing the classifier is not enough: `_backfill_outsourcerer_sidechain` is
-    gated by a persistent `osrc_backfill_done` marker, so the corrected code
-    would never revisit the rows the buggy code already wrote. Code fixed, data
-    still wrong. This pass re-tests only rows currently flagged is_sidechain=1
-    with the corrected scanner and flips back the ones that no longer qualify.
-
-    Direction is deliberately one-way: it can only move 1 -> 0. A row that still
-    matches under the corrected rule is left alone, and no row is ever newly
-    flagged here, so a bug in this pass cannot manufacture sidechains.
-
-    Gated by its own marker so it runs at most once, matching the discipline of
-    `_backfill_outsourcerer_sidechain` (an ungated content-scan re-reads every
-    flagged transcript on every _init_trends_db call). Returns count repaired.
-    """
-    try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS token_optimizer_meta "
-            "(key TEXT PRIMARY KEY, value TEXT)"
-        )
-        if conn.execute(
-            "SELECT 1 FROM token_optimizer_meta WHERE key = 'osrc_misflag_repair_done'"
-        ).fetchone() is not None:
-            return 0
-    except sqlite3.Error:
-        return 0
-
-    try:
-        rows = conn.execute(
-            "SELECT id, jsonl_path FROM session_log "
-            "WHERE is_sidechain = 1 AND jsonl_path IS NOT NULL"
-        ).fetchall()
-    except sqlite3.Error:
-        return 0
-
-    updates = []
-    for row_id, jpath in rows:
-        verdict = _scan_jsonl_is_sidechain(jpath)
-        # Only an explicit False repairs. None (file gone/unreadable) leaves the
-        # row as-is: we cannot prove it was misflagged, so we do not guess.
-        if verdict is False:
-            updates.append((0, row_id))
-    if updates:
-        conn.executemany(
-            "UPDATE session_log SET is_sidechain = ? WHERE id = ?", updates
-        )
-    conn.execute(
-        "INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
-        "VALUES ('osrc_misflag_repair_done', datetime('now'))"
-    )
-    conn.commit()
-    return len(updates)
+_repair_osrc_sidechain_misflag = _measure_compat.bind(_measure_providers['trends']._repair_osrc_sidechain_misflag, __name__)
 
 
-def _recompute_session_tokens(conn, rel_tol=0.1, limit=None):
-    """Re-parse stored sessions with the CURRENT collector and refresh stale token columns.
-
-    Rows collected by older collector versions (before the streaming-aware
-    per-requestId dedup) carry token counts that disagree with a fresh parse —
-    some over-counted (summed streaming chunks), some under-counted. Because rows
-    are written INSERT OR IGNORE and never updated, that staleness persists and
-    skews every per-session cost derived from session_log. This re-parses each
-    row whose transcript still exists and UPDATEs input_tokens / output_tokens /
-    cache_create_* / cache_hit_rate when they differ by more than `rel_tol`.
-
-    Idempotent: a row already matching the current parse is skipped. Rows whose
-    transcript is gone are left untouched (their stored values are the best we
-    have). Returns (refreshed, checked, missing). NOT run from _init_trends_db
-    (a full re-parse of every transcript is expensive); invoke via the
-    `recompute-tokens` command or a maintenance pass.
-    """
-    rows = conn.execute(
-        "SELECT id, jsonl_path, input_tokens FROM session_log "
-        "WHERE jsonl_path IS NOT NULL ORDER BY id DESC"
-    ).fetchall()
-    if limit:
-        rows = rows[:limit]
-    refreshed = checked = missing = 0
-    updates = []
-    for row_id, jpath, stored_input in rows:
-        if not jpath or not os.path.exists(jpath):
-            missing += 1
-            continue
-        parsed = _parse_session_jsonl(jpath)
-        if not parsed:
-            missing += 1
-            continue
-        checked += 1
-        new_input = int(parsed.get("total_input_tokens", 0) or 0)
-        stored = int(stored_input or 0)
-        # Only update when the fresh parse has a positive input. The old condition
-        # `stored <= 0 or ...` fired for stored==0 even when the new parse was also 0,
-        # overwriting valid cache_create_* on legitimately zero-input rows (e.g. the
-        # Codex path, where input_tokens can be 0 but cache_create is real). Requiring
-        # new_input > 0 keeps those rows intact while still catching every stale row.
-        if new_input > 0 and (stored <= 0 or abs(new_input - stored) > stored * rel_tol):
-            updates.append((
-                new_input,
-                int(parsed.get("total_output_tokens", 0) or 0),
-                int(parsed.get("total_cache_create_1h", 0) or 0),
-                int(parsed.get("total_cache_create_5m", 0) or 0),
-                float(parsed.get("cache_hit_rate", 0.0) or 0.0),
-                # Refresh the model-usage JSON columns too. Downstream cost calcs
-                # read BOTH input_tokens and these breakdowns; updating tokens without
-                # the breakdown leaves the row internally inconsistent.
-                json.dumps(parsed.get("model_usage", {})),
-                json.dumps(parsed.get("model_usage", {})),  # all_model_usage = {model:int}
-                json.dumps(parsed.get("model_usage_breakdown", {})),
-                row_id,
-            ))
-            refreshed += 1
-    if updates:
-        conn.executemany(
-            "UPDATE session_log SET input_tokens = ?, output_tokens = ?, "
-            "cache_create_1h_tokens = ?, cache_create_5m_tokens = ?, cache_hit_rate = ?, "
-            "model_usage_json = ?, all_model_usage_json = ?, model_usage_breakdown_json = ? "
-            "WHERE id = ?",
-            updates,
-        )
-        conn.commit()
-    return (refreshed, checked, missing)
+_recompute_session_tokens = _measure_compat.bind(_measure_providers['trends']._recompute_session_tokens, __name__, defaults=(0.1, None,))
 
 
-def _log_migration_error(step, exc):
-    """Log a trends-DB migration error, suppressing benign 'duplicate column' /
-    'table already exists' cases that are expected under concurrent init.
-
-    The migration blocks in _init_trends_db are guarded by PRAGMA table_info
-    checks, so a 'duplicate column name' error means a concurrent process won
-    the race — benign and idempotent. Any other sqlite3.Error (disk full,
-    corruption, I/O error) would otherwise be silently swallowed, leaving the
-    column missing and causing confusing downstream crashes far from the root
-    cause. Log those to stderr so they are discoverable.
-    """
-    msg = str(exc)
-    benign = (
-        "duplicate column" in msg
-        or "already exists" in msg
-    )
-    if not benign:
-        try:
-            sys.stderr.write(
-                "[Token Optimizer] trends DB migration '%s' failed: %s\n"
-                % (step, msg)
-            )
-        except Exception:
-            pass
+_log_migration_error = _measure_compat.bind(_measure_providers['trends']._log_migration_error, __name__)
 
 
-class _SkipMigration(Exception):
-    """Nothing to migrate; leave the step without touching the write lock."""
+_SkipMigration = _measure_compat.bind(_measure_providers['trends']._SkipMigration, __name__)
 
 
-def _origin_insert_parts(conn, table):
-    """(column SQL, placeholder SQL, values) that add ``origin`` to an INSERT
-    into ``table`` -- or three empties when the column is missing (a migration
-    that could not run yet), so the row still lands without it instead of the
-    whole event being lost to an "no such column" error."""
-    try:
-        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-    except Exception:
-        cols = set()
-    if "origin" in cols:
-        return ", origin", ", ?", (run_origin(),)
-    return "", "", ()
+_origin_insert_parts = _measure_compat.bind(_measure_providers['trends']._origin_insert_parts, __name__)
 
 
-def _claude_projects_like_patterns() -> tuple:
-    """Prefix LIKE patterns (ESCAPE '!') for transcripts under the resolved
-    Claude config's projects/ dir, or () when that is the default ~/.claude
-    (the literal pattern already covers it) or unresolvable.
-
-    Anchored at the start of the path, so a "copilot:"/"hermes:" dedup key or
-    a path that merely contains the folder name further down never matches.
-    Forward slashes only: callers match it against _PLATFORM_PATH_SQL, which
-    folds the backslashes of rows written on Windows to forward slashes.
-    """
-    try:
-        projects = Path(CLAUDE_DIR) / "projects"
-        if projects == Path(HOME) / ".claude" / "projects":
-            return ()
-        form = str(projects).replace("\\", "/")
-        esc = form.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-        return (esc + "/%",)
-    except Exception:
-        return ()
+_claude_projects_like_patterns = _measure_compat.bind(_measure_providers['trends']._claude_projects_like_patterns, __name__)
 
 
 # session_log.jsonl_path with Windows backslashes folded to forward slashes,
@@ -14197,150 +12265,37 @@ _REEXPAND_PAIR_WINDOW_SECONDS = 3600
 _REEXPAND_PAIR_STUB_TOKENS = 1200
 
 
-def _sql_quote(value):
-    return "'" + str(value).replace("'", "''") + "'"
+_sql_quote = _measure_compat.bind(_measure_providers['trends']._sql_quote, __name__)
 
 
-def _fixture_session_sql(col="session_id"):
-    globs = " OR ".join(f"{col} GLOB {_sql_quote(g)}" for g in _FIXTURE_SESSION_GLOBS)
-    numeric_codex = (f"({col} GLOB 'codex-sess-[0-9]*' "
-                     f"AND substr({col}, 12) NOT GLOB '*[^0-9]*')")
-    return f"({col} IS NOT NULL AND ({globs} OR {numeric_codex}))"
+_fixture_session_sql = _measure_compat.bind(_measure_providers['trends']._fixture_session_sql, __name__, defaults=("session_id",))
 
 
-def _is_fixture_session_id(session_id):
-    """Python mirror of _fixture_session_sql, for callers outside SQL."""
-    import fnmatch
-    if not session_id:
-        return False
-    sid = str(session_id)
-    if re.fullmatch(r"codex-sess-[0-9]+", sid):
-        return True
-    return any(fnmatch.fnmatchcase(sid, g) for g in _FIXTURE_SESSION_GLOBS)
+_is_fixture_session_id = _measure_compat.bind(_measure_providers['trends']._is_fixture_session_id, __name__)
 
 
-def _sql_variants(template, **fragments):
-    """Every statement *template* can become, built once at import.
-
-    Each keyword names a ``{field}`` in the template and maps a key to one of the
-    author's own fixed SQL fragments. The result is keyed by one key per field (in
-    keyword order), so a call site selects a prebuilt statement and never assembles
-    SQL text at runtime."""
-    names = tuple(fragments)
-    return {
-        keys: template.format(**{n: fragments[n][k] for n, k in zip(names, keys)})
-        for keys in itertools.product(*fragments.values())
-    }
+_sql_variants = _measure_compat.bind(_measure_providers['trends']._sql_variants, __name__)
 
 
-def _counted_twin_sql(alias, table, kind_col, same):
-    """Twin check: an earlier row of the same shape in the same session within
-    the window. Correlated EXISTS (not a window function) so a query with a
-    timestamp filter only looks at the rows it reads; the lookup is served by
-    the (session_id, kind, timestamp) indexes created in _init_trends_db."""
-    win = _COUNTED_TWIN_WINDOW_SECONDS
-    return (
-        f"EXISTS (SELECT 1 FROM main.{table} p WHERE p.session_id = {alias}.session_id "
-        f"AND p.{kind_col} = {alias}.{kind_col} AND {same} "
-        f"AND p.timestamp <= {alias}.timestamp "
-        f"AND p.timestamp >= strftime('%Y-%m-%dT%H:%M:%S', julianday({alias}.timestamp) - {win + 1.0} / 86400.0) "
-        f"AND (p.timestamp < {alias}.timestamp OR p.id < {alias}.id) "
-        f"AND (julianday({alias}.timestamp) - julianday(p.timestamp)) * 86400.0 <= {win})"
-    )
+_counted_twin_sql = _measure_compat.bind(_measure_providers['trends']._counted_twin_sql, __name__)
 
 
-def _media_reexpand_pair_sql(alias):
-    """A re-expansion whose paired archive row is a media result. Its archive
-    credit is left out as media, so its debit is left out too."""
-    media = " OR ".join(f"a.detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
-    win = _REEXPAND_PAIR_WINDOW_SECONDS
-    return (
-        f"EXISTS (SELECT 1 FROM main.savings_events a WHERE a.session_id = {alias}.session_id "
-        f"AND a.event_type = 'tool_archive' AND a.detail IS NOT NULL AND ({media}) "
-        f"AND a.timestamp <= {alias}.timestamp "
-        f"AND a.timestamp >= strftime('%Y-%m-%dT%H:%M:%S', julianday({alias}.timestamp) - {win}.0 / 86400.0) "
-        f"AND {alias}.tokens_saved - a.tokens_saved BETWEEN 0 AND {_REEXPAND_PAIR_STUB_TOKENS} "
-        f"AND NOT EXISTS (SELECT 1 FROM main.savings_events b WHERE b.session_id = {alias}.session_id "
-        f"AND b.event_type = 'tool_archive' AND b.timestamp <= {alias}.timestamp AND b.timestamp > a.timestamp "
-        f"AND {alias}.tokens_saved - b.tokens_saved BETWEEN 0 AND {_REEXPAND_PAIR_STUB_TOKENS}))"
-    )
+_media_reexpand_pair_sql = _measure_compat.bind(_measure_providers['trends']._media_reexpand_pair_sql, __name__)
 
 
-def _counted_view_statements():
-    """The two CREATE TEMP VIEW statements, composed once from the fixed rules above."""
-    media = " OR ".join(f"e.detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
-    media_types = ", ".join(_sql_quote(t) for t in _MEDIA_ARCHIVE_EVENT_TYPES)
-    media_pair = _media_reexpand_pair_sql("e")
-    se_twin = _counted_twin_sql(
-        "e", "savings_events", "event_type",
-        "p.tokens_saved = e.tokens_saved AND COALESCE(p.detail, '') = COALESCE(e.detail, '')")
-    ce_twin = _counted_twin_sql(
-        "c", "compression_events", "feature",
-        "p.original_tokens = c.original_tokens AND p.compressed_tokens = c.compressed_tokens "
-        "AND COALESCE(p.command_pattern, '') = COALESCE(c.command_pattern, '')")
-    return (
-        "CREATE TEMP VIEW IF NOT EXISTS counted_savings_events AS "
-        "SELECT e.* FROM main.savings_events e "
-        f"WHERE NOT {_fixture_session_sql('e.session_id')}"
-        f" AND NOT (e.event_type IN ({media_types}) AND e.detail IS NOT NULL AND ({media}))"
-        f" AND NOT (e.event_type = 'tool_archive_reexpand' AND COALESCE(e.session_id, '') != '' AND {media_pair})"
-        f" AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})",
-        "CREATE TEMP VIEW IF NOT EXISTS counted_compression_events AS "
-        "SELECT c.* FROM main.compression_events c "
-        f"WHERE NOT {_fixture_session_sql('c.session_id')}"
-        f" AND NOT (c.original_tokens > c.compressed_tokens AND COALESCE(c.session_id, '') != '' AND {ce_twin})",
-    )
+_counted_view_statements = _measure_compat.bind(_measure_providers['trends']._counted_view_statements, __name__)
 
 
 _COUNTED_VIEW_SQL = _counted_view_statements()
 
 
-def _counted_media_candidate_statement():
-    """Media archive events that pass every other counted-view rule."""
-    media = " OR ".join(f"e.detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
-    se_twin = _counted_twin_sql(
-        "e", "savings_events", "event_type",
-        "p.tokens_saved = e.tokens_saved AND COALESCE(p.detail, '') = COALESCE(e.detail, '')")
-    return (
-        "SELECT 'md:'||e.id, e.session_uuid, e.timestamp, 0, NULL, e.model "
-        "FROM main.savings_events e WHERE e.event_type = 'tool_archive' AND e.timestamp >= ? "
-        f"AND e.detail IS NOT NULL AND ({media}) "
-        f"AND NOT {_fixture_session_sql('e.session_id')} "
-        f"AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})"
-    )
+_counted_media_candidate_statement = _measure_compat.bind(_measure_providers['trends']._counted_media_candidate_statement, __name__)
 
 
 _COUNTED_MEDIA_CANDIDATE_SQL = _counted_media_candidate_statement()
 
 
-def _ensure_counted_views(conn):
-    """Create the per-connection counted views (idempotent, TEMP, read-only).
-
-    counted_savings_events and counted_compression_events have the same
-    columns as the tables they read. Safe to call on any trends.db connection;
-    returns False (and callers fall back to the raw table) only if the tables
-    are missing or the SQLite build lacks window functions."""
-    try:
-        have = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_temp_master WHERE type='view'").fetchall()}
-        if {"counted_savings_events", "counted_compression_events"} <= have:
-            return True
-        for statement in _COUNTED_VIEW_SQL:
-            conn.execute(statement)
-        # SQLite resolves view columns lazily: a database missing a column the
-        # filters use (very old installs, minimal schemas) only fails on first
-        # read. Probe now and fall back to the raw tables instead.
-        conn.execute("SELECT 1 FROM counted_savings_events LIMIT 0").fetchall()
-        conn.execute("SELECT 1 FROM counted_compression_events LIMIT 0").fetchall()
-        return True
-    except sqlite3.Error:
-        for drop in ("DROP VIEW IF EXISTS temp.counted_savings_events",
-                     "DROP VIEW IF EXISTS temp.counted_compression_events"):
-            try:
-                conn.execute(drop)
-            except sqlite3.Error:
-                pass
-        return False
+_ensure_counted_views = _measure_compat.bind(_measure_providers['trends']._ensure_counted_views, __name__)
 
 
 # counted_reread rows whose source event the counted views leave out.
@@ -14361,1229 +12316,85 @@ _COUNTED_SOURCES = {
 }
 
 
-def _counted_table(conn, table):
-    """Name of the counted view for *table*, or the raw table if views fail."""
-    return _COUNTED_SOURCES[table][0] if _ensure_counted_views(conn) else table
+_counted_table = _measure_compat.bind(_measure_providers['trends']._counted_table, __name__)
 
 
-def _counted_sql(table, template):
-    """Statement for every source _counted_table(conn, table) can return, keyed by
-    that name. The template's ``{table}`` field is the only thing that varies."""
-    variants = _sql_variants(template, table={name: name for name in _COUNTED_SOURCES[table]})
-    return {name: sql for (name,), sql in variants.items()}
+_counted_sql = _measure_compat.bind(_measure_providers['trends']._counted_sql, __name__)
 
 
 _ACTIVITY_DATING_JOURNAL = "activity_dating_v1_journal"
 _ACTIVITY_AGGREGATE_TABLES = ("daily_stats", "model_daily", "skill_daily", "subagent_daily")
 
 
-def _connect_trends_db():
-    """Open the trends DB with the standard pragmas (no migrations run)."""
-    conn = sqlite3.connect(str(TRENDS_DB))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    # Auto-checkpoint every 100 pages (~400 KiB) instead of 1000 (~4 MiB).
-    # A single large transaction (e.g. _rebuild_aggregate_tables) cannot
-    # checkpoint mid-flight, so a smaller threshold bounds the WAL growth
-    # between transactions to ~400 KiB instead of ~4 MiB, keeping the
-    # post-checkpoint WAL closer to the 64 MiB journal_size_limit.
-    conn.execute("PRAGMA wal_autocheckpoint=100")
-    conn.execute("PRAGMA journal_size_limit=67108864")
-    return conn
+_connect_trends_db = _measure_compat.bind(_measure_providers['trends']._connect_trends_db, __name__)
 
 
-def _snapshot_activity_dating_prestate(conn, old_rows):
-    """Journal pre-migration session dates/calls and copy the aggregate tables
-    aside, inside the caller's open transaction. ``old_rows`` holds
-    ``(jsonl_path, date, first_activity_day, last_activity_day, daily_calls_json)`` read before
-    ``repair_activity_dates`` rewrote the dates, so rollback restores the
-    values the migration replaced rather than the repaired ones."""
-    conn.execute(f"DROP TABLE IF EXISTS {_ACTIVITY_DATING_JOURNAL}")
-    conn.execute(
-        f"CREATE TABLE {_ACTIVITY_DATING_JOURNAL} ("
-        "jsonl_path TEXT PRIMARY KEY, old_date TEXT, "
-        "old_first_activity_day TEXT, old_last_activity_day TEXT, old_daily_calls_json TEXT)")
-    conn.executemany(
-        f"INSERT INTO {_ACTIVITY_DATING_JOURNAL} "
-        "(jsonl_path, old_date, old_first_activity_day, old_last_activity_day, old_daily_calls_json) "
-        "VALUES (?, ?, ?, ?, ?)", old_rows)
-    for table in _ACTIVITY_AGGREGATE_TABLES:
-        backup = f"{table}_pre_activity_v1"
-        conn.execute(f"DROP TABLE IF EXISTS {backup}")
-        conn.execute(f"CREATE TABLE {backup} AS SELECT * FROM {table}")
+_snapshot_activity_dating_prestate = _measure_compat.bind(_measure_providers['trends']._snapshot_activity_dating_prestate, __name__)
 
 
-def _archive_pre_activity_state_files():
-    """Move every pre-activity derived state file off its live name.
-
-    The first archive keeps the ``.pre-activity-v1`` suffix; when that name is
-    already taken (an interrupted earlier run, a restored backup) the active
-    copy moves to the next free ``.pre-activity-v1.N`` instead. The stale file
-    therefore always leaves its live name — it cannot keep serving as an
-    anchor — and no earlier archive is overwritten. Files already stamped
-    ``activity_basis == 1`` were rebuilt under activity dating and stay."""
-    for name in ("baseline_state.json", "workload_anchor.json", "workload_anchor_pretool.json",
-                 "weekly_full_value.json", "subagent_pool.json", "compact_advice_cache.json"):
-        path = SNAPSHOT_DIR / name
-        if not path.exists():
-            continue
-        try:
-            if json.loads(path.read_text()).get("activity_basis") == 1:
-                continue
-        except (OSError, ValueError, AttributeError):
-            pass
-        retained = path.with_name(path.name + ".pre-activity-v1")
-        suffix = 2
-        while retained.exists():
-            retained = path.with_name(f"{path.name}.pre-activity-v1.{suffix}")
-            suffix += 1
-        path.rename(retained)
+_archive_pre_activity_state_files = _measure_compat.bind(_measure_providers['trends']._archive_pre_activity_state_files, __name__)
 
 
-def rollback_activity_dating(conn):
-    """Developer-only safety net for immediately checking a migration on a copy.
-
-    No CLI is exposed. Use before any recollection or new writes: this restores
-    snapshot dates/calls and aggregates, so later changes would be overwritten
-    or lost. It is not a downgrade or live-database recovery mechanism.
-    Restores the session dates/calls journaled by jsonl_path before the rewrite, copies the
-    ``*_pre_activity_v1`` aggregate backups back over the rebuilt tables and
-    clears the migration marker, so the next ``_init_trends_db`` re-runs the
-    migration. The ``.pre-activity-v1`` JSON archives are left in place: they
-    are retained evidence, and derived files regenerate on their own. Returns
-    True when pre-migration state was restored, False when there was nothing
-    to undo. Caller owns the connection; this commits on success.
-    """
-    # Only a committed migration is reversible: without the marker the journal
-    # and backups (if any) belong to an earlier run or a rolled-back attempt,
-    # and restoring them could overwrite newer state with stale snapshots.
-    if not conn.execute(
-            "SELECT 1 FROM schema_migrations WHERE name='activity_dating_v1'").fetchone():
-        return False
-    tables = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
-    journal = _ACTIVITY_DATING_JOURNAL in tables
-    backups = [t for t in _ACTIVITY_AGGREGATE_TABLES
-               if f"{t}_pre_activity_v1" in tables]
-    if not journal and not backups:
-        return False
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        if journal:
-            rows = conn.execute(
-                f"SELECT jsonl_path, old_date, old_first_activity_day, "
-                f"old_last_activity_day, old_daily_calls_json FROM {_ACTIVITY_DATING_JOURNAL}").fetchall()
-            conn.executemany(
-                "UPDATE session_log SET date=?, first_activity_day=?, "
-                "last_activity_day=?, daily_calls_json=? WHERE jsonl_path=?",
-                [(old_date, first, last, calls, path)
-                 for path, old_date, first, last, calls in rows])
-        for table in backups:
-            backup = f"{table}_pre_activity_v1"
-            live_cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
-            backup_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({backup})")}
-            cols = [c for c in live_cols if c in backup_cols]
-            if cols:
-                conn.execute(f"DELETE FROM {table}")
-                conn.execute(
-                    f"INSERT INTO {table} ({', '.join(cols)}) "
-                    f"SELECT {', '.join(cols)} FROM {backup}")
-            conn.execute(f"DROP TABLE {backup}")
-        if journal:
-            conn.execute(f"DROP TABLE {_ACTIVITY_DATING_JOURNAL}")
-        conn.execute("DELETE FROM schema_migrations WHERE name='activity_dating_v1'")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return True
+rollback_activity_dating = _measure_compat.bind(_measure_providers['trends'].rollback_activity_dating, __name__)
 
 
-def _init_trends_db():
-    """Initialize the trends SQLite DB. Returns a connection.
-
-    Uses Total Recall's DB-lock pattern: WAL mode + 5s busy_timeout + retry.
-    """
-    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    conn = _connect_trends_db()
-    conn.executescript(_SCHEMA)
-    # Migrate existing DBs: add slug/topic columns if missing
-    try:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
-        if "slug" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN slug TEXT")
-        if "topic" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN topic TEXT")
-        if "cache_create_1h_tokens" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN cache_create_1h_tokens INTEGER DEFAULT 0")
-        if "cache_create_5m_tokens" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN cache_create_5m_tokens INTEGER DEFAULT 0")
-        if "cache_ttl_scanned" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN cache_ttl_scanned INTEGER DEFAULT 0")
-        if "avg_call_gap_seconds" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN avg_call_gap_seconds REAL")
-        if "max_call_gap_seconds" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN max_call_gap_seconds REAL")
-        if "p95_call_gap_seconds" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN p95_call_gap_seconds REAL")
-        if "model_usage_breakdown_json" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN model_usage_breakdown_json TEXT")
-        if "all_model_usage_json" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN all_model_usage_json TEXT")
-        if "quality_score" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN quality_score REAL")
-        if "quality_grade" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN quality_grade TEXT")
-        # B1: per-session reclaimable stale-read waste (opportunity tier only,
-        # never summed into realized savings). Defaults 0 for pre-existing rows.
-        if "stale_waste_tokens" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN stale_waste_tokens INTEGER DEFAULT 0")
-        # Stable UUID-keyed join column so savings/compression events can
-        # join to their originating session without LIKE-scanning jsonl_path.
-        # The session UUID is the JSONL file stem (the Claude session UUID).
-        if "session_uuid" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN session_uuid TEXT")
-        # Copilot cost is platform-reported (AI credits / premium requests) and
-        # CANNOT be re-derived from token counts the way Claude/Codex cost is,
-        # so it must be persisted. Also carry the source discriminator + plane
-        # so the credits-led dashboard keeps CLI and VS Code sessions distinct.
-        if "cost_usd" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN cost_usd REAL")
-        if "cost_source" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN cost_source TEXT")
-        if "credits" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN credits REAL")
-        if "platform" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN platform TEXT")
-        # Marks a session whose totals are partial (crashed / still-active at
-        # rollup time). Lets a later rollup UPGRADE the row once real shutdown
-        # totals arrive, instead of INSERT-OR-IGNORE freezing the partial data.
-        if "incomplete" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN incomplete INTEGER DEFAULT 0")
-        # Subagent sidechains (isSidechain:true in the JSONL) are not human working
-        # sessions; flagging them lets the before/after cost comparison filter to
-        # human sessions on both sides instead of diluting "after" with cheap
-        # sidechain rows. Added WITHOUT a default so existing rows are NULL =
-        # "not yet classified" — the sentinel _backfill_is_sidechain targets. New
-        # collection always writes an explicit 0/1. Queries treat NULL as human.
-        if "is_sidechain" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN is_sidechain INTEGER")
-        if "sidechain_reason" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN sidechain_reason TEXT")
-        # Official /stats-compatible usage is captured without streaming dedup
-        # and without cache classes. Legacy rows are filled by a one-time scan.
-        if "reported_input_tokens" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN reported_input_tokens INTEGER")
-        if "reported_output_tokens" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN reported_output_tokens INTEGER")
-        if "reported_model_usage_json" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN reported_model_usage_json TEXT")
-        # Per-local-day, per-model token buckets for the whole session INCLUDING
-        # its subagents. The daily cost rollup prices from this so each day bills
-        # its own requests and delegated work is not dropped (#200).
-        if "daily_usage_json" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN daily_usage_json TEXT")
-        # Where the collecting process ran: 'local', 'cloud' (Claude Code cloud
-        # VM) or 'cowork'. NULL on rows collected before the column existed,
-        # which were all local. Groundwork for importing a cloud VM's rows or a
-        # teleported transcript without counting the session twice: the dedupe
-        # key stays session_uuid (the transcript's session id); origin records
-        # which side a row came from.
-        if "origin" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN origin TEXT")
-        # Which usage-attribution version stored the row. NULL = stored before
-        # versioning; collect re-parses such rows from their transcript.
-        if "usage_parser_version" not in cols:
-            conn.execute("ALTER TABLE session_log ADD COLUMN usage_parser_version INTEGER")
-        conn.commit()
-    except sqlite3.Error as _e:
-        _log_migration_error("session_log columns", _e)
-    # Shares already recorded are usage evidence: a claims table from before the
-    # model and day columns keeps its counters and gains the columns. Only a
-    # table that never held counters (nothing to keep) is recreated.
-    try:
-        _claim_cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_request_claims)").fetchall()}
-        if _claim_cols and "inp" not in _claim_cols:
-            conn.execute("DROP TABLE usage_request_claims")
-            conn.executescript(_SCHEMA)
-        else:
-            for _col in ("model", "day"):
-                if _claim_cols and _col not in _claim_cols:
-                    conn.execute(f"ALTER TABLE usage_request_claims ADD COLUMN {_col} TEXT")
-        conn.commit()
-    except sqlite3.Error as _e:
-        _log_migration_error("usage_request_claims", _e)
-    # Same origin column on the per-event savings tables (NULL = legacy/local).
-    for _origin_table in ("savings_events", "compression_events"):
-        try:
-            _ocols = {r[1] for r in conn.execute(f"PRAGMA table_info({_origin_table})").fetchall()}
-            if _ocols and "origin" not in _ocols:
-                conn.execute(f"ALTER TABLE {_origin_table} ADD COLUMN origin TEXT")
-                conn.commit()
-        except sqlite3.Error as _e:
-            _log_migration_error(f"{_origin_table} origin column", _e)
-    ensure_activity_schema(conn)
-    # Backfill session_uuid from jsonl_path basename stem for existing rows,
-    # then create an index so joins are O(log n) instead of full-table LIKE scans.
-    # Done in Python (not a single SQL UPDATE) because SQLite lacks a basename
-    # function and the path separator can vary on Windows.
-    try:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_session_log_uuid ON session_log (session_uuid)"
-        )
-        rows = conn.execute(
-            "SELECT id, jsonl_path FROM session_log "
-            "WHERE (session_uuid IS NULL OR session_uuid LIKE 'rollout-%') AND jsonl_path IS NOT NULL"
-        ).fetchall()
-        if rows:
-            updates = []
-            for row_id, jpath in rows:
-                stem = Path(jpath).stem  # strips directory and .jsonl suffix
-                if stem and stem != "unknown":
-                    canonical, _ = _extract_session_uuid(stem)
-                    updates.append((canonical or stem, row_id))
-            if updates:
-                conn.executemany(
-                    "UPDATE session_log SET session_uuid = ? WHERE id = ?", updates
-                )
-        conn.commit()
-    except (sqlite3.Error, OSError, ValueError) as _e:
-        _log_migration_error("session_uuid backfill", _e)
-    # One-time backfill of the corrected sidechain classifier. It revisits old
-    # rows, including the 1-valued rows the broad marker test misclassified.
-    sidechain_changed = 0
-    try:
-        sidechain_changed, _sidechain_missing = _backfill_is_sidechain(conn)
-    except (sqlite3.Error, OSError) as _e:
-        _log_migration_error("sidechain backfill", _e)
-    # One-time backfill of official-compatible usage for existing rows. New
-    # collection writes these fields directly from every assistant record.
-    try:
-        _backfill_reported_token_usage(conn)
-    except (sqlite3.Error, OSError) as _e:
-        _log_migration_error("reported token backfill", _e)
-    if sidechain_changed:
-        try:
-            _rebuild_aggregate_tables(conn)
-            conn.commit()
-        except sqlite3.Error as _e:
-            _log_migration_error("aggregate rebuild", _e)
-    # Backfill platform for rows collected before the column was wired into the
-    # INSERT paths. The jsonl_path discriminator is definitive: Claude sessions
-    # live under ~/.claude/projects/, Codex under ~/.codex/sessions/, Hermes
-    # uses "hermes:" dedup keys, and Copilot uses "copilot:" dedup keys. Only
-    # infer when the path unambiguously identifies one platform; anything else
-    # stays NULL. Idempotent (gated by platform IS NULL). An UPDATE takes the
-    # write lock even when it matches nothing, so check with a read first: on
-    # every dashboard open this would otherwise wait out busy_timeout behind a
-    # running collector.
-    _platform_patterns = ("%/.claude/projects/%", "%/.codex/sessions/%", "%/.codex/archived_sessions/%",
-                          "hermes:%", "copilot:%", "cursor:%", "antigravity:%")
-    # A relocated Claude config (CLAUDE_CONFIG_DIR) keeps its transcripts under
-    # <config>/projects/, which the literal ~/.claude pattern above misses.
-    _claude_cfg_patterns = _claude_projects_like_patterns()
-    # Paths are matched with backslashes folded to '/', so a row written on
-    # Windows (C:\Users\me\.claude\projects\...) is tagged like a POSIX one.
-    _p = _PLATFORM_PATH_SQL
-    _cfg_where = " OR ".join([f"{_p} LIKE ? ESCAPE '!'"] * len(_claude_cfg_patterns))
-    try:
-        _needs_platform = conn.execute(
-            "SELECT 1 FROM session_log WHERE platform IS NULL AND ("
-            + " OR ".join([f"{_p} LIKE ?"] * len(_platform_patterns))
-            + (" OR " + _cfg_where if _cfg_where else "") + ") LIMIT 1",
-            _platform_patterns + _claude_cfg_patterns,
-        ).fetchone()
-    except sqlite3.Error:
-        _needs_platform = True
-    try:
-        if not _needs_platform:
-            raise _SkipMigration
-        for _platform, _pattern in (("claude", "%/.claude/projects/%"),
-                                    ("codex", "%/.codex/sessions/%"),
-                                    ("codex", "%/.codex/archived_sessions/%"),
-                                    ("hermes", "hermes:%"),
-                                    ("copilot", "copilot:%"),
-                                    ("cursor", "cursor:%"),
-                                    ("antigravity", "antigravity:%")):
-            conn.execute(
-                f"UPDATE session_log SET platform = ? WHERE platform IS NULL AND {_p} LIKE ?",
-                (_platform, _pattern),
-            )
-        # Last, so every other runtime's definitive pattern has claimed its rows
-        # first; the Codex path patterns are excluded again so a config dir
-        # that happens to sit inside a Codex home can never tag a Codex file.
-        if _cfg_where:
-            conn.execute(
-                "UPDATE session_log SET platform = 'claude' "
-                "WHERE platform IS NULL AND (" + _cfg_where + ") "
-                f"AND {_p} NOT LIKE '%/.codex/sessions/%' "
-                f"AND {_p} NOT LIKE '%/.codex/archived_sessions/%'",
-                _claude_cfg_patterns,
-            )
-        conn.commit()
-    except _SkipMigration:
-        pass
-    except sqlite3.Error as _e:
-        _log_migration_error("platform backfill", _e)
-    # Migrate: add quality columns to daily_stats for existing DBs
-    try:
-        ds_cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_stats)").fetchall()}
-        for name, kind in (("session_count", "INTEGER"), ("total_input", "INTEGER"),
-                           ("total_output", "INTEGER"), ("total_duration", "REAL"), ("avg_cache_hit", "REAL")):
-            if name not in ds_cols:
-                conn.execute(f"ALTER TABLE daily_stats ADD COLUMN {name} {kind}")
-        if "avg_quality_score" not in ds_cols:
-            conn.execute("ALTER TABLE daily_stats ADD COLUMN avg_quality_score REAL")
-        if "worst_grade" not in ds_cols:
-            conn.execute("ALTER TABLE daily_stats ADD COLUMN worst_grade TEXT")
-        conn.commit()
-    except sqlite3.Error as _e:
-        _log_migration_error("daily_stats columns", _e)
-    # Migrate: add per-event model column to savings_events (v5.9+). Lets the
-    # savings view reprice historical events at the rate that was actually in
-    # effect when they were logged, instead of today's active-model rate.
-    try:
-        se_cols = {r[1] for r in conn.execute("PRAGMA table_info(savings_events)").fetchall()}
-        if "model" not in se_cols:
-            conn.execute("ALTER TABLE savings_events ADD COLUMN model TEXT")
-        # Session_uuid + unjoinable columns for direct session joins (no LIKE scan).
-        # session_uuid = the Claude session UUID (= JSONL basename stem).
-        # unjoinable = 1 when session_id is a short agent_id that cannot be resolved.
-        if "session_uuid" not in se_cols:
-            conn.execute("ALTER TABLE savings_events ADD COLUMN session_uuid TEXT")
-        if "unjoinable" not in se_cols:
-            conn.execute("ALTER TABLE savings_events ADD COLUMN unjoinable INTEGER DEFAULT 0")
-        # Keep-warm idempotency: pause_key uniquely identifies one (session, pause)
-        # realized booking. The UNIQUE index makes SQLite the dedup authority so a
-        # lost ledger marker (or a re-detect across ticks) can never double-book the
-        # same warm resume. Partial index (WHERE pause_key IS NOT NULL) leaves every
-        # legacy/non-keepwarm row -- all NULL here -- unconstrained.
-        if "pause_key" not in se_cols:
-            conn.execute("ALTER TABLE savings_events ADD COLUMN pause_key TEXT")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_savings_events_uuid "
-            "ON savings_events (session_uuid)"
-        )
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_savings_events_pause_key "
-            "ON savings_events (pause_key) WHERE pause_key IS NOT NULL"
-        )
-        conn.commit()
-    except sqlite3.Error as _e:
-        _log_migration_error("savings_events columns", _e)
-    # Backfill session_uuid on savings_events from session_id where it looks
-    # like a UUID (8-4-4-4-12 hex pattern). Short agent_ids (<=17 chars without
-    # dashes) are flagged unjoinable=1 rather than silently treated as Sonnet.
-    try:
-        import re as _re
-        _UUID_PAT = _re.compile(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            _re.IGNORECASE,
-        )
-        rows = conn.execute(
-            "SELECT id, session_id FROM savings_events "
-            "WHERE session_uuid IS NULL AND session_id IS NOT NULL"
-        ).fetchall()
-        if rows:
-            uuid_updates = []
-            unjoinable_updates = []
-            for row_id, sid in rows:
-                canonical, _ = _extract_session_uuid(sid)
-                if canonical:
-                    uuid_updates.append((canonical, row_id))
-                elif sid and len(sid) <= 20 and "-" not in sid and sid not in (
-                    "unknown", "test-123", "perf_test", "regtest", "demo"
-                ):
-                    # Short opaque hex agent_id — cannot be resolved to a session_log row
-                    unjoinable_updates.append((row_id,))
-            if uuid_updates:
-                conn.executemany(
-                    "UPDATE savings_events SET session_uuid = ? WHERE id = ?",
-                    uuid_updates,
-                )
-            if unjoinable_updates:
-                conn.executemany(
-                    "UPDATE savings_events SET unjoinable = 1 WHERE id = ?",
-                    unjoinable_updates,
-                )
-        conn.commit()
-    except (sqlite3.Error, OSError) as _e:
-        _log_migration_error("savings_events uuid backfill", _e)
-    # Migrate: ensure compression_events table exists for upgrades from v4.x
-    try:
-        conn.execute("SELECT 1 FROM compression_events LIMIT 1")
-    except sqlite3.OperationalError:
-        try:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS compression_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    session_id TEXT,
-                    session_uuid TEXT,
-                    feature TEXT NOT NULL,
-                    command_pattern TEXT,
-                    original_tokens INTEGER DEFAULT 0,
-                    compressed_tokens INTEGER DEFAULT 0,
-                    compression_ratio REAL DEFAULT 0.0,
-                    quality_preserved INTEGER DEFAULT 1,
-                    verified INTEGER DEFAULT 0,
-                    detail TEXT,
-                    model TEXT
-                );
-            """)
-            conn.commit()
-        except sqlite3.Error as _e:
-            _log_migration_error("compression_events table", _e)
-    # Idempotent migrations for session_uuid + model on compression_events.
-    # These columns enable per-event session joins and correct model attribution.
-    try:
-        ce_cols = {r[1] for r in conn.execute("PRAGMA table_info(compression_events)").fetchall()}
-        if "session_uuid" not in ce_cols:
-            conn.execute("ALTER TABLE compression_events ADD COLUMN session_uuid TEXT")
-        if "model" not in ce_cols:
-            conn.execute("ALTER TABLE compression_events ADD COLUMN model TEXT")
-        if "tier" not in ce_cols:
-            # Three-tier accounting tag (measured/estimated/
-            # opportunity). Nullable: pre-existing rows stay NULL and keep their
-            # current headline treatment; only new coverage events set a tier.
-            conn.execute("ALTER TABLE compression_events ADD COLUMN tier TEXT")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_compression_events_uuid "
-            "ON compression_events (session_uuid)"
-        )
-        # T6: the tripwire edit-rate query filters on (feature, tier); index it so
-        # the per-cohort skeleton/follow-up scans stay cheap as the table grows.
-        # Idempotent (IF NOT EXISTS) — safe on every init.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_compression_events_feature_tier "
-            "ON compression_events (feature, tier)"
-        )
-        # Serves the counted views' same-session twin lookup.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_compression_events_session_feature_ts "
-            "ON compression_events (session_id, feature, timestamp)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_savings_events_session_type_ts "
-            "ON savings_events (session_id, event_type, timestamp)"
-        )
-        conn.commit()
-    except sqlite3.Error as _e:
-        _log_migration_error("compression_events columns", _e)
-    # Backfill session_uuid on compression_events from session_id where UUID pattern.
-    try:
-        import re as _re
-        _UUID_PAT2 = _re.compile(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            _re.IGNORECASE,
-        )
-        ce_rows = conn.execute(
-            "SELECT id, session_id FROM compression_events "
-            "WHERE session_uuid IS NULL AND session_id IS NOT NULL"
-        ).fetchall()
-        if ce_rows:
-            ce_updates = [
-                (_extract_session_uuid(sid)[0], row_id)
-                for row_id, sid in ce_rows
-                if _extract_session_uuid(sid)[0]
-            ]
-            if ce_updates:
-                conn.executemany(
-                    "UPDATE compression_events SET session_uuid = ? WHERE id = ?",
-                    ce_updates,
-                )
-        conn.commit()
-    except (sqlite3.Error, OSError) as _e:
-        _log_migration_error("compression_events uuid backfill", _e)
-    conn.commit()
-    # Journal the pre-rewrite dates before repair_activity_dates opens its
-    # transaction; the journal, aggregate backups, rebuild, archives and
-    # marker then commit or roll back together.
-    pre_activity_rows = []
-    if not conn.execute(
-            "SELECT 1 FROM schema_migrations WHERE name='activity_dating_v1'").fetchone():
-        pre_activity_rows = conn.execute(
-            "SELECT jsonl_path,date,first_activity_day,last_activity_day,daily_calls_json FROM session_log").fetchall()
-    try:
-        if repair_activity_dates(conn):
-            _snapshot_activity_dating_prestate(conn, pre_activity_rows)
-            _rebuild_aggregate_tables(conn)
-            # Keep original evidence recoverable. These derived comparisons used
-            # session-date windows and must be rebuilt against dated activity.
-            _archive_pre_activity_state_files()
-            conn.execute("INSERT INTO schema_migrations(name) VALUES ('activity_dating_v1')")
-            conn.commit()
-    except Exception as _e:
-        # Includes BEGIN IMMEDIATE lock failures. Roll back any partial work
-        # and return a fresh, usable connection; retry migration on next init.
-        try:
-            conn.rollback()
-        finally:
-            conn.close()
-        _log_migration_error("activity_dating_v1 migration", _e)
-        return _connect_trends_db()
-    return conn
+_init_trends_db = _measure_compat.bind(_measure_providers['trends']._init_trends_db, __name__)
 
 
-def _compute_call_gap_stats(api_call_timestamps):
-    """Compute avg/max/p95 gaps between assistant API calls within a session."""
-    if len(api_call_timestamps) < 2:
-        return {"avg": None, "max": None, "p95": None}
-
-    gaps = []
-    prev_ts = None
-    for ts in api_call_timestamps:
-        if prev_ts is None:
-            prev_ts = ts
-            continue
-        delta = (ts - prev_ts).total_seconds()
-        if delta >= 0:
-            gaps.append(delta)
-        prev_ts = ts
-
-    if not gaps:
-        return {"avg": None, "max": None, "p95": None}
-
-    sorted_gaps = sorted(gaps)
-    p95_index = max(0, min(len(sorted_gaps) - 1, math.ceil(len(sorted_gaps) * 0.95) - 1))
-    return {
-        "avg": sum(gaps) / len(gaps),
-        "max": max(gaps),
-        "p95": sorted_gaps[p95_index],
-    }
+_compute_call_gap_stats = _measure_compat.bind(_measure_providers['trends']._compute_call_gap_stats, __name__)
 
 
-def _make_session_key(jsonl_path):
-    """Generate a stable opaque session key from a JSONL path."""
-    if not jsonl_path:
-        return None
-    normalized = str(Path(jsonl_path).resolve())
-    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+_make_session_key = _measure_compat.bind(_measure_providers['trends']._make_session_key, __name__)
 
 
-def _retry_db_operation(conn, operation, max_retries=3, initial_backoff=0.1):
-    """Retry a database operation with exponential backoff on lock errors.
-
-    Mirrors Total Recall's DB-lock pattern: busy_timeout + retry with backoff.
-    Fails open on persistent lock errors (returns None, caller handles gracefully).
-    Non-lock OperationalErrors are re-raised so real bugs aren't silently swallowed.
-    """
-    for attempt in range(max_retries):
-        try:
-            return operation()
-        except sqlite3.OperationalError as e:
-            if "database is locked" in str(e) or "unable to open database" in str(e):
-                if attempt < max_retries - 1:
-                    backoff = initial_backoff * (2 ** attempt)
-                    time.sleep(backoff)
-                    continue
-                return None  # exhausted retries on lock error — fail open
-            raise  # non-lock error — propagate, don't swallow
+_retry_db_operation = _measure_compat.bind(_measure_providers['trends']._retry_db_operation, __name__, defaults=(3, 0.1,))
 
 
-def _backfill_session_metrics(conn, days=30, limit=50):
-    """Populate derived session metrics for rows collected before fields existed.
-    
-    Bounded per-flush work (limit=50) to prevent re-parse storms. Batched
-    UPDATEs in single transaction to minimize lock duration. Retry with backoff
-    on DB lock errors (mirrors Total Recall's pattern).
-    """
-    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    
-    def fetch_rows():
-        return conn.execute(
-            """SELECT jsonl_path
-               FROM session_log
-               WHERE date >= ?
-                 AND (
-                       IFNULL(cache_ttl_scanned, 0) = 0
-                    OR avg_call_gap_seconds IS NULL
-                    OR max_call_gap_seconds IS NULL
-                    OR p95_call_gap_seconds IS NULL
-                    OR quality_score IS NULL
-                 )
-               ORDER BY date DESC, collected_at DESC
-               LIMIT ?""",
-            (cutoff, limit),
-        ).fetchall()
-    
-    rows = _retry_db_operation(conn, fetch_rows)
-    if rows is None:
-        return 0
-
-    updates = []
-    for row in rows:
-        jsonl_path = row[0]
-        ttl_1h = 0
-        ttl_5m = 0
-        avg_gap = None
-        max_gap = None
-        p95_gap = None
-        q_score = None
-        q_grade = None
-        parsed = _parse_session_jsonl(jsonl_path) if jsonl_path and os.path.exists(jsonl_path) else None
-        if not parsed:
-            continue
-        if parsed:
-            ttl_1h = int(parsed.get("total_cache_create_1h", 0) or 0)
-            ttl_5m = int(parsed.get("total_cache_create_5m", 0) or 0)
-            avg_gap = parsed.get("avg_call_gap_seconds")
-            max_gap = parsed.get("max_call_gap_seconds")
-            p95_gap = parsed.get("p95_call_gap_seconds")
-            sq = score_session_quality(parsed)
-            q_score = sq["score"]
-            q_grade = sq["grade"]
-        updates.append((ttl_1h, ttl_5m, avg_gap, max_gap, p95_gap, q_score, q_grade, str(jsonl_path)))
-    
-    if not updates:
-        return 0
-    
-    def batch_update():
-        # Batch all UPDATEs into one commit to minimize lock duration (Total
-        # Recall's small-chunk pattern). Deliberately NO explicit BEGIN IMMEDIATE:
-        # a caller (collect_sessions) may have uncommitted inserts on this same
-        # conn — an explicit BEGIN would raise "transaction within a transaction",
-        # and rolling back on that error would DISCARD the caller's pending work.
-        # Sharing the implicit transaction commits our updates and theirs together.
-        conn.executemany(
-            """UPDATE session_log
-               SET cache_create_1h_tokens = ?,
-                   cache_create_5m_tokens = ?,
-                   cache_ttl_scanned = 1,
-                   avg_call_gap_seconds = ?,
-                   max_call_gap_seconds = ?,
-                   p95_call_gap_seconds = ?,
-                   quality_score = COALESCE(quality_score, ?),
-                   quality_grade = COALESCE(quality_grade, ?)
-               WHERE jsonl_path = ?""",
-            updates,
-        )
-        conn.commit()
-        return len(updates)
-    
-    result = _retry_db_operation(conn, batch_update)
-    return result if result is not None else 0
+_backfill_session_metrics = _measure_compat.bind(_measure_providers['trends']._backfill_session_metrics, __name__, defaults=(30, 50,))
 
 
-def _backfill_daily_usage(conn, days=30, budget_seconds=20.0):
-    """Fill daily_usage_json for rows collected before per-day attribution.
-
-    Time-boxed rather than count-capped: parses are memoized and most rows are
-    small, so the window usually converges in one pass, and a huge history
-    simply finishes on later flushes. Hook rollups without day evidence stay
-    incomplete; missing transcripts can be filled when their files return.
-    """
-    rows = _retry_db_operation(conn, lambda: conn.execute(
-        """SELECT jsonl_path, date FROM session_log
-           WHERE daily_usage_json IS NULL
-           ORDER BY collected_at DESC"""
-    ).fetchall())
-    if not rows:
-        return 0
-    deadline = time.monotonic() + budget_seconds
-    updates = []
-    live_owners = _live_usage_owners(conn)
-    for jsonl_path, stored_date in rows:
-        if time.monotonic() > deadline:
-            break
-        if not (jsonl_path and str(jsonl_path).endswith(".jsonl")):
-            # A hook-rollup adapter row has no transcript to split by day:
-            # settle it now so it is never rescanned. The other daily fields
-            # stay NULL: no evidence was produced, so nothing is claimed.
-            updates.append(("{}", None, None, None, "", None, None, None, jsonl_path))
-            continue
-        if not os.path.exists(jsonl_path):
-            # Transcript missing, maybe only for now (a synced folder not yet
-            # downloaded, an unmounted drive): stay NULL so it fills in when the
-            # file returns, even with an old mtime that collect would skip.
-            continue
-        try:
-            evidence = _session_activity_evidence(jsonl_path, conn=conn, live_owners=live_owners)
-        except Exception:
-            evidence = None
-        if evidence is None:
-            updates.append(("{}", _canonical_session_uuid(jsonl_path) if jsonl_path else None,
-                            None, None, "", None, None, None, jsonl_path))
-            continue
-        bounds = evidence["bounds"]
-        updates.append((json.dumps(evidence["daily_usage"]),
-                        _canonical_session_uuid(jsonl_path) if jsonl_path else None,
-                        bounds[0] if bounds else None, bounds[-1] if bounds else None,
-                        bounds[-1] or "",
-                        json.dumps(evidence["parent_usage"]),
-                        json.dumps(evidence["calls"]),
-                        json.dumps(evidence["metrics"]),
-                        jsonl_path))
-    if not updates:
-        return 0
-
-    def batch_update():
-        conn.executemany(
-            """UPDATE session_log
-               SET daily_usage_json = ?,
-                   session_uuid = COALESCE(session_uuid, ?),
-                   first_activity_day = ?, last_activity_day = ?, date = ?,
-                   parent_daily_usage_json = ?, daily_calls_json = ?,
-                   daily_metrics_json = ?
-               WHERE jsonl_path = ?""",
-            updates,
-        )
-        conn.commit()
-        return len(updates)
-
-    result = _retry_db_operation(conn, batch_update)
-    return result if result is not None else 0
+_backfill_daily_usage = _measure_compat.bind(_measure_providers['trends']._backfill_daily_usage, __name__, defaults=(30, 20.0,))
 
 
-def _extract_session_uuid(session_id):
-    """Return (session_uuid, unjoinable) for a session_id string.
-
-    A valid Claude session UUID has the 8-4-4-4-12 hex pattern and maps to a
-    JSONL file basename. Short opaque hex agent_ids (<=20 chars, no dashes,
-    no UUID pattern) cannot be resolved to a session_log row; they are flagged
-    unjoinable=1 so callers never silently price them at the Sonnet fallback.
-
-    Returns:
-      (uuid_str, False) — session_id IS a UUID and is safe to join on.
-      (None, True)      — short agent_id, cannot join.
-      (None, False)     — empty/unknown/test id, not an error, just no UUID.
-    """
-    import re as _re
-    _UUID_PAT = _re.compile(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-        _re.IGNORECASE,
-    )
-    if not session_id or session_id in ("unknown", "test-123", "perf_test", "regtest", "demo"):
-        return None, False
-    if session_id.startswith('rollout-'):
-        match = re.search(r'([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$', session_id, re.I)
-        if match:
-            return match.group(1), False
-    if _UUID_PAT.match(session_id):
-        return session_id, False
-    # Short opaque hex without dashes (17-char agent_ids from Claude Code)
-    if len(session_id) <= 20 and "-" not in session_id:
-        return None, True
-    return None, False
+_extract_session_uuid = _measure_compat.bind(_measure_providers['trends']._extract_session_uuid, __name__)
 
 
-def _log_spawn_failure(msg):
-    """Append a durable breadcrumb when a detached spawn returns None.
-
-    spawn_detached swallows OSError and returns None; every caller ignores it,
-    so a silent spawn failure leaves no trace. This writes one line to the
-    daemon log dir so the failure is discoverable post-hoc. Never raises.
-    """
-    try:
-        DAEMON_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        _cap_append_log(DAEMON_LOG_DIR / "spawn-failures.log")
-        with open(DAEMON_LOG_DIR / "spawn-failures.log", "a", encoding="utf-8") as f:
-            f.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), msg))
-    except OSError:
-        pass
+_log_spawn_failure = _measure_compat.bind(_measure_providers['trends']._log_spawn_failure, __name__)
 
 
-def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, model=None,
-                       cost_per_mtok=None):
-    """Log a savings event to the trends database.
-
-    Cost is calculated at the session's actual model rate. Resolution order:
-    explicit `model` arg → session JSONL (via session_id) → CLAUDE_MODEL env →
-    trends DB dominant → Sonnet fallback. See `_resolve_session_model`.
-
-    `cost_per_mtok` overrides the default input-rate pricing for event classes
-    whose avoided token is NOT an input-class token (e.g. resume_lean prices at
-    the cache-read / 1h cache-write rate of the avoided reload). When given, the
-    stored cost is tokens_saved * cost_per_mtok / 1e6 at the caller's rate.
-
-    Also writes session_uuid (the Claude UUID = JSONL stem) so aggregation
-    joins directly on session_log.session_uuid rather than LIKE-scanning
-    jsonl_path. Agent_ids that cannot be joined are flagged unjoinable=1 so
-    the reprice logic skips them instead of silently attributing them to Sonnet.
-    """
-    try:
-        # Derive the stable join key before opening the DB connection.
-        session_uuid, unjoinable = _extract_session_uuid(session_id)
-
-        # Calculate cost saved using input token rate for the active model.
-        # Unjoinable rows still get priced via env/recent fallback so the stored
-        # cost_saved_usd is a reasonable estimate; the unjoinable flag tells the
-        # aggregation layer not to use the stored model for reprice attribution.
-        tier = _load_pricing_tier()
-        tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
-        # Output-class events (a measured verbosity reduction) avoid output tokens,
-        # so they are priced at the output rate rather than the input rate.
-        output_class = _EVENT_RATE_CLASS.get(event_type) == "output"
-        if detect_runtime() == 'codex':
-            normalized = model or _resolve_session_model(session_id)
-            rates = _input_and_cached_read_rates(normalized)
-            if cost_per_mtok is None:
-                if output_class:
-                    out_rate = _get_model_cost(normalized, 0, 1) * 1e6 if rates else 0.0
-                    cost_per_mtok = out_rate or None
-                else:
-                    cost_per_mtok = rates[0] if rates else None
-        elif model:
-            normalized = _claude_price_key(model, tier_data["claude_models"]) or "sonnet"
-        else:
-            normalized = _resolve_session_model(session_id)
-        if detect_runtime() != 'codex':
-            rates = tier_data["claude_models"].get(normalized, tier_data["claude_models"].get("sonnet", {}))
-            if cost_per_mtok is None:
-                cost_per_mtok = (rates.get("output", 15.0) if output_class
-                                 else rates.get("input", 3.0))
-        cost_saved = tokens_saved * cost_per_mtok / 1e6 if cost_per_mtok is not None else None
-
-        conn = _init_trends_db()
-        try:
-            o_col, o_mark, o_val = _origin_insert_parts(conn, "savings_events")
-            conn.execute(
-                "INSERT INTO savings_events "
-                "(timestamp, event_type, tokens_saved, cost_saved_usd, session_id, session_uuid, detail, model, unjoinable"
-                + o_col + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?" + o_mark + ")",
-                (datetime.now().isoformat(), event_type, tokens_saved, cost_saved,
-                 session_id, session_uuid, detail, normalized, 1 if unjoinable else 0) + o_val,
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception:
-        pass  # Never crash the caller over savings tracking
+_log_savings_event = _measure_compat.bind(_measure_providers['trends']._log_savings_event, __name__, defaults=(None, None, None, None,))
 
 
 _cached_estimate_fn = None
 
-def _estimate_tokens(text):
-    """Estimate token count via the shared calibrated estimator (token_estimate.py).
-
-    Falls back to bytes/4 only if the shared estimator is unavailable.
-    """
-    global _cached_estimate_fn
-    if not text:
-        return 0
-    if _cached_estimate_fn is None:
-        try:
-            from token_estimate import estimate_tokens as _fn
-            _cached_estimate_fn = _fn
-        except Exception:
-            _cached_estimate_fn = lambda t: len(t.encode("utf-8", errors="replace")) // 4
-    return _cached_estimate_fn(text)
+_estimate_tokens = _measure_compat.bind(_measure_providers['trends']._estimate_tokens, __name__)
 
 
-def _log_compression_event(feature, original_text="", compressed_text="",
-                           session_id=None, command_pattern=None,
-                           quality_preserved=True, verified=False, detail=None,
-                           tier=None):
-    """Log a compression event to the trends database.
-
-    Token counts come from the shared calibrated estimator (_estimate_tokens ->
-    token_estimate.py); it falls back to a bytes/4 proxy only if that module is
-    unavailable. Never crashes the caller -- all errors silently caught.
-
-    Writes session_uuid (the stable join key) and resolves + stores model
-    at event-time so _get_merged_savings can reprice at the session's real
-    model rate instead of the current dashboard session model (anachronistic).
-    """
-    try:
-        original_tokens = _estimate_tokens(original_text)
-        compressed_tokens = _estimate_tokens(compressed_text)
-        ratio = 0.0
-        if original_tokens > 0:
-            ratio = round(1.0 - compressed_tokens / original_tokens, 4)
-
-        # DB boundary: command_pattern/detail can embed a file name or label
-        # that carries a credential shape. Redact here so NO caller (present
-        # or future) can persist them raw; on a redactor refusal the text
-        # columns go NULL while token counts still land. feature/session_id
-        # are caller text too — a no-op on real inputs (constant feature
-        # names, host-generated ids, so joins still hold), but a tainted
-        # value can no longer reach disk verbatim.
-        try:
-            from credential_patterns import redact_credentials as _ce_redact
-            if feature:
-                feature = _ce_redact(feature)
-            if session_id:
-                session_id = _ce_redact(session_id)
-            if command_pattern:
-                command_pattern = _ce_redact(command_pattern)
-            if detail:
-                detail = _ce_redact(detail)
-        except Exception:
-            feature = "unknown"
-            session_id = None
-            command_pattern = None
-            detail = None
-
-        # Derive stable join key and resolve event-time model.
-        session_uuid, _ = _extract_session_uuid(session_id)
-        resolved_model = _resolve_session_model(session_id)
-
-        conn = _init_trends_db()
-        try:
-            o_col, o_mark, o_val = _origin_insert_parts(conn, "compression_events")
-            conn.execute(
-                "INSERT INTO compression_events "
-                "(timestamp, session_id, session_uuid, feature, command_pattern, original_tokens, "
-                "compressed_tokens, compression_ratio, quality_preserved, verified, detail, model, tier"
-                + o_col + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?" + o_mark + ")",
-                (datetime.now().isoformat(), session_id, session_uuid, feature, command_pattern,
-                 original_tokens, compressed_tokens, ratio,
-                 1 if quality_preserved else 0,
-                 1 if verified else 0,
-                 detail, resolved_model, tier) + o_val,
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception:
-        pass
+_log_compression_event = _measure_compat.bind(_measure_providers['trends']._log_compression_event, __name__, defaults=("", "", None, None, True, False, None, None,))
 
 
-def _compression_known_model(model):
-    """Reject an unknown Claude generation even when its family has a card."""
-    if not isinstance(model, str) or not _is_priced_model(model):
-        return False
-    value = _strip_provider_prefixes(model)
-    if value.startswith(("gpt-", "gemini-")):
-        return _foreign_savings_card_exact(model)
-    generation = _CLAUDE_GENERATION_RE.search(model.lower())
-    legacy = _CLAUDE_LEGACY_ID_RE.search(model.lower())
-    if legacy:
-        major, minor, family = legacy.groups()
-        if major == "3" and family == "sonnet" and minor in (None, "5", "7"):
-            return True
-    elif generation:
-        family, major, minor = generation.groups()
-    else:
-        return True
-    family = "fable" if family == "mythos" else family
-    key = f"{family}_{major}" + (f"_{minor}" if minor else "")
-    return key in PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"]).get("claude_models", {})
+_compression_known_model = _measure_compat.bind(_measure_providers['trends']._compression_known_model, __name__)
 
 
-def _compression_row_rate(model, fallback_rate, tier_data):
-    """Input price per million tokens, or zero when no rate card is known."""
-    if not _compression_known_model(model):
-        return 0.0
-    return _get_model_cost(model, 1, 0) * 1_000_000
+_compression_row_rate = _measure_compat.bind(_measure_providers['trends']._compression_row_rate, __name__)
 
 
 _UNSTAMPED_MODELS = frozenset({"", "unknown", "<synthetic>", "none", "null"})
 
 
-def _compression_session_rates(conn, session_uuids, session_ids=()):
-    """{session_uuid: [(share, input_rate)]} from each session's own model mix.
-
-    Used for compression rows logged without a usable model stamp: the hook
-    often cannot read the live transcript, so it writes "unknown". Each row is
-    priced at ITS OWN session's mix (never a window average), the same rule
-    _session_model_reprice applies to savings_events."""
-    out = {}
-    ids = [u for u in set(session_uuids) if u]
-    foreign_ids = [s for s in set(session_ids) if s]
-    if not ids and not foreign_ids:
-        return out
-    try:
-        sl_cols = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
-        mu = "model_usage_json" if "model_usage_json" in sl_cols else "NULL"
-        amu = "all_model_usage_json" if "all_model_usage_json" in sl_cols else "NULL"
-        breakdown = "model_usage_breakdown_json" if "model_usage_breakdown_json" in sl_cols else "NULL"
-        for i in range(0, len(ids) if "session_uuid" in sl_cols else 0, 500):
-            chunk = ids[i:i + 500]
-            marks = ",".join("?" for _ in chunk)
-            for uuid, detail_json, mu_json, amu_json in conn.execute(
-                    f"SELECT session_uuid, {breakdown}, {mu}, {amu} FROM session_log "
-                    f"WHERE session_uuid IN ({marks}) ORDER BY id", chunk):
-                terms = _compression_mix_input_terms(detail_json, mu_json, amu_json)
-                if terms:
-                    out[uuid] = terms
-        prefixes = ("hermes:", "copilot:", "cursor:", "grok:",
-                    "antigravity:antigravity:", "antigravity:antigravity-cli:",
-                    "antigravity:antigravity-ide:")
-        for i in range(0, len(foreign_ids), 50):
-            paths = {prefix + sid: sid for sid in foreign_ids[i:i + 50] for prefix in prefixes}
-            marks = ",".join("?" for _ in paths)
-            matches = {}
-            for path, detail_json, mu_json, amu_json in conn.execute(
-                    f"SELECT jsonl_path, {breakdown}, {mu}, {amu} FROM session_log WHERE jsonl_path IN ({marks})", tuple(paths)):
-                matches.setdefault(paths[path], []).append((detail_json, mu_json, amu_json))
-            for sid, records in matches.items():
-                if len(records) == 1:
-                    terms = _compression_mix_input_terms(*records[0])
-                    if terms:
-                        out[("session_id", sid)] = terms
-    except (sqlite3.Error, TypeError, ValueError):
-        return {}
-    return out
+_compression_session_rates = _measure_compat.bind(_measure_providers['trends']._compression_session_rates, __name__, defaults=((),))
 
 
-def _compression_mix_input_terms(*blobs):
-    """Known input rates weighted by all models in one session, including unknowns."""
-    for blob in blobs:
-        try:
-            values = json.loads(blob) if blob else None
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(values, dict) or not values:
-            continue
-        weights = []
-        for name, value in values.items():
-            if isinstance(value, dict):
-                try:
-                    value = sum(float(value.get(field) or 0) for field in
-                                ("fresh_input", "cache_create", "output"))
-                except (TypeError, ValueError):
-                    continue
-            try:
-                weight = float(value)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(weight) and weight > 0:
-                weights.append((name, weight))
-        total = sum(weight for _, weight in weights)
-        if total:
-            return [(weight / total, _get_model_cost(name, 1, 0) * 1_000_000)
-                    for name, weight in weights if _compression_known_model(name)]
-    return []
+_compression_mix_input_terms = _measure_compat.bind(_measure_providers['trends']._compression_mix_input_terms, __name__)
 
 
-def _compression_rate_coverage(model, session_uuid, session_rates, fallback_rate, tier_data):
-    """Return the known input price and the fraction of saved tokens priced."""
-    if _compression_known_model(model):
-        return _compression_row_rate(model, fallback_rate, tier_data), 1.0
-    terms = session_rates.get(session_uuid, [])
-    return sum(sh * rate for sh, rate in terms), min(1.0, sum(sh for sh, _ in terms))
+_compression_rate_coverage = _measure_compat.bind(_measure_providers['trends']._compression_rate_coverage, __name__)
 
 
-def _compression_priced_rate(model, session_uuid, session_rates, fallback_rate, tier_data):
-    return _compression_rate_coverage(model, session_uuid, session_rates, fallback_rate, tier_data)[0]
+_compression_priced_rate = _measure_compat.bind(_measure_providers['trends']._compression_priced_rate, __name__)
 
 
-def _get_compression_summary(days=30, since=None):
-    """Query compression events and return a summary dict.
-
-    When *since* is a non-empty ISO-8601 timestamp string, it is used directly
-    as the cutoff (``timestamp >= since``) instead of the rolling ``now - days``
-    cutoff. When *since* is None / empty, the rolling cutoff is computed from
-    *days* as before.
-
-    Price known model stamps or the known share of the event's own session mix.
-    Keep tokens with no known rate in the count and disclose them as unpriced.
-    """
-    try:
-        conn = _init_trends_db()
-        try:
-            if since:
-                cutoff = since
-            else:
-                cutoff = (datetime.now() - timedelta(days=days)).isoformat()
-            # Pull model alongside aggregates so we can reprice by event-time model.
-            # NULLs land as None in Python; fallback handled below.
-            # REALIZED tiers only: opportunity (shadow) and estimated rows are
-            # diagnostic and MUST NEVER reach the savings headline (three-tier
-            # rule). Legacy rows predate the tier column (NULL) and stay counted.
-            rows = conn.execute(
-                "SELECT feature, COUNT(*) as cnt, "
-                "SUM(original_tokens) as orig, SUM(compressed_tokens) as comp, "
-                "AVG(compression_ratio) as avg_ratio, "
-                "SUM(CASE WHEN quality_preserved = 1 THEN 1 ELSE 0 END) as quality_ok, "
-                "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as verified_cnt, "
-                "model, session_uuid, session_id, "
-                "SUM(CASE WHEN original_tokens > compressed_tokens "
-                "    THEN original_tokens - compressed_tokens ELSE 0 END) as gross_credit, "
-                "SUM(CASE WHEN compressed_tokens > original_tokens "
-                "    THEN compressed_tokens - original_tokens ELSE 0 END) as gross_debit "
-                "FROM " + _counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
-                "AND (tier IS NULL OR tier = 'measured') "
-                "GROUP BY feature, model, session_uuid, session_id ORDER BY orig DESC",
-                (cutoff,),
-            ).fetchall()
-            session_rates = _compression_session_rates(
-                conn, [r[8] for r in rows
-                       if not _compression_known_model(r[7])],
-                [r[9] for r in rows if not _compression_known_model(r[7])])
-        finally:
-            conn.close()
-
-        # Merge rows with the same feature (may appear once per model after the
-        # GROUP BY feature, model). Accumulate cost using per-row model rate.
-        by_feature: dict = {}
-        total_original = 0
-        total_compressed = 0
-        total_events = 0
-        fallback_rate = _estimate_compression_cost_per_mtok()
-        tier = _load_pricing_tier()
-        tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
-
-        for (feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt, model, s_uuid, sid,
-             gross_credit, gross_debit) in rows:
-            orig = orig or 0
-            comp = comp or 0
-            cnt = cnt or 0
-            key = s_uuid if s_uuid in session_rates else ("session_id", sid)
-            rate, priced_share = _compression_rate_coverage(model, key, session_rates, fallback_rate, tier_data)
-            tokens_saved = orig - comp
-            cost_saved = round(tokens_saved * rate / 1_000_000, 6)
-            # Gross credits and debits are kept apart (summed per event in SQL), so
-            # an unknown-model expansion is disclosed rather than netted away.
-            uncovered = max(0.0, 1.0 - priced_share)
-            unpriced_credit = (gross_credit or 0) * uncovered
-            unpriced_debit = (gross_debit or 0) * uncovered
-
-            if feature in by_feature:
-                # Merge with existing entry for this feature (multi-model rows)
-                entry = by_feature[feature]
-                entry["events"] += cnt
-                entry["original_tokens"] += orig
-                entry["compressed_tokens"] += comp
-                entry["tokens_saved"] += tokens_saved
-                entry["cost_saved_usd"] = round(entry["cost_saved_usd"] + cost_saved, 6)
-                entry["unpriced_credit_tokens"] += unpriced_credit
-                entry["unpriced_debit_tokens"] += unpriced_debit
-                # avg_ratio and quality_pcts are approximate after merging; acceptable.
-                entry["quality_preserved_pct"] = round(
-                    (entry["quality_preserved_pct"] * (entry["events"] - cnt) + 100 * (quality_ok or 0))
-                    / max(entry["events"], 1),
-                    1,
-                )
-            else:
-                by_feature[feature] = {
-                    "events": cnt,
-                    "original_tokens": orig,
-                    "compressed_tokens": comp,
-                    "avg_ratio": round(avg_ratio or 0.0, 4),
-                    "tokens_saved": tokens_saved,
-                    "cost_saved_usd": cost_saved,
-                    "unpriced_credit_tokens": unpriced_credit,
-                    "unpriced_debit_tokens": unpriced_debit,
-                    "quality_preserved_pct": round(100 * (quality_ok or 0) / max(cnt, 1), 1),
-                    "verified_pct": round(100 * (verified_cnt or 0) / max(cnt, 1), 1),
-                }
-            total_original += orig
-            total_compressed += comp
-            total_events += cnt
-
-        overall_ratio = round(1.0 - total_compressed / max(total_original, 1), 4)
-        tokens_saved = total_original - total_compressed
-        for entry in by_feature.values():
-            entry["unpriced_credit_tokens"] = round(entry["unpriced_credit_tokens"])
-            entry["unpriced_debit_tokens"] = round(entry["unpriced_debit_tokens"])
-            entry["unpriced_tokens"] = entry["unpriced_credit_tokens"] + entry["unpriced_debit_tokens"]
-
-        return {
-            "total_events": total_events,
-            "total_original_tokens": total_original,
-            "total_compressed_tokens": total_compressed,
-            "total_tokens_saved": tokens_saved,
-            "unpriced_tokens": sum(entry["unpriced_tokens"] for entry in by_feature.values()),
-            "unpriced_credit_tokens": sum(e["unpriced_credit_tokens"] for e in by_feature.values()),
-            "unpriced_debit_tokens": sum(e["unpriced_debit_tokens"] for e in by_feature.values()),
-            "overall_ratio": overall_ratio,
-            "by_feature": by_feature,
-            "period_days": days,
-        }
-    except Exception:
-        return {"total_events": 0, "total_tokens_saved": 0, "by_feature": {}, "period_days": days}
+_get_compression_summary = _measure_compat.bind(_measure_providers['trends']._get_compression_summary, __name__, defaults=(30, None,))
 
 
 # U6: human labels for coverage features. These ARE in _V5_COMPRESSION_CATEGORIES
@@ -15636,100 +12447,10 @@ _COVERAGE_FEATURE_LABELS = {
 _FIRST_READ_PROMOTION_EDIT_RATE = 0.15
 
 
-def _coverage_feature_label(feature):
-    """Display label for a coverage feature (falls back through the v5 labels)."""
-    return (
-        _COVERAGE_FEATURE_LABELS.get(feature)
-        or _V5_COMPRESSION_LABELS.get(feature)
-        or feature
-    )
+_coverage_feature_label = _measure_compat.bind(_measure_providers['trends']._coverage_feature_label, __name__)
 
 
-def _get_compression_coverage(days=30):
-    """Tiered compression-coverage view. Diagnostic only, never summed.
-
-    Groups compression_events by feature into measured / estimated / opportunity
-    buckets and reports per-feature events, would-be (shadow) or realized
-    (active) avg ratio, and verified %. Tiers are kept strictly separate so a
-    shadow opportunity can never be read as realized savings. These numbers do
-    NOT feed _get_merged_savings (only _V5_COMPRESSION_CATEGORIES features do).
-
-    Also surfaces the first-read shadow quality proxy: edit_rate =
-    edits-after-shadow-read / shadow-reads. It is the promotion gate: a low
-    rate means the model rarely needed the full file, so a skeleton would have
-    been safe. Fail-open: returns an empty (but well-formed) structure on error.
-    """
-    out = {
-        "period_days": days,
-        "tiers": {t: [] for t in _COMPRESSION_TIERS},
-        "first_read_proxy": None,
-        "available": False,
-    }
-    try:
-        conn = _init_trends_db()
-        try:
-            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
-            rows = conn.execute(
-                "SELECT feature, tier, COUNT(*) as cnt, "
-                "SUM(original_tokens) as orig, SUM(compressed_tokens) as comp, "
-                "AVG(compression_ratio) as avg_ratio, "
-                "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as vcnt "
-                "FROM " + _counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
-                "GROUP BY feature, tier",
-                (cutoff,),
-            ).fetchall()
-        finally:
-            conn.close()
-    except Exception as exc:
-        # Distinguish a broken query from a legitimately empty DB so the
-        # dashboard/CLI can show "unavailable (error)" rather than "no data yet".
-        out["error"] = str(exc)
-        return out
-
-    # Proxy denominator is the shadow-tier skeletons only; the numerator is their
-    # edit follow-ups. Both must come from the same opportunity cohort.
-    skeleton_cnt = 0
-    followup_cnt = 0
-    for feature, tier, cnt, _orig, _comp, _avg, _vcnt in rows:
-        if feature == _FEATURE_FIRST_READ_SKELETON and tier == "opportunity":
-            skeleton_cnt += cnt or 0
-        elif feature == _FEATURE_FIRST_READ_EDIT_FOLLOWUP and tier == "opportunity":
-            followup_cnt += cnt or 0
-
-    for feature, tier, cnt, orig, comp, avg_ratio, vcnt in rows:
-        if feature in _NON_SAVINGS_COMPRESSION_FEATURES:
-            continue
-        cnt = cnt or 0
-        orig = orig or 0
-        comp = comp or 0
-        safe_tier = tier if tier in _COMPRESSION_TIERS else "estimated"
-        realized = safe_tier == "measured"
-        out["tiers"][safe_tier].append({
-            "feature": feature,
-            "label": _coverage_feature_label(feature),
-            "events": cnt,
-            "tokens_saved": max(orig - comp, 0),
-            "ratio": round(avg_ratio or 0.0, 4),
-            "ratio_kind": "realized" if realized else "would_be",
-            "verified_pct": round(100 * (vcnt or 0) / max(cnt, 1), 1),
-            "shadow": not realized,
-        })
-        out["available"] = True
-
-    if skeleton_cnt > 0:
-        edit_rate = followup_cnt / skeleton_cnt
-        out["first_read_proxy"] = {
-            "shadow_reads": skeleton_cnt,
-            "edits_after_read": followup_cnt,
-            "edit_rate_pct": round(100 * edit_rate, 1),
-            "promotion_gate_pct": round(100 * _FIRST_READ_PROMOTION_EDIT_RATE, 1),
-            "promotion_ready": edit_rate < _FIRST_READ_PROMOTION_EDIT_RATE,
-        }
-        out["available"] = True
-
-    for bucket in out["tiers"].values():
-        bucket.sort(key=lambda e: e["events"], reverse=True)
-    return out
+_get_compression_coverage = _measure_compat.bind(_measure_providers['trends']._get_compression_coverage, __name__, defaults=(30,))
 
 
 # ---------------------------------------------------------------------------
@@ -15775,34 +12496,7 @@ _INTERPOLATED_COHORTS = frozenset({
 _active_cohorts_drift_warned = False
 
 
-def _resolve_active_cohorts():
-    """The canonical active-cohort set, preferring read_cache's live constant.
-
-    C2: lazily import read_cache.FIRST_READ_ACTIVE_COHORTS (the hot-path source
-    of truth) so this CLI/dashboard module follows the read hook without a hard
-    import at module load. Falls back to the local mirror if the import fails,
-    and emits a one-line stderr drift warning (once) if the two ever disagree —
-    the drift test then fails loudly instead of the tripwire silently judging a
-    cohort the read hook no longer serves.
-    """
-    global _active_cohorts_drift_warned
-    try:
-        from read_cache import FIRST_READ_ACTIVE_COHORTS as _live
-        live = frozenset(_live)
-    except Exception:
-        return _FIRST_READ_ACTIVE_COHORTS
-    if live != _FIRST_READ_ACTIVE_COHORTS and not _active_cohorts_drift_warned:
-        _active_cohorts_drift_warned = True
-        try:
-            print(
-                "[Token Optimizer] WARNING: active-cohort drift between "
-                "measure._FIRST_READ_ACTIVE_COHORTS and "
-                "read_cache.FIRST_READ_ACTIVE_COHORTS; using the read-hook set.",
-                file=sys.stderr,
-            )
-        except Exception:
-            pass
-    return live
+_resolve_active_cohorts = _measure_compat.bind(_measure_providers['trends']._resolve_active_cohorts, __name__)
 
 
 _TRIPWIRE_SIDECAR_NAME = "cohort_tripwire.json"
@@ -15818,439 +12512,37 @@ _TRIPWIRE_LOCK_NAME = ".cohort_tripwire.lock"
 _tripwire_warned_cohorts: set = set()
 
 
-def _tripwire_min_samples(cohort) -> int:
-    """Sample floor before a cohort can be auto-demoted (T9).
-
-    Interpolated cohorts (thin historical sample) use the tighter floor so a bad
-    live signal surfaces faster; full-gate cohorts use the standard floor.
-    """
-    return (_TRIPWIRE_MIN_SAMPLES_INTERP if cohort in _INTERPOLATED_COHORTS
-            else _TRIPWIRE_MIN_SAMPLES)
+_tripwire_min_samples = _measure_compat.bind(_measure_providers['trends']._tripwire_min_samples, __name__)
 
 
-def _cohort_basis(cohort) -> str:
-    """'interpolated' (adjacent-band graduation) or 'full_gate' (sidecar label)."""
-    return "interpolated" if cohort in _INTERPOLATED_COHORTS else "full_gate"
+_cohort_basis = _measure_compat.bind(_measure_providers['trends']._cohort_basis, __name__)
 
 
-def _cohort_from_pattern(pattern):
-    """Recover a (language, band) cohort from a `lang|band` command_pattern."""
-    if not pattern or "|" not in pattern:
-        return None
-    lang, band = pattern.split("|", 1)
-    lang, band = lang.strip(), band.strip()
-    if not lang or not band:
-        return None
-    return (lang, band)
+_cohort_from_pattern = _measure_compat.bind(_measure_providers['trends']._cohort_from_pattern, __name__)
 
 
-def _compute_cohort_edit_rates(conn, promoted_at=None):
-    """Per-cohort live edit-rate over the last _TRIPWIRE_WINDOW active skeletons.
-
-    Returns {(lang, band): {"skeletons": n, "followups": m, "edit_rate": r}} for
-    every active cohort that has at least one measured skeleton. The skeleton
-    window is bounded per cohort (most recent N) so an old run of bad edits ages
-    out.
-
-    Promote fence (hysteresis hole): for any cohort with a `promoted_at`
-    timestamp, BOTH skeleton and follow-up events older than that promotion are
-    filtered out, so a re-promoted cohort is judged only on POST-promote history
-    and cannot immediately re-demote on the pre-promote edits that demoted it.
-
-    Follow-up window (T6): a global `timestamp >= oldest active-skeleton ts`
-    filter is pushed into SQL, then per-cohort follow-ups are bounded to
-    oldest(cohort skeleton ts) <= t <= newest(cohort skeleton ts) so an edit
-    attributed to an aged-out OR a not-yet-served skeleton can't inflate the rate.
-    """
-    promoted_at = promoted_at or {}
-
-    def _fence(cohort):
-        return promoted_at.get(f"{cohort[0]}|{cohort[1]}")
-
-    rates = {}
-    # Most-recent measured skeleton events per cohort (id DESC == recency).
-    sk_rows = conn.execute(
-        "SELECT command_pattern, timestamp FROM compression_events "
-        "WHERE feature = ? AND tier = 'measured' AND command_pattern LIKE '%|%' "
-        "ORDER BY id DESC",
-        (_FEATURE_FIRST_READ_SKELETON,),
-    ).fetchall()
-    per_cohort_ts = {}
-    for pattern, ts in sk_rows:
-        cohort = _cohort_from_pattern(pattern)
-        if cohort is None:
-            continue
-        fence = _fence(cohort)
-        if fence is not None and ts is not None and ts < fence:
-            continue  # pre-promote skeleton: fenced out (T5)
-        bucket = per_cohort_ts.setdefault(cohort, [])
-        if len(bucket) < _TRIPWIRE_WINDOW:
-            bucket.append(ts)
-    if not per_cohort_ts:
-        return rates
-
-    # T6: oldest in-window skeleton ts across ALL cohorts bounds the follow-up
-    # scan, so the query never reads follow-ups that predate every live window.
-    all_ts = [t for ts_list in per_cohort_ts.values() for t in ts_list if t is not None]
-    global_oldest = min(all_ts) if all_ts else None
-    if global_oldest is not None:
-        fu_rows = conn.execute(
-            "SELECT command_pattern, timestamp FROM compression_events "
-            "WHERE feature = ? AND tier = 'measured' AND command_pattern LIKE '%|%' "
-            "AND timestamp >= ?",
-            (_FEATURE_FIRST_READ_EDIT_FOLLOWUP, global_oldest),
-        ).fetchall()
-    else:
-        fu_rows = conn.execute(
-            "SELECT command_pattern, timestamp FROM compression_events "
-            "WHERE feature = ? AND tier = 'measured' AND command_pattern LIKE '%|%'",
-            (_FEATURE_FIRST_READ_EDIT_FOLLOWUP,),
-        ).fetchall()
-    followups = {}
-    for pattern, ts in fu_rows:
-        cohort = _cohort_from_pattern(pattern)
-        if cohort is None:
-            continue
-        fence = _fence(cohort)
-        if fence is not None and ts is not None and ts < fence:
-            continue  # pre-promote follow-up: fenced out (T5)
-        followups.setdefault(cohort, []).append(ts)
-
-    for cohort, ts_list in per_cohort_ts.items():
-        skeletons = len(ts_list)
-        # Window bounds: oldest skeleton ts (aged-out floor) and newest skeleton
-        # ts (a follow-up after the newest served skeleton cannot belong to it).
-        valid_ts = [t for t in ts_list if t is not None]
-        oldest = min(valid_ts) if valid_ts else None
-        newest = max(valid_ts) if valid_ts else None
-        fu = followups.get(cohort, [])
-        fu_in_window = sum(
-            1 for t in fu
-            if (oldest is None or t is None or t >= oldest)
-            and (newest is None or t is None or t <= newest)
-        )
-        # Cap follow-ups at the skeleton count (one edit per served skeleton).
-        fu_in_window = min(fu_in_window, skeletons)
-        edit_rate = (fu_in_window / skeletons) if skeletons else 0.0
-        rates[cohort] = {
-            "skeletons": skeletons,
-            "followups": fu_in_window,
-            "edit_rate": round(edit_rate, 4),
-            "basis": _cohort_basis(cohort),
-        }
-    return rates
+_compute_cohort_edit_rates = _measure_compat.bind(_measure_providers['trends']._compute_cohort_edit_rates, __name__, defaults=(None,))
 
 
-def _valid_tripwire_payload(data):
-    """Schema-check the tripwire sidecar (parity with read_cache).
-
-    `demoted` must be a list of 2-element string pairs; `edit_rates`/`promoted_at`
-    (when present) dicts. Used to decide corrupt-vs-valid so a malformed sidecar
-    forces a recompute instead of being trusted.
-    """
-    if not isinstance(data, dict):
-        return False
-    demoted = data.get("demoted", [])
-    if not isinstance(demoted, list):
-        return False
-    for pair in demoted:
-        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-            return False
-        if not all(isinstance(x, str) for x in pair):
-            return False
-    if not isinstance(data.get("edit_rates", {}), dict):
-        return False
-    if not isinstance(data.get("promoted_at", {}), dict):
-        return False
-    return True
+_valid_tripwire_payload = _measure_compat.bind(_measure_providers['trends']._valid_tripwire_payload, __name__)
 
 
-def _read_tripwire_sidecar(return_corrupt=False):
-    """Load the demoted-cohort sidecar.
-
-    Returns the parsed dict, or {} when missing/unreadable. When the file EXISTS
-    but is corrupt/malformed and `return_corrupt=True`, returns the sentinel
-    string ``"__corrupt__"`` so the caller (evaluate_cohort_tripwire) can force a
-    fresh recompute rather than trust an unparseable verdict (T1). Default
-    behavior (return_corrupt=False) keeps the historical empty-dict fail-open for
-    read-only consumers (_cohort_tripwire_state / cohorts_promote).
-    """
-    path = SNAPSHOT_DIR / _TRIPWIRE_SIDECAR_NAME
-    try:
-        if not path.exists():
-            return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, ValueError):
-        return "__corrupt__" if return_corrupt else {}
-    if not _valid_tripwire_payload(data):
-        return "__corrupt__" if return_corrupt else {}
-    return data
+_read_tripwire_sidecar = _measure_compat.bind(_measure_providers['trends']._read_tripwire_sidecar, __name__, defaults=(False,))
 
 
-def _write_tripwire_sidecar(demoted, rates, promoted_at=None):
-    """Atomically write the demoted-cohort sidecar (0600).
-
-    `promoted_at` is a {lang|band: epoch_ts} map (hysteresis fence): when a
-    cohort is re-promoted, its pre-promote skeleton/follow-up history is fenced
-    out of the live edit-rate so it cannot immediately re-demote. Each cohort
-    also carries its `basis` (full_gate|interpolated) for the dashboard label.
-    """
-    path = SNAPSHOT_DIR / _TRIPWIRE_SIDECAR_NAME
-    promoted_at = promoted_at or {}
-    record = {
-        "demoted": [list(c) for c in sorted(demoted)],
-        "edit_rates": {f"{c[0]}|{c[1]}": rates.get(c, {}) for c in rates},
-        "promoted_at": dict(promoted_at),
-        "basis": {f"{c[0]}|{c[1]}": _cohort_basis(c) for c in rates},
-        "_cached_ts": time.time(),
-    }
-    try:
-        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=".cohort_tripwire.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
-        try:
-            if hasattr(os, "fchmod"):
-                os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(record, fh)
-            os.replace(tmp_name, str(path))
-        except OSError:
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
-    except OSError:
-        pass
+_write_tripwire_sidecar = _measure_compat.bind(_measure_providers['trends']._write_tripwire_sidecar, __name__, defaults=(None,))
 
 
-@contextmanager
-def _tripwire_lock():
-    """Bounded portable lease serializing tripwire recompute+write (T4)."""
-    lock_path = SNAPSHOT_DIR / f"{_TRIPWIRE_LOCK_NAME}.lease"
-    with lease_lock(
-        lock_path,
-        deadline=current_deadline(),
-        acquire_timeout=0.075,
-    ) as acquired:
-        yield acquired
+_tripwire_lock = _measure_compat.bind(_measure_providers['trends']._tripwire_lock, __name__, decorators=(contextmanager,))
 
 
-def evaluate_cohort_tripwire(force=False):
-    """Recompute per-cohort live edit-rates and auto-demote breaches.
-
-    Cheap, mtime-gated: returns the cached sidecar verdict unless it is older
-    than _TRIPWIRE_CACHE_TTL_SECONDS (or `force`). On a fresh compute, any active
-    cohort whose live edit-rate exceeds _TRIPWIRE_EDIT_RATE (with at least
-    _TRIPWIRE_MIN_SAMPLES active reads) is added to the demoted set. Demotions
-    are STICKY (hysteresis): a cohort already demoted stays demoted regardless of
-    a later dip — only the CLI promote / next backfill clears it. Each NEW
-    demotion logs one `cohort_demoted` event. Fail-open: returns {} on error.
-    """
-    # T1: read_corrupt distinguishes a malformed sidecar (force recompute) from a
-    # fresh valid one. A corrupt verdict must never satisfy the TTL fast path.
-    sidecar = _read_tripwire_sidecar(return_corrupt=True)
-    corrupt = sidecar == "__corrupt__"
-    if corrupt:
-        sidecar = {}
-    if not force and not corrupt:
-        try:
-            age = time.time() - float(sidecar.get("_cached_ts", 0))
-            if sidecar and age < _TRIPWIRE_CACHE_TTL_SECONDS:
-                return sidecar
-        except (TypeError, ValueError):
-            pass
-
-    # T4: serialize the recompute+write branch under a portable bounded lease.
-    # Contenders fail open by skipping this mutation, never by running unlocked.
-    with _tripwire_lock() as acquired:
-        if not acquired:
-            return sidecar or {}
-        # Re-read INSIDE the lock: another process may have just recomputed.
-        sidecar = _read_tripwire_sidecar(return_corrupt=True)
-        if sidecar == "__corrupt__":
-            sidecar = {}
-        elif not force:
-            try:
-                age = time.time() - float(sidecar.get("_cached_ts", 0))
-                if sidecar and age < _TRIPWIRE_CACHE_TTL_SECONDS:
-                    return sidecar
-            except (TypeError, ValueError):
-                pass
-
-        prev_demoted = set(
-            tuple(c) for c in sidecar.get("demoted", [])
-            if isinstance(c, (list, tuple)) and len(c) == 2
-        )
-        promoted_at = sidecar.get("promoted_at", {})
-        if not isinstance(promoted_at, dict):
-            promoted_at = {}
-        try:
-            conn = _init_trends_db()
-            try:
-                rates = _compute_cohort_edit_rates(conn, promoted_at=promoted_at)
-            finally:
-                conn.close()
-        except Exception:
-            return sidecar or {}
-
-        demoted = set(prev_demoted)  # hysteresis: never un-demote here
-        newly_demoted = []
-        for cohort, r in rates.items():
-            if cohort in demoted:
-                continue
-            # T9: interpolated cohorts use a tighter sample floor.
-            if (
-                r["skeletons"] >= _tripwire_min_samples(cohort)
-                and r["edit_rate"] > _TRIPWIRE_EDIT_RATE
-            ):
-                demoted.add(cohort)
-                newly_demoted.append((cohort, r))
-
-        # Drop demotions for cohorts no longer in the active set (e.g. removed
-        # from FIRST_READ_ACTIVE_COHORTS) so the sidecar cannot pin a stale one.
-        active_cohorts = _resolve_active_cohorts()
-        demoted = {c for c in demoted if c in active_cohorts}
-
-        _write_tripwire_sidecar(demoted, rates, promoted_at=promoted_at)
-
-    for cohort, r in newly_demoted:
-        try:
-            _log_compression_event(
-                feature=_FEATURE_COHORT_DEMOTED,
-                original_text="",
-                compressed_text="",
-                command_pattern=f"{cohort[0]}|{cohort[1]}",
-                tier="opportunity",
-                verified=False,
-                quality_preserved=False,
-                detail=(
-                    f"auto-demoted: live edit-rate {r['edit_rate']*100:.1f}% "
-                    f"(> {_TRIPWIRE_EDIT_RATE*100:.0f}% gate) over "
-                    f"{r['skeletons']} active reads"
-                ),
-            )
-        except Exception:
-            pass
-        # T8: push one rate-limited warn line to stderr naming the cohort, its
-        # live edit rate, and the exact re-promote command. Operators watching
-        # hook stderr learn about a silent quality demotion immediately instead
-        # of only on the next compression-stats render.
-        key = f"{cohort[0]}|{cohort[1]}"
-        if key not in _tripwire_warned_cohorts:
-            _tripwire_warned_cohorts.add(key)
-            try:
-                print(
-                    f"[Token Optimizer] cohort auto-demoted to measure-only: "
-                    f"{cohort[0]}:{cohort[1]} (live edit-rate "
-                    f"{r['edit_rate']*100:.1f}% > {_TRIPWIRE_EDIT_RATE*100:.0f}% "
-                    f"gate). Re-promote: measure.py cohorts promote "
-                    f"{cohort[0]}:{cohort[1]}",
-                    file=sys.stderr,
-                )
-            except Exception:
-                pass
-
-    # T3: build the verdict from the in-memory demoted set + freshly-computed
-    # rates rather than re-reading the file. A concurrent writer (or our own
-    # not-yet-flushed page cache) could otherwise hand back a stale/ghost verdict.
-    return {
-        "demoted": [list(c) for c in sorted(demoted)],
-        "edit_rates": {f"{c[0]}|{c[1]}": rates.get(c, {}) for c in rates},
-        "promoted_at": dict(promoted_at),
-        "basis": {f"{c[0]}|{c[1]}": _cohort_basis(c) for c in rates},
-        "_cached_ts": time.time(),
-    }
+evaluate_cohort_tripwire = _measure_compat.bind(_measure_providers['trends'].evaluate_cohort_tripwire, __name__, defaults=(False,))
 
 
-def _cohort_tripwire_state():
-    """Read-only tripwire view for compression-stats + the dashboard.
-
-    Returns {"cohorts": [...], "demoted": [[lang,band],...]}. Each cohort row
-    carries its live edit-rate and a `demoted` flag. Does NOT recompute or
-    demote — it reads the sidecar verdict (kept fresh by the Edit-hook
-    evaluation) plus the current edit-rates for display. Fail-open: empty on
-    error.
-    """
-    out = {"cohorts": [], "demoted": []}
-    sidecar = _read_tripwire_sidecar()
-    demoted = set(
-        tuple(c) for c in sidecar.get("demoted", [])
-        if isinstance(c, (list, tuple)) and len(c) == 2
-    )
-    promoted_at = sidecar.get("promoted_at", {})
-    if not isinstance(promoted_at, dict):
-        promoted_at = {}
-    out["demoted"] = [list(c) for c in sorted(demoted)]
-    try:
-        conn = _init_trends_db()
-        try:
-            rates = _compute_cohort_edit_rates(conn, promoted_at=promoted_at)
-        finally:
-            conn.close()
-    except Exception:
-        return out
-    for cohort, r in sorted(rates.items()):
-        out["cohorts"].append({
-            "language": cohort[0],
-            "band": cohort[1],
-            # T9: full_gate | interpolated, so the dashboard/CLI can flag the
-            # thinner-sample (higher-exposure) interpolated cohorts honestly.
-            "basis": r.get("basis", _cohort_basis(cohort)),
-            "skeletons": r["skeletons"],
-            "followups": r["followups"],
-            "edit_rate_pct": round(100 * r["edit_rate"], 1),
-            "demoted": cohort in demoted,
-        })
-    return out
+_cohort_tripwire_state = _measure_compat.bind(_measure_providers['trends']._cohort_tripwire_state, __name__)
 
 
-def cohorts_promote(cohort_args):
-    """CLI: clear a tripwire demotion for one or more `lang:band` cohorts.
-
-    The ONLY runtime path that re-promotes a demoted cohort (hysteresis). Returns
-    the count cleared. Unknown cohorts are ignored with a note.
-    """
-    sidecar = _read_tripwire_sidecar()
-    demoted = set(
-        tuple(c) for c in sidecar.get("demoted", [])
-        if isinstance(c, (list, tuple)) and len(c) == 2
-    )
-    promoted_at = sidecar.get("promoted_at", {})
-    if not isinstance(promoted_at, dict):
-        promoted_at = {}
-    promoted_at = dict(promoted_at)
-    cleared = 0
-    now = time.time()
-    for arg in cohort_args:
-        if ":" not in arg:
-            # T7: a malformed arg (missing the lang:band separator) is almost
-            # always a typo; warn rather than silently skip so the operator
-            # learns nothing was re-promoted.
-            print(f"  [warn] ignoring malformed cohort arg '{arg}' "
-                  "(expected lang:band, e.g. python:64-256KB)", file=sys.stderr)
-            continue
-        lang, band = arg.split(":", 1)
-        cohort = (lang.strip(), band.strip())
-        if cohort in demoted:
-            demoted.discard(cohort)
-            cleared += 1
-            # T5: stamp the promotion time so pre-promote skeleton/follow-up
-            # history is fenced out of the live edit-rate and the cohort cannot
-            # immediately re-demote on the very edits that demoted it.
-            promoted_at[f"{cohort[0]}|{cohort[1]}"] = now
-    if cleared:
-        rates = {}
-        try:
-            conn = _init_trends_db()
-            try:
-                rates = _compute_cohort_edit_rates(conn, promoted_at=promoted_at)
-            finally:
-                conn.close()
-        except Exception:
-            pass
-        _write_tripwire_sidecar(demoted, rates, promoted_at=promoted_at)
-    return cleared
+cohorts_promote = _measure_compat.bind(_measure_providers['trends'].cohorts_promote, __name__)
 
 
 # ---------------------------------------------------------------------------
@@ -23638,268 +19930,19 @@ def _subagent_cache_payoff_lines(p, billing_mode):
     return first + "\n" + second
 
 
-def _dominant_turn_model(turns):
-    """Most frequent non-empty model id across a session's turns."""
-    counts = {}
-    for t in turns:
-        m = t.get("model")
-        if m and not str(m).startswith("<"):
-            counts[m] = counts.get(m, 0) + 1
-    return max(counts, key=counts.get) if counts else None
+_dominant_turn_model = _measure_compat.bind(_measure_providers['pricing']._dominant_turn_model, __name__)
 
 
-def _detect_explicit_ttl(turns, tier_data, profile, dominant_model=None, detail_out=None):
-    """explicit_ttl detector: a gap > the profile's EFFECTIVE TTL followed by a
-    re-WRITE of the prior cached prefix is cache-expiry waste.
-
-    The detection boundary is per-profile (`effective_ttl_seconds`):
-      - anthropic_api: 300s (the live 5-min default; the user CAN raise it).
-      - claude_code: 3600s. Claude Code REQUESTS a 1-hour cache (v2.1.129 fixed
-        the silent downgrade to 5 min), and empirically the prefix survives
-        sub-hour pauses, so only pauses LONGER than the hour count as waste.
-
-    The "recoverable" value depends on the profile's `recoverable_kind`:
-      - recoverable_1h (anthropic_api): the honest 1h-cache_control counterfactual
-        — banks the avoidable repeat-write cost minus the 2x-vs-1.25x premium on
-        the first (unavoidable) write, floored at 0.
-      - avoidable_behavioral (claude_code): there is NO setting to extend the
-        cache; the only lever is behavioral (resume within the hour / batch
-        related work). The avoidable value is the full waste delta a within-hour
-        resume would have spared (read at 0.1x instead of re-writing). No
-        first-write premium is netted (Claude Code already writes at 1h rates).
-
-    Returns (wasted_tokens, wasted_cost_usd, recoverable_usd, had_waste).
-    """
-    boundary = profile.get("effective_ttl_seconds")
-    # Default to the CONSERVATIVE kind: an unknown recoverable_kind must never
-    # inflate the recoverable claim (recoverable_1h is the most aggressive
-    # accounting). avoidable_behavioral books no 1h-cache_control counterfactual.
-    recoverable_kind = profile.get("recoverable_kind", "avoidable_behavioral")
-    # Only the recoverable_1h branch needs the repeat-write annuity + first-write
-    # accumulators; for any other kind they are computed and discarded, so gate
-    # their accumulation on that kind.
-    track_repeat_write = recoverable_kind == "recoverable_1h"
-    session_waste_tokens = 0
-    session_waste_cost = 0.0
-    session_repeat_write_cost = 0.0
-    first_write_tokens = 0
-    had = False
-
-    # Hoist the model->rate lookup out of the per-turn loop: the session is
-    # resolved to a single cache profile via its dominant model, so its rates are
-    # constant for the whole session. W5: the caller already resolved the
-    # dominant model (the same value used to pick this profile); reuse it instead
-    # of re-scanning every turn. Fall back to a local scan only if not supplied.
-    model = dominant_model if dominant_model is not None else _dominant_turn_model(turns)
-    rates = _claude_rates_for_model(model, tier_data)
-    if rates is None:
-        return 0, 0.0, 0.0, False
-    write_5m = rates.get("cache_write", rates.get("input", 3.0))
-    write_1h = rates.get("cache_write_1h", write_5m)
-    read_rate = rates.get("cache_read", rates.get("input", 3.0) * 0.1)
-    # No per-turn TTL split in the log: price the re-write at the profile's actual
-    # write rate. Claude Code holds a 1h cache (avoidable_behavioral -> write_1h);
-    # raw API/SDK runs at the 5m default (recoverable_1h -> write_5m).
-    default_write = write_1h if recoverable_kind == "avoidable_behavioral" else write_5m
-
-    prev = None
-    for turn in turns:
-        cc = int(turn.get("cache_creation", 0) or 0)
-        cc_1h = int(turn.get("cache_creation_1h", 0) or 0)
-        cc_5m = int(turn.get("cache_creation_5m", 0) or 0)
-        if track_repeat_write and cc > 0 and first_write_tokens == 0:
-            first_write_tokens = cc
-        if prev is not None:
-            gap = turn.get("gap_since_prev_seconds")
-            # Threshold basis is executor occupancy (#287); the dollars below
-            # stay on the billed aggregate `cc`.
-            prev_cached = _turn_prefix_cached(prev)
-            if (
-                gap is not None
-                and boundary is not None
-                and gap > boundary
-                and prev_cached > 0
-                and _turn_resume_write(turn) >= _CACHE_REWRITE_PREFIX_FRACTION * prev_cached
-            ):
-                if cc_1h or cc_5m:
-                    split_1h = min(cc_1h, cc)
-                    split_5m = max(0, cc - split_1h)
-                    paid = (split_1h * write_1h + split_5m * write_5m) / 1e6
-                else:
-                    paid = cc * default_write / 1e6
-                avoided_read = cc * read_rate / 1e6
-                session_waste_tokens += cc
-                session_waste_cost += max(0.0, paid - avoided_read)
-                if track_repeat_write:
-                    session_repeat_write_cost += cc * write_5m / 1e6
-                had = True
-                if detail_out is not None and gap > detail_out.get("max_gap", 0):
-                    detail_out["max_gap"] = gap  # W8: widest waste-triggering gap
-        prev = turn
-
-    recoverable = 0.0
-    if had:
-        if recoverable_kind == "recoverable_1h":
-            # 1h-cache_control counterfactual (anthropic_api only): repeat writes
-            # avoided, less the 2x-vs-1.25x premium on the first write.
-            first_premium = 0.0
-            if first_write_tokens > 0:
-                first_premium = first_write_tokens * (write_1h - write_5m) / 1e6
-            recoverable = max(0.0, session_repeat_write_cost - first_premium)
-        else:
-            # avoidable_behavioral (claude_code): no TTL setting to buy back the
-            # waste; a within-the-hour resume would have spared the whole delta.
-            recoverable = session_waste_cost
-    return session_waste_tokens, session_waste_cost, recoverable, had
+_detect_explicit_ttl = _measure_compat.bind(_measure_providers['pricing']._detect_explicit_ttl, __name__, defaults=(None, None,))
 
 
-def _detect_automatic_collapse(turns, profile, dominant_model=None, detail_out=None):
-    """automatic_discount / explicit_storage detector (OpenAI, Gemini, code review).
-
-    These providers never emit a cache-CREATION event; the cache is automatic and
-    cached reads are discounted. Expiry shows up as a COLLAPSE in the cached/prompt
-    ratio: turn N has a healthy cached ratio, the gap to turn N+1 exceeds the
-    profile TTL, and turn N+1's cached ratio collapses while its prompt size stays
-    comparable. The collapsed (lost) cached tokens are re-billed at the FULL input
-    rate instead of the discounted cached rate.
-
-    waste_cost = lost_cached_tokens * (input_rate - cached_rate).
-    For these providers the recoverable value EQUALS the waste cost (resuming
-    within the cache window would have avoided the full premium; there is no
-    extra-write premium to net out as in the explicit_ttl 1h counterfactual).
-
-    Returns (wasted_tokens, wasted_cost_usd, recoverable_usd, had_waste).
-    """
-    ttl = profile.get("effective_ttl_seconds") or 300
-    session_waste_tokens = 0
-    session_waste_cost = 0.0
-    had = False
-
-    prev = None
-    for turn in turns:
-        cr = int(turn.get("cache_read", 0) or 0)
-        inp = int(turn.get("input_tokens", 0) or 0)  # total billed input (incl. cached)
-        prompt = max(inp, cr)  # turn's prompt size (input_tokens already includes cached)
-        ratio = (cr / prompt) if prompt > 0 else 0.0
-        if prev is not None:
-            gap = turn.get("gap_since_prev_seconds")
-            # Codex turns carry timestamps but not a precomputed gap; derive it.
-            if gap is None:
-                gap = _gap_seconds(prev.get("timestamp"), turn.get("timestamp"))
-            prev_cr = int(prev.get("cache_read", 0) or 0)
-            prev_inp = int(prev.get("input_tokens", 0) or 0)
-            prev_prompt = max(prev_inp, prev_cr)
-            prev_ratio = (prev_cr / prev_prompt) if prev_prompt > 0 else 0.0
-            if (
-                gap is not None
-                and gap > ttl
-                and prev_ratio >= _CACHE_COLLAPSE_HEALTHY_RATIO
-                and ratio < _CACHE_COLLAPSE_THRESHOLD_RATIO
-                and prompt >= _CACHE_COLLAPSE_PROMPT_COMPARABLE_FRACTION * prev_prompt
-            ):
-                # Lost cached tokens = what WOULD have been cached at the prior
-                # healthy ratio but now reads as fresh input.
-                # W1: the recoverable cached prefix can never exceed what the
-                # PREVIOUS turn actually had cached (prev_cr). prev_ratio*prompt
-                # extrapolates the prior hit-rate onto this (possibly larger)
-                # turn, which can overstate the lost volume when the prompt grew;
-                # cap at the real prior cached volume so waste stays grounded.
-                lost = min(int(prev_ratio * prompt) - cr, prev_cr)
-                if lost > 0:
-                    # W2: turns may omit `model` (e.g. a tool-result-only turn);
-                    # fall back to the session's dominant model for rate lookup
-                    # so the rate is found instead of the pair being dropped.
-                    rr = _input_and_cached_read_rates(turn.get("model") or dominant_model)
-                    if rr is not None:
-                        input_rate, cached_rate = rr
-                        premium = lost * (input_rate - cached_rate) / 1e6
-                        session_waste_tokens += lost
-                        session_waste_cost += max(0.0, premium)
-                        had = True
-                        if detail_out is not None and gap > detail_out.get("max_gap", 0):
-                            detail_out["max_gap"] = gap  # W8: widest collapse gap
-        prev = turn
-
-    # For automatic-discount providers, recoverable == waste (no extra-write
-    # premium to net out; staying within the window avoids the whole delta).
-    return session_waste_tokens, session_waste_cost, session_waste_cost, had
+_detect_automatic_collapse = _measure_compat.bind(_measure_providers['pricing']._detect_automatic_collapse, __name__, defaults=(None, None,))
 
 
-def _gap_seconds(ts_a, ts_b):
-    """Seconds between two ISO/epoch timestamps, or None if unparseable."""
-    def _parse(ts):
-        if ts is None:
-            return None
-        if isinstance(ts, (int, float)):
-            return float(ts)
-        s = str(ts).strip()
-        if not s:
-            return None
-        try:
-            if s.endswith("Z"):
-                s = s[:-1] + "+00:00"
-            dt = datetime.fromisoformat(s)
-            # W3: a tz-NAIVE ISO timestamp would otherwise be interpreted in the
-            # host's LOCAL zone by .timestamp(), so two naive stamps compared
-            # across a DST shift (or on a non-UTC host) would yield a wrong gap.
-            # Force UTC for naive values; aware values keep their own offset.
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
-        except ValueError:
-            try:
-                return float(s)
-            except ValueError:
-                return None
-    a = _parse(ts_a)
-    b = _parse(ts_b)
-    if a is None or b is None:
-        return None
-    return abs(b - a)
+_gap_seconds = _measure_compat.bind(_measure_providers['pricing']._gap_seconds, __name__)
 
 
-def _cache_remedy_text(remedy_key):
-    """Return the verified, per-profile cache remedy text.
-
-    Verified 2026-06-11 against current public docs (Anthropic prompt-caching,
-    Claude Code CHANGELOG, OpenAI prompt-caching, Gemini context-caching,
-    code review context-caching). Each remedy reflects exactly what that provider
-    actually offers — no overclaiming.
-    """
-    remedies = {
-        "anthropic_api": (
-            'Anthropic API/SDK/agent harness: set cache_control '
-            '{"type":"ephemeral","ttl":"1h"} on stable prefixes. 1h write costs 2x '
-            "input once, then reads at 0.1x — cheaper than re-writing every 5min."
-        ),
-        "claude_code": (
-            "Claude Code already holds a 1-hour cache. Waste comes from pauses "
-            "longer than an hour: resuming within the hour keeps the prefix warm. "
-            "No setting can extend this further today."
-        ),
-        "openai": (
-            "OpenAI/Codex prompt caching is automatic (~5-10min inactivity, max ~1h) "
-            "with NO TTL knob below the policy level. Behavioral remedy: keep the "
-            "prompt PREFIX stable (exact-match, >=1024 tokens) and resume within the "
-            "window. For long-lived prefixes set prompt_cache_retention=\"24h\"."
-        ),
-        "gemini": (
-            "Gemini 2.5+ has automatic implicit caching (no knob). For long stable "
-            "contexts, use EXPLICIT context caching: create a cached_content resource "
-            "with a user-set ttl (default 1h) — note per-hour storage is billed for "
-            "the cached tokens, so size the TTL to your reuse pattern."
-        ),
-        "deepseek": (
-            "code review Context Caching on Disk is automatic (no knob); cache hits cost "
-            "1/10 of input. Keep prompt prefixes stable and reuse them promptly while "
-            "the on-disk cache is warm (it clears within hours-to-days of disuse)."
-        ),
-        "none": (
-            "This model has no prompt cache; prefix churn does not affect its cost. "
-            "There is no cache-TTL waste to remedy here."
-        ),
-    }
-    return remedies.get(remedy_key, remedies["none"])
+_cache_remedy_text = _measure_compat.bind(_measure_providers['pricing']._cache_remedy_text, __name__)
 
 
 # Platforms whose per-turn cache+timestamp data the Python cache-report engine
@@ -23946,75 +19989,10 @@ _CACHE_COVERAGE_GAP_REASONS = {
 }
 
 
-def _cache_coverage_gaps(runtime):
-    """Return the explicit not-measurable coverage-gap list (parity rule).
-
-    Each entry: {platform, measurable, reason}. Platforms whose per-turn cache +
-    timestamp data the Python engine cannot read are honestly listed here rather
-    than silently dropped. A platform that is wired for measurement
-    (_CACHE_WIRED_RUNTIMES) or is the active runtime is omitted — so a wired
-    platform can never be both measured and listed as a gap.
-    """
-    return [
-        {"platform": platform, "measurable": False, "reason": reason}
-        for platform, reason in _CACHE_COVERAGE_GAP_REASONS.items()
-        if platform != runtime and platform not in _CACHE_WIRED_RUNTIMES
-    ]
+_cache_coverage_gaps = _measure_compat.bind(_measure_providers['pricing']._cache_coverage_gaps, __name__)
 
 
-def _session_mix_class_terms(rate_class, *model_usage_blobs):
-    """(terms, unpriced_share) for ONE session's own token-weighted model usage at
-    one token class, or None when no usable usage is present.
-
-    *terms* is [(share, usd_per_mtok)] for every model id with an exact rate card
-    (any provider); *unpriced_share* is the share of the session's recorded tokens
-    held by ids with no exact card. *rate_class* is a key of _routing_class_rates
-    ("fresh_input", "output", "cache_create_1h", ...). Each id is priced at its
-    own generation card (Opus 5.5 is not the Opus family rate); an id without an
-    exact card contributes no term and is never borrowed from a family.
-
-    Shares are taken over the session's TOTAL recorded tokens, so a priced sliver
-    is never inflated to stand for the whole mix. The caller prices the unpriced
-    share at zero and discloses it.
-
-    Blobs are tried in order (model_usage_json, then all_model_usage_json); the
-    first that parses to a non-empty dict wins. Never raises.
-    """
-    raw = None
-    for blob in model_usage_blobs:
-        if not blob:
-            continue
-        try:
-            data = json.loads(blob)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            continue
-        if isinstance(data, dict) and data:
-            raw = data
-            break
-    if not raw:
-        return None
-    total = 0.0
-    weights = {}
-    for key, val in raw.items():
-        try:
-            val = float(val)
-        except (TypeError, ValueError):
-            continue
-        if val <= 0 or not isinstance(key, str) or key.startswith("<"):
-            continue
-        weights[key] = weights.get(key, 0.0) + val
-        total += val
-    if total <= 0:
-        return None
-    terms = []
-    priced = 0.0
-    for key, val in weights.items():
-        rates = _routing_class_rates(key)
-        rate = (rates or {}).get(rate_class)
-        if rate:
-            terms.append((val / total, float(rate)))
-            priced += val
-    return terms, max(0.0, 1.0 - priced / total)
+_session_mix_class_terms = _measure_compat.bind(_measure_providers['pricing']._session_mix_class_terms, __name__)
 
 
 # Event classes whose stored cost is NOT an input-class rate and must never be
@@ -24049,127 +20027,10 @@ _REPRICE_SQL = _sql_variants(
 )
 
 
-def _stored_model_is_unpriced(model):
-    """True when a savings row records a model id that has no exact rate card.
-    Rate-card keys and bare family labels ("opus", "sonnet_4_5") are known; a row
-    with no model, or a known one, is not unpriced."""
-    if not isinstance(model, str) or not model.strip():
-        return False
-    if _routing_card_exact(model):
-        return False
-    try:
-        cards = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])["claude_models"]
-    except Exception:
-        cards = {}
-    return model not in cards
+_stored_model_is_unpriced = _measure_compat.bind(_measure_providers['pricing']._stored_model_is_unpriced, __name__)
 
 
-def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False, unpriced_out=None):
-    """Per-event_type USD correction from repricing savings_events at each event's
-    OWN session model mix. Returns (deltas_by_event_type, repriced_tokens,
-    unmeasured_tokens). With *session_uuid* only that session's rows count; with
-    *by_day* the deltas are keyed (local YYYY-MM-DD, event_type). When
-    *unpriced_out* is a dict, ``unpriced_out["tokens"]`` accumulates the saved
-    tokens that belong to models with no exact rate card.
-
-    THE DEFECT THIS REPAIRS. _log_savings_event stamps every row with
-    _resolve_session_model(), which falls back to "sonnet" whenever the session
-    JSONL cannot be read (sub-agent / sidechain sessions, sessions still open when
-    the event is written); older rows carry model IS NULL and are priced at the
-    flat _estimate_compression_cost_per_mtok fallback. Measured on the real ledger
-    (30d, 2026-08-29): 18.9M saved tokens carry model IS NULL and 13.9M carry
-    model='sonnet', while the session_log rows they join to record 17.8M and 4.6M
-    of those same tokens inside sessions whose OWN token-weighted usage is Opus.
-    The rate card is correct; the per-row model stamp is not.
-
-    WHAT THIS DELIBERATELY IS NOT. It is not a reprice to the WINDOW's blended
-    model mix. That would lift a saving made inside a session Token Optimizer had
-    routed to a cheaper model up to an Opus-heavy window average, claiming the
-    routing win a second time inside the context pool -- and
-    _compute_model_routing_savings already owns that delta for the tokens that
-    WERE sent. Pricing each event against its own session keeps the two pools
-    disjoint by construction: a genuinely-Sonnet session stays at the Sonnet rate.
-
-    HONESTY BOUNDARY. session_log.model_usage_json is a measured column (real
-    token counts), but attributing one never-sent saving to a session's blended
-    rate is an ALLOCATION, not a measurement -- we cannot know which turn's model
-    would have carried tokens that were never sent. So the corrected figure is
-    labelled "estimated" wherever it surfaces (see _window_overage_usd), and rows
-    that cannot be joined to a session are NOT MEASURED: they keep their
-    event-time price and are counted separately rather than guessed at.
-
-    UNPRICED MODELS. The share of a session's tokens that ran on a model with no
-    exact rate card (a local or third-party model, a generation without a card) is
-    priced at zero, not at the Sonnet stand-in the event writer stamped. Those
-    tokens are reported through *unpriced_out*. Stored rows are never changed.
-
-    Degrades to ({}, 0, 0) on any schema or query problem. An older DB without
-    session_uuid / model_usage_json simply does not get the repair; a schema error
-    must never be allowed to reach the caller's blanket handler and zero out the
-    whole savings summary (that failure mode vanished an entire dashboard card on
-    2026-08-28).
-    """
-    deltas, repriced_tokens, unmeasured_tokens = {}, 0, 0
-    try:
-        se_cols = {r[1] for r in conn.execute("PRAGMA table_info(savings_events)").fetchall()}
-        sl_cols = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
-        if "session_uuid" not in se_cols or "session_uuid" not in sl_cols:
-            return {}, 0, 0
-        # by_day / session_uuid serve the status-bar buckets. The delta is linear
-        # in (tokens, cost) per session, so splitting by local day sums back to
-        # exactly the window delta.
-        params = [cutoff]
-        if session_uuid is not None:
-            # Same rows as the savings buckets (non-UUID ids live in session_id).
-            # Those rows have no session_uuid to join, so they stay unmeasured here.
-            params.extend([session_uuid, session_uuid])
-        reprice_sql = _REPRICE_SQL[(
-            _counted_table(conn, "savings_events"),
-            "model_usage_json" in sl_cols,
-            "all_model_usage_json" in sl_cols,
-            bool(by_day),
-            session_uuid is not None,
-            "model" in se_cols,
-        )]
-        rows = conn.execute(reprice_sql, tuple(params)).fetchall()
-    except (sqlite3.Error, TypeError, ValueError):
-        return {}, 0, 0
-    for day, event_type, tok, cost, mu_json, amu_json, row_model in rows:
-        if event_type in _REPRICE_SKIP_EVENT_TYPES:
-            continue  # non-input-rate class; keep the event-time price verbatim
-        try:
-            tok = int(tok or 0)
-        except (TypeError, ValueError):
-            continue
-        if tok <= 0:
-            # Zero-token markers (nudges) and debit rows carry no rate to correct.
-            continue
-        mix = _session_mix_class_terms(
-            _EVENT_RATE_CLASS.get(event_type, "fresh_input"), mu_json, amu_json)
-        if mix is None and _stored_model_is_unpriced(row_model):
-            # No session match, but the row itself names a model with no rate
-            # card: its dollars are priced at zero and the tokens disclosed.
-            key = (day, event_type) if by_day else event_type
-            if cost:
-                deltas[key] = deltas.get(key, 0.0) - float(cost)
-            if unpriced_out is not None:
-                unpriced_out["tokens"] = unpriced_out.get("tokens", 0) + tok
-            continue
-        if mix is None:
-            unmeasured_tokens += tok
-            continue
-        terms, unpriced_share = mix
-        # The priced share is charged at each model's own card; the unpriced share
-        # is charged nothing. The delta moves the stored cost to that total.
-        new_cost = sum(sh * rate for sh, rate in terms) * tok / 1_000_000.0
-        delta = new_cost - float(cost or 0.0)
-        if unpriced_out is not None and unpriced_share > 0:
-            unpriced_out["tokens"] = unpriced_out.get("tokens", 0) + tok * unpriced_share
-        if delta:
-            key = (day, event_type) if by_day else event_type
-            deltas[key] = deltas.get(key, 0.0) + delta
-        repriced_tokens += tok
-    return deltas, repriced_tokens, unmeasured_tokens
+_session_model_reprice = _measure_compat.bind(_measure_providers['pricing']._session_model_reprice, __name__, defaults=(None, False, None,))
 
 
 # ---------------------------------------------------------------------------
@@ -54814,143 +50675,25 @@ def _estimate_retrieval_serve_savings(days=30):
         return zero
 
 
-def _model_mix_shares(days=14, since=None):
-    """Return {model: share_fraction} of total tokens over the window, + total.
-
-    Reads model_daily (per-day per-model token totals). Shares sum to ~1.0.
-    Returns {"shares": {...}, "total_tokens": int, "days": days} or empty shares
-    when there is no data. Never raises.
-
-    When *since* is a non-empty ISO-8601 timestamp, its DATE part is used as the
-    cutoff (``date >= since_date``) instead of the rolling ``now - days``. This
-    aligns the routing mix to an external boundary (the subscription limit
-    reset) so the routing dollar figure scopes to the same window as the context
-    figure. model_daily is day-granular, so alignment is to the reset DAY (the
-    finest this table supports); sub-day precision is not available here.
-    """
-    out = {"shares": {}, "total_tokens": 0, "days": days}
-    try:
-        if not TRENDS_DB.exists():
-            return out
-        if since:
-            cutoff = str(since)[:10]  # date part of the ISO timestamp
-        else:
-            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        conn = _init_trends_db()
-        try:
-            out["activity_coverage"] = activity_coverage(conn)
-            rows = conn.execute(
-                "SELECT model, COALESCE(SUM(total_tokens),0) FROM model_daily "
-                "WHERE date >= ? GROUP BY model",
-                (cutoff,),
-            ).fetchall()
-        finally:
-            conn.close()
-        total = sum(int(r[1] or 0) for r in rows)
-        if total <= 0:
-            return out
-        out["shares"] = {r[0]: (int(r[1] or 0) / total) for r in rows if r[0]}
-        out["total_tokens"] = total
-    except (sqlite3.Error, OSError):
-        pass
-    return out
+_model_mix_shares = _measure_compat.bind(_measure_providers['pricing']._model_mix_shares, __name__, defaults=(14, None,))
 
 
-def _default_model_for_runtime():
-    """Representative model id to price a session against when the era's model mix
-    has no priced entries at all. Runtime-aware so a Codex user is never priced at
-    Anthropic rates (and vice versa)."""
-    return "gpt-5-codex" if detect_runtime() == "codex" else "sonnet"
+_default_model_for_runtime = _measure_compat.bind(_measure_providers['pricing']._default_model_for_runtime, __name__)
 
 
-def _friendly_model(model):
-    """Human label for a model id: 'opus' -> 'Opus', 'gpt-5.2-codex' -> 'GPT-5.2-Codex'."""
-    m = _strip_provider_prefixes(str(model or "")) or str(model or "")
-    if m in ("opus", "sonnet", "haiku"):
-        return m.capitalize()
-    if m.startswith("gpt-") or m.startswith("o3") or m.startswith("o4"):
-        return m.upper().replace("CODEX", "Codex").replace("MINI", "mini").replace("NANO", "nano").replace("PRO", "Pro")
-    return m
+_friendly_model = _measure_compat.bind(_measure_providers['pricing']._friendly_model, __name__)
 
 
-def _mix_label(shares):
-    """Short label for a model mix: the dominant model + its share, e.g. '95% Opus'
-    or '62% GPT-5.2-Codex'. Provider-agnostic display string. 'mixed' when empty."""
-    priced = {m: s for m, s in (shares or {}).items() if s and s > 0}
-    if not priced:
-        return "mixed"
-    top, share = max(priced.items(), key=lambda kv: kv[1])
-    return f"{round(share * 100)}% {_friendly_model(top)}"
+_mix_label = _measure_compat.bind(_measure_providers['pricing']._mix_label, __name__)
 
 
-def _model_rate_per_mtok(model):
-    """Conservative $/MTok proxy for a model: its input rate.
-
-    model_daily.total_tokens mixes input/cache/output, so this UNDERSTATES true
-    cost (output is up to 5x input). Using the input rate keeps routing savings
-    conservative and defensible. Returns 0.0 for unpriced models.
-    """
-    try:
-        return _get_model_cost(model, 1_000_000, 0)  # input-only -> $/MTok input
-    except Exception:
-        return 0.0
+_model_rate_per_mtok = _measure_compat.bind(_measure_providers['pricing']._model_rate_per_mtok, __name__)
 
 
-def _model_output_rate_per_mtok(model):
-    """$/MTok OUTPUT rate for a model (e.g. Opus $25 vs Sonnet $5). 0.0 if unpriced."""
-    try:
-        return _get_model_cost(model, 0, 1_000_000)  # output-only -> $/MTok output
-    except Exception:
-        return 0.0
+_model_output_rate_per_mtok = _measure_compat.bind(_measure_providers['pricing']._model_output_rate_per_mtok, __name__)
 
 
-def _session_output_fraction(days=30):
-    """Measured OUTPUT share of the FRESH-rate token mix, from the user's session_log.
-
-    Returns SUM(output) / SUM(fresh_input + output) over the window, clamped to
-    [0, 1]. The denominator deliberately EXCLUDES cache-read and cache-creation
-    tokens: those are priced separately at their own (cheap) cache rates, so the
-    blend here only governs the split between FRESH input and output — the two
-    classes that share the full input/output rate axis. Using total input_tokens
-    (which is dominated by cache-read) as the denominator collapsed this fraction
-    to ~0.5% and made the blended rate effectively the input rate, understating
-    routing savings ~3x. Fresh input and output are taken from _session_token_vector
-    so the negative-fresh clamp is applied consistently. Grounded in the user's OWN
-    data, never an invented multiplier. Returns 0.0 (input-only, conservative) when
-    there is no usable history.
-    """
-    try:
-        if not TRENDS_DB.exists():
-            return 0.0
-        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        conn = _init_trends_db()
-        ensure_activity_view(conn)
-        try:
-            # Quality filter removed (audit 2026-08-29): this is a
-            # volume-weighted metric (SUM(output)/SUM(fresh+output)), so
-            # gating by count is irrelevant. Short sessions with real output
-            # tokens must be included.
-            rows = conn.execute(
-                "SELECT input_tokens, output_tokens, cache_create_5m_tokens, "
-                "cache_create_1h_tokens, cache_hit_rate FROM session_activity "
-                "WHERE input_tokens IS NOT NULL AND date >= ? "
-                "AND COALESCE(is_sidechain, 0) = 0",
-                (cutoff,),
-            ).fetchall()
-        finally:
-            conn.close()
-        fresh_total = 0.0
-        out_total = 0.0
-        for r in rows:
-            fi, _cw, _cr, out = _session_token_vector(r)
-            fresh_total += fi
-            out_total += out
-        denom = fresh_total + out_total
-        if denom <= 0:
-            return 0.0
-        return max(0.0, min(1.0, out_total / denom))
-    except (sqlite3.Error, OSError):
-        return 0.0
+_session_output_fraction = _measure_compat.bind(_measure_providers['pricing']._session_output_fraction, __name__, defaults=(30,))
 
 
 # Token classes routing is priced by. cache_read is billed at the cache-read rate,
@@ -54965,312 +50708,43 @@ _ROUTING_BILLABLE_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h"
 
 
 
-def _foreign_savings_card_exact(model):
-    """Accept rate-card IDs and dated snapshots, without arbitrary suffixes."""
-    value = re.sub(r"[\s_]+", "-", _strip_provider_prefixes(model))
-    base = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", value)
-    if base == "gpt-5.6":
-        return True
-    return base in OPENAI_MODEL_PRICING or base in GEMINI_MODEL_PRICING
+_foreign_savings_card_exact = _measure_compat.bind(_measure_providers['pricing']._foreign_savings_card_exact, __name__)
 
 
-def _routing_card_exact(model):
-    """True when `model` resolves to an exact rate card.
-
-    A Claude id names a generation (claude-opus-5-5, claude-sonnet-4-6) and is
-    exact only when that generation's own card exists. An id whose generation has
-    no card (claude-opus-99, claude-opus-5-99) would otherwise fall back to a
-    broader card, such as the Opus 5 card or the bare family rate; that is a
-    stand-in, not a known price. Sonnet 3, 3.5 and 3.7 ids are the verified
-    aliases of the legacy Sonnet card. A bare family label ("opus",
-    "sonnet_legacy") with no generation is priced at its family card.
-    """
-    if not isinstance(model, str) or not model:
-        return False
-    if _normalize_openai_model_name(model) or _normalize_gemini_model_name(model):
-        return _foreign_savings_card_exact(model)
-    try:
-        cards = dict(PRICING_TIERS["anthropic"]["claude_models"])
-        cards.update(PRICING_TIERS.get(_load_pricing_tier(), {}).get("claude_models", {}))
-    except Exception:
-        return False
-    low = model.lower()
-    legacy = _CLAUDE_LEGACY_ID_RE.search(low)
-    if legacy:
-        major, minor, family = legacy.groups()
-        if major == "3" and family == "sonnet" and minor in (None, "5", "7"):
-            return "sonnet_legacy" in cards
-        family_major = f"{family}_{major}"
-    else:
-        generation = _CLAUDE_GENERATION_RE.search(low)
-        if not generation:
-            key = _claude_price_key(model, cards)
-            return bool(key and key in cards)
-        family, major, minor = generation.groups()
-        family = "fable" if family == "mythos" else family
-        family_major, minor = f"{family}_{major}", minor
-        return (family_major + (f"_{minor}" if minor else "")) in cards
-    key = family_major + (f"_{minor}" if minor else "")
-    return key in cards
+_routing_card_exact = _measure_compat.bind(_measure_providers['pricing']._routing_card_exact, __name__)
 
 
-def _routing_model_status(model):
-    """"priced" (exact rate card), "free" (a provider's explicitly free tier,
-    id suffix ":free") or "unpriced" (no rate card, price unknown)."""
-    if _routing_card_exact(model):
-        return "priced"
-    if isinstance(model, str) and model.lower().endswith(":free"):
-        return "free"
-    return "unpriced"
+_routing_model_status = _measure_compat.bind(_measure_providers['pricing']._routing_model_status, __name__)
 
 
-def _routing_class_rates(model):
-    """$/MTok per token class for one model id, from its own generation card.
-
-    Probes _get_model_cost so every provider and generation card
-    (Opus 5.5 $4/$20, Opus 4.1 $15/$75, Sonnet 5.5 cache reads $0.10, ...)
-    prices exactly as the rest of the product does. Returns None unless the id has
-    an exact rate card (see _routing_model_status): an unknown model is not free
-    and a missing generation is not its family's price, so callers leave such a
-    model out of a comparison instead of pricing it at zero or at a stand-in rate.
-    """
-    # Family pseudo-ids from the model-daily mix; a bare "sonnet_legacy" would
-    # otherwise resolve to the current Sonnet card.
-    probe = "claude-sonnet-4-6" if model == "sonnet_legacy" else model
-    if not _routing_card_exact(probe):
-        return None
-    try:
-        m = 1
-        rates = {
-            "fresh_input": _get_model_cost(probe, m, 0),
-            "output": _get_model_cost(probe, 0, m),
-            "cache_read": _get_model_cost(probe, 0, 0, m),
-            "cache_create_5m": _get_model_cost(probe, 0, 0, 0, m, cache_create_1h=0, cache_create_5m=m),
-            "cache_create_1h": _get_model_cost(probe, 0, 0, 0, m, cache_create_1h=m, cache_create_5m=0),
-        }
-        rates = {key: value * 1_000_000 for key, value in rates.items()}
-    except Exception:
-        return None
-    if not any(v > 0 for v in rates.values()):
-        return None
-    # Rows without a class split are priced at the input rate (conservative).
-    rates["unsplit"] = rates["fresh_input"]
-    return rates
+_routing_class_rates = _measure_compat.bind(_measure_providers['pricing']._routing_class_rates, __name__)
 
 
 _GENERATION_KEY_RE = re.compile(r"^(opus|sonnet|haiku|fable)_(\d+)(?:_(\d+))?$")
 
 
-def _newest_generation_model(family):
-    """Model id of the newest generation card of a Claude family in the active
-    rate table, or None. Legacy Sonnet cards are not generation cards."""
-    try:
-        tier = _load_pricing_tier()
-        cards = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])["claude_models"]
-        best = None
-        for key in cards:
-            m = _GENERATION_KEY_RE.match(key)
-            if m and m.group(1) == family:
-                gen = (int(m.group(2)), int(m.group(3) or 0))
-                if best is None or gen > best[0]:
-                    best = (gen, key)
-        if best:
-            major, minor = best[0]
-            return f"claude-{family}-{major}-{minor}" if best[1].count("_") == 2 else f"claude-{family}-{major}"
-    except Exception:
-        pass
-    return None
+_newest_generation_model = _measure_compat.bind(_measure_providers['pricing']._newest_generation_model, __name__)
 
 
-def _routing_target_model():
-    """Model id of the lighter arm routing is priced against: the newest Sonnet
-    generation card in the active rate table."""
-    return _newest_generation_model("sonnet") or "sonnet"
+_routing_target_model = _measure_compat.bind(_measure_providers['pricing']._routing_target_model, __name__)
 
 
-def _routing_reference_model(family):
-    """The model id whose card values a family in the standardized routing
-    comparison, in both arms: the newest generation card of its tier (legacy
-    Sonnet is valued as Sonnet). Other labels (provider models) stand for
-    themselves."""
-    if family == "sonnet_legacy":
-        family = "sonnet"
-    return _newest_generation_model(family) or family
+_routing_reference_model = _measure_compat.bind(_measure_providers['pricing']._routing_reference_model, __name__)
 
 
-def _bucket_int(value):
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
+_bucket_int = _measure_compat.bind(_measure_providers['pricing']._bucket_int, __name__)
 
 
-def _add_routing_buckets(dst, parts):
-    """Add one per-model usage bucket ({fresh_input, cache_read, cache_create,
-    cache_create_1h, cache_create_5m, output}) into class totals. Cache writes
-    without a TTL split are priced at the 5-minute rate, as _get_model_cost does."""
-    cc = _bucket_int(parts.get("cache_create"))
-    h1 = _bucket_int(parts.get("cache_create_1h"))
-    m5 = _bucket_int(parts.get("cache_create_5m"))
-    m5 += max(0, cc - h1 - m5)
-    dst["fresh_input"] = dst.get("fresh_input", 0) + _bucket_int(parts.get("fresh_input"))
-    dst["cache_read"] = dst.get("cache_read", 0) + _bucket_int(parts.get("cache_read"))
-    dst["output"] = dst.get("output", 0) + _bucket_int(parts.get("output"))
-    dst["cache_create_1h"] = dst.get("cache_create_1h", 0) + h1
-    dst["cache_create_5m"] = dst.get("cache_create_5m", 0) + m5
+_add_routing_buckets = _measure_compat.bind(_measure_providers['pricing']._add_routing_buckets, __name__)
 
 
-def _routing_pending_sessions(days=30, since=None):
-    """Window sessions whose usage collect has not finished re-reading.
-
-    A row counts when its transcript is still on disk and either its per-day
-    usage is missing (the daily-usage backfill rebuilds it) or, for a Claude
-    Code transcript under the projects folder that collect walks, it was parsed
-    by an older usage parser (collect re-parses it). A row whose transcript is
-    gone keeps its stored numbers and never counts. Pending is scoped to the
-    requested window: a record whose KNOWN last activity day predates the
-    cutoff holds no in-window work, while a record with no dated evidence at
-    all stays conservatively pending (review A6). Never raises; 0 on error."""
-    try:
-        if not TRENDS_DB.exists():
-            return 0
-        cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        conn = _init_trends_db()
-        try:
-            columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
-            has_version = "usage_parser_version" in columns
-            last_activity = (
-                "COALESCE(NULLIF(last_activity_day, ''), NULLIF(date, ''))"
-                if "last_activity_day" in columns else "NULLIF(date, '')")
-            rows = conn.execute(
-                "SELECT jsonl_path, daily_usage_json, "
-                + ("usage_parser_version" if has_version else "NULL") + "," + last_activity +
-                " FROM session_log WHERE jsonl_path LIKE '%.jsonl'",
-                ()).fetchall()
-        finally:
-            conn.close()
-        projects = os.path.normcase(os.path.abspath(str(CLAUDE_DIR / "projects"))) + os.sep
-        walked = not _use_codex_session_adapter()
-        pending = 0
-        for path, du_raw, version, last_day in rows:
-            daily_missing = du_raw is None
-            stale = (has_version and walked
-                     and (version is None or int(version) < _USAGE_PARSER_VERSION)
-                     and os.path.normcase(os.path.abspath(path)).startswith(projects))
-            if not (daily_missing or stale):
-                continue
-            # Last KNOWN activity day: the repaired bounds first, then the
-            # retained daily-usage keys for rows whose bounds were never
-            # stamped. Unknown coverage stays pending (conservative).
-            last_activity_day = str(last_day or "")[:10] or None
-            if last_activity_day is None and du_raw:
-                usage_days = _activity_days(_safe_json_dict(du_raw))
-                if usage_days:
-                    last_activity_day = usage_days[-1]
-            if last_activity_day is not None and last_activity_day < cutoff:
-                continue
-            if os.path.exists(path):
-                pending += 1
-        return pending
-    except (sqlite3.Error, OSError, TypeError, ValueError):
-        return 0
+_routing_pending_sessions = _measure_compat.bind(_measure_providers['pricing']._routing_pending_sessions, __name__, defaults=(30, None,))
 
 
-def _routing_usage_by_model(days=30, since=None):
-    """Token usage per model id and token class over the window.
-
-    Returns {model_id: {class: tokens}} (classes in _ROUTING_CLASSES). Source per
-    session row, best first:
-      1. daily_usage_json: per-day, per-model class buckets (parent + subagents),
-         cut to the window by day.
-      2. model_usage_breakdown_json: per-model class buckets for the session; any
-         tokens in all_model_usage_json beyond those buckets (subagent work) go
-         to "unsplit".
-      3. all_model_usage_json / model_usage_json: token totals with no class
-         split, all "unsplit".
-    Never raises; empty when there is no data.
-    """
-    out = {}
-    try:
-        if not TRENDS_DB.exists():
-            return out
-        cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        conn = _init_trends_db()
-        ensure_activity_view(conn)
-        try:
-            columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
-            first = "first_activity_day" if "first_activity_day" in columns else "NULL"
-            last = "last_activity_day" if "last_activity_day" in columns else "NULL"
-            rows = conn.execute(
-                "SELECT date,daily_usage_json,model_usage_breakdown_json,all_model_usage_json,model_usage_json,"
-                + first + "," + last + " FROM session_log").fetchall()
-        finally:
-            conn.close()
-        for row_date, du_raw, mb_raw, amu_raw, mu_raw, first_day, last_day in rows:
-            du = _safe_json_dict(du_raw)
-            if du:
-                undated_day = ""
-                for day, models in du.items():
-                    day = undated_day if day == UNDATED_USAGE_KEY else day
-                    if not isinstance(models, dict) or str(day) < cutoff:
-                        continue
-                    for model, parts in models.items():
-                        if isinstance(parts, dict) and _normalize_model_name(model):
-                            _add_routing_buckets(out.setdefault(model, {}), parts)
-                continue
-            if not first_day or first_day != last_day or first_day < cutoff:
-                continue
-            totals = _safe_json_dict(amu_raw) or _safe_json_dict(mu_raw)
-            mb = _safe_json_dict(mb_raw)
-            for model, parts in mb.items():
-                if isinstance(parts, dict) and _normalize_model_name(model):
-                    dst = out.setdefault(model, {})
-                    before = sum(dst.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES)
-                    _add_routing_buckets(dst, parts)
-                    split = sum(dst.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES) - before
-                    extra = _bucket_int(totals.get(model)) - split
-                    if extra > 0:
-                        dst["unsplit"] = dst.get("unsplit", 0) + extra
-            for model, tokens in totals.items():
-                if model not in mb and _normalize_model_name(model):
-                    dst = out.setdefault(model, {})
-                    dst["unsplit"] = dst.get("unsplit", 0) + _bucket_int(tokens)
-    except (sqlite3.Error, OSError):
-        return {}
-    return out
+_routing_usage_by_model = _measure_compat.bind(_measure_providers['pricing']._routing_usage_by_model, __name__, defaults=(30, None,))
 
 
-def _earliest_model_mix(lookback_days=14):
-    """Measured install-era model mix from the earliest `lookback_days` of model_daily.
-
-    Fallback baseline when no snapshot model_mix was captured (e.g. existing
-    users whose snapshot predates this feature). Measured from the user's own
-    history, so realized routing savings are grounded, not self-reported.
-    Returns {"shares": {...}, "first_date": str} or None.
-    """
-    try:
-        if not TRENDS_DB.exists():
-            return None
-        conn = _init_trends_db()
-        try:
-            first = conn.execute("SELECT MIN(date) FROM model_daily").fetchone()
-            if not first or not first[0]:
-                return None
-            first_date = first[0]
-            end = (datetime.fromisoformat(first_date) + timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-            rows = conn.execute(
-                "SELECT model, COALESCE(SUM(total_tokens),0) FROM model_daily "
-                "WHERE date >= ? AND date <= ? GROUP BY model",
-                (first_date, end),
-            ).fetchall()
-        finally:
-            conn.close()
-        total = sum(int(r[1] or 0) for r in rows)
-        if total <= 0:
-            return None
-        return {"shares": {r[0]: int(r[1] or 0) / total for r in rows if r[0]}, "first_date": first_date}
-    except (sqlite3.Error, OSError, ValueError):
-        return None
+_earliest_model_mix = _measure_compat.bind(_measure_providers['pricing']._earliest_model_mix, __name__, defaults=(14,))
 
 
 # Share of remaining Opus tokens assumed routable to a cheaper model (grunt
@@ -55283,420 +50757,13 @@ _ROUTABLE_OPUS_FRACTION = _float_env("TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION", 0
 _BASELINE_OPUS_SHARE = _float_env("TOKEN_OPTIMIZER_BASELINE_OPUS_SHARE", 0.0)
 
 
-def _pretool_baseline_mix():
-    """This user's OWN explicit pre-TO model mix, or None. PER-USER, not a default.
-
-    The normal baseline is each user's earliest measured history (see
-    _earliest_model_mix). This override exists only for a user whose history does
-    not reach back to their pre-Token-Optimizer era, so they can record their own
-    true starting point. It is read per-install from a `pretool_baseline.json` in
-    THIS user's SNAPSHOT_DIR (`{"opus_share": <their value>}`), or their
-    TOKEN_OPTIMIZER_BASELINE_OPUS_SHARE env. There is no shared/default value
-    (unset -> fall back to their own history). Remaining share goes to Sonnet.
-    Never raises.
-    """
-    share = 0.0
-    try:
-        bpath = SNAPSHOT_DIR / "pretool_baseline.json"
-        if bpath.exists():
-            share = float(json.loads(bpath.read_text(encoding="utf-8")).get("opus_share", 0.0) or 0.0)
-    except (json.JSONDecodeError, OSError, ValueError, TypeError):
-        share = 0.0
-    if share <= 0.0:
-        share = _BASELINE_OPUS_SHARE
-    if not (0.0 < share <= 1.0):
-        return None
-    return {"opus": share, "sonnet": round(1.0 - share, 4)}
+_pretool_baseline_mix = _measure_compat.bind(_measure_providers['pricing']._pretool_baseline_mix, __name__)
 
 
-def set_pretool_baseline(args):
-    """Record the user's pre-Token-Optimizer Opus share (CLI: `set-baseline --opus 0.95`).
-
-    Writes pretool_baseline.json to SNAPSHOT_DIR. Use this when your earliest captured
-    history is already optimized, so the "Your transformation" before/after reflects
-    your true pre-TO era. Without it, the transformation falls back to your measured
-    earliest sessions. Never raises fatally.
-    """
-    opus = None
-    for i, a in enumerate(args):
-        if a == "--opus" and i + 1 < len(args):
-            try:
-                opus = float(args[i + 1])
-            except ValueError:
-                opus = None
-    if opus is None or not (0.0 < opus <= 1.0):
-        print("  Usage: set-baseline --opus <0..1>   (e.g. --opus 0.95 for 95% Opus pre-TO)")
-        try:
-            bp = SNAPSHOT_DIR / "pretool_baseline.json"
-            if bp.exists():
-                cur = json.loads(bp.read_text(encoding="utf-8"))
-                print(f"  Current baseline: {float(cur.get('opus_share', 0)) * 100:.0f}% Opus")
-        except (json.JSONDecodeError, OSError, ValueError, TypeError):
-            pass
-        return
-    try:
-        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        bp = SNAPSHOT_DIR / "pretool_baseline.json"
-        bp.write_text(json.dumps({"opus_share": round(opus, 4)}) + "\n", encoding="utf-8")
-        print(f"  [Token Optimizer] Pre-TO baseline set: {opus * 100:.0f}% Opus.")
-        print("  'Your transformation' now prices the before-era at this mix.")
-        print(f"  Saved to {_display_path(bp)}")
-    except OSError as e:
-        print(f"  [Error] Could not write baseline: {e}")
+set_pretool_baseline = _measure_compat.bind(_measure_providers['pricing'].set_pretool_baseline, __name__)
 
 
-def _compute_model_routing_savings(days=30, since=None):
-    """Model-routing savings: realized (mix shift vs baseline) + potential (remaining Opus).
-
-    REALIZED: compare current model mix against the install-era baseline (snapshot
-    model_mix, else the earliest model_daily window). If the user moved tokens off
-    expensive models, the counterfactual cost (current volume spread over the
-    baseline mix) minus the current cost, both on one standardized price
-    schedule, is the estimated saving. This is the pillar that can show a
-    realized win (e.g. Opus 94% -> 67%).
-    Models priced above the baseline's costliest model (a premium model the user
-    chose) are left out of the comparison and the rest renormalized, so they do not
-    cancel a real shift toward lighter models; `premium_share` and
-    `premium_cost_usd` report them separately.
-
-    POTENTIAL: an assumption, not a measurement. A fixed share
-    (`routable_fraction`) of Opus fresh input and output is priced at the
-    Opus-to-Sonnet API rate delta. Opus usage without a class split is left out
-    and counted in `potential_unsplit_excluded_tokens`. Cache reads and
-    writes represent main-session history: switching models rebuilds that cache,
-    while routine subagent work carries its own smaller context. The result is
-    shown separately from concrete opportunities.
-
-    Realized routing prices fresh input, cache creation, cache reads and output
-    by class. Usage without a class split stays outside both comparisons and
-    their coverage, and is reported as `unsplit_tokens`. Potential uses the model's
-    own generation card for fresh input and output, and the newest Sonnet card
-    for its target.
-    The class split comes from per-day, per-model session usage.
-
-    Realized routing is a standardized family comparison: the remaining work's
-    class volumes per current family, and the same class volumes spread over the
-    baseline family shares, are valued on one fixed schedule (the newest card of
-    each family's tier) chosen independently of the window's volumes. A
-    generation change inside a family therefore cannot create routing credit.
-    The exact-card cost of the same work and its gap to the standardized value
-    are reported separately (`actual_cost_usd`, `generation_price_delta_usd`).
-    The schedule is assumed because the frozen baseline records no generations,
-    so the result is labelled "estimated".
-
-    Models with no exact rate card are unpriced, not free (an unknown Claude
-    generation does not borrow its family's price): they are left out of the
-    comparison and reported as `unpriced_models`, `unpriced_tokens` and
-    `unpriced_share`. Explicitly free tiers (":free") are left out the same way
-    and reported as `free_models`.
-    Labelled estimated (realized) and opportunity (potential). Never raises.
-    """
-    # `zero` is returned only on no-data / error paths (no current mix, no
-    # baseline, or an exception). Label it "unavailable" so a $0 here reads as
-    # "couldn't compute" rather than a measured zero -- the success return below
-    # sets its own evidence="estimated" when comparable work remains.
-    zero = {
-        "realized_cost_usd": 0.0, "potential_cost_usd": 0.0,
-        "potential_tokens": 0, "potential_tokens_monthly": 0,
-        "potential_billable_tokens": 0, "potential_by_class": {}, "unsplit_tokens": 0,
-        "potential_unsplit_excluded_tokens": 0,
-        "premium_models": [], "premium_share": 0.0, "premium_cost_usd": 0.0,
-        "unpriced_models": [], "unpriced_tokens": 0, "unpriced_share": 0.0,
-        "free_models": [], "free_tokens": 0,
-        "compared_share": 0.0,
-        "baseline_rate_basis": {}, "baseline_reference_priced": [],
-        "standardized_baseline_cost_usd": 0.0, "standardized_actual_cost_usd": 0.0,
-        "actual_cost_usd": 0.0, "generation_price_delta_usd": 0.0,
-        "baseline_opus_share": 0.0, "current_opus_share": 0.0,
-        "baseline_source": None, "evidence": "unavailable",
-    }
-    try:
-        current = _model_mix_shares(days=days, since=since)
-        zero["activity_coverage"] = current.get("activity_coverage", {"complete": True, "undated_sessions": 0})
-        cur_shares = current.get("shares", {})
-        cur_total = int(current.get("total_tokens", 0) or 0)
-        if not cur_shares or cur_total <= 0:
-            return zero
-
-        # Baseline mix: explicit pre-TO baseline (user knows it) first, then
-        # snapshot capture, else earliest measured history.
-        baseline_shares = None
-        baseline_source = None
-        explicit = _pretool_baseline_mix()
-        if explicit:
-            baseline_shares = explicit
-            baseline_source = "pretool_baseline"
-        if not baseline_shares:
-            try:
-                snap_path = SNAPSHOT_DIR / "snapshot_before.json"
-                if snap_path.exists():
-                    snap = json.loads(snap_path.read_text(encoding="utf-8"))
-                    mm = ((snap.get("model_mix") or {}).get("shares") or {}) if (snap.get("model_mix") or {}).get("activity_basis") == 1 else {}
-                    if mm:
-                        baseline_shares = mm
-                        baseline_source = "snapshot"
-            except (json.JSONDecodeError, OSError, ValueError):
-                pass
-        if not baseline_shares:
-            early = _earliest_model_mix()
-            if early:
-                baseline_shares = early["shares"]
-                baseline_source = "history"
-        if not baseline_shares:
-            return zero
-
-        # While collect is still re-reading window sessions (an older usage
-        # parser, or per-day usage not yet rebuilt), their per-class usage is
-        # incomplete and the figure would move pass to pass. Report the count
-        # instead of a number.
-        pending = _routing_pending_sessions(days=days, since=since)
-        if pending:
-            return {**zero, "evidence": "pending", "pending_sessions": pending,
-                    "baseline_source": baseline_source}
-
-        # Rows of per-model, per-class usage. When the DB holds none (adapters
-        # that only record model totals), the model-daily mix stands in as
-        # unsplit tokens, reported outside comparison coverage.
-        usage = _routing_usage_by_model(days=days, since=since)
-        from_rows = bool(usage)
-        if not from_rows:
-            usage = {m: {"unsplit": share * cur_total} for m, share in cur_shares.items()}
-
-        # Mix keys from the model-daily fallback are already family buckets.
-        fam_of = {m: (_normalize_model_name(m) if from_rows else m) for m in usage}
-        rates_cache = {}
-
-        def _rates(model):
-            if model not in rates_cache:
-                rates_cache[model] = _routing_class_rates(model)
-            return rates_cache[model]
-
-        # Only a model with an exact rate card is compared. A model with no card
-        # is unpriced (not free) and an explicitly free tier is not credited as a
-        # saving: both keep their token counts, are reported, and stay out of
-        # every mix and cost below.
-        priced_usage = {}
-        unpriced_by_model = {}
-        free_by_model = {}
-        unsplit_tokens = 0.0
-        potential_unsplit_excluded = 0.0
-        for m, classes in usage.items():
-            if not fam_of[m]:
-                continue
-            if _rates(m) is not None:
-                unsplit_tokens += classes.get("unsplit", 0)
-                if fam_of[m] == "opus":
-                    potential_unsplit_excluded += classes.get("unsplit", 0)
-                split = {k: v for k, v in classes.items() if k != "unsplit"}
-                if sum(split.values()) > 0:
-                    priced_usage[m] = split
-                continue
-            tokens = sum(classes.get(k, 0) for k in _ROUTING_CLASSES)
-            bucket = free_by_model if _routing_model_status(m) == "free" else unpriced_by_model
-            bucket[m] = bucket.get(m, 0) + tokens
-
-        fam_models = {}
-        for m in priced_usage:
-            fam_models.setdefault(fam_of[m], []).append(m)
-        fam_classes = {}
-        class_totals = {k: 0.0 for k in _ROUTING_CLASSES}
-        for fam, ms in fam_models.items():
-            dst = fam_classes[fam] = {k: 0.0 for k in _ROUTING_CLASSES}
-            for m in ms:
-                for k in _ROUTING_CLASSES:
-                    dst[k] += priced_usage[m].get(k, 0)
-                    class_totals[k] += priced_usage[m].get(k, 0)
-        pooled = sum(class_totals.values())
-
-        def _unpriced_report():
-            return [mid for mid, _t in sorted(unpriced_by_model.items(), key=lambda kv: -kv[1])]
-
-        def _free_report():
-            return [mid for mid, _t in sorted(free_by_model.items(), key=lambda kv: -kv[1])]
-
-        unpriced_tokens = int(sum(unpriced_by_model.values()))
-        free_tokens = int(sum(free_by_model.values()))
-
-        def _coverage_fields():
-            total = unpriced_tokens + free_tokens + pooled + unsplit_tokens
-            return {
-                "unpriced_models": _unpriced_report(), "unpriced_tokens": unpriced_tokens,
-                "unpriced_share": round(unpriced_tokens / total, 4) if total > 0 else 0.0,
-                "free_models": _free_report(), "free_tokens": free_tokens,
-                "unsplit_tokens": int(round(unsplit_tokens)),
-                "potential_unsplit_excluded_tokens": int(round(potential_unsplit_excluded)),
-                "baseline_source": baseline_source,
-            }
-
-        if pooled <= 0:
-            return {**zero, **_coverage_fields()}
-
-        # STANDARDIZED ROUTING VALUATION. Realized routing measures a shift of work
-        # between model families, so both arms are valued on one fixed price
-        # schedule: one rate per family and token class, chosen without looking at
-        # how much of that family ran in the window. The frozen baseline records
-        # shares by family only (no generation), so the schedule is a documented
-        # reference-card scenario: each family at the newest generation card of
-        # its tier (legacy Sonnet counts as Sonnet; a provider model stands for
-        # itself). It is the same for present and absent families, so one token of
-        # any generation changes the result only by that token's own contribution,
-        # and a generation change within a family cannot become routing credit.
-        # What the work actually cost at the exact cards used is reported
-        # separately (`actual_cost_usd`, `generation_price_delta_usd`). Because the
-        # scenario is assumed, the result is labelled estimated. A baseline that
-        # recorded generations would replace the reference card in
-        # `_fixed_family_rates` for the families it covers.
-        fam_rate_cache = {}
-        fam_rate_basis = {}
-
-        def _fixed_family_rates(fam):
-            if fam in fam_rate_cache:
-                return fam_rate_cache[fam]
-            ref_model = _routing_reference_model(fam)
-            out = _rates(ref_model)
-            if out is None and fam_models.get(fam):
-                # No reference card for a family that did run: its lowest-sorted
-                # model id stands in, so the choice never depends on input order.
-                ref_model = sorted(fam_models[fam])[0]
-                out = _rates(ref_model)
-            if out is not None:
-                fam_rate_basis[fam] = f"reference:{ref_model}"
-            fam_rate_cache[fam] = out
-            return out
-
-        def _renormalized(shares):
-            kept = {f: s for f, s in shares.items() if s and s > 0 and _fixed_family_rates(f) is not None}
-            total = sum(kept.values())
-            return {f: s / total for f, s in kept.items()} if total > 0 else {}
-
-        base_priced = _renormalized(baseline_shares)
-
-        # Effective $/MTok of a family under the window's own class mix.
-        def _family_price(f):
-            if pooled <= 0:
-                return 0.0
-            r = _fixed_family_rates(f)
-            return sum(class_totals[k] * r[k] for k in _ROUTING_CLASSES) / pooled
-
-        # Models priced above the most expensive model of the baseline are the
-        # user's own choice, not routing: they are taken out of the comparison
-        # so it measures the shift toward lighter models. Their share and cost
-        # are reported separately. A model must be dearer than the baseline's
-        # costliest family on the window's pooled mix AND on the output card:
-        # cache-read rates alone do not rank tiers across generations (Sonnet 4.6
-        # reads cache at $0.30, Opus 5.5 at $0.20), so a lighter older model is
-        # never mistaken for a premium one.
-        ceiling_fam = max(base_priced, key=_family_price, default=None)
-        baseline_ceiling = _family_price(ceiling_fam) if ceiling_fam else 0.0
-        ceiling_output = _fixed_family_rates(ceiling_fam)["output"] if ceiling_fam else 0.0
-        premium = sorted(
-            f for f in fam_classes
-            if _family_price(f) > baseline_ceiling > 0 and _fixed_family_rates(f)["output"] > ceiling_output
-        )
-        premium_share = sum(cur_shares.get(f, 0.0) for f in premium)
-        premium_cost = sum(
-            classes.get(k, 0) * _rates(m)[k]
-            for m, classes in priced_usage.items() if fam_of[m] in premium
-            for k in _ROUTING_CLASSES
-        ) / 1_000_000
-
-        # REALIZED: the remaining work's class volumes, per current family, valued
-        # on the standardized schedule, against the same total class volumes spread
-        # over the baseline family shares on that same schedule. Only the shift
-        # between families moves the number. Never negative. Premium and unpriced
-        # models are outside both arms.
-        kept_models = [m for m in priced_usage if fam_of[m] not in premium]
-        kept_totals = {k: sum(priced_usage[m].get(k, 0) for m in kept_models) for k in _ROUTING_CLASSES}
-        standardized_actual = sum(
-            priced_usage[m].get(k, 0) * _fixed_family_rates(fam_of[m])[k]
-            for m in kept_models for k in _ROUTING_CLASSES
-        ) / 1_000_000
-        standardized_baseline = sum(
-            kept_totals[k] * sum(s * _fixed_family_rates(f)[k] for f, s in base_priced.items())
-            for k in _ROUTING_CLASSES
-        ) / 1_000_000 if base_priced else 0.0
-        # Exact-card API-equivalent cost of the same work (each model's own card).
-        actual_cost = sum(
-            priced_usage[m].get(k, 0) * _rates(m)[k] for m in kept_models for k in _ROUTING_CLASSES
-        ) / 1_000_000
-        realized_cost = max(0.0, standardized_baseline - standardized_actual) if base_priced and kept_models else 0.0
-        compared_tokens = sum(kept_totals.values())
-        window_tokens = unpriced_tokens + free_tokens + pooled + unsplit_tokens
-
-        # POTENTIAL: a fixed share of remaining Opus fresh input and output, priced
-        # at each Opus model's own card minus the current Sonnet card. It is
-        # computed apart from the realized figure: with no target card the
-        # potential is zero and the realized routing above is unaffected. Usage
-        # without a class split cannot be told apart as input or output, so it is
-        # left out and its count is reported.
-        target = _routing_target_model()
-        target_rates = _rates(target)
-        by_class = {k: {"tokens": 0, "usd": 0.0} for k in _ROUTING_CLASSES}
-        for m, classes in priced_usage.items():
-            if fam_of[m] != "opus":
-                continue
-            if target_rates is None:
-                continue
-            m_rates = _rates(m)
-            for k in ("fresh_input", "output"):
-                tok = classes.get(k, 0)
-                if tok:
-                    by_class[k]["tokens"] += tok * _ROUTABLE_OPUS_FRACTION
-                    by_class[k]["usd"] += tok * _ROUTABLE_OPUS_FRACTION * (m_rates[k] - target_rates[k]) / 1_000_000
-        potential_cost = max(0.0, sum(v["usd"] for v in by_class.values()))
-        potential_tokens = int(round(sum(v["tokens"] for v in by_class.values())))
-        potential_tokens_monthly = int(round(potential_tokens / max(days, 1) * 30))
-        potential_billable_tokens = int(round(sum(by_class[k]["tokens"] for k in _ROUTING_BILLABLE_CLASSES)))
-        opus_share = cur_shares.get("opus", 0.0)
-
-        return {
-            "activity_coverage": zero["activity_coverage"],
-            "realized_cost_usd": round(realized_cost, 4),
-            "potential_cost_usd": round(potential_cost, 4),
-            # Routable tokens cover observed fresh input and output only.
-            "potential_tokens": potential_tokens,
-            "potential_tokens_monthly": potential_tokens_monthly,
-            "potential_billable_tokens": potential_billable_tokens,
-            "potential_token_classes": [k for k in _ROUTING_CLASSES if by_class[k]["tokens"]],
-            "potential_by_class": {
-                k: {"tokens": int(round(v["tokens"])), "usd": round(v["usd"], 4)}
-                for k, v in by_class.items() if v["tokens"] or v["usd"]
-            },
-            "potential_basis": "api_rate_equivalent",
-            "target_model": target,
-            "pricing_basis": "per_token_class_generation_card",
-            # Premium models (priced above the baseline's costliest model) are the
-            # user's own choice: excluded from realized routing, shown here.
-            "premium_models": premium,
-            "premium_share": round(premium_share, 4),
-            "premium_cost_usd": round(premium_cost, 4),
-            # Models with no exact rate card (unpriced) and explicitly free tiers are
-            # left out of the comparison, never priced at zero or at a stand-in rate.
-            **_coverage_fields(),
-            "baseline_opus_share": round(baseline_shares.get("opus", 0.0), 4),
-            "current_opus_share": round(opus_share, 4),
-            "baseline_source": baseline_source,
-            "routable_fraction": _ROUTABLE_OPUS_FRACTION,
-            # Realized routing is a standardized comparison on a fixed price
-            # schedule (newest card per family) in both arms, because the baseline
-            # records no generations. That schedule is an assumption, so the
-            # result is an estimate. The exact-card cost of the same work and its
-            # gap to the standardized valuation are reported apart: the gap is
-            # price/generation, never routing.
-            "realized_basis": "standardized_reference_card",
-            "baseline_rate_basis": {f: fam_rate_basis[f] for f in sorted(set(base_priced) | set(fam_classes)) if f in fam_rate_basis},
-            "baseline_reference_priced": sorted(base_priced),
-            "standardized_baseline_cost_usd": round(standardized_baseline, 4),
-            "standardized_actual_cost_usd": round(standardized_actual, 4),
-            "actual_cost_usd": round(actual_cost, 4),
-            "generation_price_delta_usd": round(actual_cost - standardized_actual, 4),
-            # Share of the window's class tokens inside both arms (premium,
-            # unpriced and free models, and unsplit tokens are outside).
-            "compared_share": round(compared_tokens / window_tokens, 4) if window_tokens > 0 else 0.0,
-            "evidence": "estimated" if compared_tokens > 0 and base_priced else "unavailable",
-        }
-    except Exception:
-        return zero
+_compute_model_routing_savings = _measure_compat.bind(_measure_providers['pricing']._compute_model_routing_savings, __name__, defaults=(30, None,))
 
 
 # Share of full-file Writes assumed avoidable via a targeted Edit, and the

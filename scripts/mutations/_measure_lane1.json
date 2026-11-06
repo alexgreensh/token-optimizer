@@ -3,7 +3,7 @@
     "mutation": "cwd/project mismatch warning printed to stdout (model context, broken hook JSON)",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "Using most recent: {result.name}\",\n          file=sys.stderr)",
+    "old": "Using most recent: {result.name}\",\n          file=_measure_facade.sys.stderr)",
     "new": "Using most recent: {result.name}\")",
     "symbol": "find_projects_dir"
   },
@@ -11,7 +11,7 @@
     "mutation": "Claude Code cloud runs the desktop-only daemon / settings / welcome work",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "            return False\n        return is_claude_code_cloud()\n",
+    "old": "            return False\n        return _measure_facade.is_claude_code_cloud()\n",
     "new": "            return False\n        return False\n",
     "symbol": "_remote_lean_profile"
   },
@@ -19,7 +19,7 @@
     "mutation": "cloud VM runs the desktop-only daemon / scheduler work",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "            return False\n        return is_claude_code_cloud()\n",
+    "old": "            return False\n        return _measure_facade.is_claude_code_cloud()\n",
     "new": "            return False\n        return False\n",
     "symbol": "_remote_lean_profile"
   },
@@ -27,7 +27,7 @@
     "mutation": "MSIX physical path is not mapped back to AppData",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    m = _MSIX_REDIRECT_RE.match(text)\n    if not m:",
+    "old": "    m = _measure_facade._MSIX_REDIRECT_RE.match(text)\n    if not m:",
     "new": "    m = None\n    if not m:",
     "symbol": "_unvirtualize_msix_path"
   },
@@ -51,7 +51,7 @@
     "mutation": "session model read through the cwd guess instead of the session's own file",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "            candidate = next(iter(sorted((CLAUDE_DIR / \"projects\").glob(f\"*/{session_id}.jsonl\"))), None)",
+    "old": "            candidate = next(iter(sorted((_measure_facade.CLAUDE_DIR / \"projects\").glob(f\"*/{session_id}.jsonl\"))), None)",
     "new": "            candidate = None",
     "symbol": "_resolve_session_model"
   },

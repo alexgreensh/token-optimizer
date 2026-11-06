@@ -3,7 +3,7 @@
     "mutation": "Codex compact window falls through to the Claude 1M default",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    if detect_runtime() == \"codex\":\n        # Codex: the Claude table",
+    "old": "    if _measure_facade.detect_runtime() == \"codex\":\n        # Codex: the Claude table",
     "new": "    if False:\n        # Codex: the Claude table",
     "symbol": "_resolve_compact_window"
   },
@@ -11,7 +11,7 @@
     "mutation": "model-pin tip ignores routing plugins",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "                        and not _model_routing_handled_elsewhere()):",
+    "old": "                        and not _measure_facade._model_routing_handled_elsewhere()):",
     "new": "                        ):",
     "symbol": "generate_auto_recommendations"
   },
@@ -35,7 +35,7 @@
     "mutation": "doctor reports a status line running a missing file as healthy",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    if qb[\"statusline\"] and _qb_sl_path and not Path(_qb_sl_path).expanduser().is_file():",
+    "old": "    if qb[\"statusline\"] and _qb_sl_path and not _measure_facade.Path(_qb_sl_path).expanduser().is_file():",
     "new": "    if False:",
     "symbol": "doctor"
   },
@@ -51,8 +51,8 @@
     "mutation": "doctor calls the plugin's SessionEnd hook a settings.json one",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    if _is_hook_installed(settings, settings_only=True):\n",
-    "new": "    if _is_hook_installed(settings):\n",
+    "old": "    if _measure_facade._is_hook_installed(settings, settings_only=True):\n",
+    "new": "    if _measure_facade._is_hook_installed(settings):\n",
     "symbol": "doctor"
   }
 ]

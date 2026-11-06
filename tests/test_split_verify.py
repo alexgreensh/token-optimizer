@@ -264,6 +264,22 @@ def test_next_patch():
     assert c.next_patch('5.13.64') == '5.13.65'
 
 
+def test_pinned_version_normalization_keeps_real_differences(tmp_path):
+    """L4 normalizes ONLY the release token: a versioned path may differ, any
+    other byte may not (known-bad: a planted non-version change still fails)."""
+    import l4_installed as l4
+    base, cand = tmp_path / 'base', tmp_path / 'cand'
+    (base / 'case-a').mkdir(parents=True)
+    (cand / 'case-a').mkdir(parents=True)
+    (base / 'case-a' / 'stdout').write_bytes(b'run /home/u/token-optimizer/5.13.64/run.py\n')
+    (cand / 'case-a' / 'stdout').write_bytes(b'run /home/u/token-optimizer/5.13.66/run.py\n')
+    (base / 'case-a' / 'exit').write_bytes(b'0\n')
+    (cand / 'case-a' / 'exit').write_bytes(b'1\n')
+    errors = ['bytes differ: case-a/stdout', 'bytes differ: case-a/exit', 'missing: case-b']
+    assert l4._unversioned_errors(errors, base, cand, '5.13.64', '5.13.66') == [
+        'bytes differ: case-a/exit', 'missing: case-b']
+
+
 # ----------------------------------------------------------------- report
 
 def _receipt(directory, layer, system, verdict, sha=('b' * 40, 'c' * 40)):

@@ -6,6 +6,11 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+def _tree_version():
+    """The release this checkout pins; literals here rot on every version bump."""
+    return json.loads((REPO / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version']
 spec = importlib.util.spec_from_file_location('split_golden', REPO / 'scripts/measure_split_golden.py')
 golden = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(golden)
@@ -237,7 +242,7 @@ def test_real_capture_detects_planted_output_and_exit_changes(tmp_path, kind):
         assert '"additionalContext": hint' in text
         path.write_text(text.replace('"additionalContext": hint', '"additionalContext": None'), encoding='utf-8')
     else:
-        assert b'5.13.64' in stdout
+        assert _tree_version().encode() in stdout
         injection = 'if __name__ == "__main__":\n    raise SystemExit(17)\n\n'
     if kind in ('json', 'dollar', 'exit'):
         text = facade.read_text(encoding='utf-8')
@@ -270,7 +275,7 @@ def test_cloud_setup_uses_pinned_metadata_without_host_dns(tmp_path, monkeypatch
         result = work / label / row['id']
         assert (result / 'exit').read_text().strip() == '0'
         output = (result / 'stdout').read_bytes()
-        assert b'sha512-' in output and b'5.13.64' in output
+        assert b'sha512-' in output and _tree_version().encode() in output
         assert (result / 'stderr').read_bytes() == b''
     assert golden.compare(work / 'first', work / 'second') == []
 

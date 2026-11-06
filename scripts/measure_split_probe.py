@@ -242,12 +242,16 @@ if hasattr(os, 'startfile'):
 
 def fixture_urlopen(request, *args, **kwargs):
     url = getattr(request, 'full_url', request)
-    expected = 'https://registry.npmjs.org/@alexgreensh%2Ftoken-optimizer/5.13.64'
+    # The product asks npm for exactly the release the manifest pins; a literal
+    # here would rot the moment the version file moved.
+    version = json.loads((Path(payload) / '.claude-plugin' / 'plugin.json')
+                         .read_text(encoding='utf-8'))['version']
+    expected = f'https://registry.npmjs.org/@alexgreensh%2Ftoken-optimizer/{version}'
     if url != expected:
         raise PermissionError('unmanifested golden URL: ' + str(url))
     effects.append(['registry-metadata', url])
     return io.BytesIO(json.dumps({'dist': {
-        'tarball': 'https://registry.npmjs.org/@alexgreensh/token-optimizer/-/token-optimizer-5.13.64.tgz',
+        'tarball': f'https://registry.npmjs.org/@alexgreensh/token-optimizer/-/token-optimizer-{version}.tgz',
         'integrity': 'sha512-' + base64.b64encode(bytes(64)).decode('ascii'),
     }}).encode('utf-8'))
 

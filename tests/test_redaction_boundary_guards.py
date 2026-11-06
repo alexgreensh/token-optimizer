@@ -98,6 +98,10 @@ def test_codex_extract_topic_redacts():
 
 
 def test_hermes_title_is_redacted_into_the_topic():
+    # The split facade's deferred bindings resolve sys.modules['measure']; a
+    # standalone hermes_session still needs it registered (shard-order leak,
+    # CI afab5255).
+    importlib.import_module("measure")
     import hermes_session
     row = {"id": "h-1", "model": "claude-sonnet-5", "input_tokens": 1000, "output_tokens": 100,
            "message_count": 4, "title": f"rotate {SECRET} today"}
@@ -108,6 +112,7 @@ def test_hermes_title_is_redacted_into_the_topic():
 
 
 def test_hermes_title_dropped_when_the_redactor_refuses(monkeypatch):
+    importlib.import_module("measure")
     import credential_patterns
     import hermes_session
 

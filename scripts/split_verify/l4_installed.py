@@ -136,11 +136,49 @@ def real_runs(arm, inst, artifact):
     return runs, live_dir
 
 
+def _release_token(install):
+    """The installed payload's own release string; hook argv bakes the versioned
+    cache path, so a version bump alone must not read as a behaviour change."""
+    for rel in ('.claude-plugin/plugin.json', '.codex-plugin/plugin.json'):
+        path = Path(install['root']) / rel
+        if path.is_file():
+            return json.loads(path.read_text(encoding='utf-8'))['version']
+    return None
+
+
+def _unversioned_rows(rows, version):
+    if not version:
+        return rows
+    return [{**row, 'argv': [a.replace(version, '\x00release\x00') for a in (row['argv'] or [])]}
+            for row in rows]
+
+
+def _unversioned_errors(errors, before, after, before_version, after_version):
+    """Drop capture diffs whose only change is each side's own release token.
+    Anything else in the file still fails: normalization is one exact token."""
+    real = []
+    for entry in errors:
+        marker = 'bytes differ: '
+        if not entry.startswith(marker):
+            real.append(entry)
+            continue
+        rel = entry[len(marker):]
+        left = (before / rel).read_bytes().replace(before_version.encode(), b'\x00release\x00')
+        right = (after / rel).read_bytes().replace(after_version.encode(), b'\x00release\x00')
+        if left != right:
+            real.append(entry)
+    return real
+
+
 def pinned(arms, insts, artifact, work):
     """U0 golden capture over each installed tree, BASE twice then candidate."""
     rows = golden_rows(DEVIN_ROWS) if artifact == 'devin' else pinned_rows(insts['base'])
-    if artifact != 'devin' and rows != pinned_rows(insts['candidate']):
-        return c.check('pinned-equivalence', c.FAIL, 'configured hook entries differ from BASE')
+    versions = {}
+    if artifact != 'devin':
+        versions = {label: _release_token(insts[label]) for label in ('base', 'candidate')}
+        if (_unversioned_rows(rows, versions['base'])
+                != _unversioned_rows(pinned_rows(insts['candidate']), versions['candidate'])):
+            return c.check('pinned-equivalence', c.FAIL, 'configured hook entries differ from BASE')
     out = work / 'pinned'
     c.remove_tree(out)
     for label, name in (('base', 'base-1'), ('base', 'base-2'), ('candidate', 'candidate')):
@@ -161,6 +199,9 @@ def pinned(arms, insts, artifact, work):
                                                arms['candidate'].tree)
     else:
         errors, identities = c.golden.compare(out / 'base-1', out / 'candidate'), []
+        if versions.get('base') and versions.get('candidate'):
+            errors = _unversioned_errors(errors, out / 'base-1', out / 'candidate',
+                                         versions['base'], versions['candidate'])
     return c.check('pinned-equivalence', c.FAIL if errors else c.PASS, errors[:40] or f'{len(rows)} cases identical',
                    cases=len(rows), verified_source_artifacts=identities)
 

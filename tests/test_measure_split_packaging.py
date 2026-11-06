@@ -11,6 +11,11 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / 'skills/token-optimizer/scripts'
+
+
+def _tree_version():
+    """The release this checkout pins; literals here rot on every version bump."""
+    return json.loads((REPO / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version']
 sys.path.insert(0, str(SCRIPTS))
 
 
@@ -143,7 +148,7 @@ def test_cowork_distributable_zip_contains_every_provider(tmp_path):
 def test_installed_smoke_exercises_normal_json_and_accounting(tmp_path):
     sys.path.insert(0, str(REPO / 'scripts'))
     from check_measure_split_payload import smoke
-    assert '5.13.64' in smoke(REPO, tmp_path)
+    assert _tree_version() in smoke(REPO, tmp_path)
     # Windows 3.14 CI timed out recompiling the facade on every call; it compiles once, outside the payload.
     assert list((tmp_path / 'pycache').rglob('measure.*.pyc'))
     for name in ('direct', 'hook'):

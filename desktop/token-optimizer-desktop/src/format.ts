@@ -1,8 +1,8 @@
 // Pure formatting for the band: clocks, token counts, relative and local times,
 // grades. No I/O and nothing from 'claude-code'.
 
-/** Injectable zone and locale so tests do not depend on the machine's clock settings. */
-export type FormatOptions = { timeZone?: string; locale?: string }
+/** Injectable zone and locale so tests do not depend on the machine's clock settings; hourCycle forces a 12- or 24-hour clock. */
+export type FormatOptions = { timeZone?: string; locale?: string; hourCycle?: 'h12' | 'h23' }
 
 const MINUTE = 60_000
 const DAY_MIN = 24 * 60
@@ -87,8 +87,8 @@ export function renewal(iso: string | null, nowMs: number, opts: FormatOptions =
   if (!iso) return null
   const at = Date.parse(iso)
   if (!Number.isFinite(at)) return null
-  const { timeZone, locale } = opts
-  const time = clean(new Intl.DateTimeFormat(locale, { timeZone, hour: 'numeric', minute: '2-digit' }).format(at))
+  const { timeZone, locale, hourCycle } = opts
+  const time = clean(new Intl.DateTimeFormat(locale, { timeZone, hour: 'numeric', minute: '2-digit', ...(hourCycle ? { hourCycle } : {}) }).format(at))
   const diff = dayNumber(at, timeZone) - dayNumber(nowMs, timeZone)
   if (diff === 0) return `today at ${time}`
   if (diff === 1) return `tomorrow at ${time}`

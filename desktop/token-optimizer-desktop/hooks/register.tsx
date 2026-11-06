@@ -54,6 +54,7 @@ import { ICONS, ICON_ALT, iconSvg, type IconName } from '../src/icons.ts'
 import { QUALITY_FLOOR, moodOf, sentence, type ActionId, type Run } from '../src/ladder.ts'
 import { cards, marks, row, type Card, type Mark, type MarkTone } from '../src/marks.ts'
 import { envSize, slimSide, storedSize, type BandSize } from '../src/size.ts'
+import { switchedOff, timeOptions } from '../src/switches.ts'
 import { DEBOUNCE_MS, initialPose, reducePose, type PoseEvent, type PoseState } from '../src/pose.ts'
 import {
   QUALITY_REFRESH_MS,
@@ -142,6 +143,7 @@ let compactionsLanded = 0
 const SIZE_KEY = 'status-bar-size'
 /** The env default (TOKEN_OPTIMIZER_STATUS_BAR_SIZE), read once in readSwitches. */
 let sizeEnvDefault: BandSize = 'full'
+let timeOpts = timeOptions(undefined)
 /** The stored size, once read or pressed: null while only the env default applies. */
 let sizeClicked: BandSize | null = null
 /** Whether $.store was consulted for the size successfully (a failed read retries next render). */
@@ -1130,8 +1132,8 @@ function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) 
 function detailRow(D: Desktop, m: Model, on: Handlers, size: BandSize) {
   const { Box, Text, Button } = D
   const { snap, tones: t } = m
-  const say = sentence(snap)
-  const cardList = cards(snap)
+  const say = sentence(snap, timeOpts)
+  const cardList = cards(snap, timeOpts)
   const detail = row(snap)
   // A card action joins the row only when the moment calls for it (quality sagging, the cache
   // about to drop) and the sentence's own button is not already offering it.
@@ -1215,9 +1217,9 @@ function detailRow(D: Desktop, m: Model, on: Handlers, size: BandSize) {
 function drawBand(D: Desktop, m: Model, on: Handlers) {
   const { Box, Text, Button, Svg } = D
   const { snap, tones: t } = m
-  const say = sentence(snap)
-  const markList = marks(snap)
-  const cardList = cards(snap)
+  const say = sentence(snap, timeOpts)
+  const markList = marks(snap, timeOpts)
+  const cardList = cards(snap, timeOpts)
   // The artifact's layout: Clawd and his arrow beside the sentence and the marks; the
   // unfolded row under all of it, from Clawd's left edge, savings on the right.
   return (
@@ -1277,7 +1279,7 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
 function drawSlim(D: Desktop, m: Model, on: Handlers) {
   const { Box, Text, Button, Svg } = D
   const { snap, tones: t } = m
-  const side = slimSide(sentence(snap))
+  const side = slimSide(sentence(snap, timeOpts))
   return (
     // Keyed like the full band: the same one hover zone, so pointing still wakes Clawd's look.
     <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
@@ -1301,7 +1303,7 @@ function drawSlim(D: Desktop, m: Model, on: Handlers) {
         <Button key="size" label="+" onPress={() => on.size()} />
       </Box>
       <Box flexGrow={1} flexShrink={1}>
-        {markRow(D, marks(snap), cards(snap), t, on)}
+        {markRow(D, marks(snap, timeOpts), cards(snap, timeOpts), t, on)}
       </Box>
       {side.kind === 'action' ? (
         <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
@@ -1343,11 +1345,6 @@ async function endTurn($: EngineInterface, reason: Extract<PoseEvent, { type: 't
   }
 }
 
-/** Set to 0, false, off or no, a Token Optimizer switch turns its feature off. */
-function switchedOff(value: string | undefined): boolean {
-  return /^(0|false|off|no)$/i.test((value ?? '').trim())
-}
-
 /** Reads the TOKEN_OPTIMIZER_STATUS_BAR switches once per environment. */
 async function readSwitches($: EngineInterface): Promise<void> {
   if (switchesRead) return
@@ -1355,6 +1352,7 @@ async function readSwitches($: EngineInterface): Promise<void> {
   if (switchedOff(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR'), undefined))) enabled = false
   if (switchedOff(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR_ANIMATE'), undefined))) animate = false
   sizeEnvDefault = envSize(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR_SIZE'), undefined))
+  timeOpts = timeOptions(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR_TIME_FORMAT'), undefined))
 }
 
 /**

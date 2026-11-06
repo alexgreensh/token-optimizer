@@ -44,11 +44,12 @@ The countdown prefers the native Claude Code `prompt_cache` object when bridged 
 
 ## Settings
 
-Three switches, set in the `env` block of `~/.claude/settings.json` like the other Token Optimizer switches:
+Four switches, set in the `env` block of `~/.claude/settings.json` like the other Token Optimizer switches:
 
 - `"TOKEN_OPTIMIZER_STATUS_BAR": "0"` hides the bar.
 - `"TOKEN_OPTIMIZER_STATUS_BAR_ANIMATE": "0"` keeps Clawd still.
 - `"TOKEN_OPTIMIZER_STATUS_BAR_SIZE": "slim"` starts the band as one line instead of the full band. The `–` button beside the arrow shrinks it and `+` brings it back. The arrow still unfolds the details row under it, and the choice is remembered across sessions and restarts.
+- `"TOKEN_OPTIMIZER_STATUS_BAR_TIME_FORMAT": "24h"` (or `"12h"`) forces the clock used for limit renewal times. Unset, they follow your locale.
 
 ## The "hook was skipped" notice on managed machines
 

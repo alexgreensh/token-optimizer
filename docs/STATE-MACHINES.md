@@ -628,6 +628,23 @@ product-level reachability conditional on harness event ordering, unproven per h
   regression tests — implemented and reviewed in a SEPARATE pending change that
   is NOT part of this PR and not shipped here; the invariant below is therefore
   stated as observed-current vs proposed, not as enforced.
+* **K3. Antigravity rollup lease fails open on a degraded data dir — spawn storm.**
+  Reachable invalid state: on a read-only or full Antigravity data dir,
+  `_touch_rollup_lease` swallowed the OSError, so the 30s `rollup.lease` could
+  never be observed held and EVERY `stop` event spawned a detached
+  `antigravity-rollup` + `dashboard` pair — a process storm under exactly the
+  degraded conditions the lease exists to contain (the Cursor bridge's
+  throttle-state write fails closed for this documented reason, R12). Evidence
+  (before the fix): `tests/test_antigravity_hook_bridge.py::
+  test_stop_fails_closed_when_lease_touch_fails` — two `handle_stop` calls
+  against a 0o500 data dir produced 4 detached spawns. Fix: `_touch_rollup_lease`
+  returns success and `handle_stop` fails closed when the touch fails, matching
+  the Cursor rule; healthy-path behavior pinned by
+  `test_stop_still_spawns_when_lease_writeable`. Residual, documented: two
+  concurrent stops can still both observe a free lease and both spawn (no
+  serialization around check+touch); impact is one duplicate idempotent
+  rollup+dashboard spawn, not a storm — same exposure class the Cursor bridge
+  closed with a lease lock; candidate follow-up, not fixed here.
 
 * **K2. Read-cache post-reset writer race — confirmed-storage-race; product
   reachability conditional, unproven per host.** Storage-layer interleaving
@@ -695,6 +712,15 @@ for approval before any public issue is filed.
   tests in `tests/test_keepwarm_arm_dedup.py` — implemented in a SEPARATE pending
   change, not this PR. No other confirmed keep-warm findings group with it yet.
 
+* **G3 (single-finding group, Antigravity rollup lease) - HELD for trusted-channel
+  review, not filed:** K3. Draft title: "Antigravity bridge: fail closed when the
+  rollup lease can't be written (degraded data dir)". Body draft: impact (detached
+  rollup+dashboard spawn per stop on a read-only/full data dir), root cause
+  (swallowed OSError in _touch_rollup_lease), repro
+  (test_stop_fails_closed_when_lease_touch_fails - 4 spawns from 2 stops pre-fix),
+  fix (fail-closed touch mirroring the Cursor R12 rule), residual (concurrent-stop
+  duplicate spawn, candidate lease-lock follow-up).
+
 * **G2 (single-finding group, read-cache reset integrity) - HELD for trusted-channel
   review, not filed:** K2. Draft title: "Read cache: harden file_reads writes against
   post-reset resurrection (reset epoch)". Body draft must carry the K2 label verbatim:
@@ -721,5 +747,6 @@ for approval before any public issue is filed.
 | Consent gate | `tests/test_consent_gate_race_window.py` |
 | Keep-warm arm dedup (K1) | `tests/test_keepwarm_arm_dedup.py` (in the pending K1 change, not this PR) |
 | Read-cache reset epoch (K2) | `tests/test_read_cache_reset_epoch_race.py`, `tests/test_read_cache_reset_epoch_integration.py` |
+| Antigravity rollup lease (K3) | `tests/test_antigravity_hook_bridge.py::test_stop_fails_closed_when_lease_touch_fails`, `::test_stop_fails_closed_when_lease_touch_raises`, `::test_stop_still_spawns_when_lease_writeable` |
 
 New regression tests added by this workstream are listed here as they land.

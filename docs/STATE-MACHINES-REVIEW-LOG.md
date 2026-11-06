@@ -76,6 +76,79 @@ perspective with the check actually run and its evidence. Verdicts: PASS / PASS-
     byte-identical per `scripts/check-mirror-sync.sh` (run after every commit,
     last run green at the recomposed PR heads).
 
+
+## K3 (Antigravity rollup-lease fail-closed) — delta rounds
+
+11. **Failure modes / fail-closed direction** — PASS. Any OSError from the lease
+    touch skips the spawn pair. Evidence: real permission repro
+    (`test_stop_fails_closed_when_lease_touch_fails`, 0o500 dir — 4 spawns from 2
+    stops pre-fix, 0 after) plus a portable seam test
+    (`test_stop_fails_closed_when_lease_touch_raises`, Path.touch patched to
+    raise) for platforms where directory permissions do not block file creation.
+    `_to_dir` never returns None (unconditional `home / "token-optimizer"`), so
+    no TypeError path exists between the held-check and the touch.
+12. **API / caller contract** — PASS. `_touch_rollup_lease` return None -> bool;
+    sole caller is `handle_stop` (grep-verified across all three mirror trees and
+    tests). Pre-existing tests monkeypatch `_rollup_lease_held`, not the touch,
+    and stay green.
+13. **Concurrency honesty** — PASS-NOTE. No lock serializes check+touch: two
+    concurrent stops can both observe a free lease and both spawn. Impact is one
+    duplicate idempotent rollup+dashboard spawn (atomic os.replace dashboard
+    publish, WAL trends.db), not a storm; the Cursor bridge closed this same
+    class with a lease lock. Recorded as a documented residual in the K3 finding
+    and G3 draft; deliberately not fixed in this minimal change.
+14. **Healthy-path parity + self-healing** — PASS. Free-lease spawn and
+    lease-held skip pinned by pre-existing tests plus
+    `test_stop_still_spawns_when_lease_writeable`; 21/21 bridge tests green. When
+    the data dir recovers, the next stop's touch succeeds and normal throttled
+    behavior resumes (30s lease TTL) — the fail-closed state is not sticky.
+15. **Blast radius / scope discipline** — PASS. Behavior changes only on the
+    write-failure path (previously a spawn storm); healthy installs are
+    byte-identical in behavior. No `_measure` changes (lane-4 ownership
+    untouched); mirrors byte-identical (`check-mirror-sync.sh` green after each
+    commit). Zero-token local spawns only; no paid inference anywhere in the
+    repro (spawn_detached stubbed capture).
+
+
+## K3 artifact torture rounds (10 distinct perspectives on the final PR-3 artifact)
+
+Rounds 11-15 above were preliminary (pre-artifact). The rounds below are the
+countable set, executed against the final `pr-k3-antigravity-lease` head.
+
+16. **Adversarial storm variants** — PASS. Data path as a regular FILE (mkdir
+    FileExistsError) → 0 spawns; parent-dir writable but lease create denied
+    (0o500) → 0 spawns from 2 stops (pre-fix: 4). Executable probes, this run.
+17. **TTL boundary** — PASS. Lease at 29.9s → held (skip); at 30.1s → free
+    (spawn). `_ROLLUP_LEASE_SECONDS = 30` honored exactly.
+18. **Clock skew** — PASS. Lease mtime 10min in the future → negative age →
+    held → 0 spawns, no crash; throttling resumes as real time passes.
+19. **Concurrent stops (residual verification)** — PASS-NOTE, corrected after
+    independent review. Two threads barrier-synced at the held-check produced a
+    single winner in my run, but the reviewer's 10-concurrent-stop run observed
+    6 spawns (3 duplicate pairs): the check→touch window is NOT atomic, so
+    concurrent stops CAN duplicate-spawn — there is no single-winner guarantee.
+    Bounded by stop-event count, spawns are idempotent, documented in the
+    finding and G3 as a candidate lease-lock follow-up, deliberately out of
+    this minimal fix.
+20. **Full-suite regression at PR-3 head** — PASS. 63 passed across bridge,
+    install, install-atomicity, state, and session antigravity suites.
+21. **Mirror parity at PR-3 head** — PASS. `check-mirror-sync.sh` green
+    (plugins + cowork byte-identical).
+22. **Caller contract on final artifact** — PASS. `_touch_rollup_lease` has
+    exactly one caller per mirror tree (`handle_stop`); no test or module
+    consumes the old None return.
+23. **Doc coherence on final artifact** — PASS. K3 finding states the
+    fail-closed rule, the 30s TTL, the red-repro numbers (4 spawns from 2
+    stops pre-fix), and the residual; G3 marked HELD for trusted-channel
+    review; no filing language.
+24. **Consent semantics parity** — PASS. `_consent_ok` gates only the
+    pre-invocation/preToolUse rewrite path (line 495); `handle_stop` rollups
+    were never consent-gated and are unchanged — the fix alters behavior only
+    on the lease-write-failure path.
+25. **Self-healing / non-stickiness** — PASS. After a degraded-dir window (0
+    spawns), restoring writability makes the very next stop spawn the pair
+    again (2 spawns) — fail-closed is not a latched outage.
+
 ## Known gaps handed to the independent judge
 
 - ~~No end-to-end `handle_read` integration test~~ CLOSED (delta):

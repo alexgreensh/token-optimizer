@@ -10,6 +10,8 @@ sys.path.insert(0, str(REPO / 'scripts'))
 
 
 def tooling():
+    if sys.version_info < (3, 11):
+        pytest.skip("offline mover requires Python 3.11+")
     import measure_split
     return measure_split
 
@@ -316,3 +318,15 @@ def test_plain_exception_rewrite_does_not_require_try_star(monkeypatch):
     assert '_measure_exception_' not in restored
     assert 'except ValueError as exc:' in restored
     compile(moved, '<moved>', 'exec')
+
+def test_collection_helper_keeps_try_star_optional(monkeypatch):
+    import ast
+    from helpers.measure_split import _inspection_text
+    monkeypatch.delattr(ast, 'TryStar', raising=False)
+    source = ('try:\n    pass\nexcept ValueError as _measure_exception_0:\n'
+              '    _measure_facade.exc = _measure_exception_0\n'
+              '    try:\n        result = str(_measure_facade.exc)\n'
+              '    finally:\n        _measure_facade.exc = None\n        del _measure_facade.exc\n')
+    restored = _inspection_text(source)
+    assert 'except ValueError as exc:' in restored
+    assert '_measure_exception_' not in restored

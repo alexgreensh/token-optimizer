@@ -16,7 +16,7 @@ perspective with the check actually run and its evidence. Verdicts: PASS / PASS-
 ## K2 (reset-epoch guard)
 
 1. **Concurrency / atomicity** — PASS. Epoch check and insert run inside one
-   `BEGIN IMMEDIATE` transaction (`session_store.py::upsert_file_entry`); the reset
+   `BEGIN IMMEDIATE` transaction (`reset_epoch.py::ResetEpochMixin.upsert_file_entry`, mixed into `SessionStore`); the reset
    bump is inside the reset's own `with conn:` transaction, so no interleaving can
    pass the check yet lose the row. Evidence: `test_two_process_interleaving`
    (subprocess writer sleeps 1.0s in the judge->write window; resetter commits at
@@ -126,8 +126,11 @@ Rounds below run against the final v2 artifact.
     no unguarded call remains.
 32. **Mirror parity** — PASS. check-mirror-sync.sh green at PR-2 head
     (plugins + cowork byte-identical).
-33. **Full stack regression** — PASS. 63 passed across K1 keepwarm, K2
-    race+integration, K3 antigravity suites at the rebased PR-3 head.
+33. **Full stack regression** — PASS (historical artifact evidence, NOT re-executed
+    as a K1+K2+K3 stack on the standalone branches). 63 passed across K1 keepwarm,
+    K2 race+integration, K3 antigravity suites at the old stacked PR-3 head
+    `0c705b8f` (K1 code present there). The standalone branches contain no K1
+    code; their own executed suites are recorded in rounds 36-45 below.
 34. **Escape-hatch reachability (execution)** — CONFIRMED COLD, repro
     preserved. `consecutive_denials` has no `file_reads` column, so it is
     in-memory only and resets every hook process. `tests/repro_escape_hatch_cold.py`

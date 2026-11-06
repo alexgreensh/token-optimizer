@@ -467,8 +467,10 @@ spend), and the whole LLM ping ships OFF behind `TOKEN_OPTIMIZER_KEEPWARM_ALLOW_
   (finding K1). PROPOSED guarantee: arm-time (session_id, transcript_mtime,
   byte_size) dedup under the keep-warm lock, landing with the pending K1 change
   (not part of this PR).
-* I16.2 The per-pause probe cap (2) and the break-even abort are per *pause*, which
-  I16.1 makes equivalent to per record.
+* I16.2 The per-pause probe cap (2) and the break-even abort are per *pause*; once
+  I16.1 lands (pending K1 change, see above) that makes them equivalent to per
+  record. Until then, duplicate records for one snapshot each carry their own
+  `pings_fired` (finding K1).
 * I16.3 A ping never hides its spend: the ledger 'firing' row is written before the
   subprocess exists.
 * I16.4 A resume is only ever *detected* by transcript growth; booking always re-reads
@@ -651,6 +653,10 @@ product-level reachability conditional on harness event ordering, unproven per h
   `upsert_file_entry(..., expected_reset_epoch=...)` checks-and-inserts in one
   IMMEDIATE transaction and drops the write when the epoch moved (failure mode
   parity with the pre-fix unconditional write under the same 50ms busy budget).
+  The guard lives in a new sibling module `reset_epoch.py` (a `SessionStore` mixin
+  plus `bump_reset_epoch` / `snapshot_reset_epoch` helpers; `SessionStore` public
+  method signatures unchanged) so the already-over-limit `session_store.py` and
+  `read_cache.py` do not grow under the repo's file-size gate.
   Judge-driven follow-up (F3/F4): the escape-hatch and invalidate writers were
   also unconditional `file_reads` writers that could resurrect a pre-clear row.
   They are now epoch-guarded at the PRODUCTION call sites: both

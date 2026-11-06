@@ -42,6 +42,9 @@ def prepare(module):
     package = sys.modules[__package__]
     hook, package.HOOK_IMPORT = getattr(package, 'HOOK_IMPORT', False) is True, False
     sys.modules['measure'] = module
+    values = vars(module)
+    for key in [k for k in ('__getattr__', '__dir__') if getattr(values.get(k), '_measure_lazy', False)]:
+        del values[key]  # a previous lazy initialization's lookups
     providers = Providers(n for n in DOMAIN_MODULES if hook and n in DEFERRED_MODULES)
     for name in DOMAIN_MODULES:
         if name in providers.deferred:
@@ -57,16 +60,14 @@ def _fresh(name):
 
 
 def _require(name):
-    """A deferred provider that is missing still fails the facade import, also
-    when an earlier one is cached: search the package path, not sys.modules."""
+    """A missing deferred provider fails the facade import, cached or not."""
     qualified = __package__ + '.' + name
     if importlib.machinery.PathFinder.find_spec(qualified, sys.modules[__package__].__path__) is None:
         raise ModuleNotFoundError(f'No module named {qualified!r}', name=qualified)
 
 
 class Providers(dict):
-    """Provider modules by domain. A deferred domain loads on first use and then
-    binds all of its facade names at once, as eager initialization did."""
+    """Provider modules by domain; a deferred one loads and binds all its names on first use."""
     def __init__(self, deferred):
         super().__init__()
         self.deferred = frozenset(deferred)
@@ -120,8 +121,7 @@ class _Binding:
 
 
 def _sweep():
-    """Move assigned deferred bindings out of their facade namespace. A lookup
-    then misses and module __getattr__ (PEP 562) loads the domain."""
+    """Move assigned deferred bindings out of the namespace; __getattr__ (PEP 562) loads them."""
     with _LOCK:
         waiting = []  # bindings whose statement has not assigned them yet
         while _UNSWEPT:
@@ -151,6 +151,7 @@ def _lookups(namespace, providers):
 
     def __dir__():
         return sorted(set(namespace) | set(providers.pending))
+    __getattr__._measure_lazy = __dir__._measure_lazy = True
     return __getattr__, __dir__
 
 

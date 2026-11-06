@@ -195,3 +195,15 @@ def test_userpromptsubmit_runner_opts_in_and_resets():
     flags = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.Assign)
              and any(ast.unparse(t).endswith('.HOOK_IMPORT') for t in n.targets)]
     assert any(f.endswith('= True') for f in flags) and any(f.endswith('= False') for f in flags), flags
+
+
+def test_review2_hook_to_default_reload_retires_the_lazy_handlers(tmp_path):
+    """REVIEW-sol-perf-fix2 finding 1: an eager reload of the same module object
+    after a hook-mode import leaves no lazy lookup behind."""
+    with _measure_for(tmp_path, 'hook') as m:
+        assert '__getattr__' in vars(m)
+        importlib.reload(m)  # HOOK_IMPORT was consumed: this re-initialization is eager
+        assert not m._measure_providers.deferred
+        assert '__getattr__' not in vars(m) and '__dir__' not in vars(m)
+        del m.savings_report
+        assert not hasattr(m, 'savings_report')

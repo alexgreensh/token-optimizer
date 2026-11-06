@@ -76,7 +76,7 @@ GUARD_TEXT = 'if __name__ == "__main__":\n    _measure_providers[\'cli\'].main()
 PINNED_BASE = {'commit': '55da0b1179afa98455fa1b1c6e3dd372afa8ec3f',
                'measure_sha256': 'e675f01b22b12923f412c0404e102faaba94e55fe616987f385b61e5c696bcfc'}
 PINNED_FOUNDATION = {
-    'commit': '8aa1464db203b78bded10b87f8ecbd2b497f7fad',
+    'commit': 'aa356ec654a1f6fa2e736f1269a412ef5422069b',
     'inputs_sha256': {
         'skills/token-optimizer/scripts/measure.py': '82de61c808d96ce8ea7318d332ba2e57c2267cb8d1d8eb20817db7a2255b8fde',
         'skills/token-optimizer/scripts/_measure/__init__.py': '57114e197b9b1879fb97d0985b77cd215b27b1d8f6fa223488ebd16c25e5c961',
@@ -84,7 +84,7 @@ PINNED_FOUNDATION = {
         'skills/token-optimizer/scripts/_measure/sessions.py': 'a0b0af34292099e4d8268fb3cb977679db580f5e52b45c552ada5d60a40dd962',
         'skills/token-optimizer/scripts/_measure/cli.py': 'a0b0af34292099e4d8268fb3cb977679db580f5e52b45c552ada5d60a40dd962',
         'scripts/mutations/_measure_lane2.json': '8f46c8271938ffe222f0a1786140e78b88d87cbccf8d75c2f228d6c8b8c6ed95',
-        'scripts/measure_split.py': 'a25e3b66514ffdcc1ed640f7e763af38db1b8b4518b6917dd1295f1a5c11cd73',
+        'scripts/measure_split.py': '53398444aa02f9eecc09137953d6d13e7b1f97a47c3c724090885ba96dc666e8',
         'scripts/measure_split_manifest.json': 'e2708beba9bbd5671b6e492b564ba19006c4e0b27ba7b9fe38eda8d06e73e73f',
         'scripts/measure_split_ownership.json': '04574f5d338a160a3018eaa436b7b1e7f0ddaf03fcd456c5858d7dc787fc9d37',
     },
@@ -97,7 +97,7 @@ PINNED_OUTPUTS = {
     'skills/token-optimizer/scripts/_measure/sessions.py': 'e958f4462d03b2448b55dab8b286daa5e6c89380cdac44040e90295df8c0f2c3',
     'skills/token-optimizer/scripts/_measure/cli.py': '7e1efcd5fbc725731896a56c46517c2cacd441410315596de13164c7145a22dc',
     'scripts/mutations/_measure_lane2.json': '8575771aa875f7ea96ee651a5361721e238710c624dc49fea218ed3fa1e256ac',
-    'scripts/split_lanes/u2_frozen.json': '23c86ab0e6e85fa947f727f13bc42c6801b9b2dc5bb8bd4619c9b15c1978843a',
+    'scripts/split_lanes/u2_frozen.json': 'fff3c038830fcf85431facaa25ca8e465b21875f890d906c3915e7e8a160caac',
 }
 # Read-only inputs this lane depends on; the working tree must still carry the pinned bytes.
 SHARED_INPUTS = ('scripts/measure_split.py', 'scripts/measure_split_manifest.json',

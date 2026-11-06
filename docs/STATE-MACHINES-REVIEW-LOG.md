@@ -210,3 +210,42 @@ so rounds 38-41 re-test it fresh.
     `tests/test_keepwarm_arm_dedup.py` byte-identical to the cleared K1 branch
     `93e78486`; K3 antigravity bridge + tests byte-identical to `955fa4aa`'s;
     docs pending/implemented wording flips only at the K1 head.
+
+## K2 extraction (`reset_epoch.py`) fresh torture rounds, executed
+
+Script: `torture_reset_epoch.py` (attached to the packet, not in the repo), run against all
+three trees (skills/, plugins/, cowork/) at the K2 refactor. Interpreter: CPython 3.12
+only. NOT tested: a 3.9 or 3.10 interpreter (grammar parse only, round 53), PyPy,
+Windows, macOS, hooks driven by a real host harness, or the per-host installer scripts.
+
+46. **MRO and signature** — PASS x3. `SessionStore.__mro__[1]` is `ResetEpochMixin`;
+    `upsert_file_entry` resolves to the mixin function and is not shadowed in the class
+    dict; parameters are `(self, file_path, entry, expected_reset_epoch)`.
+47. **Import isolation and cycles** — PASS x3. Fresh interpreter importing only
+    `reset_epoch`, only `session_store`, only `read_cache` each succeeds.
+48. **Partial install** — PASS (loud failure). A scripts copy with `reset_epoch.py`
+    deleted: `import read_cache` and `import session_store` both fail with
+    `ModuleNotFoundError: reset_epoch`. This differs from the old optional-import
+    behavior for session_store; closure is guarded by round 39 and the closure test.
+49. **Legacy DB, epoch 0 semantics** — PASS x3. Fresh store reports 0; guarded write with
+    expected 0 succeeds; after `reset_context_state` a stale expected-0 write returns False
+    and leaves no row.
+50. **Corrupt stored epoch through the mixin** — PASS x3. `'junk'` stored: both expected 0
+    and expected 1 drop (False); the next reset CAST-heals to 1; a write with expected 1
+    then lands. Unguarded (None) write still lands.
+51. **Subclass and override compatibility** — PASS x3. A `SessionStore` subclass overriding
+    `upsert_file_entry` and calling `super()` works; `clear_file_entries` bumps the epoch.
+52. **Concurrency, separate processes** — PASS x3. Six writer processes snapshot the epoch
+    then sleep 1.0s inside the judge-to-write window while a resetter process commits at
+    0.4s: all six writes dropped (False), reset completed.
+53. **Python 3.9 grammar** — PASS x3 (`ast.parse(..., feature_version=(3, 9))`; grammar
+    only, no 3.9 interpreter was run).
+54. **Real hook entry points per tree** — PASS x3. `read_cache.py --quiet`, `--invalidate`,
+    `--clear`, `--clear-compacted` run as subprocesses from each tree with isolated HOME:
+    exit 0, no traceback.
+55. **Byte identity** — PASS. `reset_epoch.py` sha256 prefix `a71a08bc3cecafff` identical
+    in all three trees, LF only, single trailing newline.
+
+Harness note: the first run of round 49-51 failed for plugins/cowork because all three
+trees reused one session id and shared one on-disk DB (test artifact, not a code
+defect); rerun with a unique session id per tree passed.

@@ -266,3 +266,49 @@ def test_blocked_socket_records_never_carry_the_descriptor(tmp_path):
         records.append([row for row in json.loads(effects.read_text()) if row[:2] == ['blocked', 'socket.connect']])
     assert records[0] and records[0] == records[1], records
     assert 'fd=' not in json.dumps(records[0])
+
+
+_PREFIX_DIAGNOSTIC = b'diagnostic: File "D:\\payload\\measure.py", line %d\r\n'
+
+
+@pytest.mark.parametrize('variant', ['diagnostic', 'source', 'message'])
+def test_known_crash_normalizes_only_traceback_frame_headers(tmp_path, variant):
+    """Astra U0-final2 #1: frame-shaped text outside a real traceback frame header must stay
+    raw. Every traceback frame is identical on both sides; only that text differs."""
+    name = 'cli-devin-filter---quiet'
+    frames = SIGPIPE_STDERR % 64099
+
+    def side(number):
+        if variant == 'diagnostic':
+            return _PREFIX_DIAGNOSTIC % number + frames
+        if variant == 'source':
+            return frames.replace(b'    sys.exit(devin_compress.main(args[1:]))\r\n',
+                                  b'    sys.exit(devin_compress.main(args[1:]))  # File "D:\\x\\measure.py", line %d\r\n' % number)
+        return frames.replace(b"Did you mean: 'SIGFPE'?", b'File "D:\\x\\measure.py", line %d' % number)
+
+    before, after = side(100), side(101)
+    assert crashes.known_crash(name, before, platform='nt') is crashes.known_crash(name, after, platform='nt') is not None
+    _case(tmp_path / 'base', name, before)
+    _case(tmp_path / 'candidate', name, after)
+    raw = golden.compare(tmp_path / 'base', tmp_path / 'candidate')
+    assert raw == ['bytes differ: ' + name + '/stderr']
+    remaining, normalized = crashes.normalize_known_crashes(raw, tmp_path / 'base', tmp_path / 'candidate', platform='nt')
+    assert remaining == raw and normalized == []
+
+
+def test_known_crash_normalizes_every_measure_frame_in_chained_tracebacks(tmp_path):
+    """Genuine-frame positive across a chained traceback; non-measure frames stay raw."""
+    name = 'cli-devin-filter---quiet'
+    chained = (b'Traceback (most recent call last):\r\n'
+               b'  File "D:\\a\\x\\payload\\skills\\token-optimizer\\scripts\\measure.py", line %d, in helper\r\n'
+               b'    raise KeyError(1)\r\n'
+               b'KeyError: 1\r\n\r\n'
+               b'During handling of the above exception, another exception occurred:\r\n\r\n')
+    _case(tmp_path / 'base', name, chained % 10 + SIGPIPE_STDERR % 64099)
+    _case(tmp_path / 'candidate', name, chained % 12 + SIGPIPE_STDERR % 63813)
+    raw = golden.compare(tmp_path / 'base', tmp_path / 'candidate')
+    remaining, normalized = crashes.normalize_known_crashes(raw, tmp_path / 'base', tmp_path / 'candidate', platform='nt')
+    assert remaining == [] and normalized == [name + '/stderr: devin-sigpipe-windows']
+    _case(tmp_path / 'other', name, chained % 10 + (SIGPIPE_STDERR % 64099).replace(b'line 707', b'line 708'))
+    raw = golden.compare(tmp_path / 'base', tmp_path / 'other')
+    assert crashes.normalize_known_crashes(raw, tmp_path / 'base', tmp_path / 'other', platform='nt') == (raw, [])

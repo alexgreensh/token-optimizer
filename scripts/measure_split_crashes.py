@@ -40,7 +40,9 @@ KNOWN_BASE_CRASHES = (
 )
 
 _FRAME = re.compile(rb'^\s*File "([^"]+)", line \d+, in ')
-_MEASURE_LINE = re.compile(rb'(File "[^"\r\n]*[\\/]measure\.py", line )\d+')
+# A real traceback frame header for measure.py, anchored on the whole line.
+_MEASURE_FRAME = re.compile(rb'(  File "[^"\r\n]*[\\/]measure\.py", line )\d+(, in [^\r\n]*)')
+_TRACEBACK = b'Traceback (most recent call last):'
 
 
 def known_crash(case_id, stderr, platform=None):
@@ -63,7 +65,26 @@ def known_crash(case_id, stderr, platform=None):
 
 
 def _masked(stderr):
-    return _MEASURE_LINE.sub(rb'\1<measure-line>', stderr)
+    """Mask measure.py line numbers in traceback frame headers only.
+
+    A frame header is a whole line inside a traceback block: after a
+    'Traceback (most recent call last):' line and before the first unindented
+    line (the exception). Every other byte, including frame-shaped text in
+    diagnostics, source lines or exception messages, is returned unchanged.
+    """
+    out, inside = [], False
+    for line in stderr.splitlines(keepends=True):
+        body = line.rstrip(b'\r\n')
+        if body == _TRACEBACK:
+            inside = True
+        elif inside and not body.startswith(b' '):
+            inside = False
+        elif inside:
+            match = _MEASURE_FRAME.fullmatch(body)
+            if match:
+                line = match.group(1) + b'<measure-line>' + match.group(2) + line[len(body):]
+        out.append(line)
+    return b''.join(out)
 
 
 def normalize_known_crashes(errors, expected, actual, platform=None):

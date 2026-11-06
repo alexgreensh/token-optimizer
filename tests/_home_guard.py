@@ -24,7 +24,7 @@ TWO LAYERS
 
 LIMITS: audit events are per-process. A subprocess that is handed the real HOME
 explicitly is not seen, and ``os.stat``/``lstat``/``access`` raise no audit event, so the guard also
-wraps those three (``Path.exists()`` goes through ``os.stat``). C-level stats
+wraps those three and the cached pathlib accessor aliases on Python 3.9/3.10. C-level stats
 (``os.scandir`` entries, ``shutil`` fast paths) are not seen.
 
 ``TOKEN_OPTIMIZER_TEST_REAL_HOME_OVERRIDE=<dir>`` makes the guard treat a decoy
@@ -40,11 +40,13 @@ from __future__ import annotations
 
 import atexit
 import os
+import pathlib
 import re
 import shutil
 import sys
 import tempfile
 import threading
+from types import BuiltinFunctionType
 from pathlib import Path
 from sys import addaudithook as _register_audit_hook
 
@@ -96,6 +98,10 @@ SANDBOX: Path | None = None
 # (event kind, regex on the real-home-relative path, reason). Read-only and
 # justified cases only; a write never belongs here.
 ALLOWLIST: list[tuple[str, str, str]] = [
+    # _compute_home_redirected compares the sandbox home with the account home
+    # before touching schedulers. Resolving/samefile on that directory is a
+    # metadata-only identity check; no child, content read or listing is exempt.
+    ("STAT", r"^\.$", "account-home directory identity for scheduler isolation"),
     # Host CLI discovery: PATH shims (~/.local/bin/claude, devin) are symlinks
     # into these version dirs, and the code under test stats/access-checks the
     # resolved binary to find the host CLI. Existence probe of an executable,
@@ -353,6 +359,17 @@ def install_guard() -> None:
     _register_audit_hook(_hook)
     for name in ("stat", "lstat", "access"):
         setattr(os, name, _wrap_stat(name, getattr(os, name), "STAT"))
+    # Python 3.9/3.10 pathlib caches os.stat (and 3.9 os.lstat) on its
+    # accessor before this guard replaces os functions. Wrap those cached
+    # callables too. A staticmethod preserves the unbound builtin signature.
+    accessor = getattr(pathlib, "_NormalAccessor", None)
+    for name in ("stat", "lstat"):
+        cached = vars(accessor).get(name) if accessor is not None else None
+        if cached is not None and cached is not getattr(os, name):
+            # Only builtin aliases need wrapping; 3.10's lstat is a Python
+            # method that delegates to the now-wrapped accessor.stat.
+            if isinstance(cached, BuiltinFunctionType):
+                setattr(accessor, name, staticmethod(_wrap_stat(name, cached, "STAT")))
     # On Windows these use C fast paths (nt._path_exists etc.) that never call
     # os.stat, and from 3.14 Path.exists() delegates to os.path.exists.
     for name in ("exists", "lexists", "isfile", "isdir", "islink"):

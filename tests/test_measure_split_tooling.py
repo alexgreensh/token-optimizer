@@ -18,7 +18,8 @@ def tooling():
     'result = str(exc) + """\nunchanged literal\n"""',
     'result = f"""\nunchanged {exc}\n"""',
     'def read_error():\n            return str(exc)\n        result = read_error()'])
-@pytest.mark.parametrize('star', [False, True])
+@pytest.mark.parametrize('star', [False, pytest.param(True, marks=pytest.mark.skipif(
+    sys.version_info < (3, 11), reason='except* syntax requires Python 3.11+'))])
 def test_cli_exception_target_is_global_and_deleted_after_handler(tmp_path, body, star):
     from types import SimpleNamespace
     scripts = tmp_path / 'scripts'
@@ -275,15 +276,43 @@ def test_inspection_view_preserves_literals_and_resolves_fstrings_and_lambdas():
     assert 'globals().get("VALUE")' in resolved
 
 
-def test_mover_writes_lf_on_every_platform():
-    """Windows text mode would write CRLF into facade and providers; every write pins LF."""
+def test_mover_writes_lf_on_every_platform(tmp_path):
+    """Byte writes retain LF on Windows and work before Path.write_text(newline)."""
     import ast
     tree = ast.parse((REPO / 'scripts/measure_split.py').read_text(encoding='utf-8'))
     writes = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
-              and isinstance(node.func, ast.Attribute) and node.func.attr == 'write_text']
-    assert len(writes) >= 4
+              and isinstance(node.func, ast.Attribute) and node.func.attr == 'write_bytes']
+    assert len(writes) == 4
     for node in writes:
-        newline = {kw.arg: kw.value for kw in node.keywords}.get('newline')
-        assert isinstance(newline, ast.Constant) and newline.value == '\n', f'line {node.lineno}'
+        encoded = node.args[0]
+        assert isinstance(encoded, ast.Call) and isinstance(encoded.func, ast.Attribute)
+        assert encoded.func.attr == 'encode'
+        assert isinstance(encoded.args[0], ast.Constant) and encoded.args[0].value == 'utf-8'
+    assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr == 'write_text' for node in ast.walk(tree))
     opened = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'open']
     assert all('w' not in ast.unparse(node.args[1]) for node in opened if len(node.args) > 1), 'text open() for writing'
+    scripts = tmp_path / 'scripts'
+    package = scripts / '_measure'
+    package.mkdir(parents=True)
+    (scripts / 'measure.py').write_bytes('if __name__ == "__main__":\r\n    value = "é"\r\n'.encode())
+    (package / 'cli.py').write_bytes(tooling().HEADER.replace('\n', '\r\n').encode())
+    tooling().move_cli(scripts)
+    for path in (scripts / 'measure.py', package / 'cli.py'):
+        assert b'\r\n' not in path.read_bytes(), path
+        compile(path.read_text(encoding='utf-8'), str(path), 'exec')
+
+
+
+def test_plain_exception_rewrite_does_not_require_try_star(monkeypatch):
+    import ast
+    from helpers.measure_split import _inspection_text
+    monkeypatch.delattr(ast, 'TryStar', raising=False)
+    source = ('def work():\n    global exc\n    try:\n        raise ValueError("expected")\n'
+              '    except ValueError as exc:\n        return str(exc)\n')
+    moved, binding = tooling().extract_definition(source, 'work', 'runtime')
+    assert '_measure_exception_' in moved
+    restored = _inspection_text(moved)
+    assert '_measure_exception_' not in restored
+    assert 'except ValueError as exc:' in restored
+    compile(moved, '<moved>', 'exec')

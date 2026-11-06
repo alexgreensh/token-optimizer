@@ -34,7 +34,7 @@ from typing import Any, Optional
 from hook_io import read_stdin_hook_input
 from plugin_env import is_v5_flag_enabled, resolve_snapshot_dir
 from runtime_env import project_config_value, run_origin, runtime_home
-from reset_epoch import _reset_replacement_state, snapshot_reset_epoch
+from reset_epoch import _reset_replacement_state, refresh_message, snapshot_reset_epoch
 
 try:
     from session_store import SessionStore, cleanup_old_stores, mark_context_reset
@@ -2312,9 +2312,9 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
                 existing["content_hash"] = None
                 store.delete_cached_content(file_path)
 
-        store.upsert_file_entry(file_path, existing, expected_reset_epoch=_invalidate_epoch)
+        written = store.upsert_file_entry(file_path, existing, expected_reset_epoch=_invalidate_epoch)
         if not quiet:
-            print(f"[Read Cache] Refreshed after edit: {file_path}", file=sys.stderr)
+            print(refresh_message(file_path, written), file=sys.stderr)
     except Exception:
         # Fallback: purge on any unexpected error so a stale entry is never
         # served.

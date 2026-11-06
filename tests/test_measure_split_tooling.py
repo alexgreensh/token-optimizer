@@ -287,3 +287,33 @@ def test_mover_writes_lf_on_every_platform():
         assert isinstance(newline, ast.Constant) and newline.value == '\n', f'line {node.lineno}'
     opened = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'open']
     assert all('w' not in ast.unparse(node.args[1]) for node in opened if len(node.args) > 1), 'text open() for writing'
+
+
+@pytest.mark.parametrize('builtins_value', [{}, __import__('builtins')])
+def test_missing_global_keeps_native_name_error_contract(builtins_value, monkeypatch):
+    from types import SimpleNamespace
+    scripts = REPO / 'skills/token-optimizer/scripts'
+    monkeypatch.syspath_prepend(str(scripts))
+    from _measure._compat import read_global
+    module = SimpleNamespace(__builtins__=builtins_value)
+    with pytest.raises(NameError) as actual:
+        read_global(module, '__to_missing_global__')
+    assert str(actual.value) == "name '__to_missing_global__' is not defined"
+    try:
+        eval('__to_missing_global__', {})
+    except NameError as native:
+        assert getattr(actual.value, 'name', None) == getattr(native, 'name', None)
+    assert actual.value.__suppress_context__ is True
+    assert actual.value.__cause__ is None
+    module.__to_missing_global__ = 'restored'
+    assert read_global(module, '__to_missing_global__') == 'restored'
+
+
+def test_global_lookup_keeps_builtin_fallback_and_shadowing(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.syspath_prepend(str(REPO / 'skills/token-optimizer/scripts'))
+    from _measure._compat import read_global
+    module = SimpleNamespace()
+    assert read_global(module, 'len') is len
+    module.len = 'shadow'
+    assert read_global(module, 'len') == 'shadow'

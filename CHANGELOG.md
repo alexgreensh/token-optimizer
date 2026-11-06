@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Preserve the native missing-global `NameError` contract on Python 3.9 instead of raising a constructor `TypeError`.
+
 ## [5.13.66] - 2026-11-06
 
 - Token Optimizer's engine is now split into smaller modules, so it loads faster and is easier to keep reliable. Same results, same savings.

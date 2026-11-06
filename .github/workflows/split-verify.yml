@@ -24,7 +24,7 @@ on:
         required: false
         default: L4,L5,L7
       samples:
-        description: L7 paired samples per arm (TEST-PLAN n=30)
+        description: L7 paired samples per arm (TEST-PLAN n=30; n=100 for the aggregate gate run)
         required: false
         default: '30'
 
@@ -50,7 +50,8 @@ jobs:
       SELECTED: ${{ inputs.layers || 'L4,L5,L7' }}
       BASE_REF: ${{ inputs.base_ref || '55da0b1179afa98455fa1b1c6e3dd372afa8ec3f' }}
       CANDIDATE_REF: ${{ inputs.candidate_ref || github.sha }}
-      SAMPLES: ${{ inputs.samples || '30' }}
+      # TEST-PLAN amendment 2026-11-06: the gate run on the aggregate uses n=100 pairs per OS.
+      SAMPLES: ${{ inputs.samples || (github.ref == 'refs/heads/cloud/split-aggregate' && '100' || '30') }}
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v7

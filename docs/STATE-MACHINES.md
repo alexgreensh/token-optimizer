@@ -462,15 +462,11 @@ spend), and the whole LLM ping ships OFF behind `TOKEN_OPTIMIZER_KEEPWARM_ALLOW_
 
 **Invariants**
 
-* I16.1 At most ONE active arm record per (session, transcript snapshot). OBSERVED
-  CURRENT: not enforced — `write_keepwarm_arm_record` appends unconditionally
-  (finding K1). PROPOSED guarantee: arm-time (session_id, transcript_mtime,
-  byte_size) dedup under the keep-warm lock, landing with the pending K1 change
-  (not part of this PR).
-* I16.2 The per-pause probe cap (2) and the break-even abort are per *pause*; once
-  I16.1 lands (pending K1 change, see above) that makes them equivalent to per
-  record. Until then, duplicate records for one snapshot each carry their own
-  `pings_fired` (finding K1).
+* I16.1 At most ONE active arm record per (session, transcript snapshot). Enforced at
+  arm time by the (session_id, transcript_mtime, byte_size) dedup under the keep-warm
+  lock (finding K1).
+* I16.2 The per-pause probe cap (2) and the break-even abort are per *pause*, which
+  I16.1 makes equivalent to per record.
 * I16.3 A ping never hides its spend: the ledger 'firing' row is written before the
   subprocess exists.
 * I16.4 A resume is only ever *detected* by transcript growth; booking always re-reads
@@ -618,16 +614,16 @@ product-level reachability conditional on harness event ordering, unproven per h
   appended unconditionally, `pings_fired` is tracked per record, and the ping command
   is `--no-session-persistence`, so a fired ping never bumps the transcript mtime
   that would make the duplicate classify `resumed` or fail the idle re-check.
-  Evidence: `tests/test_keepwarm_arm_dedup.py` (in the pending change) —
+  Evidence (before the fix): `tests/test_keepwarm_arm_dedup.py` —
   one `keepwarm_tick` fired 2 `claude --resume` pings for one paused session
   (assertion failure showed both `fire_status: ok` decisions). Impact: with the
   LLM-ping escape hatch on, probe spend per pause is multiplied by the registration
   count (default product path is safe: the LLM ping ships disabled, and the
-  zero-spend window never trips the tripwire). Diagnosed fix: arm-time dedup on
-  (session_id, transcript_mtime, byte_size) under the keep-warm lock, with 6
-  regression tests — implemented and reviewed in a SEPARATE pending change that
-  is NOT part of this PR and not shipped here; the invariant below is therefore
-  stated as observed-current vs proposed, not as enforced.
+  zero-spend window never trips the tripwire). Fix: arm-time dedup on
+  (session_id, transcript_mtime, byte_size) under the keep-warm lock; a genuine
+  re-arm after transcript growth still appends (pinned by
+  `test_arm_after_real_turn_appends`). Regression tests:
+  `tests/test_keepwarm_arm_dedup.py` (6 tests).
 * **K3. Antigravity rollup lease fails open on a degraded data dir — spawn storm.**
   Reachable invalid state: on a read-only or full Antigravity data dir,
   `_touch_rollup_lease` swallowed the OSError, so the 30s `rollup.lease` could
@@ -709,8 +705,8 @@ for approval before any public issue is filed.
 
 * **G1 (single-finding group, keep-warm arm integrity) - HELD for trusted-channel
   review, not filed:** K1. Small, self-contained: arm-time dedup + 6 regression
-  tests in `tests/test_keepwarm_arm_dedup.py` — implemented in a SEPARATE pending
-  change, not this PR. No other confirmed keep-warm findings group with it yet.
+  tests in `tests/test_keepwarm_arm_dedup.py`. No other confirmed keep-warm findings
+  group with it yet.
 
 * **G3 (single-finding group, Antigravity rollup lease) - HELD for trusted-channel
   review, not filed:** K3. Draft title: "Antigravity bridge: fail closed when the
@@ -745,7 +741,7 @@ for approval before any public issue is filed.
 | Sweeper | `tests/test_reclaim_sweep_serialization.py` |
 | Flush/backfill | `tests/test_stuck_session_compact_restore_budget.py`, `tests/test_sessionend_fossil_reconcile.py` |
 | Consent gate | `tests/test_consent_gate_race_window.py` |
-| Keep-warm arm dedup (K1) | `tests/test_keepwarm_arm_dedup.py` (in the pending K1 change, not this PR) |
+| Keep-warm arm dedup (K1) | `tests/test_keepwarm_arm_dedup.py` |
 | Read-cache reset epoch (K2) | `tests/test_read_cache_reset_epoch_race.py`, `tests/test_read_cache_reset_epoch_integration.py` |
 | Antigravity rollup lease (K3) | `tests/test_antigravity_hook_bridge.py::test_stop_fails_closed_when_lease_touch_fails`, `::test_stop_fails_closed_when_lease_touch_raises`, `::test_stop_still_spawns_when_lease_writeable` |
 

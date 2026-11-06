@@ -1,15 +1,12 @@
 # Torture-review log — K1 + K2 patch families
 
-Scope (provenance, standalone recomposition): the reviewed units are the
-standalone per-family branches on base 86d9374b. K1 (keep-warm arm dedup,
-`_measure/cache_policy.py` x3 mirrors + `tests/test_keepwarm_arm_dedup.py`) is
-code-CLEAR but held on the frozen lane-4 proof contract (F1) — it ships as its
-own change once that contract lands, and is NOT in this PR. K2 =
-`pr-k2-standalone` (read-cache reset-epoch guard, `session_store.py` +
-`read_cache.py` x3 mirrors + `tests/test_read_cache_reset_epoch_race.py` /
-`_integration.py`). K3 = `pr-k3-standalone` (antigravity bridge), stacked on K2.
-The doc presents the K1 finding as diagnosed-pending: observed-current vs
-proposed guarantees are kept separate. Each round is a distinct adversarial
+Scope (provenance, standalone recomposition on base 2c3412ca): K2 =
+`pr-k2-nb` (read-cache reset-epoch guard: `reset_epoch.py`, `session_store.py`,
+`read_cache.py` x3 mirrors + race/integration/closure tests), K3 = `pr-k3-nb`
+(antigravity bridge) on K2, K1 = `pr-k1-nb` (keep-warm arm dedup,
+`_measure/cache_policy.py` x3 mirrors + `tests/test_keepwarm_arm_dedup.py`) on
+K3. K1 is code-reviewed (rounds in the K1 section); its doc wording is
+implemented-in-this-change but not released until merge. Each round is a distinct adversarial
 perspective with the check actually run and its evidence. Verdicts: PASS / PASS-NOTE
 (passes with an observation) / FAIL (blocks).
 

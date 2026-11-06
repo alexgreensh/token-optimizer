@@ -237,3 +237,32 @@ def test_precompact_checkpoint_persists_under_windows_command_line_audit(monkeyp
     assert golden.capture(REPO, work / 'fixed-path', work / 'capture', [row]) == 1
     files = work / 'capture' / case / 'files'
     assert any('checkpoints' in path.parts for path in files.rglob('*.md'))
+
+
+def test_blocked_socket_records_never_carry_the_descriptor(tmp_path):
+    """CI 42138301440: BASE doctor --json effects differed from BASE on Windows because the
+    blocked socket.connect record printed the socket repr, whose fd is a fresh kernel handle
+    each run. Shift the descriptor between two runs; the record must not change."""
+    records = []
+    for extra in (0, 3):
+        work = REPO / '.scratch-u0' / ('socket-test-' + uuid.uuid4().hex)
+        (work / 'case').mkdir(parents=True)
+        home, project = golden.fixture(work / 'case', 'synthetic-current')
+        env = golden.environment(home, tmp_path / 'payload', work / 'case')
+        script = work / 'case' / 'connect.py'
+        script.write_text(
+            'import socket\n'
+            f'held = [socket.socket() for _ in range({extra})]\n'
+            'probe = socket.socket()\n'
+            'try:\n'
+            '    probe.connect(("127.0.0.1", 24848))\n'
+            'except PermissionError:\n'
+            '    pass\n', encoding='utf-8')
+        effects = work / 'case' / 'effects.json'
+        proc = subprocess.run([sys.executable, str(REPO / 'scripts/measure_split_probe.py'), str(tmp_path / 'payload'),
+                               str(effects), 'script', str(script)],
+                              cwd=project, env=env, capture_output=True, timeout=60)
+        assert proc.returncode == 0, proc.stderr
+        records.append([row for row in json.loads(effects.read_text()) if row[:2] == ['blocked', 'socket.connect']])
+    assert records[0] and records[0] == records[1], records
+    assert 'fd=' not in json.dumps(records[0])

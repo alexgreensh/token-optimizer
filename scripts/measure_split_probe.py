@@ -175,6 +175,9 @@ def clean(value):
         return value
     if isinstance(value, io.IOBase):
         return {'stream': str(getattr(value, 'name', 'unnamed'))}
+    if isinstance(value, socket.socket):
+        # Never the repr: its fd is a fresh kernel handle each Windows run.
+        return {'socket': [int(value.family), int(value.type), value.proto]}
     return str(value)
 
 

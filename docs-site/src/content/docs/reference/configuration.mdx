@@ -143,6 +143,7 @@ Do not apply Python defaults to the TypeScript extensions merely because an envi
 | OpenClaw `TOKEN_OPTIMIZER_CHECKPOINT_COOLDOWN_MS` | 90000 ms | Checkpoint policy cooldown |
 | OpenClaw `TOKEN_OPTIMIZER_RUNTIME_EVALUATION_COOLDOWN_MS` | 30000 ms | Runtime checkpoint-policy evaluation cooldown |
 | OpenClaw `TOKEN_OPTIMIZER_CONTINUITY_MAX_AGE_DAYS` | 7 days | Prior-session age bound |
+| OpenClaw `TOKEN_OPTIMIZER_CHECKPOINT_ROOT` | `~/.openclaw/token-optimizer/checkpoints` | Checkpoint storage location override |
 | Pi `TOKEN_OPTIMIZER_PI_HOME` | `~/.pi/agent/token-optimizer` | Complete data directory, not a parent home |
 
 OpenCode plugin options can set feature gates and numeric defaults; environment reads then apply as defined by the adapter. An explicit `dataDir` option wins over its environment value. Pi persists `enabled`, `retainDays` (1-365, default 7), `archiveToolOutput`, and `continuity` in its own `settings.json`; the three boolean gates default off. OpenClaw keeps its own host/plugin config, not Python `config.json`.

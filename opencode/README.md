@@ -22,7 +22,7 @@ For OpenCode V2, use the `plugins` key (plural):
 { "plugins": ["token-optimizer-opencode"] }
 ```
 
-OpenCode V2 normalizes older `plugin` entries, but V1 plugin *code* cannot run in V2. Upgrade the npm package to 1.2.0 or later once that version is published. On OpenCode V1 1.18.29+, use `plugin` (singular) with the same package.
+OpenCode V2 normalizes older `plugin` entries, but V1 plugin *code* cannot run in V2. Upgrade the npm package to 1.2.0 or later; the npm registry currently publishes 1.2.1. On OpenCode V1 1.18.29+, use `plugin` (singular) with the same package.
 
 For V1, add the plugin to your `opencode.json` (or `.opencode/opencode.jsonc`) `plugin` array. OpenCode resolves and installs it from npm on the next launch:
 

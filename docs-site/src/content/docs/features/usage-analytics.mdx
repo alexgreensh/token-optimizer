@@ -47,6 +47,12 @@ python3 measure.py savings --days 30
 python3 measure.py savings --json
 ```
 
+The same report also prints one monthly headline number that adds logged savings, the routing you actually used, repeat reads avoided and estimates together, counted once each, plus a cumulative total since install. After an upgrade re-dates older history, figures are labelled "so far" until the one-time background pass finishes. The dashboard shows the same monthly and since-install figures as the CLI.
+
+## Session cost lookup
+
+`session-cost` looks up a collected session in the local trends database and reports its total spend, so you can answer "what did that session cost?" without parsing the full history. Give it search words from the session's slug or first prompt (or `--id UUID` to pin one session), and it prints the cost, model, API-call count and timing; `--date` and `--days` narrow the window, `--limit` caps matches, and `--json` returns the record for scripts. Full flags are in the [CLI reference](/reference/cli/).
+
 ## Per-turn cost
 
 `conversation` breaks a single session into its individual API calls. Each row shows input tokens, output tokens, cache read and cache write, dollar cost, the model used, and the tools invoked on that turn. This is the view for finding the one expensive turn in an otherwise cheap session.

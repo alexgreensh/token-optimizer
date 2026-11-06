@@ -6,7 +6,7 @@ description: "Hermes: terminal output compression, cheaper re-reads, loop warnin
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Beta">
-The Hermes adapter is beta, version 0.2.0. It is tested against Hermes's documented plugin hook contract (upstream commit 7ee6d99c) but not yet validated against a live Hermes install.
+The Hermes adapter is beta, version 0.2.2. It is tested against Hermes's documented plugin hook contract (upstream commit 7ee6d99c), and fixes reported from live installs shipped in Token Optimizer 5.13.60 and 5.13.63.
 </Aside>
 
 Token Optimizer runs on Hermes as a native plugin. It brings the same engines Claude Code and Codex use, through Hermes's own plugin hooks: smaller terminal and tool output, cheaper re-reads, loop warnings, checkpoints that survive compaction, prior-session hints, and cost and quality tracking. It reads Hermes's session database read-only and never writes to it.

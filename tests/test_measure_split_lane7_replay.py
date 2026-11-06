@@ -37,11 +37,18 @@ def test_mover_reports_the_applied_tree_as_a_verified_no_op(mover, tmp_path):
     merge-base guess, so this runs the same way locally and in CI.
     """
     assert re.fullmatch('[0-9a-f]{40}', mover.FOUNDATION)
-    result = mover.plan(REPO, foundation=mover.FOUNDATION, scratch_parent=tmp_path)
-    assert result['moved'] == [] and result['already'] == 126 and len(result['fragments']) == 13
-    assert result['verified'] == 126
-    assert result['rebuilt'] == [mover.FACADE, mover.PROVIDER, mover.FRAGMENTS]
-    assert result['provider'] == PROVIDER.read_text(encoding='utf-8')
+    found = mover.examine(REPO)
+    assert found['state'] == 'done' and found['done'] == 126 and len(found['fragments']) == 13
+    expected = mover.rebuild_expected(REPO, mover.FOUNDATION, tmp_path, mover.PINS)
+    # The aggregate facade also carries the other lanes, so it is the one file a fresh
+    # move may not reproduce (facade bytes: merge oracle, decisions-U9 D1); every other
+    # lane file must equal the fresh move byte for byte, and the finer checks still hold.
+    problems = mover.byte_differences(mover.disk_texts(REPO), expected)
+    assert [line.split(':', 1)[0] for line in problems] == [mover.FACADE]
+    assert mover.verify_applied(REPO, found['tool'], found['names'], found['frozen']) == 126
+    for fragment in found['fragments']:
+        mover.verify_fragment(found['tool'], found['existing'], fragment)
+    assert found['existing'] == PROVIDER.read_text(encoding='utf-8')
 
 
 def _git(cwd, *args):

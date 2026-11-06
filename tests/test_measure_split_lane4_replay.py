@@ -21,13 +21,20 @@ from helpers._lane4_helpers import (DEFINITION, REPO, SCRIPTS, SYMBOLS, _files, 
 # ---------------------------------------------------------------- the move script
 
 @structural
-def test_script_is_a_no_op_on_a_finished_tree(copy_root, capsys):
+def test_script_is_a_no_op_on_a_finished_tree(copy_root, capsys, tmp_path):
     root = copy_root()
     before = [path.read_bytes() for path in _files(root)]
-    assert _run(root) == 0
-    assert _run(root, check=True) == 0
+    # The aggregate facade also carries the other lanes, so the whole-facade rebuild
+    # compare is skipped (facade bytes: merge oracle, decisions-U9 D1); the finer
+    # checks still run, and the lane-owned files are compared to the rebuild below.
+    assert _run(root, rebuilding=True) == 0
+    assert _run(root, check=True, rebuilding=True) == 0
     assert [path.read_bytes() for path in _files(root)] == before
     assert capsys.readouterr().out.count('already applied, 181/181') == 2
+    script = _load_script()
+    rebuilt = script.rebuild(REPO, script.PIN, REPO, tmp_path / 'u4-scratch')
+    assert _read(_files(root)[1]) == rebuilt[script.PROVIDER_REL]
+    assert _read(REPO / script.FRAGMENT) == rebuilt[script.FRAGMENT]
 
 
 def _break_binding(root):
@@ -320,10 +327,15 @@ def test_the_rebuild_catches_changes_no_finer_check_looks_for(copy_root, damage,
 def test_the_real_tree_is_the_rebuild_of_the_pinned_frozen_inputs(tmp_path):
     """In CI (shallow, no history) the pinned commit is fetched by sha; locally it is read from the object store."""
     script = _load_script()
+    rebuilt = script.rebuild(REPO, script.PIN, REPO, tmp_path / 'u4-scratch')
+    # The aggregate facade also carries the other lanes (facade bytes: merge oracle,
+    # decisions-U9 D1); the lane-owned files must equal the rebuild byte for byte.
+    assert _read(SCRIPTS / '_measure/cache_policy.py') == rebuilt[script.PROVIDER_REL]
+    assert _read(REPO / script.FRAGMENT) == rebuilt[script.FRAGMENT]
     import io
     out = io.StringIO()
-    assert script.run(REPO, check=True, out=out, scratch=tmp_path / 'u4-scratch') == 0
-    assert f'byte-identical to the rebuild of the frozen inputs (pinned {script.PIN["input"]["commit"][:8]}' in out.getvalue()
+    assert script.run(REPO, check=True, out=out, scratch=tmp_path / 'u4-scratch', rebuilding=True) == 0
+    assert 'already applied, 181/181' in out.getvalue()
 
 
 @structural
@@ -489,13 +501,13 @@ def test_script_rebuilds_the_committed_result_from_the_verbatim_originals(copy_r
     facade, provider = _files(root)
     assert _run(root, check=True) == 1
     assert '4/181 pending, 177 done, no hash drift' in capsys.readouterr().out
-    assert _run(root) == 0
+    assert _run(root, rebuilding=True) == 0
     assert 'moved 4 definitions' in capsys.readouterr().out
     assert facade.read_bytes() == (SCRIPTS / 'measure.py').read_bytes()
     committed, rebuilt = _segments(SCRIPTS / '_measure/cache_policy.py'), _segments(provider)
     assert rebuilt == committed
     assert '# fail-closed: if we cannot read the verdict, refuse' in rebuilt['_keepwarm_tripwire_off']
-    assert _run(root) == 0
+    assert _run(root, rebuilding=True) == 0
     assert 'already applied' in capsys.readouterr().out
 
 
@@ -505,7 +517,7 @@ def test_script_matches_the_stock_mover_except_for_the_preserved_trailing_commen
     mine, stock = copy_root('mine'), copy_root('stock')
     _make_pending(mine, names)
     _make_pending(stock, names)
-    _run(mine)
+    _run(mine, rebuilding=True)
     spec = importlib.util.spec_from_file_location('_u4_stock_mover', stock / 'scripts/measure_split.py')
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
@@ -523,7 +535,7 @@ def test_the_script_writes_lf_only_and_refuses_a_crlf_tree(copy_root):
     """The repo requires LF and the replay compares raw bytes: never the platform's text-mode newline."""
     root = copy_root()
     _make_pending(root, list(VERBATIM))
-    _run(root)
+    _run(root, rebuilding=True)
     assert all(b'\r' not in path.read_bytes() for path in _files(root))
     facade, provider = _files(root)
     facade.write_bytes(facade.read_bytes().replace(b'\n', b'\r\n'))

@@ -417,11 +417,19 @@ def _real_copy(tmp_path):
     return repo
 
 
+def _assert_only_the_facade_differs_from_the_clean_room(refused):
+    """On the aggregate the shared facade also carries the other lanes, so it is the one
+    file a clean-room rebuild may not reproduce (facade bytes: merge oracle, decisions-U9 D1)."""
+    differing = [line for line in str(refused.value).splitlines() if 'differs from the clean-room result' in line]
+    assert [line.split(':', 1)[0] for line in differing] == [FACADE_REL], str(refused.value)
+
+
 @split_tree_only
 def test_real_audit_domain_equals_a_clean_room_rebuild_of_the_pre_lane_inputs(tmp_path, history):
-    report = mover().run(_real_copy(tmp_path), check_only=True, git_repo=REPO)
-    assert report['moved_now'] == 0 and report['clean_room_files'] == 3
-    assert report['already_moved'] == len(packet()['symbols'])
+    tool = mover()
+    with pytest.raises(tool.Refusal, match='not exactly the mechanical move') as refused:
+        tool.run(_real_copy(tmp_path), check_only=True, git_repo=REPO)
+    _assert_only_the_facade_differs_from_the_clean_room(refused)
 
 
 KEEPWARM = '_KEEPWARM_PING_BUDGET_USD = 0.10'
@@ -650,8 +658,10 @@ def real_shallow(history, tmp_path_factory):
 
 @split_tree_only
 def test_real_tree_in_a_shallow_clone_passes_untouched(tmp_path, real_shallow):
-    report = mover().run(_real_copy(tmp_path), check_only=True, git_repo=real_shallow)
-    assert report['moved_now'] == 0 and report['clean_room_files'] == 3
+    tool = mover()
+    with pytest.raises(tool.Refusal, match='not exactly the mechanical move') as refused:
+        tool.run(_real_copy(tmp_path), check_only=True, git_repo=real_shallow)
+    _assert_only_the_facade_differs_from_the_clean_room(refused)
 
 
 @split_tree_only

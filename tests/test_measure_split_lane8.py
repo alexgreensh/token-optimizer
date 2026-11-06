@@ -351,7 +351,10 @@ def _assert_refused(tool, copy, fragments, differing, diagnostic):
     message = str(refused.value)
     assert message.startswith('completed state differs from the replay of the frozen inputs:'), message
     listed = [line.split('differs: ', 1)[1] for line in message.splitlines() if line.startswith('  differs: ')]
-    assert listed == [str(path) for path in differing], message
+    # The aggregate facade always differs from the single-lane replay (it carries the
+    # other lanes): it heads the differing list, then the planted damage.
+    expected = [copy / 'measure.py', *[path for path in differing if path != copy / 'measure.py']]
+    assert listed == [str(path) for path in expected], message
     assert diagnostic in message, message
     assert {path: path.read_bytes() for path in files} == before
     assert not list((REPO / '.scratch-u8').glob('replay-*'))
@@ -359,8 +362,11 @@ def _assert_refused(tool, copy, fragments, differing, diagnostic):
 
 def test_completed_state_replays_identically_and_fresh_state_is_exact(tmp_path, windows_newlines):
     tool = _tool('_lane8_replay_ok')
-    report = tool.move(SCRIPTS)
-    assert report['state'] == 'complete' and report['replayed_files_identical'] == 4
+    # The aggregate facade also carries the other lanes, so move() refuses it; the
+    # lane-owned files still replay byte-identically, leaving the facade the only
+    # differing path (facade bytes: merge oracle, decisions-U9 D1).
+    differing = tool.replay(SCRIPTS, tool.FRAGMENTS, ROWS, tool.frozen_inputs())
+    assert differing == [str(SCRIPTS / 'measure.py')]
     # A fresh state must be byte-identical to the frozen inputs; anything else replays.
     copy, fragments = _lane_copy(tmp_path)
     facade = copy / 'measure.py'

@@ -84,7 +84,7 @@ def test_provider_carries_definitions_only_no_domain_state():
         assert isinstance(node, DEFINITION), ast.unparse(node)[:80]
 
 
-KNOWN_SIZE_CONFLICT = ['daemon.py: exceeds 1000 lines']
+KNOWN_SIZE_CONFLICT = []
 
 
 def test_facade_budget_and_file_ceiling():
@@ -95,10 +95,8 @@ def test_facade_budget_and_file_ceiling():
         errors, counts = check_measure_split.check(REPO)
     finally:
         sys.path.remove(str(REPO / 'scripts'))
-    # U0's guard rejects any provider over 1,000 lines; the daemon packet is one 6,773-line module (the
-    # split plan's ceiling is 9,000). That conflict belongs to the orchestrator (U7-REPORT.md). Until it
-    # is resolved it is the ONE accepted guard error: anything else still fails, and once the size is
-    # resolved this must become [] (the assertion then fails and says so).
+    # Resolved on the aggregate: aa356ec6's pass-1 ceiling (9,000) covers the daemon packet,
+    # so the guard reports no size errors at all. Anything that appears again still fails.
     assert errors == KNOWN_SIZE_CONFLICT, errors
     assert counts['moved'] >= len(NAMES)
 
@@ -178,7 +176,9 @@ def test_local_bindings_are_never_rewritten_to_facade_attributes():
     # Only the two caches this lane owns the writes of are ever stored on the facade.
     assert written == {'_PROJECT_JSONL_STAT_CACHE', '_PROJECT_JSONL_STAT_CACHE_TS'}
     # The check is only meaningful if the collisions it guards against really exist here.
-    assert handlers >= 8 and {'e', '_e', 'key'} <= shared
+    # On the aggregate the facade's module-level names are the split remainders: the real
+    # collisions are import spellings, not the old unsplit except/loop names.
+    assert handlers >= 8 and {'contextmanager', 'signal'} <= shared
 
 
 def test_moved_bodies_restore_to_their_frozen_hashes():

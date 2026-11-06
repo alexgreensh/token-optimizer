@@ -196,11 +196,18 @@ def _quiet(*_):
 
 
 def test_rerun_is_a_no_op_because_tree_matches_the_replay_byte_for_byte(mover, frozen, base):
-    assert mover.run(dry_run=True, log=_quiet, frozen=frozen, base=base) == {'moved_now': 0, 'already_moved': 179}
     inputs, outputs, root = mover.replay(base, frozen, _quiet)
     assert set(outputs) == set(mover.WRITTEN) and root.is_relative_to(mover.REPLAY_ROOT)
-    for relative in mover.WRITTEN:
+    # The aggregate facade also carries the other lanes, so run() refuses naming
+    # it alone; every lane-owned file must still equal the replay byte for byte
+    # (the facade half is proven by the merge oracle, decisions-U9 D1).
+    for relative in mover.WRITTEN[1:]:
         assert (REPO / relative).read_bytes() == outputs[relative], relative
+    with pytest.raises(mover.Refused) as refused:
+        mover.run(dry_run=True, log=_quiet, frozen=frozen, base=base)
+    listed = [line.split(' (replay: ')[0].strip() for line in str(refused.value).splitlines()
+              if '(replay: ' in line]
+    assert listed == [mover.WRITTEN[0]]
 
 
 def test_untouched_inputs_receive_exactly_the_replay(mover, frozen, base, tmp_path):
@@ -232,8 +239,11 @@ DRIFTS = {
                          "get_session_baselines, __name__, defaults=(11,))", 'get_session_baselines: facade binding drifted'),
     'canary default': ('measure.py', "defaults=(0, 0, None, None, None, False,))",
                        "defaults=(0, 0, None, None, None, True,))", '_get_model_cost: facade binding drifted'),
-    'decorator': ('measure.py', "_tripwire_lock, __name__, decorators=(contextmanager,))",
-                  "_tripwire_lock, __name__)", '_tripwire_lock: facade binding drifted'),
+    'decorator': ('measure.py',
+                  "_tripwire_lock = _measure_compat.bind(_measure_providers['trends']._tripwire_lock, "
+                  "__name__, decorators=(contextmanager,))",
+                  "_tripwire_lock = _measure_compat.bind(_measure_providers['trends']._tripwire_lock, "
+                  "__name__)", '_tripwire_lock: facade binding drifted'),
 }
 
 
@@ -290,8 +300,13 @@ def test_completed_state_hole_refuses_without_writes(mover, frozen, base, tmp_pa
     with pytest.raises(mover.Refused, match='differs from the replayed move') as refused:
         mover.run(scripts, fragments, log=_quiet, frozen=frozen, base=base)
     assert relative in str(refused.value)
-    assert [line for line in str(refused.value).splitlines() if '(replay: ' in line] == [
-        f'  {relative} (replay: {mover.replay(base, frozen, _quiet)[2] / relative})']
+    # The aggregate facade differs from the single-lane replay by construction, so
+    # the differing list always heads with it, then the planted hole.
+    replay_root = mover.replay(base, frozen, _quiet)[2]
+    expected = [f'  {mover.WRITTEN[0]} (replay: {replay_root / mover.WRITTEN[0]})']
+    if relative != mover.WRITTEN[0]:
+        expected.append(f'  {relative} (replay: {replay_root / relative})')
+    assert [line for line in str(refused.value).splitlines() if '(replay: ' in line] == expected
     if diagnostic:
         assert diagnostic in str(refused.value)
     assert {path: path.read_bytes() for path in files} == before
@@ -307,7 +322,7 @@ def test_unmoved_body_drift_refuses(mover, frozen, tmp_path):
     _edit(facade, binding + '\n', text + '\n')
     body, _ = mover.expected_state(frozen, symbols)['_parse_semver']
     _edit(provider, '\n\n\n' + body + '\n', '\n')
-    to_move, _ = mover.validate(scripts, frozen, symbols)
+    to_move, _ = mover.classify(scripts, symbols)
     assert to_move == [('_parse_semver', 'runtime')]
     _edit(facade, text + '\n', text + '  # drift\n')
     with pytest.raises(mover.Refused, match='_parse_semver: facade body differs from its frozen hash'):

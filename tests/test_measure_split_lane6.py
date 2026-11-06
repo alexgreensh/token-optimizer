@@ -393,7 +393,11 @@ def test_real_tree_replay_refuses_a_changed_constant_and_blesses_only_the_pinned
     assert (copy / 'scripts/_measure').as_posix() not in str(refused.value)
     assert _snapshot(copy) == before
     # The same replay output equals the real working tree in every lane file.
+    # The aggregate facade also carries the other lanes, so it is excluded here
+    # (its bytes are proven by the merge oracle, decisions-U9 D1).
     for rel in mover.WRITTEN:
+        if rel == 'measure.py':
+            continue
         assert (SCRIPTS / rel).read_bytes() == (scratch / 'scripts' / rel).read_bytes(), rel
     assert (REPO / 'scripts/mutations/_measure_lane6.json').read_bytes() == (scratch / 'fragments.json').read_bytes()
     base_path = _base_scripts(tmp_path)

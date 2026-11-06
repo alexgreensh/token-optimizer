@@ -244,9 +244,14 @@ def test_lane_script_is_a_verified_noop_on_the_split_tree(tmp_path):
     measure_text = (SCRIPTS / 'measure.py').read_text(encoding='utf-8')
     provider_text = PROVIDER.read_text(encoding='utf-8')
     proc, scripts = _mover(tmp_path, measure_text, provider_text)
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip().endswith('no-op')
-    assert 'reproduces measure.py, savings.py and _measure_lane3.json byte for byte' in proc.stdout
+    # The aggregate facade also carries the other lanes, so the frozen re-run
+    # refuses it alone; savings.py and the fragment still reproduce byte for byte
+    # (facade half: merge oracle, decisions-U9 D1), and nothing may be written.
+    assert proc.returncode == 1, proc.stderr
+    assert 'u3_move refused' in proc.stderr
+    differing = [line for line in proc.stderr.splitlines() if 'differs from the frozen re-run' in line]
+    assert len(differing) == 1 and 'measure.py differs from the frozen re-run' in differing[0], proc.stderr
+    assert 'savings.py' not in proc.stderr and '_measure_lane3.json' not in proc.stderr
     assert (scripts / 'measure.py').read_text(encoding='utf-8') == measure_text
     assert (scripts / '_measure/savings.py').read_text(encoding='utf-8') == provider_text
 

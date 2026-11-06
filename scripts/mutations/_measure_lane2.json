@@ -3,7 +3,7 @@
     "mutation": "one session stored under two paths counted twice",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "            if any(_session_rank(r[1], r[2], r[3]) >= mine for r in other):",
+    "old": "            if any(_measure_facade._session_rank(r[1], r[2], r[3]) >= mine for r in other):",
     "new": "            if False:",
     "symbol": "collect_sessions"
   },
@@ -43,7 +43,7 @@
     "mutation": "a generation model priced at its family card",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    m = _CLAUDE_GENERATION_RE.search(model_id.lower())\n    if m:",
+    "old": "    m = _measure_facade._CLAUDE_GENERATION_RE.search(model_id.lower())\n    if m:",
     "new": "    m = None\n    if m:",
     "symbol": "_claude_price_key"
   },
@@ -59,7 +59,7 @@
     "mutation": "session total drops the subagents (main thread only)",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "        total_cost = sum(\n                _cost_from_model_breakdown(models, tier=pricing_tier)\n                for models in du.values() if isinstance(models, dict))\n",
+    "old": "        total_cost = sum(\n                _measure_facade._cost_from_model_breakdown(models, tier=pricing_tier)\n                for models in du.values() if isinstance(models, dict))\n",
     "new": "        total_cost = session_cost\n",
     "symbol": "_price_session_row"
   }

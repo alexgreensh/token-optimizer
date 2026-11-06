@@ -1,0 +1,986 @@
+{
+ "base": "55da0b1179afa98455fa1b1c6e3dd372afa8ec3f",
+ "dispatch": {
+  "provider_sha256": "b44c2de88d39444a423b63b5ff9c3d7f502c387383b7114dde89d5bf17cc7858"
+ },
+ "foundation": "aa356ec654a1f6fa2e736f1269a412ef5422069b",
+ "outputs": {
+  "_measure/cli.py": "7e1efcd5fbc725731896a56c46517c2cacd441410315596de13164c7145a22dc",
+  "_measure/sessions.py": "e958f4462d03b2448b55dab8b286daa5e6c89380cdac44040e90295df8c0f2c3",
+  "measure.py": "19974a7e30e0eca60f229d76b20a61a3c680e04698b22c98b6cd17fa1d5aaa71",
+  "scripts/mutations/_measure_lane2.json": "8575771aa875f7ea96ee651a5361721e238710c624dc49fea218ed3fa1e256ac"
+ },
+ "positions": [
+  {
+   "after": [
+    "stmt",
+    "99b59628ae387e77ef77d210ce4f8ac502b20120c4dcbea5df079f971115b3f5"
+   ],
+   "before": [
+    "def",
+    "generate_coach_block"
+   ],
+   "run": [
+    [
+     "def",
+     "_find_all_jsonl_files"
+    ],
+    [
+     "def",
+     "_find_subagent_jsonl_files"
+    ],
+    [
+     "def",
+     "_extract_skills_and_agents_from_subagent"
+    ],
+    [
+     "def",
+     "_extract_agent_type"
+    ],
+    [
+     "def",
+     "_analyze_subagent_costs"
+    ],
+    [
+     "def",
+     "_extract_costly_prompts"
+    ],
+    [
+     "def",
+     "_clean_project_name"
+    ],
+    [
+     "def",
+     "_extract_topic"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "376540cbc87ab702890342b1682580709fc9497c70b2e63fb32ba849d61ee0c5"
+   ],
+   "before": [
+    "stmt",
+    "a99e2c3f26e477f54d3c1cbd8c8461f7f44a6ccd405f728d79d752b0677b41ed"
+   ],
+   "run": [
+    [
+     "def",
+     "_leading_user_text"
+    ],
+    [
+     "def",
+     "_resolve_installed_skill"
+    ],
+    [
+     "def",
+     "_sidechain_path_reason"
+    ],
+    [
+     "def",
+     "_osrc_prompt_text"
+    ],
+    [
+     "def",
+     "_usage_request_key"
+    ],
+    [
+     "def",
+     "_request_local_day"
+    ],
+    [
+     "def",
+     "_empty_model_buckets"
+    ],
+    [
+     "def",
+     "_net_request_is_empty"
+    ],
+    [
+     "def",
+     "_aggregate_request_usage"
+    ],
+    [
+     "def",
+     "_parse_session_jsonl"
+    ],
+    [
+     "def",
+     "parse_session_turns"
+    ],
+    [
+     "def",
+     "score_session_quality"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "df645cef882d13403702f36b7185ba368a47ce37e524d15b444205e91ac61d98"
+   ],
+   "before": [
+    "stmt",
+    "376540cbc87ab702890342b1682580709fc9497c70b2e63fb32ba849d61ee0c5"
+   ],
+   "run": [
+    [
+     "def",
+     "_record_model"
+    ],
+    [
+     "def",
+     "_normalize_model_name"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "9b2b483ee697358dd4c9017708f7f839c38e0ad10dc2c627dae3d3e5b1e2bfaf"
+   ],
+   "before": [
+    "stmt",
+    "fbc4adb46889654561c8bf0bed402a1993b40ff32fc75691934a979a756a263f"
+   ],
+   "run": [
+    [
+     "def",
+     "_claude_price_key"
+    ],
+    [
+     "def",
+     "_load_overhead_snapshots"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "2edc36f42fbfffbe50e31f350e94d4687a33d6983f4ef184d24ab91027b16052"
+   ],
+   "before": [
+    "def",
+    "_get_savings_summary"
+   ],
+   "run": [
+    [
+     "def",
+     "_is_file_collected"
+    ],
+    [
+     "def",
+     "_adapter_activity_ts"
+    ],
+    [
+     "def",
+     "_store_adapter_activity"
+    ],
+    [
+     "def",
+     "_insert_normalized_session"
+    ],
+    [
+     "def",
+     "_safe_json_dict"
+    ],
+    [
+     "def",
+     "_rebuild_aggregate_tables"
+    ],
+    [
+     "def",
+     "_needs_model_daily_rebuild"
+    ],
+    [
+     "def",
+     "_needs_streaming_dedup_rebuild"
+    ],
+    [
+     "def",
+     "_migrate_model_daily"
+    ],
+    [
+     "def",
+     "_migrate_streaming_dedup"
+    ],
+    [
+     "def",
+     "_hermes_refresh_session_totals"
+    ],
+    [
+     "def",
+     "_collect_hermes_sessions"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "a7676ee2a6b0dda3b273f7f70b5d485d62baf555e1b9cbdd2b9cbab382542302"
+   ],
+   "before": [
+    "stmt",
+    "2edc36f42fbfffbe50e31f350e94d4687a33d6983f4ef184d24ab91027b16052"
+   ],
+   "run": [
+    [
+     "def",
+     "_parse_hermes_rollup_skills"
+    ],
+    [
+     "def",
+     "_parse_hermes_rollup_context"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "f6fefd8c48870ce3157df67d64cca870bc538a0c69efcab6849f019fb5627e06"
+   ],
+   "before": [
+    "stmt",
+    "a7676ee2a6b0dda3b273f7f70b5d485d62baf555e1b9cbdd2b9cbab382542302"
+   ],
+   "run": [
+    [
+     "def",
+     "_hermes_transcript_dir"
+    ],
+    [
+     "def",
+     "_sweep_hermes_transcripts"
+    ],
+    [
+     "def",
+     "hermes_checkpoint"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "31fdf57c5bd10fdcf485b7f536906511d4d55288c652ee5b9db8373de652b646"
+   ],
+   "before": [
+    "stmt",
+    "f67ea659f069bd8be8668a1c3c6e5bb398939a2a79ee6f24ab2fc7eb86a4e0df"
+   ],
+   "run": [
+    [
+     "def",
+     "_hermes_checkpoint_cli"
+    ],
+    [
+     "def",
+     "hermes_turn_context"
+    ],
+    [
+     "def",
+     "_resolve_copilot_home_wsl_aware"
+    ],
+    [
+     "def",
+     "_write_copilot_restore_context"
+    ],
+    [
+     "def",
+     "_grok_summary"
+    ],
+    [
+     "def",
+     "_collect_grok_sessions"
+    ],
+    [
+     "def",
+     "_copilot_summary"
+    ],
+    [
+     "def",
+     "_collect_copilot_sessions"
+    ],
+    [
+     "def",
+     "_write_cursor_restore_context"
+    ],
+    [
+     "def",
+     "_cursor_summary"
+    ],
+    [
+     "def",
+     "_collect_cursor_sessions"
+    ],
+    [
+     "def",
+     "_antigravity_restore_clean"
+    ],
+    [
+     "def",
+     "_write_antigravity_restore_context"
+    ],
+    [
+     "def",
+     "_price_antigravity_session"
+    ],
+    [
+     "def",
+     "_antigravity_summary"
+    ],
+    [
+     "def",
+     "_collect_antigravity_sessions"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "8104e27233ad4fb5958a29ddddd9821068def6ed515fab0f257f8e689a2784fc"
+   ],
+   "before": [
+    "stmt",
+    "31fdf57c5bd10fdcf485b7f536906511d4d55288c652ee5b9db8373de652b646"
+   ],
+   "run": [
+    [
+     "def",
+     "_merge_daily_usage"
+    ],
+    [
+     "def",
+     "_session_merged_requests"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "862c5d355bd6d54e381e8adca9f95e157585a849e9f7aff8121e772264f8201e"
+   ],
+   "before": [
+    "stmt",
+    "8104e27233ad4fb5958a29ddddd9821068def6ed515fab0f257f8e689a2784fc"
+   ],
+   "run": [
+    [
+     "def",
+     "_stable_hash63"
+    ],
+    [
+     "def",
+     "_request_base_key"
+    ],
+    [
+     "def",
+     "_usage_owner_id"
+    ],
+    [
+     "def",
+     "_live_usage_owners"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "5c610975deb0e1e4dc0720f5a806a8fda1c96347258ef0079b8fcff634df432e"
+   ],
+   "before": [
+    "stmt",
+    "862c5d355bd6d54e381e8adca9f95e157585a849e9f7aff8121e772264f8201e"
+   ],
+   "run": [
+    [
+     "def",
+     "_empty_share"
+    ],
+    [
+     "def",
+     "_claim_state"
+    ],
+    [
+     "def",
+     "_net_of_counted"
+    ],
+    [
+     "def",
+     "_retained_requests"
+    ],
+    [
+     "def",
+     "_claim_requests"
+    ],
+    [
+     "def",
+     "_net_and_record"
+    ],
+    [
+     "def",
+     "_parsed_with_requests"
+    ],
+    [
+     "def",
+     "_parsed_net_of_counted"
+    ],
+    [
+     "def",
+     "_parsed_net_of_ledger"
+    ],
+    [
+     "def",
+     "_stale_usage_row_paths"
+    ],
+    [
+     "def",
+     "_stamp_usage_parser_version"
+    ],
+    [
+     "def",
+     "_daily_usage_from_merged"
+    ],
+    [
+     "def",
+     "_session_daily_metrics"
+    ],
+    [
+     "def",
+     "_session_daily_usage"
+    ],
+    [
+     "def",
+     "_session_activity_evidence"
+    ],
+    [
+     "def",
+     "_session_rank"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "38687f4befad4e664338ea943f8043850dd21a91749285e189c09ae31ac10f07"
+   ],
+   "before": [
+    "stmt",
+    "dbaee1d160d3dd670b6aad216189cae2c8ee515f66567bafec260af6f5c86cc6"
+   ],
+   "run": [
+    [
+     "def",
+     "_session_dir_index"
+    ],
+    [
+     "def",
+     "_session_copy_files"
+    ],
+    [
+     "def",
+     "_session_subagent_files"
+    ],
+    [
+     "def",
+     "_canonical_session_uuid"
+    ],
+    [
+     "def",
+     "_dedupe_session_rows"
+    ]
+   ]
+  },
+  {
+   "after": [
+    "stmt",
+    "148b7a58843002d89aeac15b6af5e20c834f5c35a6fc1eeb46e3cb005accfccc"
+   ],
+   "before": [
+    "stmt",
+    "506810b6da72a1c0de4572e179c354720387809ce8feb8bdbecba1a3988306fb"
+   ],
+   "run": [
+    [
+     "def",
+     "_collect_drain_mode"
+    ],
+    [
+     "def",
+     "_upgrade_drain_key"
+    ],
+    [
+     "def",
+     "_upgrade_meta_get"
+    ],
+    [
+     "def",
+     "_upgrade_meta_set"
+    ],
+    [
+     "def",
+     "_upgrade_drain_mark_done"
+    ],
+    [
+     "def",
+     "_upgrade_drain_after_pass"
+    ],
+    [
+     "def",
+     "_upgrade_drain_claim_lock"
+    ],
+    [
+     "def",
+     "_upgrade_drain_release_lock"
+    ],
+    [
+     "def",
+     "_spawn_upgrade_drain"
+    ],
+    [
+     "def",
+     "_upgrade_drain_days"
+    ],
+    [
+     "def",
+     "_run_upgrade_drain"
+    ],
+    [
+     "def",
+     "collect_sessions"
+    ],
+    [
+     "def",
+     "conn_total_sessions"
+    ],
+    [
+     "def",
+     "_read_path_upkeep"
+    ],
+    [
+     "def",
+     "_session_price_buckets"
+    ],
+    [
+     "def",
+     "_price_session_row"
+    ]
+   ]
+  },
+  {
+   "after": null,
+   "before": [
+    "def",
+    "_verbosity_nudge_text"
+   ],
+   "run": [
+    [
+     "dispatch"
+    ]
+   ]
+  }
+ ],
+ "source_sha256": "e675f01b22b12923f412c0404e102faaba94e55fe616987f385b61e5c696bcfc",
+ "symbols": {
+  "_adapter_activity_ts": {
+   "binding": "_adapter_activity_ts = _measure_compat.bind(_measure_providers['sessions']._adapter_activity_ts, __name__)",
+   "provider_sha256": "b8216f7f9e14b003e9c4d0499e46dd93816f63ef9ff3c0708530d79312feb361"
+  },
+  "_aggregate_request_usage": {
+   "binding": "_aggregate_request_usage = _measure_compat.bind(_measure_providers['sessions']._aggregate_request_usage, __name__)",
+   "provider_sha256": "50b08defc667eedeb9824e7389b54fa2ab5573d3baa0f18caff76eeaa194b3f9"
+  },
+  "_analyze_subagent_costs": {
+   "binding": "_analyze_subagent_costs = _measure_compat.bind(_measure_providers['sessions']._analyze_subagent_costs, __name__, defaults=(None,))",
+   "provider_sha256": "b73688cfd87a73414196db3e9fd6f7563c5b32727fa66036a96cdb089bc6df85"
+  },
+  "_antigravity_restore_clean": {
+   "binding": "_antigravity_restore_clean = _measure_compat.bind(_measure_providers['sessions']._antigravity_restore_clean, __name__)",
+   "provider_sha256": "74efb2cf73aa3ca1eecd40b604dd0550db5a8ae7b50716941bdd458720d5187f"
+  },
+  "_antigravity_summary": {
+   "binding": "_antigravity_summary = _measure_compat.bind(_measure_providers['sessions']._antigravity_summary, __name__)",
+   "provider_sha256": "fad67a64bfda0925e13c4feea268ee9fef33f8f099087733d6d51eb35d4bd5ee"
+  },
+  "_canonical_session_uuid": {
+   "binding": "_canonical_session_uuid = _measure_compat.bind(_measure_providers['sessions']._canonical_session_uuid, __name__)",
+   "provider_sha256": "b57bb7e042db03b1dd0742e6160b845c05da12b9c937aae6bf64779b2f4615ec"
+  },
+  "_claim_requests": {
+   "binding": "_claim_requests = _measure_compat.bind(_measure_providers['sessions']._claim_requests, __name__)",
+   "provider_sha256": "ee850344cde1f42dcf4e9ae59e75b673d783f43c45af10600ec46658ef942a03"
+  },
+  "_claim_state": {
+   "binding": "_claim_state = _measure_compat.bind(_measure_providers['sessions']._claim_state, __name__)",
+   "provider_sha256": "48dc66c914f0aee9cdf0429ac882b2196f26849a7ebf63830995618326c0dd98"
+  },
+  "_claude_price_key": {
+   "binding": "_claude_price_key = _measure_compat.bind(_measure_providers['sessions']._claude_price_key, __name__)",
+   "provider_sha256": "6f6b558442b6c3a0fd42077593de8fe11985614155cfffe1f10bf0e56e816bf0"
+  },
+  "_clean_project_name": {
+   "binding": "_clean_project_name = _measure_compat.bind(_measure_providers['sessions']._clean_project_name, __name__)",
+   "provider_sha256": "5aa42c95d2f176566f020db386e4ba4c6ee076dde3c932577f4961c5aaccbde4"
+  },
+  "_collect_antigravity_sessions": {
+   "binding": "_collect_antigravity_sessions = _measure_compat.bind(_measure_providers['sessions']._collect_antigravity_sessions, __name__, defaults=(90, False, False,))",
+   "provider_sha256": "b9a5dd327c042d42be9c58ecf01273b349faa7068d0de9c3ac347b7bf3ef2f6a"
+  },
+  "_collect_copilot_sessions": {
+   "binding": "_collect_copilot_sessions = _measure_compat.bind(_measure_providers['sessions']._collect_copilot_sessions, __name__, defaults=(90, False, False,))",
+   "provider_sha256": "e0938daa818e06c2b662e0172896f89b0247649580e978e40df8539144bd4e1b"
+  },
+  "_collect_cursor_sessions": {
+   "binding": "_collect_cursor_sessions = _measure_compat.bind(_measure_providers['sessions']._collect_cursor_sessions, __name__, defaults=(90, False, False,))",
+   "provider_sha256": "d8b60f0e6f6d9ad0183b961ca415caedd091e4e452582f7a1ef4dea2eeb5cd15"
+  },
+  "_collect_drain_mode": {
+   "binding": "_collect_drain_mode = _measure_compat.bind(_measure_providers['sessions']._collect_drain_mode, __name__)",
+   "provider_sha256": "137f5e51db993ed27d8254b9b4b330c39c6d4634bd96ad241b8654d27e4260fb"
+  },
+  "_collect_grok_sessions": {
+   "binding": "_collect_grok_sessions = _measure_compat.bind(_measure_providers['sessions']._collect_grok_sessions, __name__, defaults=(90, False, False,))",
+   "provider_sha256": "c92684c39f9cefe7d045055096be0692ce2239ee24eb382e9509b79f178582e0"
+  },
+  "_collect_hermes_sessions": {
+   "binding": "_collect_hermes_sessions = _measure_compat.bind(_measure_providers['sessions']._collect_hermes_sessions, __name__, defaults=(90, False, False,))",
+   "provider_sha256": "9b3f7ac726489613ad37bc057a7962dfb3c344fd1b93544c1d06628376f9d316"
+  },
+  "_copilot_summary": {
+   "binding": "_copilot_summary = _measure_compat.bind(_measure_providers['sessions']._copilot_summary, __name__)",
+   "provider_sha256": "68f9c4be4e5239ec3614fee534f3670632932f9c9a45739d6518a4ef4bb6659d"
+  },
+  "_cursor_summary": {
+   "binding": "_cursor_summary = _measure_compat.bind(_measure_providers['sessions']._cursor_summary, __name__)",
+   "provider_sha256": "8c40eddd9b42698f52e4fa7d36ed0553df75b74ce9962c3de0537479a259608b"
+  },
+  "_daily_usage_from_merged": {
+   "binding": "_daily_usage_from_merged = _measure_compat.bind(_measure_providers['sessions']._daily_usage_from_merged, __name__)",
+   "provider_sha256": "ca7a10d0a12261a872b79bd2818111e8ec80193ffaceca7b371472a369976654"
+  },
+  "_dedupe_session_rows": {
+   "binding": "_dedupe_session_rows = _measure_compat.bind(_measure_providers['sessions']._dedupe_session_rows, __name__)",
+   "provider_sha256": "3a30422016d2ce8643ac45b6dad48b078de78e692db7ce98dba832415af3ba5a"
+  },
+  "_empty_model_buckets": {
+   "binding": "_empty_model_buckets = _measure_compat.bind(_measure_providers['sessions']._empty_model_buckets, __name__)",
+   "provider_sha256": "3c05733767a16f29ab09023bbcd11ba29ab27b920a225c09ad7abf364f194359"
+  },
+  "_empty_share": {
+   "binding": "_empty_share = _measure_compat.bind(_measure_providers['sessions']._empty_share, __name__)",
+   "provider_sha256": "7693b56e11bbff843b1e4e26b390be40ee30b737e57c5ffa208e7c18f69de7ef"
+  },
+  "_extract_agent_type": {
+   "binding": "_extract_agent_type = _measure_compat.bind(_measure_providers['sessions']._extract_agent_type, __name__)",
+   "provider_sha256": "aa8ee28d6ace69cec35ee58cd1be9b0211ee32aaac2dac5cd8cee2c176c9f76f"
+  },
+  "_extract_costly_prompts": {
+   "binding": "_extract_costly_prompts = _measure_compat.bind(_measure_providers['sessions']._extract_costly_prompts, __name__, defaults=(None, 5,))",
+   "provider_sha256": "9466ffb071e8d6b7310384290e5e7bcde4dea81692b1f27dbb76cd2f7393f3b5"
+  },
+  "_extract_skills_and_agents_from_subagent": {
+   "binding": "_extract_skills_and_agents_from_subagent = _measure_compat.bind(_measure_providers['sessions']._extract_skills_and_agents_from_subagent, __name__)",
+   "provider_sha256": "240e20a6815ac7e0b9aebd25f45c69a790b5a0247e56cf359bb10023469ed259"
+  },
+  "_extract_topic": {
+   "binding": "_extract_topic = _measure_compat.bind(_measure_providers['sessions']._extract_topic, __name__)",
+   "provider_sha256": "c5287f364c1be745a1c9f6288b760a722187598c544ccb9a2aaa421acbd13f48"
+  },
+  "_find_all_jsonl_files": {
+   "binding": "_find_all_jsonl_files = _measure_compat.bind(_measure_providers['sessions']._find_all_jsonl_files, __name__, defaults=(30,))",
+   "provider_sha256": "ec4860d3f7f4b7d89d833f75b0aeb8d397b7648544895aed186eeee2aff0c986"
+  },
+  "_find_subagent_jsonl_files": {
+   "binding": "_find_subagent_jsonl_files = _measure_compat.bind(_measure_providers['sessions']._find_subagent_jsonl_files, __name__)",
+   "provider_sha256": "bdeb2d8ede4c6a4a353999744eade420bd12ffb3053cbc9768e4e032b62468db"
+  },
+  "_grok_summary": {
+   "binding": "_grok_summary = _measure_compat.bind(_measure_providers['sessions']._grok_summary, __name__)",
+   "provider_sha256": "ac9cd6e821166ed5c2369c91b7a73ed7e9b880d011e7ce3041c3902ed0efc56a"
+  },
+  "_hermes_checkpoint_cli": {
+   "binding": "_hermes_checkpoint_cli = _measure_compat.bind(_measure_providers['sessions']._hermes_checkpoint_cli, __name__)",
+   "provider_sha256": "73aa8847ad85fd202d58fddf6239c2a48a45c0ec05195415e6c871f7461d42e3"
+  },
+  "_hermes_refresh_session_totals": {
+   "binding": "_hermes_refresh_session_totals = _measure_compat.bind(_measure_providers['sessions']._hermes_refresh_session_totals, __name__)",
+   "provider_sha256": "8bc8cc9a11d511db218e435d75894cd9b6c63fb9f0687b78b9bb814e4580f9da"
+  },
+  "_hermes_transcript_dir": {
+   "binding": "_hermes_transcript_dir = _measure_compat.bind(_measure_providers['sessions']._hermes_transcript_dir, __name__)",
+   "provider_sha256": "bb7b6add5dd53f4e05abea2d4b016615f89730ac6a8e11de9976d162937b761e"
+  },
+  "_insert_normalized_session": {
+   "binding": "_insert_normalized_session = _measure_compat.bind(_measure_providers['sessions']._insert_normalized_session, __name__, defaults=(False,))",
+   "provider_sha256": "97a90c75bffb17c57a74d425688c3642abc8eaf7150f672399519f73dbbaf77c"
+  },
+  "_is_file_collected": {
+   "binding": "_is_file_collected = _measure_compat.bind(_measure_providers['sessions']._is_file_collected, __name__, defaults=(False,))",
+   "provider_sha256": "0f02d3703b01af095d22e983ba2a99daf555f2c96cc8090e5ab3e6db32091693"
+  },
+  "_leading_user_text": {
+   "binding": "_leading_user_text = _measure_compat.bind(_measure_providers['sessions']._leading_user_text, __name__)",
+   "provider_sha256": "6a1493da169819a9025b8a82b5dc8b22cb33d00e42de226ed1010e7c0ff711d5"
+  },
+  "_live_usage_owners": {
+   "binding": "_live_usage_owners = _measure_compat.bind(_measure_providers['sessions']._live_usage_owners, __name__)",
+   "provider_sha256": "98937f50ce5adb30c8bb234be084396c8631da9af1fdee3b167fa8840fa60ba4"
+  },
+  "_load_overhead_snapshots": {
+   "binding": "_load_overhead_snapshots = _measure_compat.bind(_measure_providers['sessions']._load_overhead_snapshots, __name__)",
+   "provider_sha256": "62295775ff265577eaab648bca6824fac7159c22433f50c2ab5affa746fae08e"
+  },
+  "_merge_daily_usage": {
+   "binding": "_merge_daily_usage = _measure_compat.bind(_measure_providers['sessions']._merge_daily_usage, __name__)",
+   "provider_sha256": "fb8c114115a162d973312ba1a1058b24f24235c9a5b01172a6621ae7fabed1fe"
+  },
+  "_migrate_model_daily": {
+   "binding": "_migrate_model_daily = _measure_compat.bind(_measure_providers['sessions']._migrate_model_daily, __name__, defaults=(False,))",
+   "provider_sha256": "5f5d0df4cdceb5a95a22cf89607970e5af07818333aee21e7cef02fc92cbd66f"
+  },
+  "_migrate_streaming_dedup": {
+   "binding": "_migrate_streaming_dedup = _measure_compat.bind(_measure_providers['sessions']._migrate_streaming_dedup, __name__, defaults=(False,))",
+   "provider_sha256": "c0b99811902cf781a9c31fbf294267baff59911abb26978d26f5caac566d2df2"
+  },
+  "_needs_model_daily_rebuild": {
+   "binding": "_needs_model_daily_rebuild = _measure_compat.bind(_measure_providers['sessions']._needs_model_daily_rebuild, __name__)",
+   "provider_sha256": "a953b5035174f48b554d938e010c3bb3eef676b5665be3265159ffdea3a9a037"
+  },
+  "_needs_streaming_dedup_rebuild": {
+   "binding": "_needs_streaming_dedup_rebuild = _measure_compat.bind(_measure_providers['sessions']._needs_streaming_dedup_rebuild, __name__)",
+   "provider_sha256": "c2bbd104a650fdd76e5739106054be4bc67c116d6616a85ade18c2eeebe8a433"
+  },
+  "_net_and_record": {
+   "binding": "_net_and_record = _measure_compat.bind(_measure_providers['sessions']._net_and_record, __name__)",
+   "provider_sha256": "7ceeb1bbd795bd5ff656d8e539e30a5b93eb9f4277ae91f2d80cec6e1a9e4f17"
+  },
+  "_net_of_counted": {
+   "binding": "_net_of_counted = _measure_compat.bind(_measure_providers['sessions']._net_of_counted, __name__, defaults=(None,))",
+   "provider_sha256": "378204f98df0e465b00ac1ce73175afdc4a38da77e5920a16642749efdfb01da"
+  },
+  "_net_request_is_empty": {
+   "binding": "_net_request_is_empty = _measure_compat.bind(_measure_providers['sessions']._net_request_is_empty, __name__)",
+   "provider_sha256": "edcc81aee6ea61b7edb12b9f133669705ed60de2a6207efdd8257059d78fb879"
+  },
+  "_normalize_model_name": {
+   "binding": "_normalize_model_name = _measure_compat.bind(_measure_providers['sessions']._normalize_model_name, __name__)",
+   "provider_sha256": "b04f48bae381c71e93c8e74eb9d11200a3cc6f844619c66cfbfc52b5177af47b"
+  },
+  "_osrc_prompt_text": {
+   "binding": "_osrc_prompt_text = _measure_compat.bind(_measure_providers['sessions']._osrc_prompt_text, __name__)",
+   "provider_sha256": "83b6f05721abd7984e516bbafb0d11d3c13de1dc245244fd203303fc68908fdf"
+  },
+  "_parse_hermes_rollup_context": {
+   "binding": "_parse_hermes_rollup_context = _measure_compat.bind(_measure_providers['sessions']._parse_hermes_rollup_context, __name__)",
+   "provider_sha256": "52c645ae683cadc46cd6e30ff66ca5a9152eec25b4243a2d2802f38867263540"
+  },
+  "_parse_hermes_rollup_skills": {
+   "binding": "_parse_hermes_rollup_skills = _measure_compat.bind(_measure_providers['sessions']._parse_hermes_rollup_skills, __name__)",
+   "provider_sha256": "0506ff088e512c8c17d08a2c8f975293ee159f580860e3babddd4929104e5dd3"
+  },
+  "_parse_session_jsonl": {
+   "binding": "_parse_session_jsonl = _measure_compat.bind(_measure_providers['sessions']._parse_session_jsonl, __name__, defaults=(None, None,))",
+   "provider_sha256": "6f76a24698608cf1c2da7697ff3cba9a9e954375af4cf2dcfd55c74b4e2f95fb"
+  },
+  "_parsed_net_of_counted": {
+   "binding": "_parsed_net_of_counted = _measure_compat.bind(_measure_providers['sessions']._parsed_net_of_counted, __name__, defaults=(None,))",
+   "provider_sha256": "881576fac467149cd7ceef433ac56025355a3c9861c89f5f10fac0967513929b"
+  },
+  "_parsed_net_of_ledger": {
+   "binding": "_parsed_net_of_ledger = _measure_compat.bind(_measure_providers['sessions']._parsed_net_of_ledger, __name__)",
+   "provider_sha256": "d0ba56754992d340ff7bcd7453889789dfe9a572b09f598cdabeda27f8937cbf"
+  },
+  "_parsed_with_requests": {
+   "binding": "_parsed_with_requests = _measure_compat.bind(_measure_providers['sessions']._parsed_with_requests, __name__)",
+   "provider_sha256": "a3e1579ba2e0d2833ee71fb1ba577fe610dfd0ee67c72d4642d98baed5faa749"
+  },
+  "_price_antigravity_session": {
+   "binding": "_price_antigravity_session = _measure_compat.bind(_measure_providers['sessions']._price_antigravity_session, __name__)",
+   "provider_sha256": "103878fc6507223b33b88c900188033cf1cf9b04686f4432bb4c1389148587b4"
+  },
+  "_price_session_row": {
+   "binding": "_price_session_row = _measure_compat.bind(_measure_providers['sessions']._price_session_row, __name__)",
+   "provider_sha256": "f894c26deb62c0b1201c4f0dc9557c6a3bdeef7cfcceee32dec5014bde327c37"
+  },
+  "_read_path_upkeep": {
+   "binding": "_read_path_upkeep = _measure_compat.bind(_measure_providers['sessions']._read_path_upkeep, __name__)",
+   "provider_sha256": "8ecb0697472ccbd0c3d0d5ef85670e0496fa7315dc90a8d6881ae087e6b9bd54"
+  },
+  "_rebuild_aggregate_tables": {
+   "binding": "_rebuild_aggregate_tables = _measure_compat.bind(_measure_providers['sessions']._rebuild_aggregate_tables, __name__)",
+   "provider_sha256": "1a1c12dc6910ce2b8b82562e3ecea776a9fb3dda1a4bc57acf020a8d6eaf04e9"
+  },
+  "_record_model": {
+   "binding": "_record_model = _measure_compat.bind(_measure_providers['sessions']._record_model, __name__)",
+   "provider_sha256": "655a15ba53c1653f1c48e336d653669aff49e7a0b33c6263478833734f36f6db"
+  },
+  "_request_base_key": {
+   "binding": "_request_base_key = _measure_compat.bind(_measure_providers['sessions']._request_base_key, __name__)",
+   "provider_sha256": "0052246074486a48460a529dd2be7b4c3150536d206b8c51a351f77d07f4cece"
+  },
+  "_request_local_day": {
+   "binding": "_request_local_day = _measure_compat.bind(_measure_providers['sessions']._request_local_day, __name__)",
+   "provider_sha256": "06ce9b201629af0ffb0a85e03951580b3a07c3668de8afc76fe4fdab85f8666e"
+  },
+  "_resolve_copilot_home_wsl_aware": {
+   "binding": "_resolve_copilot_home_wsl_aware = _measure_compat.bind(_measure_providers['sessions']._resolve_copilot_home_wsl_aware, __name__, defaults=(None,))",
+   "provider_sha256": "3ed0f38a14b55aee55e31afc3d61b7f0ad3643eb0b20eefbf8f51176d3750437"
+  },
+  "_resolve_installed_skill": {
+   "binding": "_resolve_installed_skill = _measure_compat.bind(_measure_providers['sessions']._resolve_installed_skill, __name__)",
+   "provider_sha256": "ee5a6a06b094599f512ca86cb61f47f385344fa2b1f5090d811aded669704fb0"
+  },
+  "_retained_requests": {
+   "binding": "_retained_requests = _measure_compat.bind(_measure_providers['sessions']._retained_requests, __name__)",
+   "provider_sha256": "30d20966a3649b9cc358aee9dc0b98aee9a5ff1fa7ecc5eb8d2f305d236a1a9e"
+  },
+  "_run_upgrade_drain": {
+   "binding": "_run_upgrade_drain = _measure_compat.bind(_measure_providers['sessions']._run_upgrade_drain, __name__, defaults=(None, True,))",
+   "provider_sha256": "8de628c865105e29c04ea575538b6a9890195d4f3be5e9b8375f816e109dc18c"
+  },
+  "_safe_json_dict": {
+   "binding": "_safe_json_dict = _measure_compat.bind(_measure_providers['sessions']._safe_json_dict, __name__)",
+   "provider_sha256": "494528678e7516484c211029227f9478dd183b40a168318ca7141b6b0de3fb5c"
+  },
+  "_session_activity_evidence": {
+   "binding": "_session_activity_evidence = _measure_compat.bind(_measure_providers['sessions']._session_activity_evidence, __name__, defaults=(None, None, None, None,))",
+   "provider_sha256": "f7a6e7f4949d35a1a31a86c51f1723ab2574595ee1d49a038020977a5c556e23"
+  },
+  "_session_copy_files": {
+   "binding": "_session_copy_files = _measure_compat.bind(_measure_providers['sessions']._session_copy_files, __name__)",
+   "provider_sha256": "29105d4c6001b2af0fe95ea89bd358bac4d173a11a377188a96a1d924545a68b"
+  },
+  "_session_daily_metrics": {
+   "binding": "_session_daily_metrics = _measure_compat.bind(_measure_providers['sessions']._session_daily_metrics, __name__)",
+   "provider_sha256": "0dd66257649e5a5922ba0940676c0ce260a19a731ed833dd6da288b3af2b5d15"
+  },
+  "_session_daily_usage": {
+   "binding": "_session_daily_usage = _measure_compat.bind(_measure_providers['sessions']._session_daily_usage, __name__, defaults=(None, None, None, None,))",
+   "provider_sha256": "a697c9ff69902cfd169748b0a624a4b9db313263941bf1b0798513c5ffbbdddd"
+  },
+  "_session_dir_index": {
+   "binding": "_session_dir_index = _measure_compat.bind(_measure_providers['sessions']._session_dir_index, __name__)",
+   "provider_sha256": "4b0cff988e21867eefdaa71d86690ce385e75f175d550b4e11e35175429eadcf"
+  },
+  "_session_merged_requests": {
+   "binding": "_session_merged_requests = _measure_compat.bind(_measure_providers['sessions']._session_merged_requests, __name__)",
+   "provider_sha256": "028b7332caadac425535165d436cc96a389f516ce8b82221a0d50828be99c937"
+  },
+  "_session_price_buckets": {
+   "binding": "_session_price_buckets = _measure_compat.bind(_measure_providers['sessions']._session_price_buckets, __name__)",
+   "provider_sha256": "0ccdcf5eda1797f97d9ca8600f6336baffd913c9d9659c92e3b64c1a3214e967"
+  },
+  "_session_rank": {
+   "binding": "_session_rank = _measure_compat.bind(_measure_providers['sessions']._session_rank, __name__)",
+   "provider_sha256": "1eeef3963eb831ac32700df3521bb899de6b73d0af03e85092dfb93138d82ac7"
+  },
+  "_session_subagent_files": {
+   "binding": "_session_subagent_files = _measure_compat.bind(_measure_providers['sessions']._session_subagent_files, __name__)",
+   "provider_sha256": "9463af70ba1ba74ad4f6eaa87f50daeb8b42cfdcf9f729935c8f8f4b3db79191"
+  },
+  "_sidechain_path_reason": {
+   "binding": "_sidechain_path_reason = _measure_compat.bind(_measure_providers['sessions']._sidechain_path_reason, __name__)",
+   "provider_sha256": "a28b1f56f4ccd2d6637e5711c14f8a309d60e69d2dbd4bbab54b9b2250834ee0"
+  },
+  "_spawn_upgrade_drain": {
+   "binding": "_spawn_upgrade_drain = _measure_compat.bind(_measure_providers['sessions']._spawn_upgrade_drain, __name__)",
+   "provider_sha256": "d0ba6770f510f53da38f4522ab41dad46ad8f35104f8a968cb4629e3990255ac"
+  },
+  "_stable_hash63": {
+   "binding": "_stable_hash63 = _measure_compat.bind(_measure_providers['sessions']._stable_hash63, __name__)",
+   "provider_sha256": "e78c5b0dfe4b1536d965eba6558de1c709017d9cc67fad6fc59473421dc9caa5"
+  },
+  "_stale_usage_row_paths": {
+   "binding": "_stale_usage_row_paths = _measure_compat.bind(_measure_providers['sessions']._stale_usage_row_paths, __name__)",
+   "provider_sha256": "105fb18eb19fe807b6931f07e6e7d7b06ee9559841936f3e1f89edcaf49258ff"
+  },
+  "_stamp_usage_parser_version": {
+   "binding": "_stamp_usage_parser_version = _measure_compat.bind(_measure_providers['sessions']._stamp_usage_parser_version, __name__)",
+   "provider_sha256": "445f5bad460e2794f4b01a33d79b05a3199bad0e4e6dbd1cee5b5a75e693ed04"
+  },
+  "_store_adapter_activity": {
+   "binding": "_store_adapter_activity = _measure_compat.bind(_measure_providers['sessions']._store_adapter_activity, __name__)",
+   "provider_sha256": "9be287884dba48b1d195979258bb4ce84f38a42f01f2357fe7e2910f7d6d94c8"
+  },
+  "_sweep_hermes_transcripts": {
+   "binding": "_sweep_hermes_transcripts = _measure_compat.bind(_measure_providers['sessions']._sweep_hermes_transcripts, __name__, defaults=(None,))",
+   "provider_sha256": "5e841b4ebdd5b6833f54065b7d18aab0b255915b666c1e16bb379488eeb08cd6"
+  },
+  "_upgrade_drain_after_pass": {
+   "binding": "_upgrade_drain_after_pass = _measure_compat.bind(_measure_providers['sessions']._upgrade_drain_after_pass, __name__)",
+   "provider_sha256": "f684ccb0230d9ece4f8a4f5863bb4a599ee8cec02b0780063bb0cf90b15f5cd7"
+  },
+  "_upgrade_drain_claim_lock": {
+   "binding": "_upgrade_drain_claim_lock = _measure_compat.bind(_measure_providers['sessions']._upgrade_drain_claim_lock, __name__)",
+   "provider_sha256": "35edab5a956016963fd7e1d1346ee3756162df43ff6f94fa5d1bedc138b3364b"
+  },
+  "_upgrade_drain_days": {
+   "binding": "_upgrade_drain_days = _measure_compat.bind(_measure_providers['sessions']._upgrade_drain_days, __name__)",
+   "provider_sha256": "2f1c6ff2312daf97fc43ba3b961461fb08c6c32cbd3496eae535893ff7473f94"
+  },
+  "_upgrade_drain_key": {
+   "binding": "_upgrade_drain_key = _measure_compat.bind(_measure_providers['sessions']._upgrade_drain_key, __name__)",
+   "provider_sha256": "62aa2e235db4ff20b06703f839e535193134fce20ef73b3656a50d2d8b0fc5da"
+  },
+  "_upgrade_drain_mark_done": {
+   "binding": "_upgrade_drain_mark_done = _measure_compat.bind(_measure_providers['sessions']._upgrade_drain_mark_done, __name__)",
+   "provider_sha256": "342823602b4a635a21868f66380aea0da8f8c4d1c0a2cb08aedad8beca0fd597"
+  },
+  "_upgrade_drain_release_lock": {
+   "binding": "_upgrade_drain_release_lock = _measure_compat.bind(_measure_providers['sessions']._upgrade_drain_release_lock, __name__)",
+   "provider_sha256": "390d623133ba795131fb205c9623b527633646aab1e69c6484d3f0cc339ad998"
+  },
+  "_upgrade_meta_get": {
+   "binding": "_upgrade_meta_get = _measure_compat.bind(_measure_providers['sessions']._upgrade_meta_get, __name__)",
+   "provider_sha256": "f11d448fed9206761a6da839b7ddfee19886ac0fb9ab0366a6249d1f0183789a"
+  },
+  "_upgrade_meta_set": {
+   "binding": "_upgrade_meta_set = _measure_compat.bind(_measure_providers['sessions']._upgrade_meta_set, __name__)",
+   "provider_sha256": "6e48de7d5da412919640ac22c250eb5303ece7c7097c4550884306fd1c956938"
+  },
+  "_usage_owner_id": {
+   "binding": "_usage_owner_id = _measure_compat.bind(_measure_providers['sessions']._usage_owner_id, __name__)",
+   "provider_sha256": "98e03201cce5d3fedc0427712ba28288fceb4957f74f67fa93e97b5332302c85"
+  },
+  "_usage_request_key": {
+   "binding": "_usage_request_key = _measure_compat.bind(_measure_providers['sessions']._usage_request_key, __name__, defaults=(None,))",
+   "provider_sha256": "fd401d90fb545648a89f5799e4e7fba57a0077fc687fbdfe91f0593a1b092bcc"
+  },
+  "_write_antigravity_restore_context": {
+   "binding": "_write_antigravity_restore_context = _measure_compat.bind(_measure_providers['sessions']._write_antigravity_restore_context, __name__, defaults=(False,))",
+   "provider_sha256": "295ca656ac276d15a2f283617ffb4cf0c761b42534c1827715d02965508cf7e2"
+  },
+  "_write_copilot_restore_context": {
+   "binding": "_write_copilot_restore_context = _measure_compat.bind(_measure_providers['sessions']._write_copilot_restore_context, __name__, defaults=(False,))",
+   "provider_sha256": "f6aaecdd30821a3d3f45e5800f930cf4542ff0506dac4b122c06bc15e571e85b"
+  },
+  "_write_cursor_restore_context": {
+   "binding": "_write_cursor_restore_context = _measure_compat.bind(_measure_providers['sessions']._write_cursor_restore_context, __name__, defaults=(False,))",
+   "provider_sha256": "c1015c3cc46bf2f372eedb4208da27b5dc5f84ed502343d93432304ee7512274"
+  },
+  "collect_sessions": {
+   "binding": "collect_sessions = _measure_compat.bind(_measure_providers['sessions'].collect_sessions, __name__, defaults=(90, False, False,))",
+   "provider_sha256": "b724948ea1b7cb8d7dae55644c3f4ec037879762bb67284bec37b29a4b3827a8"
+  },
+  "conn_total_sessions": {
+   "binding": "conn_total_sessions = _measure_compat.bind(_measure_providers['sessions'].conn_total_sessions, __name__)",
+   "provider_sha256": "f43092a4ca4f62a933810a30e1094d8d27e65e63f67ec4595311d0743181861e"
+  },
+  "hermes_checkpoint": {
+   "binding": "hermes_checkpoint = _measure_compat.bind(_measure_providers['sessions'].hermes_checkpoint, __name__, defaults=(\"stop\", None, None,))",
+   "provider_sha256": "4b4051e254c4a6ed68fd7d941ae039421197d1edad3b62dc1a643423945cc5b4"
+  },
+  "hermes_turn_context": {
+   "binding": "hermes_turn_context = _measure_compat.bind(_measure_providers['sessions'].hermes_turn_context, __name__)",
+   "provider_sha256": "6291316aa6f0636e38098c5aa32ebdca42bc1594c9570e3586b71d73559006e7"
+  },
+  "parse_session_turns": {
+   "binding": "parse_session_turns = _measure_compat.bind(_measure_providers['sessions'].parse_session_turns, __name__)",
+   "provider_sha256": "1e3aa40395dc12245b89a3080c1aa95ba6939c027e5933fe02064c32e95bd698"
+  },
+  "score_session_quality": {
+   "binding": "score_session_quality = _measure_compat.bind(_measure_providers['sessions'].score_session_quality, __name__)",
+   "provider_sha256": "2464a687203ad19794b2dd09f5b95b40170ea250187ec059be3143b3f152007d"
+  }
+ }
+}

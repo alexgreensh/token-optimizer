@@ -184,27 +184,67 @@ def test_two_sessions_arm_independently(m, tmp_path):
     assert sids == ["abc123", "def456"]
 
 
-def test_concurrent_arms_collapse_to_one_record(m, tmp_path):
-    """Two racing Stop-hook processes (fossil double-registration) arm once."""
+def _race_two_arms(mod, transcript):
     import threading
-    mod, _ = m
-    transcript = _arm(m, tmp_path)
     barrier = threading.Barrier(2)
-    results = []
+    results, errors = [], []
 
     def _arm_again():
-        barrier.wait()
-        results.append(mod.write_keepwarm_arm_record("abc123", str(transcript)))
+        try:
+            barrier.wait()
+            results.append(mod.write_keepwarm_arm_record("abc123", str(transcript)))
+        except Exception as exc:  # the writer must never raise into the hook chain
+            errors.append(exc)
 
     threads = [threading.Thread(target=_arm_again) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+    return results, errors
+
+
+def _assert_race_invariants(mod, results, errors):
     records = [r for r in _sidecar_records(mod) if r.get("session_id") == "abc123"]
+    assert not errors, errors
+    assert len(results) == 2
     assert len(records) == 1, f"racing arms produced {len(records)} records"
-    # Both callers see a truthy record (armed state), never an exception.
-    assert all(r is not None for r in results)
+    # The lock is a bounded lease (75ms): a contender that cannot get it skips the
+    # mutation and returns None BY DESIGN, so a loaded runner may legitimately hand
+    # one racer None. What must hold: never an exception, exactly one stored record,
+    # at least one racer saw it, and every non-None result is that one record.
+    seen = [r for r in results if r is not None]
+    assert seen, "neither racer saw the armed record"
+    assert all(r.get("transcript_mtime") == records[0]["transcript_mtime"]
+               and r.get("byte_size") == records[0]["byte_size"] for r in seen)
+
+
+def test_concurrent_arms_collapse_to_one_record(m, tmp_path):
+    """Two racing Stop-hook processes (fossil double-registration) arm once."""
+    mod, _ = m
+    transcript = _arm(m, tmp_path)
+    results, errors = _race_two_arms(mod, transcript)
+    _assert_race_invariants(mod, results, errors)
+
+
+def test_concurrent_arms_when_the_lock_holder_outlasts_the_lease(m, tmp_path):
+    """Forced contention: the holder spends longer than the 75ms lease timeout scanning the
+    sidecar, so the other racer is skipped (None). Still one record, no exception."""
+    mod, _ = m
+    transcript = _arm(m, tmp_path)
+    original = mod.load_keepwarm_records
+
+    def slow_load(*args, **kwargs):
+        time.sleep(0.3)
+        return original(*args, **kwargs)
+
+    mod.load_keepwarm_records = slow_load
+    try:
+        results, errors = _race_two_arms(mod, transcript)
+    finally:
+        mod.load_keepwarm_records = original
+    _assert_race_invariants(mod, results, errors)
+    assert any(r is None for r in results), "precondition: the lease timeout skipped one racer"
 
 
 def test_truncated_rotated_transcript_rearms(m, tmp_path):

@@ -283,8 +283,6 @@ def test_healer_preserves_foreign_measure_hook(m, installed):
     "python3 $(which python3) /home/u/bin/measure.py --config token-optimizer",
     # product string in a trailing comment
     "python3 $(which python3) /home/u/bin/measure.py --quiet  # token-optimizer",
-    # root-prefix collision: shares a string prefix with the real install root
-    f"python3 $(which python3) {REPO}-evil/skills/token-optimizer/scripts/measure.py --quiet",
 ])
 def test_ownership_evasions_survive(m, foreign):
     assert m._is_malformed_to_hook(foreign) is False
@@ -305,6 +303,20 @@ def test_healer_preserves_marker_shaped_foreign_hook(m, installed):
     assert removed == 1
     remaining = [c for c in _all_commands(installed)]
     assert any("vendor/token-optimizer" in c for c in remaining), "lookalike foreign hook deleted"
+
+
+def test_root_prefix_collision_against_proven_root_survives(m, monkeypatch, tmp_path):
+    """A sibling dir sharing a string prefix with a PROVEN root
+    (plugin-evil vs plugin) is not under that root and must survive.
+    tmp_path-based: resolving a real repo-adjacent path trips the suite's
+    real-home guard on CI, where the repo lives under the runner home."""
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path / "plugin"))
+    evil = tmp_path / "plugin-evil"
+    cmd = f"python3 $(which python3) {evil}/skills/token-optimizer/scripts/measure.py --quiet"
+    assert m._is_malformed_to_hook(cmd) is False
+    # positive control: the proven root itself is flagged
+    own = f"python3 $(which python3) {tmp_path}/plugin/skills/token-optimizer/scripts/measure.py --quiet"
+    assert m._is_malformed_to_hook(own) is True
 
 
 def test_owned_paths_under_each_root_are_proven(m, installed, monkeypatch):
@@ -434,3 +446,42 @@ def test_healer_ignores_root_in_argument_e2e(m, installed):
     assert removed == 0
     remaining = list(_all_commands(installed))
     assert any("/opt/vendor/measure.py" in c for c in remaining), "root-in-argument foreign hook deleted"
+
+
+def test_windows_style_path_on_posix_is_unprovable_preserved(m):
+    """A drive-letter token on a POSIX healer names no install this process
+    runs from: unprovable, preserved (fail-safe). The reverse direction
+    (Windows healer, its own drive-letter install paths) is covered by the
+    platform-aware absolute/separator handling and verified by the Windows
+    CI shard."""
+    assert m._is_malformed_to_hook(
+        "python3 $(which python3) D:\\a\\token-optimizer\\token-optimizer"
+        "/skills/token-optimizer/scripts/read_cache.py --quiet"
+    ) is False
+
+
+def test_unc_absolute_token_on_posix_is_unprovable_preserved(m):
+    """UNC absolute (\\\\server\\share\\...) is recognized as an absolute
+    form by the classifier (so it is not misread as relative on Windows), but
+    on a POSIX healer it names no install this process runs from: preserved."""
+    assert m._is_malformed_to_hook(
+        "python3 $(which python3) \\\\evil\\share\\skills\\token-optimizer"
+        "\\scripts\\measure.py --quiet"
+    ) is False
+
+
+def test_drive_relative_token_is_not_absolute_preserved(m):
+    """C:foo (drive-relative, no separator after the colon) is NOT an absolute
+    path under Windows semantics; the classifier must not treat it as one."""
+    assert m._is_malformed_to_hook(
+        "python3 $(which python3) C:skills\\token-optimizer\\scripts\\measure.py --quiet"
+    ) is False
+
+
+def test_backslash_foreign_posix_path_preserved(m):
+    """A foreign POSIX install whose token carries literal backslashes cannot
+    be canon-collapsed into our install root on Linux: preserved."""
+    assert m._is_malformed_to_hook(
+        "python3 $(which python3) /home/u/.claude\\skills\\token-optimizer"
+        "\\scripts\\measure.py --quiet"
+    ) is False

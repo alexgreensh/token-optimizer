@@ -57,8 +57,11 @@ def test_candidate_verification_enables_cone_mode_before_set():
 
 
 def _git(*args, cwd=None):
+    # Persist LF checkout policy so Git called later by Bash matches setup.
+    if args and args[0] == "clone":
+        args = ("clone", "--config", "core.autocrlf=false", *args[1:])
     return subprocess.run(["git", "-c", "core.autocrlf=false", *args], cwd=cwd, check=True,
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding="utf-8")
 
 
 @pytest.fixture()
@@ -108,7 +111,7 @@ def test_fixed_clone_sequence_materializes_manifest_root_files(remote, tmp_path)
         "root file install.sh must survive the sparse checkout: the release "
         "manifest covers it and verification aborts when it is missing")
     check = subprocess.run(["sha256sum", "-c", "CHECKSUMS.sha256", "--quiet"],
-                           cwd=dest, capture_output=True, text=True)
+                           cwd=dest, capture_output=True, text=True, encoding="utf-8")
     assert check.returncode == 0, check.stderr
     assert not (dest / "openclaw" / "skip.txt").exists()
 
@@ -119,7 +122,7 @@ def test_bare_set_behavior_matches_cone_config(remote, tmp_path):
     dest = tmp_path / "bare"
     _clone(remote, dest)
     probe = subprocess.run(["git", "config", "--bool", "core.sparseCheckoutCone"],
-                           cwd=dest, capture_output=True, text=True)
+                           cwd=dest, capture_output=True, text=True, encoding="utf-8")
     cone = probe.stdout.strip() or "false"
     if cone == "true":
         assert (dest / "install.sh").is_file()
@@ -303,7 +306,7 @@ def test_existing_install_keeps_ignored_extra_folder_data(remote, tmp_path, mode
     env = dict(os.environ, INSTALL_DIR=str(dest), INSTALL_OLD_HEAD=old_head,
                INSTALL_UPDATED='0', NEW_HEAD=new_head, RELEASE_TAG='v1.0.0', TMP_DIR=str(tmp_path),
                CHECKSUM_FILE=str(remote / 'CHECKSUMS.sha256'), UPDATE_MARKER=str(tmp_path / 'update-attempted'))
-    result = subprocess.run([install_bash(), '-c', script], env=env, capture_output=True, text=True)
+    result = subprocess.run([install_bash(), '-c', script], env=env, capture_output=True, text=True, encoding="utf-8")
     assert (tmp_path / 'update-attempted').exists() == (outcome != 'disable-failed' or mode != 'legacy')
     expected = 0 if outcome == 'success' or (outcome == 'disable-failed' and mode != 'legacy') else 41
     assert result.returncode == expected, result.stderr + result.stdout
@@ -332,10 +335,10 @@ def test_payload_repair_widens_without_deleting_ignored_extra_data(remote, tmp_p
               + shell_function(source, 'repair_and_verify_skill_payload')
               + '\nrepair_and_verify_skill_payload')
     result = subprocess.run([install_bash(), '-c', script],
-                            env=dict(os.environ, INSTALL_DIR=str(dest)), capture_output=True, text=True)
+                            env=dict(os.environ, INSTALL_DIR=str(dest)), capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert database.read_bytes() == b'payload repair fixture'
-    assert subprocess.run(['git', 'config', '--bool', 'core.sparseCheckout'], cwd=dest, capture_output=True, text=True).stdout.strip() != 'true'
+    assert subprocess.run(['git', 'config', '--bool', 'core.sparseCheckout'], cwd=dest, capture_output=True, text=True, encoding="utf-8").stdout.strip() != 'true'
 
 
 @pytest.mark.parametrize('edit', ['unstaged', 'staged', 'mixed', 'binary', 'deleted', 'mode'])
@@ -383,7 +386,7 @@ def test_failed_verification_rollback_preserves_untouched_tracked_edits(remote, 
                           ('rollback_install_update', 'fail_verified_install'))
     script = ('warn() { printf "%s\n" "$1"; }; info() { printf "%s\n" "$1"; }; '
               'fail() { exit 41; }; ' + functions + '\nif (cd \"$INSTALL_DIR\" && sha256sum -c \"$CHECKSUM_FILE\" --quiet); then exit 93; fi; fail_verified_install "checksum failed"')
-    result = subprocess.run([install_bash(), '-c', script], capture_output=True, text=True,
+    result = subprocess.run([install_bash(), '-c', script], capture_output=True, text=True, encoding="utf-8",
                             env=dict(os.environ, INSTALL_DIR=str(dest), INSTALL_OLD_HEAD=old_head,
                                      INSTALL_UPDATED='1', CHECKSUM_FILE=str(remote / 'CHECKSUMS.sha256')))
     assert result.returncode == 41, result.stderr
@@ -421,7 +424,7 @@ def test_rollback_refusal_or_no_update_keeps_work_and_reports_recovery(remote, t
         target = ''
     script = ('warn() { printf "%s\n" "$1"; }; info() { printf "%s\n" "$1"; }; '
               + shell_function(_src(), 'rollback_install_update') + '\nrollback_install_update')
-    result = subprocess.run([install_bash(), '-c', script], capture_output=True, text=True,
+    result = subprocess.run([install_bash(), '-c', script], capture_output=True, text=True, encoding="utf-8",
                             env=dict(os.environ, INSTALL_DIR=str(dest), INSTALL_OLD_HEAD=target,
                                      INSTALL_UPDATED='0' if failure == 'not-updated' else '1'))
     assert result.returncode == 0, result.stderr
@@ -466,7 +469,7 @@ def test_rollback_refuses_to_overwrite_local_file_removed_by_release(remote, tmp
     before_index = _git('ls-files', '--stage', cwd=dest).stdout
     script = ('warn() { printf "%s\n" "$1"; }; info() { printf "%s\n" "$1"; }; '
               + shell_function(_src(), 'rollback_install_update') + '\nrollback_install_update')
-    result = subprocess.run([install_bash(), '-c', script], capture_output=True, text=True,
+    result = subprocess.run([install_bash(), '-c', script], capture_output=True, text=True, encoding="utf-8",
                             env=dict(os.environ, INSTALL_DIR=str(dest), INSTALL_OLD_HEAD=old_head,
                                      INSTALL_UPDATED='1'))
     assert result.returncode == 0, result.stderr
@@ -476,3 +479,36 @@ def test_rollback_refuses_to_overwrite_local_file_removed_by_release(remote, tmp
     assert 'Rollback succeeded' not in result.stdout
     assert 'Rollback refused or failed' in result.stdout
     assert 'After saving local work' in result.stdout
+
+
+
+def test_recovery_command_preserves_unicode_with_legacy_parent_encoding(remote, tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, '_text_encoding', lambda: 'cp1252', raising=False)
+    import locale
+    monkeypatch.setattr(locale, 'getpreferredencoding', lambda do_setlocale=True: 'cp1252')
+    test_rollback_refusal_or_no_update_keeps_work_and_reports_recovery(remote, tmp_path, 'unknown-target')
+
+
+@pytest.mark.parametrize('scenario', [
+    'legacy-exclude', 'legacy-gitignore', 'legacy-untracked',
+    'rollback-unstaged', 'rollback-staged', 'rollback-mixed', 'rollback-binary', 'rollback-deleted',
+    'recovery-conflict-unstaged', 'recovery-conflict-staged', 'recovery-unknown-target',
+])
+def test_preservation_fixtures_resist_inherited_crlf_and_legacy_encoding(remote, tmp_path, monkeypatch, scenario):
+    # Reproduce the two independent Windows boundary conditions, without
+    # changing the product or normalizing the data/status assertions.
+    global_config = tmp_path / 'git-global-config'
+    global_config.write_bytes(b'[core]\n\tautocrlf = true\n')
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(global_config))
+    monkeypatch.setattr(subprocess, '_text_encoding', lambda: 'cp1252', raising=False)
+    import locale
+    monkeypatch.setattr(locale, 'getpreferredencoding', lambda do_setlocale=True: 'cp1252')
+    if scenario.startswith('legacy-'):
+        test_existing_install_keeps_ignored_extra_folder_data(
+            remote, tmp_path, 'legacy', 'success', scenario.removeprefix('legacy-'))
+    elif scenario.startswith('rollback-'):
+        test_failed_verification_rollback_preserves_untouched_tracked_edits(
+            remote, tmp_path, scenario.removeprefix('rollback-'))
+    else:
+        test_rollback_refusal_or_no_update_keeps_work_and_reports_recovery(
+            remote, tmp_path, scenario.removeprefix('recovery-'))

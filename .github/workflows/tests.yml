@@ -90,7 +90,33 @@ jobs:
       - name: Run tests
         env:
           TO_TEST_SHARD: ${{ matrix.shard }}/4
-        run: python -m pytest tests/ -q -rs
+        # The lane replay files are one-time split proofs (each replays its lane's mover), not product
+        # tests: they run in split-lane-proofs below. Excluded here, not skipped, so skips stay <= BASE.
+        run: python -m pytest tests/ -q -rs --ignore-glob='tests/test_measure_split_lane*.py'
+
+  # measure.py split (5.13.65): each extraction lane's proof files, one lane per machine. They replay the
+  # lane's mover against pinned inputs, so they are minutes each and do not fit the regular shards.
+  split-lane-proofs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+      - name: Lane ${{ matrix.lane }} split proofs
+        shell: bash
+        run: |
+          files=(tests/test_measure_split_lane${{ matrix.lane }}*.py)
+          [ -e "${files[0]}" ] || { echo "no proof files for lane ${{ matrix.lane }}" >&2; exit 1; }
+          printf '%s\n' "${files[@]}"
+          python -m pytest "${files[@]}" -q -rs
 
   opencode-native:
     runs-on: ubuntu-latest
@@ -279,7 +305,9 @@ jobs:
       - name: Run tests
         env:
           TO_TEST_SHARD: ${{ matrix.shard }}/4
-        run: python -m pytest tests/ -q -rs
+        # The lane replay files are one-time split proofs (each replays its lane's mover), not product
+        # tests: they run in split-lane-proofs below. Excluded here, not skipped, so skips stay <= BASE.
+        run: python -m pytest tests/ -q -rs --ignore-glob='tests/test_measure_split_lane*.py'
 
   # Build the docs site here, not only in Deploy Docs.
   #

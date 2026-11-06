@@ -2,15 +2,15 @@
   {
     "mutation": "baseline slides onto post-install months",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "            pinned = _pinned_workload_anchor()\n",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "            pinned = _measure_facade._pinned_workload_anchor()\n",
     "new": "            pinned = None\n",
     "symbol": "_session_weight_pool_savings"
   },
   {
     "mutation": "baseline slides onto post-install months",
     "edit": 1,
-    "file": "skills/token-optimizer/scripts/measure.py",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
     "old": "str(frozen.get(\"month\") or \"\") <= month",
     "new": "str(frozen.get(\"month\") or \"\") == month",
     "symbol": "_stable_workload_anchor"
@@ -18,15 +18,15 @@
   {
     "mutation": "re-reads priced at the family card, not the exact model",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
     "old": "key = value.replace(\"-\", \"_\").replace(\".\", \"_\")",
-    "new": "key = _normalize_model_name(value)",
+    "new": "key = _measure_facade._normalize_model_name(value)",
     "symbol": "_counted_exact_card"
   },
   {
     "mutation": "savings report leaves out avoided re-reads",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
     "old": "    summary[\"reread_avoided\"] = summary[\"counted_period\"]\n",
     "new": "    summary[\"reread_avoided\"] = {}\n",
     "symbol": "savings_report"
@@ -34,7 +34,7 @@
   {
     "mutation": "a flat whole-workload week hides the measured savings",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
     "old": "return value if float((value or {}).get(\"saved_usd\") or 0.0) > 0 else None",
     "new": "return value",
     "symbol": "_positive_full_value"
@@ -42,7 +42,7 @@
   {
     "mutation": "a flat whole-workload week hides the measured savings",
     "edit": 1,
-    "file": "skills/token-optimizer/scripts/measure.py",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
     "old": "if wdays == 7 and weekly_full and float(weekly_full.get(\"saved_usd\") or 0.0) > ctx + rt:",
     "new": "if wdays == 7 and weekly_full:",
     "symbol": "runway_snapshot"
@@ -50,23 +50,23 @@
   {
     "mutation": "stored re-read rows keep a pricing bug after it is fixed",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "def _reprice_counted_rows_once(conn):\n",
-    "new": "def _reprice_counted_rows_once(conn):\n    return\n",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "def _reprice_counted_rows_once(conn):\n    _measure_facade = _compat.facade()\n    try:\n",
+    "new": "def _reprice_counted_rows_once(conn):\n    _measure_facade = _compat.facade()\n    return\n    try:\n",
     "symbol": "_reprice_counted_rows_once"
   },
   {
     "mutation": "stored re-read rows keep a pricing bug after it is fixed",
     "edit": 1,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "        current = (detail.get(\"version\") == _COUNTED_PRICING_VERSION",
-    "new": "        current = True or (detail.get(\"version\") == _COUNTED_PRICING_VERSION",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "        current = (detail.get(\"version\") == _measure_facade._COUNTED_PRICING_VERSION",
+    "new": "        current = True or (detail.get(\"version\") == _measure_facade._COUNTED_PRICING_VERSION",
     "symbol": "_counted_rollup_rows"
   },
   {
     "mutation": "stored re-read rows keep a pricing bug after it is fixed",
     "edit": 2,
-    "file": "skills/token-optimizer/scripts/measure.py",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
     "old": "                out[key] += detail[key]\n",
     "new": "                out[key] += detail.get(key, 0)\n",
     "symbol": "_counted_rollup_rows"
@@ -74,23 +74,23 @@
   {
     "mutation": "a thinner history silently shrinks the frozen baseline",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "def _baseline_shrink_is_material(incumbent, candidate):",
-    "new": "def _baseline_shrink_is_material(incumbent, candidate):\n    return False\n\n\ndef _unused_shrink(incumbent, candidate):",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "def _baseline_shrink_is_material(incumbent, candidate):\n    \"\"\"True when `candidate` is materially SMALLER than `incumbent`.\n\n    Asymmetric on purpose. A baseline drifting DOWN silently deletes reported\n    savings, so it needs a human; drifting up does not. Compares priced cost and\n    cache_read (the term that dominates a session, ~2/3 of it) and trips on\n    either.\n    \"\"\"\n    _measure_facade = _compat.facade()\n    try:\n        inc_cost = _measure_facade._baseline_priced_cost(incumbent)\n        cand_cost = _measure_facade._baseline_priced_cost(candidate)\n        if inc_cost > 0 and cand_cost < inc_cost * (1 - _measure_facade._BASELINE_SHRINK_COST_PCT):\n            return True\n        inc_cr = float((incumbent.get(\"typical_session\") or {}).get(\"cache_read\", 0) or 0)\n        cand_cr = float((candidate.get(\"typical_session\") or {}).get(\"cache_read\", 0) or 0)\n        if inc_cr > 0 and cand_cr < inc_cr * (1 - _measure_facade._BASELINE_SHRINK_CACHE_READ_PCT):\n            return True\n    except (TypeError, ValueError):\n        return False\n",
+    "new": "def _baseline_shrink_is_material(incumbent, candidate):\n    _measure_facade = _compat.facade()\n",
     "symbol": "_baseline_shrink_is_material"
   },
   {
     "mutation": "session-cost breakdown prices input at the family card",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "        c_in = _get_model_cost(model, fi, 0, 0, 0, tier=tier)",
-    "new": "        c_in = _get_model_cost(_normalize_model_name(model), fi, 0, 0, 0, tier=tier)",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "        c_in = _measure_facade._get_model_cost(model, fi, 0, 0, 0, tier=tier)",
+    "new": "        c_in = _measure_facade._get_model_cost(_measure_facade._normalize_model_name(model), fi, 0, 0, 0, tier=tier)",
     "symbol": "_session_cost_components"
   },
   {
     "mutation": "subagent cost added on top of a total that already holds it",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
     "old": "    total = float(priced[\"total_cost\"])\n",
     "new": "    total = float(priced[\"total_cost\"]) + max(0.0, float(priced[\"total_cost\"]) - float(priced[\"main_cost\"]))\n",
     "symbol": "_session_cost_entry"
@@ -98,39 +98,39 @@
   {
     "mutation": "a session stored under two paths is counted twice",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "        key = _session_cost_row_id(r)\n        rank = _session_rank(",
-    "new": "        key = (_session_cost_row_id(r), r[\"id\"])\n        rank = _session_rank(",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "        key = _measure_facade._session_cost_row_id(r)\n        rank = _measure_facade._session_rank(",
+    "new": "        key = (_measure_facade._session_cost_row_id(r), r[\"id\"])\n        rank = _measure_facade._session_rank(",
     "symbol": "session_cost_query"
   },
   {
     "mutation": "session-cost reads the legacy ~/.claude/token-optimizer/trends.db",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    if not TRENDS_DB.exists():\n        out[\"error\"] = (\"No Token Optimizer history yet",
-    "new": "    TRENDS_DB = RUNTIME_DIR / \"token-optimizer\" / \"trends.db\"\n    if not TRENDS_DB.exists():\n        out[\"error\"] = (\"No Token Optimizer history yet",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "        \"db\": str(_measure_facade.TRENDS_DB),\n        \"basis\": _measure_facade.SESSION_COST_BASIS.format(tier=_measure_facade._pricing_tier_label(tier)),\n        \"query\": {\"words\": opts[\"words\"], \"id\": opts[\"id\"], \"date\": opts[\"date\"],\n                  \"days\": opts[\"days\"]},\n        \"sessions\": [],\n        \"match_count\": 0,\n        \"total_cost_usd\": 0.0,\n        \"closest\": [],\n        \"note\": None,\n    }\n    if err:\n        out[\"error\"] = err\n        return out\n    if not _measure_facade.TRENDS_DB.exists():\n        out[\"error\"] = (\"No Token Optimizer history yet (no trends database at this \"\n                        \"path). Sessions are collected when they end.\")\n        return out\n    conn, mode = _measure_facade._session_cost_open_db(_measure_facade.TRENDS_DB)\n",
+    "new": "        \"db\": str(TRENDS_DB),\n        \"basis\": _measure_facade.SESSION_COST_BASIS.format(tier=_measure_facade._pricing_tier_label(tier)),\n        \"query\": {\"words\": opts[\"words\"], \"id\": opts[\"id\"], \"date\": opts[\"date\"],\n                  \"days\": opts[\"days\"]},\n        \"sessions\": [],\n        \"match_count\": 0,\n        \"total_cost_usd\": 0.0,\n        \"closest\": [],\n        \"note\": None,\n    }\n    if err:\n        out[\"error\"] = err\n        return out\n    TRENDS_DB = _measure_facade.RUNTIME_DIR / \"token-optimizer\" / \"trends.db\"\n    if not TRENDS_DB.exists():\n        out[\"error\"] = (\"No Token Optimizer history yet (no trends database at this \"\n                        \"path). Sessions are collected when they end.\")\n        return out\n    conn, mode = _measure_facade._session_cost_open_db(TRENDS_DB)\n",
     "symbol": "session_cost_query"
   },
   {
     "mutation": "session-cost reads the legacy ~/.claude/token-optimizer/trends.db",
     "edit": 1,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "        \"db\": str(TRENDS_DB),\n        \"basis\": SESSION_COST_BASIS",
-    "new": "        \"db\": str(RUNTIME_DIR / \"token-optimizer\" / \"trends.db\"),\n        \"basis\": SESSION_COST_BASIS",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "        \"db\": str(TRENDS_DB),\n        \"basis\": _measure_facade.SESSION_COST_BASIS",
+    "new": "        \"db\": str(_measure_facade.RUNTIME_DIR / \"token-optimizer\" / \"trends.db\"),\n        \"basis\": _measure_facade.SESSION_COST_BASIS",
     "symbol": "session_cost_query"
   },
   {
     "mutation": "session-cost opens trends.db through the collector's opener (schema, migrations, backfills)",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    conn, mode = _session_cost_open_db(TRENDS_DB)\n",
-    "new": "    conn, mode = _init_trends_db(), \"read-only\"\n    conn.row_factory = sqlite3.Row\n",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "    conn, mode = _measure_facade._session_cost_open_db(_measure_facade.TRENDS_DB)\n",
+    "new": "    conn, mode = _measure_facade._init_trends_db(), \"read-only\"\n    conn.row_factory = _measure_facade.sqlite3.Row\n",
     "symbol": "session_cost_query"
   },
   {
     "mutation": "short words match inside longer ones ('tr' in 'trends')",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
     "old": "        if (w in tokens) if len(w) <= 3 else (w in hay):",
     "new": "        if w in hay:",
     "symbol": "_session_cost_word_hits"
@@ -138,15 +138,15 @@
   {
     "mutation": "any one word is enough to match a session",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    matched = [r for r in scoped if not words or _session_cost_word_hits(words, r) == len(words)]",
-    "new": "    matched = [r for r in scoped if not words or _session_cost_word_hits(words, r) > 0]",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
+    "old": "    matched = [r for r in scoped if not words or _measure_facade._session_cost_word_hits(words, r) == len(words)]",
+    "new": "    matched = [r for r in scoped if not words or _measure_facade._session_cost_word_hits(words, r) > 0]",
     "symbol": "session_cost_query"
   },
   {
     "mutation": "a multi-day session's 'yesterday' share is the whole session",
     "edit": 0,
-    "file": "skills/token-optimizer/scripts/measure.py",
+    "file": "skills/token-optimizer/scripts/_measure/savings.py",
     "old": "            sum(sl[1] for sl in priced[\"slices\"] if sl[0] == date_filter), 4)",
     "new": "            sum(sl[1] for sl in priced[\"slices\"]), 4)",
     "symbol": "_session_cost_entry"

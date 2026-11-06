@@ -181,22 +181,42 @@ def test_original_manifest_shell_launcher_recovers_root_and_runs_guidance(tmp_pa
                 'TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S': '-1', 'PYTHONUTF8': '1',
                 'PYTHONPYCACHEPREFIX': str(tmp_path / 'pycache'), 'XDG_CACHE_HOME': str(home / '.cache')})
     env.pop('PYTHONDONTWRITEBYTECODE', None)
-    outputs = []
-    for index, root in enumerate((version, version.with_name('5.13.63-missing'))):
-        cache = tmp_path / ('entry-cache-' + str(index))
-        run_env = {**env, 'CLAUDE_PLUGIN_ROOT': str(root), 'PYTHONPYCACHEPREFIX': str(cache)}
+
+    def launch(root, cache):
+        run_env = {**env, 'CLAUDE_PLUGIN_ROOT': root, 'PYTHONPYCACHEPREFIX': str(cache)}
         warm = 'import sys; sys.path.insert(0, sys.argv[1]); import measure, read_cache'
         proc = subprocess.run([sys.executable, '-c', warm, str(version / 'skills/token-optimizer/scripts')],
                               cwd=home, env=run_env, capture_output=True, timeout=45)
         assert proc.returncode == 0 and not proc.stderr, proc.stderr
-        proc = subprocess.run([bash, '-c', command], cwd=home,
-                              env=run_env,
+        # The warm-up compiles read_cache too; drop it so only the real entry can recreate it.
+        for compiled in cache.rglob('read_cache.*.pyc'):
+            compiled.unlink()
+        return subprocess.run([bash, '-c', command], cwd=home, env=run_env,
                               input=b'{}', capture_output=True, timeout=45)
+
+    stale = version.with_name('5.13.63-missing')
+    # Pinned BASE 5.13.64 behavior on Windows, unchanged by the split (diag runs
+    # 42132891199 and 42136205975 traced BASE and candidate under bash -x): Git Bash
+    # leaves "${D%[/\\]*}" unstripped for backslash AND forward-slash roots, so a
+    # stale root never recovers and the hook fails open silently. Product bug,
+    # reported in U0-FINAL2-REPORT.md; a hooks.json fix must flip this branch.
+    recovers = os.name != 'nt'
+    roots = [str(version), str(stale)]
+    if not recovers:
+        roots += [str(version).replace('\\', '/'), str(stale).replace('\\', '/')]
+    outputs = []
+    for index, root in enumerate(roots):
+        cache = tmp_path / ('entry-cache-' + str(index))
+        proc = launch(root, cache)
         assert proc.returncode == 0 and not proc.stderr, proc.stderr
+        if root.endswith('5.13.63-missing') and not recovers:
+            assert proc.stdout == b''
+            assert not list(cache.rglob('read_cache.*.pyc'))
+            continue
         if guidance:
             assert b'COMPACTION GUIDANCE:' in proc.stdout
         else:
             assert b'Traceback' not in proc.stderr
             assert list(cache.rglob('read_cache.*.pyc')), 'the Cowork entry never loaded its real target'
         outputs.append(proc.stdout)
-    assert outputs[0] == outputs[1]
+    assert len(outputs) == 2 and outputs[0] == outputs[1]

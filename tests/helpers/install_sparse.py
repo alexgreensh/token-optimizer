@@ -43,7 +43,7 @@ def sparse_set_commands(source):
 
 def assert_sparse_paths(script):
     commands = sparse_set_commands(script)
-    assert len(commands) == 6, "every clone, migration and repair path must be covered"
+    assert len(commands) == 2, "only disposable fresh clones may narrow the checkout"
     # Execute every real command with a recording git function. Bash, rather
     # than a string splitter, expands the shared list and handles redirections.
     import tempfile
@@ -61,7 +61,7 @@ def assert_sparse_paths(script):
             raise RuntimeError(f"sparse probe failed ({run.returncode})\n"
                                f"stdout: {run.stdout}\nstderr: {run.stderr}")
         calls = [row.split(b'\0')[:-1] for row in log.read_bytes().splitlines()]
-    assert len(calls) == 6
+    assert len(calls) == 2
     for args in calls:
         assert args[:1] == [b'-C'] and args[2:4] == [b'sparse-checkout', b'set']
         assert args[4:] == [b'skills/', b'hooks/', b'devin/', b'.claude-plugin/', b'.codex-plugin/', b'.codex/']

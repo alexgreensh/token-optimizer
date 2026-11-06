@@ -19,7 +19,7 @@ set -euo pipefail
 GITHUB_REPO="alexgreensh/token-optimizer"
 REPO_HTTPS="https://github.com/${GITHUB_REPO}.git"
 REPO_SSH="git@github.com:${GITHUB_REPO}.git"
-SPARSE_CONE_DIRS="skills/ hooks/ devin/ .claude-plugin/ .codex-plugin/ .codex/"  # every sparse checkout: Claude payload dirs; cone mode also materializes root files
+SPARSE_CONE_DIRS="skills/ hooks/ devin/ .claude-plugin/ .codex-plugin/ .codex/"  # new clones only: Claude payload dirs; cone mode also materializes root files
 # Honor a relocated Claude home (matches runtime_env.py:380-402 which reads
 # CLAUDE_CONFIG_DIR). OpenCode users without Claude Code, or anyone pointing
 # Claude at a non-default home, get the skill tree installed in the right
@@ -1304,13 +1304,12 @@ repair_and_verify_skill_payload() {
         return 0
     fi
     warn "Incomplete skill payload detected (missing referenced files). Repairing sparse checkout..."
-    git -C "$INSTALL_DIR" sparse-checkout set $SPARSE_CONE_DIRS \
-        2>/dev/null || git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
+    git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
     if verify_skill_payload; then
         info "Skill payload restored"
         return 0
     fi
-    warn "Sparse checkout set did not restore skill payload. Disabling sparse checkout..."
+    warn "Full checkout did not restore skill payload. Retrying..."
     git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
     if verify_skill_payload; then
         info "Skill payload restored (sparse checkout disabled)"
@@ -1477,22 +1476,20 @@ if [ -d "${INSTALL_DIR}/.git" ]; then
     info "Existing install found. Updating..."
     INSTALL_OLD_HEAD=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)
 
-    # Migrate full clones and non-cone sparse checkouts to cone mode: only
-    # cone mode materializes the root files the checksum manifest covers.
-    if ! git -C "$INSTALL_DIR" sparse-checkout list &>/dev/null || \
-       git -C "$INSTALL_DIR" sparse-checkout list 2>/dev/null | grep -q "^/$" || \
+    # Never narrow a live checkout: Git may delete ignored data in an extra
+    # selected folder. Legacy non-cone patterns cannot be safely translated.
+    if [ "$(git -C "$INSTALL_DIR" config --bool core.sparseCheckout 2>/dev/null)" = "true" ] &&
        [ "$(git -C "$INSTALL_DIR" config --bool core.sparseCheckoutCone 2>/dev/null)" != "true" ]; then
-        info "Migrating to sparse checkout (removing OpenClaw files)..."
-        git -C "$INSTALL_DIR" sparse-checkout init --cone 2>/dev/null || true
-        git -C "$INSTALL_DIR" sparse-checkout set $SPARSE_CONE_DIRS 2>/dev/null || true
+        info "Restoring full checkout without narrowing legacy selected folders..."
+        git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null ||
+            fail_verified_install "Could not safely restore legacy sparse checkout. No update attempted. Inspect: git -C ${INSTALL_DIR} status"
     fi
 
     # Self-heal: v5.7.5-5.7.9 had a sparse-checkout bug that pruned skills/ and hooks/.
     # If they're missing after update, fix the sparse checkout config.
     if [ ! -d "${INSTALL_DIR}/skills" ] || [ ! -d "${INSTALL_DIR}/hooks" ]; then
         warn "Broken sparse checkout detected (skills/ or hooks/ missing). Repairing..."
-        git -C "$INSTALL_DIR" sparse-checkout set $SPARSE_CONE_DIRS \
-            2>/dev/null || git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
+        git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
         if [ ! -d "${INSTALL_DIR}/skills" ]; then
             warn "Sparse checkout repair failed. Disabling sparse checkout..."
             git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
@@ -1509,8 +1506,7 @@ if [ -d "${INSTALL_DIR}/.git" ]; then
     # A release checkout can change sparse checkout behavior. Repair again after update.
     if [ ! -d "${INSTALL_DIR}/skills" ] || [ ! -d "${INSTALL_DIR}/hooks" ]; then
         warn "Broken sparse checkout detected after update. Repairing..."
-        git -C "$INSTALL_DIR" sparse-checkout set $SPARSE_CONE_DIRS \
-            2>/dev/null || git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
+        git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
         if [ ! -d "${INSTALL_DIR}/skills" ]; then
             warn "Sparse checkout repair failed. Disabling sparse checkout..."
             git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true

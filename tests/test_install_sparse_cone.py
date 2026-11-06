@@ -138,15 +138,14 @@ def test_noncone_root_omission_is_repaired_without_changing_checksums(remote, tm
     check = subprocess.run(["sha256sum", "-c", "CHECKSUMS.sha256", "--quiet"],
                            cwd=dest, capture_output=True)
     assert check.returncode != 0, "the pre-fix non-cone tree must fail verification"
-    _git("sparse-checkout", "init", "--cone", cwd=dest)
-    _git("sparse-checkout", "set", *SPARSE_DIRS.split(), cwd=dest)
+    _git("sparse-checkout", "disable", cwd=dest)
     check = subprocess.run(["sha256sum", "-c", "CHECKSUMS.sha256", "--quiet"],
                            cwd=dest, capture_output=True)
     assert check.returncode == 0, check.stderr
     assert (dest / "CHECKSUMS.sha256").read_bytes() == manifest
 
 
-@pytest.mark.parametrize("path_index", range(6))
+@pytest.mark.parametrize("path_index", range(2))
 def test_semantic_sparse_guard_catches_each_missing_release_template_path(path_index):
     from helpers.install_sparse import assert_sparse_paths, sparse_set_commands
     source = _src().replace('\\\n', ' ')
@@ -163,7 +162,7 @@ def test_semantic_sparse_guard_catches_each_missing_release_template_path(path_i
 
 
 
-def test_semantic_sparse_guard_control_reaches_all_six_commands(monkeypatch):
+def test_semantic_sparse_guard_control_reaches_both_fresh_clone_commands(monkeypatch):
     import tempfile
     from helpers.install_sparse import assert_sparse_paths
     original = tempfile.TemporaryDirectory
@@ -251,3 +250,89 @@ def test_sparse_probe_does_not_accept_wsl_even_as_override(monkeypatch):
     monkeypatch.setattr(install_sparse.Path, 'is_file', lambda _: True)
     monkeypatch.setattr(install_sparse.shutil, 'which', lambda _: wsl)
     assert install_sparse.install_bash() == r'C:\Program Files\Git\bin\bash.exe'
+
+
+@pytest.mark.parametrize('mode', ['legacy', 'cone', 'full'])
+@pytest.mark.parametrize('outcome', ['success', 'bad-checksum', 'failed-update', 'disable-failed'])
+@pytest.mark.parametrize('ignore', ['exclude', 'gitignore', 'untracked'])
+def test_existing_install_keeps_ignored_extra_folder_data(remote, tmp_path, mode, outcome, ignore):
+    from helpers.install_sparse import install_bash, shell_function, sparse_assignment
+    import os
+    dest = tmp_path / 'installed é extra'
+    _git('clone', remote.as_uri(), str(dest))
+    if mode == 'cone':
+        _git('sparse-checkout', 'init', '--cone', cwd=dest)
+    if mode != 'full':
+        _git('sparse-checkout', 'set', '--cone' if mode == 'cone' else '--no-cone',
+             *SPARSE_DIRS.split(), 'openclaw/', cwd=dest)
+    database = dest / 'openclaw/store/private.db'
+    database.parent.mkdir(parents=True)
+    secret_fixture = b'private fixture db\x00\xff'
+    database.write_bytes(secret_fixture)
+    if ignore != 'untracked':
+        ignore_file = dest / ('.git/info/exclude' if ignore == 'exclude' else '.gitignore')
+        ignore_file.write_text('openclaw/store/\n', encoding='utf-8')
+        assert _git('check-ignore', 'openclaw/store/private.db', cwd=dest).returncode == 0
+    source = _src()
+    start = source.index('\n', source.index('    INSTALL_OLD_HEAD=$(git -C')) + 1
+    end = source.index('\nelif [ -d "$INSTALL_DIR" ]; then', start)
+    branch = source[start:end]
+    integrity_start = source.index('if verification_enabled; then', end)
+    integrity_end = source.index('\n# Log the current commit SHA', integrity_start)
+    branch += '\n' + source[integrity_start:integrity_end]
+    old_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    new_head = old_head
+    if outcome == 'bad-checksum':
+        (remote / 'install.sh').write_bytes(b'changed unverified installer\n')
+        _git('add', 'install.sh', cwd=remote)
+        _git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'bad release', cwd=remote)
+        new_head = _git('rev-parse', 'HEAD', cwd=remote).stdout.strip()
+        _git('fetch', 'origin', cwd=dest)
+    functions = '\n'.join(shell_function(source, name) for name in
+                          ('rollback_install_update', 'fail_verified_install'))
+    script = ('set -e\ninfo() { :; }; warn() { :; }; fail() { exit 41; }; '
+              'verify_skill_payload() { return 0; }; repair_and_verify_skill_payload() { :; }; '
+              'verification_enabled() { return 0; }; fetch_release_checksums() { return 0; }; '
+              'verify_checksums_in_dir() { (cd \"$INSTALL_DIR\" && sha256sum -c \"$CHECKSUM_FILE\" --quiet); }; '
+              + sparse_assignment(source) + '\n' + functions + '\n'
+              + 'update_repo() { : > \"$UPDATE_MARKER\"; '
+              + ('return 1;' if outcome == 'failed-update' else 'git -C \"$INSTALL_DIR\" checkout --detach -q \"$NEW_HEAD\"; INSTALL_UPDATED=1;') + ' };\n'
+              + branch)
+    if outcome == 'disable-failed':
+        script = script.replace('set -e\n', 'set -e\ngit() { if [ \"$3\" = sparse-checkout ] && [ \"$4\" = disable ]; then return 1; fi; command git \"$@\"; };\n', 1)
+    env = dict(os.environ, INSTALL_DIR=str(dest), INSTALL_OLD_HEAD=old_head,
+               INSTALL_UPDATED='0', NEW_HEAD=new_head, RELEASE_TAG='v1.0.0', TMP_DIR=str(tmp_path),
+               CHECKSUM_FILE=str(remote / 'CHECKSUMS.sha256'), UPDATE_MARKER=str(tmp_path / 'update-attempted'))
+    result = subprocess.run([install_bash(), '-c', script], env=env, capture_output=True, text=True)
+    assert (tmp_path / 'update-attempted').exists() == (outcome != 'disable-failed' or mode != 'legacy')
+    expected = 0 if outcome == 'success' or (outcome == 'disable-failed' and mode != 'legacy') else 41
+    assert result.returncode == expected, result.stderr + result.stdout
+    assert _git('rev-parse', 'HEAD', cwd=dest).stdout.strip() == old_head
+    assert database.read_bytes() == secret_fixture
+    assert (dest / 'openclaw/skip.txt').exists()
+    if outcome != 'disable-failed' or mode != 'legacy':
+        assert (dest / 'install.sh').is_file()
+
+
+def test_payload_repair_widens_without_deleting_ignored_extra_data(remote, tmp_path):
+    from helpers.install_sparse import install_bash, shell_function, sparse_assignment
+    import os
+    dest = tmp_path / 'payload repair'
+    _clone(remote, dest, ('sparse-checkout', 'init', '--cone'))
+    _git('sparse-checkout', 'add', 'openclaw/', cwd=dest)
+    database = dest / 'openclaw/store/private.db'
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b'payload repair fixture')
+    (dest / '.git/info/exclude').write_text('openclaw/store/\n')
+    source = _src()
+    script = ('set -e; warn() { :; }; info() { :; }; fail_verified_install() { exit 41; }; '
+              'verify_skill_payload() { test -f "$INSTALL_DIR/install.sh" && '
+              'test "$(git -C "$INSTALL_DIR" config --bool core.sparseCheckout)" != true; }; '
+              + sparse_assignment(source) + '\n'
+              + shell_function(source, 'repair_and_verify_skill_payload')
+              + '\nrepair_and_verify_skill_payload')
+    result = subprocess.run([install_bash(), '-c', script],
+                            env=dict(os.environ, INSTALL_DIR=str(dest)), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert database.read_bytes() == b'payload repair fixture'
+    assert subprocess.run(['git', 'config', '--bool', 'core.sparseCheckout'], cwd=dest, capture_output=True, text=True).stdout.strip() != 'true'

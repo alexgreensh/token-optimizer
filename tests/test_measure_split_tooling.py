@@ -287,3 +287,79 @@ def test_mover_writes_lf_on_every_platform():
         assert isinstance(newline, ast.Constant) and newline.value == '\n', f'line {node.lineno}'
     opened = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'open']
     assert all('w' not in ast.unparse(node.args[1]) for node in opened if len(node.args) > 1), 'text open() for writing'
+
+
+@pytest.mark.parametrize('literal', [
+    'f"""\nunchanged {STATE}\n"""',
+    'f"""first {STATE}\nsecond {STATE!r}\n"""',
+    'f"""\n{STATE:>{WIDTH}}\n"""',
+    'f"""\né literal {{braces}} {STATE}\n"""',
+    'f"pre {STATE}" f"""\npost {STATE}\n"""',
+    'f"""\n{(STATE +\n STATE)}\n"""',
+    'rf"""\nraw \\ literal {STATE}\n"""',
+    'f"""\n{(lambda item: item + STATE)(STATE)}\n"""',
+    'f"""\n{[item + STATE for item in [STATE]]}\n"""',
+    'f"""\n{STATE.upper()}\n"""',
+    'f"""\n{f\'{STATE}\'}\n"""',
+    'f"""\n{{STATE}} {f\'{STATE}\'}\n"""',
+    'f"""\n{f\'\'\'\n{STATE}\n\'\'\'}\n"""',
+    'f"""\n{STATE}{f\'{STATE}\'}{STATE}\n"""',
+])
+@pytest.mark.parametrize('leading', ['', 'marker = "é"; '])
+def test_mover_multiline_fstring_global_positions_preserve_values(literal, leading):
+    from types import SimpleNamespace
+    source = 'STATE = "x"\nWIDTH = 5\ndef work():\n    ' + leading + 'return ' + literal + '\n'
+    expected = {}
+    exec(source, expected)
+    moved, _ = tooling().extract_definition(source, 'work', 'runtime')
+    facade = SimpleNamespace(STATE='x', WIDTH=5)
+    values = {'_compat': SimpleNamespace(facade=lambda: facade)}
+    exec(moved, values)
+    assert values['work']() == expected['work']()
+    facade.STATE = 'updated'
+    expected['STATE'] = 'updated'
+    assert values['work']() == expected['work']()
+
+
+
+@pytest.mark.skipif(sys.version_info >= (3, 10), reason='Python 3.9 compatibility repair only')
+def test_fstring_position_repair_fails_closed_without_a_verified_token(monkeypatch):
+    import ast
+    import measure_split_positions as positions
+    source = 'value = f"""\n{STATE}\n"""'
+    joined = next(node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.JoinedStr))
+    monkeypatch.setattr(positions, '_fstring_tokens', lambda _source: ())
+    with pytest.raises(ValueError, match='unverified'):
+        positions.repair_fstring_positions(source, joined)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason='Modern parser fast path')
+def test_fstring_repair_keeps_modern_positions_unchanged(monkeypatch):
+    import ast
+    import measure_split_positions as positions
+    source = 'value = f"""\n{STATE}\n"""'
+    joined = next(node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.JoinedStr))
+    before = ast.dump(joined, include_attributes=True)
+    monkeypatch.setattr(positions, '_fstring_tokens', lambda _source: (_ for _ in ()).throw(AssertionError('unexpected tokenizer')))
+    positions.repair_fstring_positions(source, joined)
+    assert ast.dump(joined, include_attributes=True) == before
+
+
+def test_fstring_candidate_must_be_an_executable_field_not_matching_literal_text():
+    import ast
+    import measure_split_positions as positions
+    source = 'value = f"""\n{{STATE}} {"STATE"} {STATE}\n"""'
+    # Use the pre-3.12 token surface intentionally, even on a modern parser.
+    import tokenize
+    token = tokenize.TokenInfo(tokenize.STRING, source[source.index('f"""'):],
+                               (1, 8), (3, 3), source)
+    columns = [index for index in range(len(source.splitlines()[1]))
+               if source.splitlines()[1].startswith('STATE', index)]
+    assert len(columns) == 3
+    results = []
+    for column in columns:
+        candidate = ast.Name(id='STATE', ctx=ast.Load(), lineno=2, col_offset=column,
+                             end_lineno=2, end_col_offset=column + 5)
+        assert positions._same_expression(source, candidate, candidate)
+        results.append(positions._inside_field(source, candidate, token))
+    assert results == [False, False, True]

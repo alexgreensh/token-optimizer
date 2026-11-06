@@ -121,6 +121,11 @@ class Qualifier(ast.NodeVisitor):
             else:
                 self.replace(node, prefix + node.id)
 
+    def visit_JoinedStr(self, node):
+        from measure_split_positions import repair_fstring_positions
+        repair_fstring_positions(self.source, node)
+        self.generic_visit(node)
+
     def visit_Global(self, node):
         remaining = [name for name in node.names if name not in self.globals]
         self.replace(node, 'global ' + ', '.join(remaining) if remaining else 'pass')

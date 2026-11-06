@@ -46,6 +46,7 @@ Run: python3 -m pytest tests/test_heal_hardening.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import ast
 import contextlib
@@ -69,7 +70,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 
 def _measure_source() -> str:
-    return MEASURE_PY.read_text(encoding="utf-8")
+    return _split_measure_source(MEASURE_PY)
 
 
 @pytest.fixture()

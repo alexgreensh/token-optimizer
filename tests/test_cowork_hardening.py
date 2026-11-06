@@ -20,6 +20,7 @@ Run: python3 -m pytest tests/test_cowork_hardening.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import json
 import subprocess
@@ -407,7 +408,7 @@ def test_compact_restore_envelope_event_derives_from_hook_event_name():
     post-compaction recovery context. Source-pin the fix so it cannot silently
     revert to the runtime-detection choice.
     """
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     # The compact-restore dispatch must read the event from stdin.
     assert 'event=str(hook_input.get("hook_event_name") or "SessionStart")' in src, (
         "compact-restore must derive the envelope event from stdin hook_event_name"

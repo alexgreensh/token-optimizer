@@ -27,6 +27,7 @@ test_runway_card_wiring.py / test_dashboard_regen_retry.py take).
 
 Run: python3 -m pytest tests/test_dashboard_version_selfheal.py -v
 """
+from helpers.measure_split import inspect_source as _split_inspect_source
 from _activity_fixtures import stamp_activity
 import importlib
 import inspect
@@ -137,7 +138,7 @@ def test_dispatch_dashboard_defaults_to_no_force(m, monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_ensure_health_hands_html_heal_to_detached_forced_child(m):
-    src = inspect.getsource(m.run_ensure_health)
+    src = _split_inspect_source(m.run_ensure_health)
     # The stale-HTML branch must hand off to the detached, forced child...
     assert "_spawn_detached_dashboard_selfheal(days=30, force=True, hook_timeout=False)" in src, (
         "the stale-HTML self-heal must spawn the detached forced child, not run "
@@ -155,7 +156,7 @@ def test_ensure_health_daemon_update_runs_after_html_heal(m):
     the HTML self-heal. With the heal now a fast detached spawn, the tick always
     reaches the daemon update -- the block that was stranded when the in-process
     regen blew the budget."""
-    src = inspect.getsource(m.run_ensure_health)
+    src = _split_inspect_source(m.run_ensure_health)
     heal_at = src.index("_spawn_detached_dashboard_selfheal(days=30, force=True, hook_timeout=False)")
     daemon_at = src.index('TOKEN_OPTIMIZER_DAEMON_VERSION = "')
     assert heal_at < daemon_at, "HTML heal must precede the daemon-script update"
@@ -334,7 +335,7 @@ def test_heal_spawn_due_reclaims_stale_marker(m):
 
 def test_ensure_health_guards_spawn_with_herd_lock(m):
     """Every self-heal call, including ensure-health, uses the central spawn guard."""
-    src = inspect.getsource(m._spawn_detached_dashboard_selfheal)
+    src = _split_inspect_source(m._spawn_detached_dashboard_selfheal)
     guard_at = src.index("_dashboard_heal_spawn_due()")
     spawn_at = src.index("subprocess.Popen(")
     assert guard_at < spawn_at, "the herd guard must gate the spawn, not follow it"

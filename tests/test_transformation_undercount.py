@@ -18,6 +18,7 @@ window's real spend:
 
 Run: python3 -m pytest tests/test_transformation_undercount.py -v
 """
+from helpers.measure_split import inspect_source as _split_inspect_source
 from _activity_fixtures import stamp_activity
 import importlib
 import inspect
@@ -394,7 +395,7 @@ def test_transformation_reprice_has_no_second_routing_implementation(measure):
     no pending gate -- every defect docs/METHODOLOGY.md section 3.2 forbids."""
     mod, tmp = measure
     assert not hasattr(mod, "_input_rate_mix_ratio")
-    src = inspect.getsource(mod._estimate_before_after_savings)
+    src = _split_inspect_source(mod._estimate_before_after_savings)
     assert "_input_rate_mix_ratio" not in src
     # The reprice helper answers only from the shared recipe payload.
     assert mod._routing_mix_reprice_ratio(None) == 1.0

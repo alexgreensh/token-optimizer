@@ -17,6 +17,7 @@ can't go red on the addback is not a gate -- both branches are asserted.
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import sys
@@ -40,7 +41,7 @@ def measure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", SCRIPTS / "measure.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     yield mod
     sys.modules.pop("measure", None)
 

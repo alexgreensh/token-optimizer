@@ -15,6 +15,7 @@ Run: python3 -m pytest tests/test_daemon_sweep_hardening.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import os
@@ -46,7 +47,7 @@ def measure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", SCRIPTS / "measure.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     base = tmp_path / "base"
     base.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(mod.plugin_env, "_PLUGIN_DATA_BASE", base)

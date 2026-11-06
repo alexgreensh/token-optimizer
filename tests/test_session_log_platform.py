@@ -10,6 +10,7 @@ These tests exercise the real collection path end-to-end (Claude JSONL)
 and source-inspect the Hermes and Copilot INSERTs so all three paths are
 covered.
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import importlib
 import json
@@ -93,7 +94,7 @@ def test_claude_collect_records_platform(tmp_path, monkeypatch):
 
 def test_hermes_insert_includes_platform():
     """Source inspection: the Hermes INSERT must include the platform column."""
-    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(Path(SCRIPTS, "measure.py"))
     insert_start = src.index("def _collect_hermes_sessions")
     insert_end = src.index("\ndef ", insert_start + 1)
     hermes_section = src[insert_start:insert_end]
@@ -110,7 +111,7 @@ def test_hermes_insert_includes_platform():
 
 def test_copilot_insert_writes_platform_not_token_source():
     """Source inspection: the Copilot INSERT must write the platform name, not token_source."""
-    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(Path(SCRIPTS, "measure.py"))
     insert_start = src.index("def _collect_copilot_sessions")
     insert_end = src.index("\ndef ", insert_start + 1)
     copilot_section = src[insert_start:insert_end]
@@ -129,7 +130,7 @@ def test_copilot_insert_writes_platform_not_token_source():
 def test_cursor_collector_writes_platform_and_cursor_dedup_key():
     """Source inspection: the Cursor path must write the platform column and a
     cursor: dedup-key prefix, never a token_source into the platform column."""
-    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(Path(SCRIPTS, "measure.py"))
 
     # _insert_normalized_session owns the shared INSERT and must list platform.
     insert_start = src.index("def _insert_normalized_session")
@@ -158,7 +159,7 @@ def test_cursor_collector_writes_platform_and_cursor_dedup_key():
 
 def test_grok_insert_writes_platform_not_token_source():
     """Source inspection: the Grok INSERT must write the platform name, not token_source."""
-    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(Path(SCRIPTS, "measure.py"))
     insert_start = src.index("def _collect_grok_sessions")
     insert_end = src.index("\ndef ", insert_start + 1)
     grok_section = src[insert_start:insert_end]
@@ -173,7 +174,7 @@ def test_grok_insert_writes_platform_not_token_source():
 
 def test_main_claude_insert_includes_platform():
     """Source inspection: the main Claude/Codex INSERT must include the platform column."""
-    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(Path(SCRIPTS, "measure.py"))
     # The main collector INSERT is inside collect_sessions, after the hermes/copilot dispatch
     collect_start = src.index("def collect_sessions(")
     collect_end = src.index("\ndef ", collect_start + 1)

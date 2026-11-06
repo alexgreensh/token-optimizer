@@ -21,6 +21,7 @@ Run: python3 -m pytest tests/test_effective_compact_window.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import sys
@@ -40,7 +41,7 @@ def measure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", SCRIPTS / "measure.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     home = tmp_path / "claude"
     home.mkdir(parents=True, exist_ok=True)
     settings = home / "settings.json"
@@ -290,7 +291,7 @@ def test_quality_score_fill_warning_fires_earlier_with_small_window(measure, mon
 
 def test_no_fixed_percent_compaction_advice_left_in_measure():
     """Compaction advice follows the resolver / current facts, not a fixed 50-70%."""
-    text = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    text = _split_measure_source(SCRIPTS / "measure.py")
     assert "Use /compact at 50-70%" not in text
     assert "Compact around 50-70%" not in text
     assert "undocumented and has inverted" not in text

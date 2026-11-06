@@ -24,6 +24,7 @@ Run: python3 -m pytest tests/test_rollup_deadline.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import os
 import subprocess
@@ -79,9 +80,12 @@ def _rollup_dispatch_code(
         "marker = 'if __name__ == \"__main__\":'\n"
         "src = src.replace(marker, patch + marker, 1)\n"
         "ns = {{'__name__': '__main__', '__file__': {measure!r}}}\n"
-        "exec(compile(src, ns['__file__'], 'exec'), ns)\n"
+        "sys.path.insert(0, {tests!r})\n"
+        "from helpers.measure_split import exec_facade_source\n"
+        "exec_facade_source(src, ns['__file__'], ns)\n"
     ).format(
         scripts=str(SCRIPTS),
+        tests=str(REPO / 'tests'),
         sub=subcommand,
         snap=str(tmp_path),
         measure=str(MEASURE),
@@ -188,7 +192,7 @@ def test_both_rollup_branches_install_and_clear_budget_source():
     """Source inspection: both copilot-rollup and hermes-rollup branches call
     _install_hook_budget( and _clear_hook_budget( (mirrors the
     test_all_three_user_prompt_handlers_install_and_clear_budgets pattern)."""
-    source = MEASURE.read_text(encoding="utf-8")
+    source = _split_measure_source(MEASURE)
     names = ["copilot-rollup", "hermes-rollup", "cursor-rollup", "grok-rollup"]
     blocks = []
     for name in names:

@@ -13,6 +13,7 @@
 Run directly:  python3 tests/test_session_locale_and_hooks.py
 Exits non-zero on first failure.
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import json
 import os
@@ -75,7 +76,7 @@ def test_ps_calls_force_c_locale():
 
 
 def test_ps_source_documents_issue_73():
-    src = MEASURE.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE)
     # Three ps calls parse/inspect lstart: the two production collectors plus
     # the codex_doctor diagnostic probe. All must force C locale.
     assert src.count('"LC_ALL": "C", "LC_TIME": "C"') >= 3, \
@@ -108,7 +109,7 @@ def test_setup_hook_noop_under_codex():
 
 def test_setup_hook_writes_async_for_claude():
     """Positive control: under Claude Code the hook IS async (correct there)."""
-    src = MEASURE.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE)
     assert '{"type": "command", "command": HOOK_COMMAND, "async": True}' in src, \
         "Claude Code path must still install an async SessionEnd hook"
 
@@ -320,7 +321,7 @@ def test_ccd_cli_session_collected_end_to_end_issue_192():
 
 
 def test_ccd_cli_source_documents_issue_192():
-    src = MEASURE.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE)
     assert "/.claude/remote/ccd-cli/" in src, \
         "ccd-cli launcher segment missing from the process matcher"
     assert "issue #192" in src, "issue #192 reference missing from measure.py"

@@ -31,6 +31,7 @@ Run: python3 -m pytest tests/test_cleanup_does_not_latch_daemon_optout.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import os
@@ -56,7 +57,7 @@ def measure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", SCRIPTS / "measure.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     # Each test replaces every platform uninstaller before calling setup_daemon.
     monkeypatch.setattr(mod, "_daemon_snapshot_sandboxed", lambda: False)
     yield mod
@@ -110,7 +111,7 @@ def test_dry_run_never_latches_regardless_of_flag(measure, monkeypatch):
 
 def test_cleanup_wires_latch_optout_false(measure):
     """Source-level: cleanup() must pass latch_optout=False into setup_daemon."""
-    source = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    source = _split_measure_source(SCRIPTS / "measure.py")
     marker = "setup_daemon(dry_run=dry_run, uninstall=True, this_install_only=this_install_only, latch_optout=False)"
     assert marker in source, (
         "cleanup() no longer passes latch_optout=False -- a tidy will again latch "

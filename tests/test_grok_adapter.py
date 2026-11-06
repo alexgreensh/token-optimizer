@@ -11,6 +11,7 @@ Run: python3 -m pytest tests/test_grok_adapter.py -v
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import json
 import os
@@ -641,7 +642,7 @@ def test_install_copies_bash_whitelist(gi, tmp_path):
     import importlib.util
     spec = importlib.util.spec_from_file_location("bw_check", whitelist)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     assert hasattr(mod, "is_whitelisted"), (
         "installed bash_whitelist.py is not the real module"
     )

@@ -27,9 +27,9 @@ Contract:
 
 Run: python3 -m pytest tests/test_usage_recommendations.py -q
 """
-
 from __future__ import annotations
-
+from helpers.measure_split import inspect_source as _split_inspect_source
+from helpers.measure_split import exec_source_module as _split_exec_module
 import inspect
 import importlib
 import json
@@ -39,7 +39,6 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
@@ -75,7 +74,7 @@ def m(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", MEASURE)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     home = tmp_path / "claude"
     home.mkdir(parents=True, exist_ok=True)
     settings = _write_settings(home / "settings.json")
@@ -709,7 +708,7 @@ def test_ensure_fresh_never_spawns_on_foreign_runtime(m, monkeypatch):
 def test_spawn_goes_through_spawn_detached_only(m):
     mod, _s, _h = m
     for fn in (mod._recs_spawn_refresh, mod._recs_ensure_fresh):
-        body = inspect.getsource(fn)
+        body = _split_inspect_source(fn)
         assert "Popen" not in body
         assert "os.system" not in body
         assert "subprocess.run" not in body

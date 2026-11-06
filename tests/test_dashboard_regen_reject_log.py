@@ -15,6 +15,7 @@ These tests extract the shipped function out of the generated daemon source
 and assert both the logging behaviour and the do_POST wiring. They fail at edit
 time if the reject trace is removed or moved out of the token-mismatch branch.
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import re
 import sys
@@ -131,10 +132,8 @@ def test_do_POST_does_not_log_reject_on_valid_token_path():
 
 def test_reject_logger_mirrored_to_plugin_tree():
     """Both measure.py trees must carry the reject logger."""
-    a = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
-    b = (
-        ROOT
+    a = _split_measure_source(SCRIPTS / "measure.py")
+    b = _split_measure_source(ROOT
         / "plugins" / "token-optimizer" / "skills" / "token-optimizer" / "scripts"
-        / "measure.py"
-    ).read_text(encoding="utf-8")
+        / "measure.py")
     assert a == b, "measure.py drifted between the two install trees"

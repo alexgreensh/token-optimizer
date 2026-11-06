@@ -55,79 +55,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 MUTATIONS_DIR = REPO / "scripts" / "mutations"
 MEASURE = "skills/token-optimizer/scripts/measure.py"
+_SPLIT_RESOLVER = None
 
 # (name, tests that must catch it, file, [(old, new), ...])
 MUTATIONS = [
-    ("baseline slides onto post-install months",
-     ["tests/test_golden_user.py", "tests/test_pinned_baseline.py", "tests/test_weekly_full_savings.py"],
-     MEASURE,
-     [("            pinned = _pinned_workload_anchor()\n", "            pinned = None\n"),
-      ('str(frozen.get("month") or "") <= month', 'str(frozen.get("month") or "") == month')]),
-    ("re-reads priced at the family card, not the exact model",
-     ["tests/test_counted_pricing_integrity.py::test_supported_claude_aliases_use_exact_card",
-      "tests/test_counted_pricing_integrity.py::test_unknown_models_keep_tokens_without_fallback"],
-     MEASURE,
-     [('key = value.replace("-", "_").replace(".", "_")',
-       'key = _normalize_model_name(value)')]),
-    ("savings report leaves out avoided re-reads",
-     ["tests/test_pinned_baseline.py::test_savings_report_counts_avoided_re_reads"],
-     MEASURE,
-     [('    summary["reread_avoided"] = summary["counted_period"]\n',
-       '    summary["reread_avoided"] = {}\n')]),
-    ("one session stored under two paths counted twice",
-     ["tests/test_golden_user.py", "tests/test_cost_accuracy_200.py"],
-     MEASURE,
-     [("            if any(_session_rank(r[1], r[2], r[3]) >= mine for r in other):", "            if False:"),
-      ("def _dedupe_session_rows(conn):", "def _dedupe_session_rows(conn):\n    return 0\n\n\ndef _unused_dedupe(conn):"),
-      ('                conn.executemany("DELETE FROM session_log WHERE id = ?", [(r[0],) for r in other])',
-       "                pass")]),
-    ("a flat whole-workload week hides the measured savings",
-     ["tests/test_weekly_full_savings.py"],
-     MEASURE,
-     [('return value if float((value or {}).get("saved_usd") or 0.0) > 0 else None', "return value"),
-      ('if wdays == 7 and weekly_full and float(weekly_full.get("saved_usd") or 0.0) > ctx + rt:',
-       "if wdays == 7 and weekly_full:")]),
-    ("a growing session keeps its stale per-day usage",
-     ["tests/test_golden_user.py"],
-     MEASURE,
-     [("               daily_usage_json=excluded.daily_usage_json",
-       "               daily_usage_json=session_log.daily_usage_json")]),
-    ("re-collecting a grown session adds its old tokens again",
-     ["tests/test_golden_user.py"],
-     MEASURE,
-     [("               input_tokens=excluded.input_tokens,",
-       "               input_tokens=session_log.input_tokens + excluded.input_tokens,")]),
-    ("stored re-read rows keep a pricing bug after it is fixed",
-     ["tests/test_golden_user.py"],
-     MEASURE,
-     # Two protections: the one-time repricer and the summary's refusal to
-     # trust dollars stored without current price evidence. Break both.
-     [("def _reprice_counted_rows_once(conn):\n",
-       "def _reprice_counted_rows_once(conn):\n    return\n"),
-      ("        current = (detail.get(\"version\") == _COUNTED_PRICING_VERSION",
-       "        current = True or (detail.get(\"version\") == _COUNTED_PRICING_VERSION"),
-      ("                out[key] += detail[key]\n",
-       "                out[key] += detail.get(key, 0)\n")]),
-    ("a thinner history silently shrinks the frozen baseline",
-     ["tests/test_baseline_safety.py"],
-     MEASURE,
-     [("def _baseline_shrink_is_material(incumbent, candidate):",
-       "def _baseline_shrink_is_material(incumbent, candidate):\n    return False\n\n\ndef _unused_shrink(incumbent, candidate):")]),
-    ("a generation model priced at its family card",
-     ["tests/test_bundled_prices.py", "tests/test_cost_accuracy_200.py"],
-     MEASURE,
-     [("    m = _CLAUDE_GENERATION_RE.search(model_id.lower())\n    if m:",
-       "    m = None\n    if m:")]),
-    ("cwd/project mismatch warning printed to stdout (model context, broken hook JSON)",
-     ["tests/test_cloud_parity.py::test_cwd_mismatch_warning_goes_to_stderr"],
-     MEASURE,
-     [('Using most recent: {result.name}",\n          file=sys.stderr)',
-       'Using most recent: {result.name}")')]),
-    ("Claude Code cloud runs the desktop-only daemon / settings / welcome work",
-     ["tests/test_cloud_parity.py"],
-     MEASURE,
-     [("            return False\n        return is_claude_code_cloud()\n",
-       "            return False\n        return False\n")]),
 ]
 
 
@@ -155,18 +86,54 @@ def _validate(entry, origin: str):
     if not isinstance(edits, (list, tuple)) or not edits:
         raise MutationError(f"{where}: needs at least one (old, new) edit")
     for edit in edits:
+        if isinstance(edit, dict):
+            if (not {'old', 'new'} <= edit.keys() or edit.keys() - {'old', 'new', 'file', 'symbol'}
+                    or not all(isinstance(value, str) for value in edit.values())):
+                raise MutationError(f"{where}: malformed multi-target edit")
+            target = edit.get('file', relpath)
+            if not target or os.path.isabs(target) or '..' in Path(target).parts:
+                raise MutationError(f"{where}: file must be a repo-relative path")
+            if not edit['old'] or edit['old'] == edit['new']:
+                raise MutationError(f"{where}: an edit has empty `old` or old == new (plants nothing)")
+            continue
         if not (isinstance(edit, (list, tuple)) and len(edit) == 2
                 and all(isinstance(s, str) for s in edit)):
             raise MutationError(f"{where}: each edit must be an (old, new) pair of strings")
         if not edit[0] or edit[0] == edit[1]:
             raise MutationError(f"{where}: an edit has empty `old` or old == new (plants nothing)")
-    return name, list(tests), relpath, [tuple(e) for e in edits]
+    return name, list(tests), relpath, [dict(e) if isinstance(e, dict) else tuple(e) for e in edits]
+
+
+def _load_partitioned():
+    """One logical mutation may own replacement fragments in several lanes."""
+    index = MUTATIONS_DIR / '_measure_index.json'
+    if not index.exists():
+        return []
+    try:
+        metadata = json.loads(index.read_text(encoding='utf-8'))
+        fragments = {}
+        for lane in range(9):
+            path = MUTATIONS_DIR / f'_measure_lane{lane}.json'
+            for fragment in json.loads(path.read_text(encoding='utf-8')):
+                key = (fragment['mutation'], fragment['edit'])
+                if key in fragments:
+                    raise ValueError(f'duplicate fragment {key}')
+                fragments[key] = {key: value for key, value in fragment.items() if key in ('file', 'symbol', 'old', 'new')}
+        out = []
+        for mutation in metadata:
+            edits = [fragments.pop((mutation['name'], index)) for index in range(mutation['edits'])]
+            out.append((mutation['origin'], (mutation['name'], mutation['tests'], MEASURE, edits)))
+        if fragments:
+            raise ValueError(f'orphan fragments: {list(fragments)}')
+        return out
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise MutationError(f'{index}: invalid partitioned mutations: {exc}') from exc
 
 
 def _load_extra() -> list:
     """(origin, entry) for every MUTATIONS in scripts/mutations/*.py. A file that
     fails to import or lacks MUTATIONS is an error, not an empty list."""
-    out = []
+    out = _load_partitioned()
     if not MUTATIONS_DIR.is_dir():
         return out
     for path in sorted(MUTATIONS_DIR.glob("*.py")):
@@ -211,6 +178,50 @@ def plant(text: str, edits) -> str:
     return text
 
 
+def resolve_targets(root: Path, relpath, edits):
+    """Resolve every fragment, apply sequentially in memory, and reject no-ops.
+
+    Old tuple descriptors still work. Explicit symbol descriptors follow the
+    frozen owner into a provider, so cross-file mutations remain atomic.
+    """
+    global _SPLIT_RESOLVER
+    texts, originals = {}, {}
+    for edit in edits:
+        if isinstance(edit, dict):
+            target, old, new = edit.get('file', relpath), edit['old'], edit['new']
+            if edit.get('symbol'):
+                if _SPLIT_RESOLVER is None:
+                    spec = importlib.util.spec_from_file_location('_guard_measure_split', Path(__file__).with_name('measure_split.py'))
+                    _SPLIT_RESOLVER = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(_SPLIT_RESOLVER)
+                try:
+                    target = str(_SPLIT_RESOLVER.resolve_symbol(root / Path(MEASURE).parent, edit['symbol']).relative_to(root))
+                except (ValueError, StopIteration, OSError) as exc:
+                    raise MutationError(f"cannot resolve {edit['symbol']}: {exc}") from exc
+        else:
+            target, (old, new) = relpath, edit
+        if target not in texts:
+            try:
+                texts[target] = (root / target).read_text(encoding='utf-8')
+                originals[target] = texts[target]
+            except OSError as exc:
+                raise MutationError(f'{target}: cannot read source: {exc}') from exc
+        if old not in texts[target] and target == MEASURE and not isinstance(edit, dict):
+            matches = [p for p in (root / Path(MEASURE).parent / '_measure').glob('*.py')
+                       if old in p.read_text(encoding='utf-8')]
+            if len(matches) != 1:
+                raise MutationError(f'stale or ambiguous moved fragment: {old[:80]!r}')
+            target = str(matches[0].relative_to(root))
+            if target not in texts:
+                texts[target] = matches[0].read_text(encoding='utf-8')
+                originals[target] = texts[target]
+        texts[target] = plant(texts[target], [(old, new)])
+    changed = {name: (originals[name], text) for name, text in texts.items() if text != originals[name]}
+    if not changed:
+        raise MutationError('mutation made zero replacements')
+    return changed
+
+
 def _copy_repo(src: Path, dst: Path) -> None:
     """Copy the tree for mutation, skipping (with a warning) anything unreadable.
 
@@ -226,7 +237,7 @@ def _copy_repo(src: Path, dst: Path) -> None:
     try:
         shutil.copytree(src, dst, copy_function=_copy, ignore=shutil.ignore_patterns(
             ".git", "node_modules", "docs-site", "research", "__pycache__", "*.pyc",
-            ".pytest_cache", ".regression-guards-tmp"))
+            ".pytest_cache", ".regression-guards-tmp", ".scratch*"))
     except shutil.Error as exc:
         for entry in exc.args[0]:
             print(f"warning: skipping unreadable path {entry[0]}: {entry[2]}", file=sys.stderr)
@@ -290,6 +301,10 @@ def _pytest(copy_root: Path, tests: list, exitfirst: bool = True, outcomes_to: P
     if exitfirst:
         args.insert(4, "-x")
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    # A mutation copy has its own real-home guard. An inherited prefix in the
+    # caller's checkout is outside that copy, so keep its bytecode local too.
+    if env.get('PYTHONPYCACHEPREFIX'):
+        env['PYTHONPYCACHEPREFIX'] = str(copy_root / '.scratch-regression-bytecode')
     if outcomes_to is not None:
         plugin_dir = outcomes_to.parent / "plugin"
         plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -304,16 +319,16 @@ def _pytest(copy_root: Path, tests: list, exitfirst: bool = True, outcomes_to: P
 def _run_one(mut, copy_root: Path):
     """Plant one mutation in copy_root, run its tests, restore. ('ok'|'fail', detail)."""
     name, tests, relpath, edits, _origin = mut
-    target = copy_root / relpath
-    original = target.read_bytes()
+    targets = resolve_targets(copy_root, relpath, edits)
     try:
-        mutated = plant(original.decode("utf-8"), edits)
-        target.write_bytes(mutated.encode("utf-8"))
+        for relative, (_original, mutated) in targets.items():
+            (copy_root / relative).write_bytes(mutated.encode('utf-8'))
         t0 = time.monotonic()
         code, out = _pytest(copy_root, tests)
         took = time.monotonic() - t0
     finally:
-        target.write_bytes(original)
+        for relative, (original, _mutated) in targets.items():
+            (copy_root / relative).write_bytes(original.encode('utf-8'))
     if code == 1:
         return "ok", f"{took:.0f}s"
     if code == 0:
@@ -366,7 +381,7 @@ def main(argv=None) -> int:
     runnable = []
     for mut in muts:
         try:
-            plant((REPO / mut[2]).read_text(encoding="utf-8"), mut[3])
+            resolve_targets(REPO, mut[2], mut[3])
             runnable.append(mut)
         except MutationError as exc:
             failures.append(f"{mut[0]} ({mut[4]} -> {mut[2]}): {exc}; update this entry")

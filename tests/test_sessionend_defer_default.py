@@ -11,6 +11,7 @@ that decision at `_dispatch_session_end_flush` without spawning any worker.
 """
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import importlib
 import sys
@@ -57,13 +58,13 @@ def test_hook_command_with_defer_still_defers(m):
 def test_manual_refresh_cmd_carries_no_defer():
     """The codex manual refresh_cmd must stay synchronous (carry --no-defer) so a
     user running it and immediately opening the dashboard sees fresh data."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     assert "session-end-flush --trigger manual --no-defer" in src
 
 
 def test_both_trees_have_the_dispatch():
-    top = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
-    mirror = (REPO / "plugins" / "token-optimizer" / "skills" / "token-optimizer"
-              / "scripts" / "measure.py").read_text(encoding="utf-8")
+    top = _split_measure_source(SCRIPTS / "measure.py")
+    mirror = _split_measure_source(REPO / "plugins" / "token-optimizer" / "skills" / "token-optimizer"
+              / "scripts" / "measure.py")
     assert "_dispatch_session_end_flush" in top
     assert top == mirror, "measure.py trees must be byte-identical"

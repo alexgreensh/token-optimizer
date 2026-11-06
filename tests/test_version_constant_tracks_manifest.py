@@ -9,6 +9,7 @@ earlier releases, making it a release-process gap rather than a one-off.
 The repo's own version audit did not catch it: it scans manifests and does not
 reach this constant. This test is the gate that was missing.
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import importlib
 import json
@@ -51,7 +52,7 @@ def test_version_constant_matches_marketplace_manifest():
 
 def test_version_is_derived_not_hardcoded():
     """A literal here is the defect itself: it will drift again."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     line = next(
         l for l in src.splitlines()
         if l.startswith("TOKEN_OPTIMIZER_VERSION =")

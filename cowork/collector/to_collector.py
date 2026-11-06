@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
 import importlib.util
 import json
 import math
@@ -501,12 +502,35 @@ def _measure_candidates() -> list[Path]:
     return cands
 
 
+def _engine_module_names():
+    return [key for key in sys.modules if key == 'measure' or key == '_measure'
+            or key.startswith('_measure.') or key in ('plugin_env', 'runtime_env')]
+
+
+@contextmanager
+def _measure_import_scope():
+    """Keep a collector call's canonical facade separate from its caller's."""
+    previous = {key: sys.modules[key] for key in _engine_module_names()}
+    search = list(sys.path)
+    try:
+        for key in previous:
+            sys.modules.pop(key, None)
+        yield
+    finally:
+        for key in _engine_module_names():
+            sys.modules.pop(key, None)
+        sys.modules.update(previous)
+        sys.path[:] = search
+
+
 def _load_measure(measure_path: str | None):
     """Import measure.py as a module, or return (None, tried_paths)."""
     cands = [Path(measure_path).expanduser()] if measure_path else _measure_candidates()
     for cand in cands:
         if not cand.is_file():
             continue
+        for key in _engine_module_names():
+            sys.modules.pop(key, None)
         # measure.py imports siblings (hook_io, codex_session, ...) bare, so its
         # directory must be importable.
         script_dir = str(cand.parent)
@@ -514,8 +538,9 @@ def _load_measure(measure_path: str | None):
         if added:
             sys.path.insert(0, script_dir)
         try:
-            spec = importlib.util.spec_from_file_location("to_measure", str(cand))
+            spec = importlib.util.spec_from_file_location("measure", str(cand))
             mod = importlib.util.module_from_spec(spec)
+            sys.modules['measure'] = mod
             spec.loader.exec_module(mod)
             return mod, cands
         except Exception as exc:  # noqa: BLE001 - report and try the next candidate
@@ -525,6 +550,7 @@ def _load_measure(measure_path: str | None):
     return None, cands
 
 
+@_measure_import_scope()
 def ingest(data_dir: Path, measure_path: str | None = None, db_override: str | None = None,
            quiet: bool = False) -> int:
     """Write parsed Cowork sessions into TO's trends.db via measure.py helpers.
@@ -793,6 +819,7 @@ def _row_host(platform: str | None, jsonl_path: str | None) -> str:
     return "claude-code"
 
 
+@_measure_import_scope()
 def cost_view(measure_path: str | None = None, db_override: str | None = None,
               days: int = 30, as_json: bool = False) -> int:
     """Print total tokens/cost grouped by host from the trends store."""

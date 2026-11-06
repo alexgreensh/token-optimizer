@@ -18,9 +18,8 @@ These four tests pin the three deliverables:
 
 Run: python3 -m pytest tests/test_userpromptsubmit_runner.py -q
 """
-
 from __future__ import annotations
-
+from helpers.measure_split import exec_source_module as _split_exec_module
 import importlib.util
 import sys
 from pathlib import Path
@@ -37,7 +36,7 @@ def _load_run_py():
     """Import hooks/run.py as a fresh module (it has no package-relative imports)."""
     spec = importlib.util.spec_from_file_location("ups_run_py_under_test", RUN_PY)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 
@@ -53,7 +52,7 @@ def _load_runner(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     spec = importlib.util.spec_from_file_location("ups_runner_under_test", RUNNER)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 
@@ -524,7 +523,7 @@ def _load_runner_real_consent(monkeypatch, tmp_path, config_json="{}"):
 
     spec = importlib.util.spec_from_file_location("ups_runner_consent_under_test", RUNNER)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
 
     # Repoint measure's import-time config globals at the tmp config so the real
     # _write_config_flag / _read_config_flag / _config_lock primitives stay
@@ -849,7 +848,7 @@ def _load_runner_fresh_measure(monkeypatch, tmp_path):
         "ups_runner_integration_under_test", RUNNER
     )
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
 
     def _restore():
         for k in _FRESH_MEASURE_MODULES:

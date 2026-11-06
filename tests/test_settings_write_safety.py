@@ -6,6 +6,7 @@ Run: python3 -m pytest tests/test_settings_write_safety.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import json
@@ -44,7 +45,7 @@ def measure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", SCRIPTS / "measure.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
 
     home = tmp_path / "claude"
     (home / "plugins").mkdir(parents=True, exist_ok=True)
@@ -300,7 +301,7 @@ def test_quality_cache_self_heal_in_the_gate_and_the_runner_skip_a_fifo(fifo_set
 
     spec = importlib.util.spec_from_file_location("qc_gate_safety", SCRIPTS / "quality_cache_gate.py")
     gate = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gate)
+    _split_exec_module(gate)
     out = _call_with_fifo(settings, lambda: gate._quality_cache_self_heal(mod))
     assert "exc" not in out, out
 
@@ -308,7 +309,7 @@ def test_quality_cache_self_heal_in_the_gate_and_the_runner_skip_a_fifo(fifo_set
     spec = importlib.util.spec_from_file_location(
         "ptu_runner_safety", REPO / "hooks" / "posttooluse_runner.py")
     runner = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(runner)
+    _split_exec_module(runner)
     monkeypatch.setattr(runner, "_measure", lambda: mod)
     out = _call_with_fifo(settings, runner._quality_cache_self_heal)
     assert "exc" not in out, out

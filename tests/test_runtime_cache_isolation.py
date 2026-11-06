@@ -7,15 +7,22 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" / "scripts"))
-import runtime_env  # noqa: E402
+import importlib  # noqa: E402
+
+
+def _env():
+    # Resolve through sys.modules at call time: earlier files that pop and
+    # re-import runtime_env leave a duplicate instance, and the bound name
+    # would keep a stale cache the conftest cleanup never sees (CI afab5255).
+    return importlib.import_module("runtime_env")
 
 
 def test_a_forces_codex_and_leaves_without_cleaning(monkeypatch):
     monkeypatch.setenv("TOKEN_OPTIMIZER_RUNTIME", "codex")
-    runtime_env.detect_runtime.cache_clear()
-    assert runtime_env.detect_runtime() == "codex"
+    _env().detect_runtime.cache_clear()
+    assert _env().detect_runtime() == "codex"
 
 
 def test_b_next_test_does_not_inherit_codex(monkeypatch):
     monkeypatch.setenv("TOKEN_OPTIMIZER_RUNTIME", "claude")
-    assert runtime_env.detect_runtime() == "claude"
+    assert _env().detect_runtime() == "claude"

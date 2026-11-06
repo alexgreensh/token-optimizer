@@ -24,17 +24,16 @@ and assert the scoped behavior required by FIX-SPEC-108:
 
 Run: python3 -m pytest tests/test_codex_goal_scoping.py -v
 """
+from helpers.measure_split import measure_source as _split_measure_source
 import json
 import os
 import sqlite3
 import sys
 import tempfile
 from pathlib import Path
-
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-
 import codex_session  # noqa: E402
 import codex_state  # noqa: E402
 import measure  # noqa: E402
@@ -836,7 +835,7 @@ def test_memory_overhead_empty_id_is_not_machine_wide():
 
 
 def test_machine_wide_memory_component_is_labelled_all_threads():
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     assert '"scope": "all_threads"' in src
     assert "Codex memories (all threads)" in src
     assert "threads on this machine" in src
@@ -1106,7 +1105,7 @@ def test_compare_snapshots_qualifies_partial_memory(monkeypatch, tmp_path, capsy
 
 
 def test_dashboard_generation_uses_real_codex_memory_review_counts():
-    src = Path(measure.__file__).read_text(encoding="utf-8")
+    src = _split_measure_source(Path(measure.__file__))
     assert "mr_data = _codex_memory_review_data(mem)" in src
     assert 'len(mem.get("files", []))' not in src
 

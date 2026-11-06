@@ -39,6 +39,7 @@ the same spawn site class (a Windows child that must inherit stdio) and
 
 Run: python3 -m pytest tests/test_windows_spawn_no_window.py -v
 """
+from helpers.measure_split import exec_source_module as _split_exec_module
 import importlib
 import importlib.util
 import os
@@ -49,9 +50,7 @@ import tempfile
 import threading
 import types
 from pathlib import Path
-
 import pytest
-
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 HOOKS = REPO / "hooks"
@@ -766,7 +765,7 @@ def _load_run_py():
     """Load hooks/run.py as an isolated module (it is a script, not a package)."""
     spec = importlib.util.spec_from_file_location("run_py_under_test", HOOKS / "run.py")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

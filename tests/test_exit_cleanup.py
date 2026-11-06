@@ -47,6 +47,7 @@ Run: python3 -m pytest tests/test_exit_cleanup.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import hashlib
 import importlib.util
@@ -91,7 +92,7 @@ def _load_archive_result(monkeypatch: pytest.MonkeyPatch, snapshot_dir: Path):
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, "archive_result", module)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 
@@ -169,9 +170,12 @@ def _rollup_dispatch_code(
         "marker = 'if __name__ == \"__main__\":'\n"
         "src = src.replace(marker, patch + marker, 1)\n"
         "ns = {{'__name__': '__main__', '__file__': {measure!r}}}\n"
-        "exec(compile(src, ns['__file__'], 'exec'), ns)\n"
+        "sys.path.insert(0, {tests!r})\n"
+        "from helpers.measure_split import exec_facade_source\n"
+        "exec_facade_source(src, ns['__file__'], ns)\n"
     ).format(
         scripts=str(SCRIPTS),
+        tests=str(REPO / 'tests'),
         sub=subcommand,
         snap=str(tmp_path),
         measure=str(MEASURE),
@@ -289,7 +293,7 @@ def test_defeat_bug_a_budget_value_is_60_source():
     ``_install_hook_budget(60)`` -- not 0, not negative, not a typo.  A budget
     of 0 would fire instantly (kill normal completion); a missing/negative
     budget would be a regression.  The literal 60 is the contract."""
-    source = MEASURE.read_text(encoding="utf-8")
+    source = _split_measure_source(MEASURE)
     for name in ("copilot-rollup", "hermes-rollup", "cursor-rollup", "grok-rollup"):
         start = source.index(f'elif args[0] == "{name}":')
         nxt = source.find('elif args[0] ==', start + 1)

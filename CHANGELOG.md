@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [5.13.66] - 2026-11-06
+
+- Token Optimizer's engine is now split into smaller modules, so it loads faster and is easier to keep reliable. Same results, same savings.
+
 ## [5.13.65] - 2026-11-06
 
 - Fixes the desktop band failing to load after 5.13.64 ("Export named 'COMPACT_HEAVY' not found"). The quality card now appears only when quality is low or recovery after a compaction needs attention (#307).

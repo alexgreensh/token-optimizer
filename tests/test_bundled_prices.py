@@ -6,6 +6,7 @@ says (and ignores a bad file), model ids resolve to the right card with no code
 change, and the refresh script refuses to ship a gutted table or a price that
 moved beyond 2x.
 """
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import copy
 import importlib.util
@@ -197,7 +198,7 @@ def _fresh_measure_no_bundled(monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "measure_no_bundled_under_test", SCRIPTS / "measure.py")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

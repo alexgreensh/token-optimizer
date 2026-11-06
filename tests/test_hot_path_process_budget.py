@@ -458,6 +458,17 @@ def healthy_install(tmp_path, monkeypatch):
                 "CLAUDE_CODE_REMOTE_SESSION_ID", "TOKEN_OPTIMIZER_REMOTE_HOST",
                 "TOKEN_OPTIMIZER_CLOUD_KIT_VERSION"):
         monkeypatch.delenv(var, raising=False)
+    # The install owns its config, as a real account does: hooks/run.py's
+    # consent check reads $HOME, measure's writers read CONFIG_*. The session
+    # sandbox's shared config dir can hold another test's released lease.
+    for var in ("CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_DATA", "CODEX_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    config_dir = home / ".claude" / "token-optimizer"
+    monkeypatch.setattr(measure, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(measure, "CONFIG_PATH", config_dir / "config.json")
+    monkeypatch.setattr(measure, "_CONFIG_LOCK_PATH", config_dir / ".config.lock")
     monkeypatch.setattr(measure, "_real_account_home", lambda: home)
     monkeypatch.setattr(measure, "HOME", home)
     monkeypatch.setattr(measure, "_SNAPSHOT_DIR_OVERRIDE", "")
@@ -522,6 +533,34 @@ def _apply_shape(shape, monkeypatch):
     if shape == "windows":
         monkeypatch.setattr(platform, "system", lambda: "Windows")
     measure._reset_job_guard_cache()
+
+
+def test_healthy_install_owns_its_config(healthy_install, monkeypatch):
+    """Windows CI 42124039503: an earlier test's hook child left a released
+    config lease (another pid, reuse window still open) in the session
+    sandbox's shared config dir. Every write here then skipped, so session 2
+    never saw session 1's stamp and re-ran ``schtasks /Query``. The healthy
+    install must own its config, as a real account does."""
+    import _home_guard
+    shared = (Path(measure._CONFIG_BASE) if measure._CONFIG_BASE
+              else measure.RUNTIME_DIR / "token-optimizer")
+    assert _home_guard.SANDBOX and shared.resolve().is_relative_to(Path(_home_guard.SANDBOX).resolve())
+    shared.mkdir(parents=True, exist_ok=True)
+    lease = shared / ".config.lease"
+    previous = lease.read_bytes() if lease.exists() else None
+    now = __import__("time").time()
+    lease.write_text(json.dumps({"pid": os.getpid() + 1, "nonce": "foreign-hook-child", "released": 1,
+                                 "created_wall": now, "expires_wall": now + 60, "reuse_wall": now + 60}),
+                     encoding="utf-8")
+    try:
+        _install_recorder(monkeypatch)
+        _run_runner("sessionstart_runner", _payload("SessionStart", "warm-1", healthy_install["tmp"]), monkeypatch)
+        assert measure._read_config_flag("v5_welcome_shown", False) is True
+    finally:
+        if previous is None:
+            lease.unlink(missing_ok=True)
+        else:
+            lease.write_bytes(previous)
 
 
 @pytest.mark.parametrize("shape", _SHAPES)

@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from helpers.measure_split import measure_source
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
@@ -37,11 +38,12 @@ def test_every_fchmod_call_is_guarded():
     # Scan EVERY shipped copy of measure.py, not just the canonical one: the repo
     # keeps three byte-identical mirrors (skills/, plugins/, cowork/), and an
     # unguarded os.fchmod in any of them crashes Windows just the same.
-    measures = sorted(REPO.glob("**/token-optimizer/scripts/measure.py"))
+    measures = [REPO / prefix / 'skills/token-optimizer/scripts/measure.py'
+                for prefix in ('', 'plugins/token-optimizer', 'cowork/token-optimizer')]
     assert measures, "no measure.py copies found to scan"
     unguarded = []
     for mp in measures:
-        lines = mp.read_text(encoding="utf-8").splitlines()
+        lines = measure_source(mp).splitlines()
         for i, line in enumerate(lines):
             if re.search(r"\bos\.fchmod\s*\(", line):
                 # The guard is `if hasattr(os, "fchmod"):` on one of the few lines

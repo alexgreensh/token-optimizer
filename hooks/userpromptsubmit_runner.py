@@ -92,7 +92,19 @@ _MEASURE_DIR = _resolve_measure_dir()
 if _MEASURE_DIR and _MEASURE_DIR not in sys.path:
     sys.path.insert(0, _MEASURE_DIR)
 
-import measure  # noqa: E402  (path bootstrapped above)
+# This process only calls the facade, so it may defer the providers no
+# UserPromptSubmit handler runs (_measure.HOOK_IMPORT, consumed by the import).
+try:
+    import _measure as _measure_package  # noqa: E402
+    if "measure" not in sys.modules:
+        _measure_package.HOOK_IMPORT = True
+except Exception:
+    _measure_package = None
+try:
+    import measure  # noqa: E402  (path bootstrapped above)
+finally:
+    if _measure_package is not None:
+        _measure_package.HOOK_IMPORT = False
 
 
 # --------------------------------------------------------------------------- #

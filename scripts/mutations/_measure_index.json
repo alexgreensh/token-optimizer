@@ -1,0 +1,681 @@
+[
+  {
+    "name": "baseline slides onto post-install months",
+    "tests": [
+      "tests/test_golden_user.py",
+      "tests/test_pinned_baseline.py",
+      "tests/test_weekly_full_savings.py"
+    ],
+    "edits": 2,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "re-reads priced at the family card, not the exact model",
+    "tests": [
+      "tests/test_counted_pricing_integrity.py::test_supported_claude_aliases_use_exact_card",
+      "tests/test_counted_pricing_integrity.py::test_unknown_models_keep_tokens_without_fallback"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "savings report leaves out avoided re-reads",
+    "tests": [
+      "tests/test_pinned_baseline.py::test_savings_report_counts_avoided_re_reads"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "one session stored under two paths counted twice",
+    "tests": [
+      "tests/test_golden_user.py",
+      "tests/test_cost_accuracy_200.py"
+    ],
+    "edits": 3,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "a flat whole-workload week hides the measured savings",
+    "tests": [
+      "tests/test_weekly_full_savings.py"
+    ],
+    "edits": 2,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "a growing session keeps its stale per-day usage",
+    "tests": [
+      "tests/test_golden_user.py"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "re-collecting a grown session adds its old tokens again",
+    "tests": [
+      "tests/test_golden_user.py"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "stored re-read rows keep a pricing bug after it is fixed",
+    "tests": [
+      "tests/test_golden_user.py"
+    ],
+    "edits": 3,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "a thinner history silently shrinks the frozen baseline",
+    "tests": [
+      "tests/test_baseline_safety.py"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "a generation model priced at its family card",
+    "tests": [
+      "tests/test_bundled_prices.py",
+      "tests/test_cost_accuracy_200.py"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "cwd/project mismatch warning printed to stdout (model context, broken hook JSON)",
+    "tests": [
+      "tests/test_cloud_parity.py::test_cwd_mismatch_warning_goes_to_stderr"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "Claude Code cloud runs the desktop-only daemon / settings / welcome work",
+    "tests": [
+      "tests/test_cloud_parity.py"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
+  },
+  {
+    "name": "Stop flush outcome never recorded",
+    "tests": [
+      "tests/test_codex_install_issue_276.py::test_stop_flush_records_throttled_skip"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/codex_install_276.py"
+  },
+  {
+    "name": "Codex compact window falls through to the Claude 1M default",
+    "tests": [
+      "tests/test_codex_install_issue_276.py::test_codex_compact_window_uses_codex_model_window"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/codex_install_276.py"
+  },
+  {
+    "name": "every cached plugin version counted",
+    "tests": [
+      "tests/test_codex_install_issue_276.py::test_plugin_skills_count_only_newest_cached_version"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/codex_install_276.py"
+  },
+  {
+    "name": "model-pin tip ignores routing plugins",
+    "tests": [
+      "tests/test_codex_install_issue_276.py::test_pin_tip_hidden_when_router_plugin_enabled",
+      "tests/test_codex_install_issue_276.py::test_pin_tip_hidden_by_env_opt_out"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/codex_install_276.py"
+  },
+  {
+    "name": "fill phrase leads with the auto-compact share again",
+    "tests": [
+      "tests/test_context_window_disclosure.py::test_fill_phrase_leads_with_the_model_window_share",
+      "tests/test_context_window_disclosure.py::test_fill_phrase_matches_the_users_meter_for_a_500k_compact_window"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/context_fill.py"
+  },
+  {
+    "name": "verbosity nudge hand-builds the fill number from fill_pct",
+    "tests": [
+      "tests/test_context_window_disclosure.py::test_every_context_nudge_uses_the_shared_phrase"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/context_fill.py"
+  },
+  {
+    "name": "quality detail leads with the compact-window share",
+    "tests": [
+      "tests/test_context_window_disclosure.py::test_quality_score_labels_lead_with_the_model_share"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/context_fill.py"
+  },
+  {
+    "name": "checkpoint header shows the compact-window share",
+    "tests": [
+      "tests/test_context_window_disclosure.py::test_display_fill_for_checkpoints_is_the_model_share"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/context_fill.py"
+  },
+  {
+    "name": "cloud VM runs the desktop-only daemon / scheduler work",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_cloud_vm_session_is_lean"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "#249 settings autoCompactWindow ignored (fill measured against the model window)",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_context_fill_uses_the_users_compact_window[settings_autoCompactWindow-cli]",
+      "tests/test_env_fingerprint_matrix.py::test_context_fill_uses_the_users_compact_window[settings_autoCompactWindow-cli_config_dir]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "#249 compact-window % labelled with the model window",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_context_fill_uses_the_users_compact_window[settings_autoCompactWindow-cli]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "#209 CLAUDE_CODE_AUTO_COMPACT_WINDOW env ignored",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_context_fill_uses_the_users_compact_window[env_auto_compact_window-cli]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "#73 ps under a non-English locale: localized lstart drops every session",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_health_sees_terminal_and_desktop_wsl_sessions_in_any_locale[he_IL.UTF-8]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "#192 Claude Desktop WSL 2 ccd-cli launcher not recognised as a session",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_health_sees_terminal_and_desktop_wsl_sessions_in_any_locale[en_US.UTF-8]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "checkpoint git label follows git's auto-lengthened --short",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_checkpoint_git_label_ignores_abbrev_length_and_keeps_unicode_branch"
+    ],
+    "edits": 2,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "Codex plugin users get the Claude Code '/plugin -> Marketplaces' first-run tip",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_every_hook_envelope_names_the_event_that_fired_it[codex_plugin]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "Bug 1 repair: a script install keeps a statusLine that runs the Codex plugin cache's copy",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_claude_session_repoints_statusline_from_codex_cache[script_install]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "Bug 1 repair: ensure-health never calls the dangling-statusLine heal",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_claude_session_repoints_statusline_to_a_deleted_file[plugin_cache]",
+      "tests/test_env_fingerprint_matrix.py::test_claude_session_repoints_statusline_to_a_deleted_file[script_install]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "Bug 1 repair overreaches: an existing dev-clone statusline.js gets re-pointed",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_claude_session_leaves_other_statuslines_alone[dev_clone]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "Bug 1 repair overreaches: another tool's missing statusline.js gets taken over",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_claude_session_leaves_other_statuslines_alone[foreign_missing_js]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "doctor reports a status line running a missing file as healthy",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_doctor_flags_a_status_line_running_a_missing_file"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "doctor stays quiet about a status line running another Token Optimizer checkout",
+    "tests": [
+      "tests/test_env_fingerprint_matrix.py::test_doctor_names_another_token_optimizer_checkout"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/env.py"
+  },
+  {
+    "name": "post-compact restore picks a checkpoint saved after the compaction",
+    "tests": [
+      "tests/test_compact_restore_choice.py::test_compact_restore_brings_back_the_task_from_before_the_compaction",
+      "tests/test_checkpoint_task_state.py::test_restore_excludes_saves_after_recent_precompact_anchor"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/followups.py"
+  },
+  {
+    "name": "post-compact restore fences on a stale PreCompact capture",
+    "tests": [
+      "tests/test_compact_restore_choice.py::test_an_old_precompact_capture_does_not_hide_later_saves"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/followups.py"
+  },
+  {
+    "name": "post-compact restore always prefers the PreCompact capture",
+    "tests": [
+      "tests/test_compact_restore_choice.py::test_an_old_precompact_capture_does_not_hide_later_saves",
+      "tests/test_checkpoint_task_state.py::test_restore_does_not_prefer_auto_over_newer_valid_state"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/followups.py"
+  },
+  {
+    "name": "doctor calls the plugin's SessionEnd hook a settings.json one",
+    "tests": [
+      "tests/test_doctor_hook_source_label.py::test_plugin_hooks_json_is_not_called_settings_json"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/followups.py"
+  },
+  {
+    "name": "MSIX physical path is not mapped back to AppData",
+    "tests": [
+      "tests/test_msix_project_dir.py::test_msix_physical_path_maps_to_the_logical_appdata_path",
+      "tests/test_msix_project_dir.py::test_msix_cwd_finds_its_own_project_not_the_newest_one",
+      "tests/test_msix_project_dir.py::test_msix_subdirectory_still_finds_the_project"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/msix_project_dir.py"
+  },
+  {
+    "name": "hook transcript_path is ignored",
+    "tests": [
+      "tests/test_msix_project_dir.py::test_transcript_path_wins_over_a_misleading_cwd"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/msix_project_dir.py"
+  },
+  {
+    "name": "payload cwd is ignored",
+    "tests": [
+      "tests/test_msix_project_dir.py::test_payload_cwd_is_used_before_the_process_cwd"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/msix_project_dir.py"
+  },
+  {
+    "name": "session model read through the cwd guess instead of the session's own file",
+    "tests": [
+      "tests/test_msix_project_dir.py::test_session_model_is_read_from_the_sessions_own_transcript"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/msix_project_dir.py"
+  },
+  {
+    "name": "5.13.50 schtasks /Query on every healthy SessionStart (guard before cheap gates)",
+    "tests": [
+      "tests/test_hot_path_process_budget.py::test_healthy_session_start_starts_no_scheduler_query",
+      "tests/test_cloud_parity.py::test_scheduler_writers_run_cheap_gates_before_the_job_query"
+    ],
+    "edits": 3,
+    "origin": "scripts/mutations/platform.py"
+  },
+  {
+    "name": "keep-warm plist heal queries the Windows scheduler on every SessionStart",
+    "tests": [
+      "tests/test_hot_path_process_budget.py::test_healthy_session_start_starts_no_scheduler_query"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/platform.py"
+  },
+  {
+    "name": "#117 tasklist /v on the per-prompt daemon pulse (Windows)",
+    "tests": [
+      "tests/test_hot_path_process_budget.py::test_healthy_prompt_and_tool_hooks_start_nothing"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/platform.py"
+  },
+  {
+    "name": "#144 dashboard writer calls os.fchmod unguarded (absent on Windows)",
+    "tests": [
+      "tests/test_windows_fchmod_guard.py::test_dashboard_generation_survives_missing_fchmod"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/platform.py"
+  },
+  {
+    "name": "#118 Windows SessionEnd hook uses a cmd NUL redirect under Git Bash",
+    "tests": [
+      "tests/test_windows_hook_launcher.py::test_claude_windows_hook_command_constant_is_bash_safe"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/platform.py"
+  },
+  {
+    "name": "#118 Windows SessionEnd hook keeps backslash paths",
+    "tests": [
+      "tests/test_windows_hook_launcher.py::test_claude_windows_hook_command_constant_is_bash_safe"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/platform.py"
+  },
+  {
+    "name": "Stop starts the session-end flush worker twice",
+    "tests": [
+      "tests/test_hot_path_process_budget.py::test_real_dispatch_extra_processes_within_budget"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/platform.py"
+  },
+  {
+    "name": "windows task action read on every SessionStart (no check throttle)",
+    "tests": [
+      "tests/test_heal_hardening.py::test_healthy_task_is_read_once_per_window_not_every_session_start"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/platform.py"
+  },
+  {
+    "name": "setup-daemon after --uninstall leaves the tombstone on Windows/Linux",
+    "tests": [
+      "tests/test_daemon_uninstall_tombstone_persists.py::test_setup_daemon_clears_the_uninstall_tombstone_on_every_platform"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/platform.py"
+  },
+  {
+    "name": "kill-stale no longer spares its own process and parent",
+    "tests": [
+      "tests/test_posix_session_identity.py::test_kill_stale_never_kills_own_pid_or_parent"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/safety_guards.py"
+  },
+  {
+    "name": "kill-stale no longer spares the session it runs inside of",
+    "tests": [
+      "tests/test_posix_session_identity.py::test_kill_stale_never_kills_the_session_it_runs_inside_of"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/safety_guards.py"
+  },
+  {
+    "name": "post-flush extension read is no longer capped at 1 MB",
+    "tests": [
+      "tests/test_post_flush_extensions.py::test_oversized_extension_refused"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/safety_guards.py"
+  },
+  {
+    "name": "post-flush extension loader accepts a FIFO or device",
+    "tests": [
+      "tests/test_post_flush_extensions.py::test_fifo_extension_refused_as_not_a_regular_file"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/safety_guards.py"
+  },
+  {
+    "name": "a foreign status line counts as ours when its folder path mentions token-optimizer",
+    "tests": [
+      "tests/test_statusline_ownership.py::test_foreign_statusline_commands_are_not_ours",
+      "tests/test_statusline_ownership.py::test_cleanup_keeps_a_foreign_statusline_under_a_token_optimizer_folder"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/safety_guards.py"
+  },
+  {
+    "name": "Opus 5.5 billed at the opus family card, not its generation card",
+    "tests": [
+      "tests/test_session_cost.py::test_garden_cost_matches_the_hand_worked_dollars"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "session-cost breakdown prices input at the family card",
+    "tests": [
+      "tests/test_session_cost.py::test_garden_cost_matches_the_hand_worked_dollars"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "subagent cost added on top of a total that already holds it",
+    "tests": [
+      "tests/test_session_cost.py::test_garden_cost_matches_the_hand_worked_dollars",
+      "tests/test_session_cost.py::test_same_number_as_the_dashboard",
+      "tests/test_session_cost.py::test_text_output_reads_like_an_answer"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "session total drops the subagents (main thread only)",
+    "tests": [
+      "tests/test_session_cost.py::test_garden_cost_matches_the_hand_worked_dollars",
+      "tests/test_session_cost.py::test_text_output_reads_like_an_answer"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "a session stored under two paths is counted twice",
+    "tests": [
+      "tests/test_session_cost.py::test_a_session_stored_twice_counts_once"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "session-cost reads the legacy ~/.claude/token-optimizer/trends.db",
+    "tests": [
+      "tests/test_session_cost.py::test_finds_the_plugin_data_db_not_a_legacy_one",
+      "tests/test_session_cost.py::test_finds_the_db_under_claude_config_dir"
+    ],
+    "edits": 2,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "session-cost opens trends.db through the collector's opener (schema, migrations, backfills)",
+    "tests": [
+      "tests/test_session_cost.py::test_never_writes_the_db_even_while_a_writer_holds_the_lock",
+      "tests/test_session_cost.py::test_an_older_install_db_is_read_as_is_never_migrated"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "short words match inside longer ones ('tr' in 'trends')",
+    "tests": [
+      "tests/test_session_cost.py::test_all_words_must_match_and_short_words_are_whole_tokens"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "any one word is enough to match a session",
+    "tests": [
+      "tests/test_session_cost.py::test_all_words_must_match_and_short_words_are_whole_tokens"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "a multi-day session's 'yesterday' share is the whole session",
+    "tests": [
+      "tests/test_session_cost.py::test_a_multi_day_session_gives_the_asked_days_share"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/session_cost.py"
+  },
+  {
+    "name": "#246 module-level threshold call raises a NameError the fallback swallows",
+    "tests": [
+      "tests/test_swallowed_errors.py::test_cli_command_raises_no_programming_error[quick]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/silent.py"
+  },
+  {
+    "name": "#226 doctor does not recognise the shipped hook runners",
+    "tests": [
+      "tests/test_false_success.py::test_doctor_counts_every_hook_a_plugin_install_runs"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/silent.py"
+  },
+  {
+    "name": "settings self-heal raises on an unreadable or malformed file",
+    "tests": [
+      "tests/test_settings_self_heal.py::test_malformed_file_is_left_alone",
+      "tests/test_settings_self_heal.py::test_unreadable_file_is_left_alone"
+    ],
+    "edits": 2,
+    "origin": "scripts/mutations/silent.py"
+  },
+  {
+    "name": "ensure_dashboard_daemon queries the scheduler job before its health probe (143f9841)",
+    "tests": [
+      "tests/test_cloud_parity.py::test_scheduler_writers_run_cheap_gates_before_the_job_query"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/today.py"
+  },
+  {
+    "name": "restart_dashboard_daemon queries the scheduler job before the already-current check (143f9841)",
+    "tests": [
+      "tests/test_cloud_parity.py::test_scheduler_writers_run_cheap_gates_before_the_job_query"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/today.py"
+  },
+  {
+    "name": "heal_windows_task_action queries the scheduler job before its resurrection gate (143f9841)",
+    "tests": [
+      "tests/test_cloud_parity.py::test_scheduler_writers_run_cheap_gates_before_the_job_query"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/today.py"
+  },
+  {
+    "name": "a scheduler job whose paths are all gone counts as another install (REVIEW-2 MED-2)",
+    "tests": [
+      "tests/test_cloud_parity.py::test_stale_job_whose_paths_are_gone_is_repaired_not_protected"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/today.py"
+  },
+  {
+    "name": "#278 Codex Stop writes a 'No transcript data available' placeholder",
+    "tests": [
+      "tests/test_hook_wire_contract.py::test_codex_stop_finds_the_transcript_from_the_session_id_alone",
+      "tests/test_codex_shell_neutral_hooks_278.py::test_compact_capture_writes_no_unknown_placeholder_on_codex"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/windows_sweep_rel59.py"
+  },
+  {
+    "name": "Windows liveness probe sends CTRL_C_EVENT via os.kill(pid, 0)",
+    "tests": [
+      "tests/test_windows_pid_liveness.py::test_windows_never_sends_a_signal_and_reads_the_process_table"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/windows_sweep_rel59.py"
+  },
+  {
+    "name": "purge --force on Windows asks POSIX ps and never stops the daemon",
+    "tests": [
+      "tests/test_windows_pid_liveness.py::test_purge_force_on_windows_identifies_and_stops_the_daemon"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/windows_sweep_rel59.py"
+  },
+  {
+    "name": "Windows settings.json hooks call bare python3 (missing or the Store stub in Git Bash)",
+    "tests": [
+      "tests/test_windows_settings_hook_interpreter.py::test_windows_smart_compact_hooks_name_the_real_interpreter",
+      "tests/test_windows_settings_hook_interpreter.py::test_setup_quality_bar_on_windows_writes_the_real_interpreter"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/windows_sweep_rel59.py"
+  },
+  {
+    "name": "dashboard-launcher.cmd is read in the OEM code page and garbles non-ASCII paths",
+    "tests": [
+      "tests/test_windows_dashboard_launcher_cmd.py::test_utf8_code_page_is_set_before_any_path"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/windows_sweep_rel59.py"
+  },
+  {
+    "name": "status line command breaks on an apostrophe in the path",
+    "tests": [
+      "tests/test_windows_settings_hook_interpreter.py::test_status_line_command_survives_an_apostrophe_in_the_path"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/windows_sweep_rel59.py"
+  },
+  {
+    "name": "#253 compact-capture exits 0 without writing the checkpoint",
+    "tests": [
+      "tests/test_hook_wire_contract.py::test_checkpoint_hooks_really_write_the_checkpoint[claude]"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/wire.py"
+  },
+  {
+    "name": "resolver $(...) collapses every hook to one dedup identity (setup_all_hooks/cleanup)",
+    "tests": [
+      "tests/test_hook_launcher_failopen_guard.py::test_resolver_keeps_per_handler_dedup_identity"
+    ],
+    "edits": 1,
+    "origin": "scripts/mutations/wire.py"
+  },
+  {
+    "name": "split pricing bypasses the live same-domain helper",
+    "tests": [
+      "tests/test_measure_split_compat.py::test_moved_price_lookup_uses_live_helper_and_shared_dictionary"
+    ],
+    "edits": 1,
+    "origin": "check_regression_guards.py"
+  }
+]

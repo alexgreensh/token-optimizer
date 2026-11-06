@@ -11,6 +11,7 @@ The Windows branches are driven through ``refetch_fingerprint._windows_hints``
 """
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import os
 import re
@@ -198,7 +199,7 @@ def test_subagent_cache_commands_use_the_hint_builder(measure, monkeypatch):
 def test_no_printed_command_in_measure_py_hardcodes_python3_plus_the_script_path():
     """A `python3 {path}` f-string is a hint that bypasses the builder (and so stays
     python3 and POSIX-quoted on Windows)."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     bad = [f"measure.py:{n}: {line.strip()[:90]}" for n, line in enumerate(src.splitlines(), 1)
            if re.search(r"python3 \{(?:mp_cmd|_shell_script_path\(\)|_display_path)", line)
            or re.search(r"TOKEN_OPTIMIZER_RUNTIME=\w+ python3 \{", line)]

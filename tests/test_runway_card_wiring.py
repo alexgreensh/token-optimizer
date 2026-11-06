@@ -9,6 +9,7 @@ computes the snapshot rather than on the payload the page actually receives.
 
 These tests assert the wiring, not the arithmetic.
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import ast
 import re
@@ -35,7 +36,7 @@ def _assigned_dict_keys(func: ast.FunctionDef) -> set:
 
 
 def _func(name: str) -> ast.FunctionDef:
-    tree = ast.parse((SCRIPTS / "measure.py").read_text(encoding="utf-8"))
+    tree = ast.parse(_split_measure_source(SCRIPTS / "measure.py"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node

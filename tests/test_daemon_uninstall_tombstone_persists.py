@@ -33,6 +33,7 @@ Run: python3 -m pytest tests/test_daemon_uninstall_tombstone_persists.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import os
@@ -64,7 +65,7 @@ def measure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", SCRIPTS / "measure.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     yield mod
     sys.modules.pop("measure", None)
 
@@ -186,7 +187,7 @@ def test_reinstall_is_the_only_path_that_clears_the_tombstone(measure, tmp_path)
     above; this one pins the other half (the clear still exists on the start
     path) so the tombstone can never become permanently sticky either.
     """
-    source = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    source = _split_measure_source(SCRIPTS / "measure.py")
     assert 'if DAEMON_THRASH_BREADCRUMB.exists():' in source, (
         "setup_daemon's stale-tombstone clear disappeared -- a reinstall would "
         "start a daemon that immediately exits noop-tombstoned"

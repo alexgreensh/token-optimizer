@@ -18,6 +18,7 @@ Run: python3 -m pytest tests/test_consent_gate_race_window.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import json
@@ -53,7 +54,7 @@ def _load_run_py():
     """Import hooks/run.py as a fresh module (it has no package-relative imports)."""
     spec = importlib.util.spec_from_file_location("race_window_run_py", RUN_PY)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

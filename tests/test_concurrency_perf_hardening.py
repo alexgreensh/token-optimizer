@@ -14,6 +14,7 @@ Each test pins one fix so a future edit that reintroduces the defect fails here:
 - The hook disable-check fails open on an oversized config file rather than
   reading it unboundedly on every hook event.
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import os
 import re
@@ -52,7 +53,7 @@ def _extract(src, names, extra_ns=None):
 def test_dashboard_write_is_atomic():
     """The dashboard write loop must use a temp file + os.replace, never a bare
     O_TRUNC write onto the live path (which lets two regens interleave)."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     m = re.search(r"for wp in write_paths:(.*?)\n    if not wrote_any:", src, re.S)
     assert m, "dashboard write loop not found"
     body = m.group(1)
@@ -69,7 +70,7 @@ def test_dashboard_write_is_atomic():
 # --- bounded transcript preload --------------------------------------
 
 def test_transcript_preload_has_size_guard():
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     assert "_turn_preload_maxbytes" in src, "preload size cap variable missing"
     assert "TOKEN_OPTIMIZER_TURN_PRELOAD_MAX_BYTES" in src, "preload size env override missing"
     # the guard must gate the parse call

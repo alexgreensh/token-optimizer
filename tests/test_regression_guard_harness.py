@@ -34,7 +34,7 @@ def test_every_registered_mutation_is_well_formed_and_still_applies():
     assert len(muts) >= 12
     for name, _tests, relpath, edits, origin in muts:
         try:
-            guards.plant((REPO / relpath).read_text(encoding="utf-8"), edits)
+            guards.resolve_targets(REPO, relpath, edits)
         except guards.MutationError as exc:
             pytest.fail(f"{origin}: {name}: {exc}")
 
@@ -52,6 +52,28 @@ def test_one_stale_edit_among_several_is_still_stale():
     with pytest.raises(guards.MutationError):
         guards.plant(text, [("alpha", "A"), ("alpha", "again")])  # 2nd edit no longer matches
     assert guards.plant(text, [("alpha", "A"), ("beta", "B")]) == "A B"
+
+
+def test_multi_target_mutation_is_one_atomic_run_and_restores_every_file(tmp_path, monkeypatch):
+    (tmp_path / 'a.py').write_text('VALUE = 1\n')
+    (tmp_path / 'b.py').write_text('VALUE = 2\n')
+    edits = [{'file': 'a.py', 'old': 'VALUE = 1', 'new': 'VALUE = 7'},
+             {'file': 'b.py', 'old': 'VALUE = 2', 'new': 'VALUE = 8'}]
+    calls = []
+    def run(root, tests):
+        calls.append(tests)
+        assert (root / 'a.py').read_text() == 'VALUE = 7\n'
+        assert (root / 'b.py').read_text() == 'VALUE = 8\n'
+        return 1, 'caught'
+    monkeypatch.setattr(guards, '_pytest', run)
+    assert guards._run_one(('cross-domain', ['guard'], 'a.py', edits, 'fixture'), tmp_path)[0] == 'ok'
+    assert calls == [['guard']]
+    assert (tmp_path / 'a.py').read_text() == 'VALUE = 1\n'
+    assert (tmp_path / 'b.py').read_text() == 'VALUE = 2\n'
+    edits[1]['old'] = 'missing'
+    with pytest.raises(guards.MutationError, match='stale'):
+        guards._run_one(('cross-domain', ['guard'], 'a.py', edits, 'fixture'), tmp_path)
+    assert (tmp_path / 'a.py').read_text() == 'VALUE = 1\n'
 
 
 @pytest.mark.parametrize("body,needle", [

@@ -345,6 +345,16 @@ def _registration_checks() -> list[dict[str, str]]:
     return checks
 
 
+# Completeness is separate from the legacy healthy-output counts.
+_MEASURE_PACKAGE_FILES = (
+    "_measure/__init__.py", "_measure/_compat.py", "_measure/runtime.py",
+    "_measure/pricing.py", "_measure/audit.py", "_measure/dashboard.py",
+    "_measure/lifecycle.py", "_measure/sessions.py", "_measure/trends.py",
+    "_measure/cache_policy.py", "_measure/daemon.py", "_measure/quality_archive.py",
+    "_measure/continuity.py", "_measure/savings.py", "_measure/cli.py",
+)
+
+
 def _engine_checks() -> list[dict[str, str]]:
     """The checkout the plugin points at must hold every engine script."""
     plugin_dir = _plugin_install_dir(hermes_home())
@@ -355,6 +365,7 @@ def _engine_checks() -> list[dict[str, str]]:
         return [_check("FAIL", "Engine scripts", f"cannot read {locator}; re-run: python3 hermes_install.py")]
     sdir = measure_py.parent
     missing = [name for name in REQUIRED_ENGINE_SCRIPTS if not (sdir / name).is_file()]
+    missing += [name for name in _MEASURE_PACKAGE_FILES if not (sdir / name).is_file()]
     if missing:
         return [_check("FAIL", "Engine scripts",
                        f"missing in {sdir}: {', '.join(missing)}; update the Token Optimizer checkout")]
@@ -645,6 +656,8 @@ def _dashboard_port_check() -> dict[str, str]:
 def _skill_install_checks() -> list[dict[str, str]]:
     root = _skill_root()
     missing = [rel for rel in SKILL_INSTALL_FILES if not (root / rel).exists()]
+    missing += ['scripts/' + rel for rel in _MEASURE_PACKAGE_FILES
+                if not (root / 'scripts' / rel).is_file()]
     if missing:
         return [_check("FAIL", "Installed skill files", ", ".join(missing))]
     return [

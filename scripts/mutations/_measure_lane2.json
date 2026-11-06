@@ -1,0 +1,66 @@
+[
+  {
+    "mutation": "one session stored under two paths counted twice",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            if any(_measure_facade._session_rank(r[1], r[2], r[3]) >= mine for r in other):",
+    "new": "            if False:",
+    "symbol": "collect_sessions"
+  },
+  {
+    "mutation": "one session stored under two paths counted twice",
+    "edit": 1,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "def _dedupe_session_rows(conn):",
+    "new": "def _dedupe_session_rows(conn):\n    return 0\n\n\ndef _unused_dedupe(conn):",
+    "symbol": "_dedupe_session_rows"
+  },
+  {
+    "mutation": "one session stored under two paths counted twice",
+    "edit": 2,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "                conn.executemany(\"DELETE FROM session_log WHERE id = ?\", [(r[0],) for r in other])",
+    "new": "                pass",
+    "symbol": "collect_sessions"
+  },
+  {
+    "mutation": "a growing session keeps its stale per-day usage",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "               daily_usage_json=excluded.daily_usage_json",
+    "new": "               daily_usage_json=session_log.daily_usage_json",
+    "symbol": "collect_sessions"
+  },
+  {
+    "mutation": "re-collecting a grown session adds its old tokens again",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "               input_tokens=excluded.input_tokens,",
+    "new": "               input_tokens=session_log.input_tokens + excluded.input_tokens,",
+    "symbol": "collect_sessions"
+  },
+  {
+    "mutation": "a generation model priced at its family card",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    m = _measure_facade._CLAUDE_GENERATION_RE.search(model_id.lower())\n    if m:",
+    "new": "    m = None\n    if m:",
+    "symbol": "_claude_price_key"
+  },
+  {
+    "mutation": "Opus 5.5 billed at the opus family card, not its generation card",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            for key in ((f\"{fam}_{major}_{minor}\", f\"{fam}_{major}\") if minor else (f\"{fam}_{major}\",)):",
+    "new": "            for key in ():",
+    "symbol": "_claude_price_key"
+  },
+  {
+    "mutation": "session total drops the subagents (main thread only)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        total_cost = sum(\n                _measure_facade._cost_from_model_breakdown(models, tier=pricing_tier)\n                for models in du.values() if isinstance(models, dict))\n",
+    "new": "        total_cost = session_cost\n",
+    "symbol": "_price_session_row"
+  }
+]

@@ -18,6 +18,7 @@ hardening landed:
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import hashlib
 import importlib.util
@@ -45,7 +46,7 @@ def _load_module(path: Path, name: str):
             sys.path.insert(0, p)
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 

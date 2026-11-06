@@ -1,0 +1,5 @@
+# Code files exempt from the 1,000-line rule (scripts/check_file_size.py). Every line needs a # reason.
+# Remove each line as soon as its reason stops being true.
+skills/token-optimizer/scripts/_measure/*.py   # measure.py split pass 1; pass 2 brings each module under 1,000 lines
+plugins/token-optimizer/skills/token-optimizer/scripts/_measure/*.py   # measure.py split pass 1; pass 2 brings each module under 1,000 lines
+cowork/token-optimizer/skills/token-optimizer/scripts/_measure/*.py   # measure.py split pass 1; pass 2 brings each module under 1,000 lines

@@ -9,15 +9,6 @@ MEASURE = "skills/token-optimizer/scripts/measure.py"
 IDENTITY = "tests/test_posix_session_identity.py"
 
 MUTATIONS = [
-    ("kill-stale no longer spares its own process and parent",
-     [IDENTITY + "::test_kill_stale_never_kills_own_pid_or_parent"],
-     MEASURE,
-     [("             and s[\"pid\"] != my_pid\n             and s[\"pid\"] != my_ppid\n", "")]),
-    ("kill-stale no longer spares the session it runs inside of",
-     [IDENTITY + "::test_kill_stale_never_kills_the_session_it_runs_inside_of"],
-     MEASURE,
-     [("             and s[\"pid\"] not in my_ancestors\n             and s.get(\"identity\", \"unknown\") in killable]",
-       "             and s.get(\"identity\", \"unknown\") in killable]")]),
 ]
 
 REFETCH = "skills/token-optimizer/scripts/refetch_guard.py"
@@ -41,16 +32,6 @@ MUTATIONS += [
 EXT = "tests/test_post_flush_extensions.py"
 
 MUTATIONS += [
-    ("post-flush extension read is no longer capped at 1 MB",
-     [EXT + "::test_oversized_extension_refused"],
-     MEASURE,
-     [("            read_size = min(st.st_size if st.st_size > 0 else 1_048_576,\n                            1_048_576)",
-       "            read_size = st.st_size if st.st_size > 0 else 1_048_576")]),
-    ("post-flush extension loader accepts a FIFO or device",
-     [EXT + "::test_fifo_extension_refused_as_not_a_regular_file"],
-     MEASURE,
-     [("            if not stat.S_ISREG(st.st_mode):\n                sys.stderr.write(\n                    f\"[Token Optimizer] post-flush extension refused at \"",
-       "            if False:\n                sys.stderr.write(\n                    f\"[Token Optimizer] post-flush extension refused at \"")]),
 ]
 
 MUTATIONS += [
@@ -82,9 +63,4 @@ MUTATIONS += [
      ["tests/test_uninstall_manifest_reconcile.py::test_remove_keeps_active_our_entries"],
      RECONCILE,
      [("        all_gone = all(\n", "        all_gone = True or all(\n")]),
-    ("a foreign status line counts as ours when its folder path mentions token-optimizer",
-     ["tests/test_statusline_ownership.py::test_foreign_statusline_commands_are_not_ours",
-      "tests/test_statusline_ownership.py::test_cleanup_keeps_a_foreign_statusline_under_a_token_optimizer_folder"],
-     MEASURE,
-     [("    if not found:\n        return True\n    parts = ", "    return True\n    parts = ")]),
 ]

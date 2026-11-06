@@ -17,6 +17,7 @@ optimization; a wrong nudge costs the whole session.
 
 Run: python3 -m pytest tests/test_session_identity_guard.py -v
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import measure  # noqa: E402
 
-SRC = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+SRC = _split_measure_source(SCRIPTS / "measure.py")
 STEER = SRC[SRC.index("def run_verbosity_steer("):][:6000]
 
 

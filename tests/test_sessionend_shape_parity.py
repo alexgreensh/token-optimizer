@@ -7,6 +7,7 @@ the still-shipped HOOK_COMMAND / hooks-starter.json fossil.
 """
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import ast
 import json
@@ -64,7 +65,7 @@ def _commands_from_hooks_json(path: Path, events: tuple[str, ...]) -> list[tuple
 
 
 def _load_win32_hook_command() -> str:
-    tree = ast.parse(MEASURE.read_text(encoding="utf-8"))
+    tree = ast.parse(_split_measure_source(MEASURE))
     node = None
     for candidate in tree.body:
         if not isinstance(candidate, ast.If):
@@ -235,7 +236,7 @@ def test_hook_command_win32_branch_is_flush_not_collect():
 
 
 def test_hook_command_posix_branch_is_flush_not_collect():
-    src = MEASURE.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE)
     assert "session-end-flush --trigger end" in src
     assert "collect --quiet &&" not in src
     if sys.platform != "win32":

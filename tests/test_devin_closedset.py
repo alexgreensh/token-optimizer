@@ -1,3 +1,4 @@
+from helpers.measure_split import exec_source_module as _split_exec_module
 from pathlib import Path
 import os,sys,pytest
 pytestmark=pytest.mark.skipif(os.name != "posix", reason="POSIX adapter only")
@@ -157,7 +158,7 @@ def test_allowed_source_open_checks(tmp_path, monkeypatch, kind):
         reason={'symlink':'regular payload source required','oversize':'payload source exceeds bound'}.get(
             kind,'private regular payload source required')
         with pytest.raises((OSError,ImportError),match=reason):
-            spec=loader.find_spec('token_estimate');module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+            spec=loader.find_spec('token_estimate');module=importlib.util.module_from_spec(spec);_split_exec_module(module)
 
 
 def test_real_installed_chain_and_stdlib_after_activation(tmp_path, monkeypatch):
@@ -388,9 +389,9 @@ def test_v3_refused_repo_preloads_are_evicted(tmp_path,monkeypatch):
 from pathlib import Path
 root=Path(sys.argv[1]);namespace={}
 exec(compile((root/'devin_source.py').read_bytes(),str(root/'devin_source.py'),'exec'),namespace)
-for name in ('archive_result','measure','measure.child'):sys.modules[name]=types.ModuleType(name)
+for name in ('archive_result','measure','measure.child','_measure','_measure.pricing'):sys.modules[name]=types.ModuleType(name)
 namespace['activate'](root)
-for name in ('archive_result','measure','measure.child'):
+for name in ('archive_result','measure','measure.child','_measure','_measure.pricing'):
     assert name not in sys.modules
     try:__import__(name)
     except ImportError:pass
@@ -456,6 +457,8 @@ def test_v4_refusal_inventory_includes_packages():
     repo_names={p.stem for p in SCRIPTS.glob('*.py')}|{p.name for p in SCRIPTS.iterdir() if p.is_dir() and p.name!='__pycache__'}
     assert repo_names==devin_source.REPO_MODULES
     with pytest.raises(ImportError):devin_source.SourceOnly(SCRIPTS).find_spec('detectors')
+    for name in ('_measure', '_measure.pricing'):
+        with pytest.raises(ImportError):devin_source.SourceOnly(SCRIPTS).find_spec(name)
 
 
 @pytest.mark.parametrize('entry',['devin_compress.py','devin_doctor.py'])

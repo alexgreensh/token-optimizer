@@ -11,6 +11,7 @@ Two mechanisms guard the "it didn't regenerate, it did not self-heal" report:
 
 Run: python3 -m pytest tests/test_dashboard_selfheal_bugB.py -v
 """
+from helpers.measure_split import inspect_source as _split_inspect_source
 import importlib
 import sys
 from pathlib import Path
@@ -94,7 +95,7 @@ def test_sessionend_flush_regen_wires_selfheal_on_timeout(m):
     so the wiring can't silently regress (the same self-heal used by the open path
     is unit-tested above)."""
     import inspect
-    src = inspect.getsource(m)
+    src = _split_inspect_source(m)
     # locate the flush-worker's standalone regen call and its enclosing try/except
     idx = src.find("generate_standalone_dashboard(days=30, quiet=True)")
     assert idx != -1, "flush-worker standalone regen call not found"

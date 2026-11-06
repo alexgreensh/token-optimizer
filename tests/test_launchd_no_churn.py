@@ -15,6 +15,7 @@ process WITHOUT re-registering the background item, so it does not fire the bann
 and keeps its original version-marker staleness check (do not re-add a version
 strip there under the belief that kickstart banners -- it does not).
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import re
 import sys
@@ -70,7 +71,7 @@ def test_write_file_if_changed_applies_mode_even_when_unchanged(tmp_path):
 def test_daemon_install_guards_reload_when_current():
     """setup_daemon's launchd path must skip the reload when nothing changed and
     the agent is loaded and serving."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     assert "_write_file_if_changed(daemon_script, _generate_daemon_script()" in src
     assert "_write_file_if_changed(PLIST_PATH, _generate_plist())" in src
     assert "not script_changed and not plist_changed" in src
@@ -78,20 +79,20 @@ def test_daemon_install_guards_reload_when_current():
 
 
 def test_keepwarm_install_guards_reload_when_current():
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     assert "_write_file_if_changed(plist_path, _keepwarm_generate_scheduler_plist())" in src
     assert "not plist_changed and _launchagent_loaded(_KEEPWARM_SCHEDULER_LABEL)" in src
 
 
 def test_launchagent_loaded_probe_is_time_bounded():
     """The launchctl print probe on the hot path must use a short timeout."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     m = re.search(r'"launchctl", "print", f"gui/\{getuid\(\)\}/\{label\}"\],\s*\n\s*capture_output=True, text=True, timeout=(\d+)', src)
     assert m, "launchctl print probe not found"
     assert int(m.group(1)) <= 2, "probe timeout must be small (<=2s) on the SessionStart hot path"
 
 
 def test_both_trees_identical():
-    a = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
-    b = (ROOT / "plugins" / "token-optimizer" / "skills" / "token-optimizer" / "scripts" / "measure.py").read_text(encoding="utf-8")
+    a = _split_measure_source(SCRIPTS / "measure.py")
+    b = _split_measure_source(ROOT / "plugins" / "token-optimizer" / "skills" / "token-optimizer" / "scripts" / "measure.py")
     assert a == b, "measure.py drifted between install trees"

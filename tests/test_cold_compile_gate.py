@@ -19,6 +19,7 @@ loaded measure and whether it compiled it.
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import json
@@ -37,6 +38,56 @@ HOOKS = REPO / "hooks"
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 MEASURE = SCRIPTS / "measure.py"
 COMPILER_TAG = "token-optimizer-bytecode-warmup"
+
+
+def _gate_module():
+    spec = importlib.util.spec_from_file_location('split_gate_under_test', HOOKS / 'module_runner.py')
+    module = importlib.util.module_from_spec(spec)
+    _split_exec_module(module)
+    return module
+
+
+def test_warm_facade_does_not_hide_a_cold_domain(tmp_path, monkeypatch):
+    gate = _gate_module()
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    (scripts / 'measure.py').write_text('VALUE = 1\n')
+    package = scripts / '_measure'
+    package.mkdir()
+    for name in ('__init__', '_compat', 'runtime', 'pricing', 'audit', 'dashboard',
+                 'lifecycle', 'sessions', 'trends', 'cache_policy', 'daemon',
+                 'quality_archive', 'continuity', 'savings', 'cli'):
+        (package / (name + '.py')).write_text('VALUE = 1\n')
+    monkeypatch.setattr(gate, '_bytecode_path', lambda src: str(tmp_path / 'cache' / (Path(src).name + '.pyc')))
+    monkeypatch.setattr(gate, '_bytecode_fresh', lambda src, cache: Path(src).name != 'runtime.py')
+    monkeypatch.setattr(gate, '_start_background_compile', lambda *args: type('Child', (), {'poll': lambda self: None})())
+    assert gate._measure_bytecode_ready(str(scripts), 0) is False
+
+
+def test_failure_marker_is_invalidated_by_a_package_only_source_change(tmp_path):
+    gate = _gate_module()
+    scripts = tmp_path / 'scripts'
+    package = scripts / '_measure'
+    package.mkdir(parents=True)
+    (scripts / 'measure.py').write_text('VALUE = 1\n')
+    for name in gate._MEASURE_PACKAGE_SOURCES:
+        (package / name).write_text('VALUE = 1\n')
+    marker = tmp_path / 'failed'
+    source = str(scripts / 'measure.py')
+    marker.write_text(gate._source_set_key(source))
+    assert gate._compile_failed_for(str(marker), source)
+    (package / 'runtime.py').write_text('VALUE = 12345\n')
+    assert not gate._compile_failed_for(str(marker), source)
+
+
+def test_deleted_package_is_still_part_of_a_split_facades_source_set(tmp_path):
+    gate = _gate_module()
+    source = tmp_path / 'measure.py'
+    source.write_text('from _measure import _compat as _measure_compat\n')
+    sources = gate._runtime_sources(str(source))
+    assert len(sources) == 1 + len(gate._MEASURE_PACKAGE_SOURCES)
+    assert all(not Path(path).exists() for path in sources[1:])
+    assert ':missing' not in gate._source_set_key(str(source))  # the key is a digest
 
 # Simulated compile time for measure.py, and the hook's wait for the
 # background compile. A hook that compiled inline would take >= SLOW_S.
@@ -67,12 +118,14 @@ _SITECUSTOMIZE = textwrap.dedent(r'''
             except Exception:
                 pass
 
+        if _compiler:
+            _time.sleep(float(_os.environ.get('TO_COLD_BOOT_DELAY_S') or 0))
         _w("boot")
         from importlib import machinery as _machinery
         _real = _machinery.SourceFileLoader.source_to_code
 
         def _source_to_code(self, data, path, *a, **k):
-            if str(path).replace("\\", "/").endswith("/measure.py"):
+            if str(path).replace("\\", "/").endswith(_os.environ.get("TO_COLD_TARGET", "/measure.py")):
                 _state["compiled_measure"] = True
                 _w("compile-measure")
                 slow = float(_os.environ.get("TO_COLD_SLOW_S") or 0)
@@ -133,20 +186,20 @@ class Bench:
             "TO_COLD_LOG": str(self.log),
         })
 
-    def measure_pyc(self) -> Path:
+    def measure_pyc(self, source=MEASURE) -> Path:
         saved = sys.pycache_prefix
         sys.pycache_prefix = str(self.prefix)
         try:
-            return Path(importlib.util.cache_from_source(str(MEASURE)))
+            return Path(importlib.util.cache_from_source(str(source)))
         finally:
             sys.pycache_prefix = saved
 
-    def pyc_fresh(self) -> bool:
+    def pyc_fresh(self, source=MEASURE) -> bool:
         try:
-            head = self.measure_pyc().read_bytes()[:16]
+            head = self.measure_pyc(source).read_bytes()[:16]
         except OSError:
             return False
-        st = MEASURE.stat()
+        st = source.stat()
         return (len(head) == 16 and head[:4] == importlib.util.MAGIC_NUMBER
                 and int.from_bytes(head[8:12], "little") == int(st.st_mtime) & 0xFFFFFFFF
                 and int.from_bytes(head[12:16], "little") == st.st_size & 0xFFFFFFFF)
@@ -200,10 +253,10 @@ class Bench:
             time.sleep(0.1)
         return False
 
-    def wait_for_pyc(self, timeout=150.0):
+    def wait_for_pyc(self, timeout=150.0, source=MEASURE):
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            if self.pyc_fresh():
+            if self.pyc_fresh(source):
                 return True
             time.sleep(0.2)
         return False
@@ -233,12 +286,14 @@ def bench(tmp_path):
     return Bench(tmp_path)
 
 
-def test_slow_cold_compile_runs_once_in_the_background_and_hooks_fail_open(bench):
+@pytest.mark.parametrize('boot_delay', ['0', '3'])
+def test_slow_cold_compile_runs_once_in_the_background_and_hooks_fail_open(bench, boot_delay):
     """The #264 machine: compiling measure.py takes longer than the host allows.
     Concurrent hooks finish fast with a valid (empty) envelope, exactly one
     background compile starts, the .pyc lands in the active pycache prefix,
     and the next hook runs the normal path from it."""
-    slow = {"TO_COLD_SLOW_S": str(SLOW_S), "TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S": str(WAIT_S)}
+    slow = {"TO_COLD_SLOW_S": str(SLOW_S), "TO_COLD_BOOT_DELAY_S": boot_delay,
+            "TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S": str(WAIT_S)}
     started = [bench.start(**slow) for _ in range(4)]
     results = [bench.finish(s) for s in started]
     for rc, out, err, elapsed in results:
@@ -251,12 +306,13 @@ def test_slow_cold_compile_runs_once_in_the_background_and_hooks_fail_open(bench
     assert len(exits) == 4, bench.rows()
     assert not any(r["compiled_measure"] or r["measure_loaded"] for r in exits), exits
 
-    assert len(bench.compiler_boots()) == 1, (
-        f"{len(bench.compiler_boots())} background compiles for 4 concurrent cold hooks")
     assert bench.wait_for_pyc(), f"no fresh measure .pyc under the prefix: {bench.measure_pyc()}"
     # The compiler writes the .pyc, then releases its lock: wait for the
     # release instead of racing it (a slow runner lost that race in CI).
     assert bench.wait_for_lock_release(), "the compile lock was never released"
+    # Detached worker startup can outlast all four hooks on Windows.
+    assert len(bench.compiler_boots()) == 1, (
+        f"{len(bench.compiler_boots())} background compiles for 4 concurrent cold hooks")
 
     bench.clear_log()
     rc, out, err, elapsed = bench.fire(**slow)
@@ -285,23 +341,61 @@ def test_fast_cold_compile_inside_the_wait_runs_the_hook_as_before(bench):
     assert bench.pyc_fresh()
 
 
-def test_failed_background_compile_falls_back_to_the_inline_compile(bench):
+def test_cold_domain_with_warm_facade_compiles_in_the_background(bench):
+    import py_compile
+    destination = bench.measure_pyc()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    py_compile.compile(str(MEASURE), cfile=str(destination), doraise=True,
+                       invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+    assert bench.pyc_fresh()
+    slow = {'TO_COLD_TARGET': '/_measure/runtime.py', 'TO_COLD_SLOW_S': str(SLOW_S),
+            'TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S': str(WAIT_S)}
+    rc, out, err, elapsed = bench.fire(**slow)
+    assert rc == 0 and _valid_envelope(out), err[-2000:]
+    assert elapsed < FAST_EXIT_S, 'the cold domain compiled on the hook deadline'
+    [cold] = bench.hook_exits()
+    assert not cold['compiled_measure'] and not cold['measure_loaded']
+    assert len(bench.compiler_boots()) == 1
+    assert bench.wait_for_lock_release(), 'package compile did not release the shared lock'
+    bench.clear_log()
+    rc, out, err, _ = bench.fire(**slow)
+    assert rc == 0 and _valid_envelope(out), err[-2000:]
+    [warm] = bench.hook_exits()
+    assert warm['measure_loaded'] and not warm['compiled_measure']
+    assert not bench.compiler_boots()
+
+
+@pytest.mark.parametrize('package_only', [False, True])
+def test_failed_background_compile_falls_back_to_the_inline_compile(bench, package_only):
     """A compile that cannot succeed must not leave every later hook failing
     open: the hook compiles inline as it did before the gate (and that inline
     import writes the cache)."""
+    target = MEASURE
+    if package_only:
+        import py_compile
+        py_compile.compile(str(MEASURE), cfile=str(bench.measure_pyc()), doraise=True)
+        target = SCRIPTS / '_measure/runtime.py'
+        bench.env['TO_COLD_TARGET'] = '/_measure/runtime.py'
     rc, _out, err, _elapsed = bench.fire(TO_COLD_COMPILER_FAILS="1",
                                         TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S="20")
     assert rc == 0, err[-2000:]
     assert len(bench.compiler_boots()) == 1
     [hook] = bench.hook_exits()
     assert hook["measure_loaded"] and hook["compiled_measure"], hook
-    assert bench.pyc_fresh()
+    assert bench.pyc_fresh(target)
 
 
-def test_live_lock_defers_to_the_running_compile_and_stale_lock_is_taken_over(bench):
+@pytest.mark.parametrize('package_only', [False, True])
+def test_live_lock_defers_to_the_running_compile_and_stale_lock_is_taken_over(bench, package_only):
     """A fresh lock means another hook's compile is running: no second compile,
     fail open after the wait. A lock past its stale age belongs to a compile
     that died: the next hook starts a new one."""
+    target = MEASURE
+    if package_only:
+        import py_compile
+        py_compile.compile(str(MEASURE), cfile=str(bench.measure_pyc()), doraise=True)
+        target = SCRIPTS / '_measure/runtime.py'
+        bench.env['TO_COLD_TARGET'] = '/_measure/runtime.py'
     lock = bench.measure_pyc().parent / ".token-optimizer-compile.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text("4242 0\n", encoding="utf-8")
@@ -313,7 +407,7 @@ def test_live_lock_defers_to_the_running_compile_and_stale_lock_is_taken_over(be
     # is what this test is about.
     assert elapsed < HANG_S, f"hook waited {elapsed:.1f}s on a lock nobody will release"
     assert not bench.compiler_boots(), "started a compile while another one holds the lock"
-    assert not bench.pyc_fresh()
+    assert not bench.pyc_fresh(target)
 
     old = time.time() - 600
     os.utime(lock, (old, old))
@@ -328,7 +422,7 @@ def test_live_lock_defers_to_the_running_compile_and_stale_lock_is_taken_over(be
     except FileNotFoundError:
         still_stale = False  # taken over and already released
     assert not still_stale, "the dead compile's stale lock was never taken over"
-    assert bench.wait_for_pyc()
+    assert bench.wait_for_pyc(source=target)
     assert len(bench.compiler_boots()) == 1
 
 
@@ -347,7 +441,7 @@ _RESERVE_OVERRIDES_S = {"codex_hook_bridge": 4.5}
 def _module_runner():
     spec = importlib.util.spec_from_file_location("_module_runner_264", HOOKS / "module_runner.py")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

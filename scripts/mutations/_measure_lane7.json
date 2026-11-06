@@ -1,0 +1,106 @@
+[
+  {
+    "mutation": "#73 ps under a non-English locale: localized lstart drops every session",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            # and dropping every session.\n            env={**_measure_facade.os.environ, \"LC_ALL\": \"C\", \"LC_TIME\": \"C\"}, creationflags=_measure_facade._NO_WINDOW,",
+    "new": "            # and dropping every session.\n            env={**_measure_facade.os.environ}, creationflags=_measure_facade._NO_WINDOW,",
+    "symbol": "_collect_posix_claude_sessions"
+  },
+  {
+    "mutation": "5.13.50 schtasks /Query on every healthy SessionStart (guard before cheap gates)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    # cheap gates and the health probe say a repair is actually due.\n    _measure_facade = _compat.facade()\n    if _measure_facade._daemon_snapshot_sandboxed():\n",
+    "new": "    # cheap gates and the health probe say a repair is actually due.\n    _measure_facade = _compat.facade()\n    if _measure_facade._scheduler_install_refused():\n",
+    "symbol": "_ensure_dashboard_daemon"
+  },
+  {
+    "mutation": "5.13.50 schtasks /Query on every healthy SessionStart (guard before cheap gates)",
+    "edit": 1,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    _measure_facade = _compat.facade()\n    if _measure_facade._daemon_snapshot_sandboxed():\n        return \"noop-sandbox\"\n    try:\n        # Already current (a sibling session fixed it)?",
+    "new": "    _measure_facade = _compat.facade()\n    if _measure_facade._scheduler_install_refused():\n        return \"noop-sandbox\"\n    try:\n        # Already current (a sibling session fixed it)?",
+    "symbol": "_restart_dashboard_daemon"
+  },
+  {
+    "mutation": "5.13.50 schtasks /Query on every healthy SessionStart (guard before cheap gates)",
+    "edit": 2,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    # cheap gates below say a heal is actually due.\n    _measure_facade = _compat.facade()\n    if _measure_facade._daemon_snapshot_sandboxed():\n",
+    "new": "    # cheap gates below say a heal is actually due.\n    _measure_facade = _compat.facade()\n    if _measure_facade._scheduler_install_refused():\n",
+    "symbol": "_heal_windows_task_action"
+  },
+  {
+    "mutation": "#117 tasklist /v on the per-prompt daemon pulse (Windows)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        if _measure_facade._daemon_snapshot_sandboxed():\n            return \"noop-sandbox\"\n        # SAFETY gates run EVERY turn",
+    "new": "        if _measure_facade._daemon_snapshot_sandboxed():\n            return \"noop-sandbox\"\n        if _measure_facade._normalized_platform() == \"Windows\":\n            _measure_facade.subprocess.run([\"tasklist\", \"/v\", \"/fo\", \"csv\", \"/nh\"],\n                           capture_output=True, text=True, timeout=10)\n        # SAFETY gates run EVERY turn",
+    "symbol": "_daemon_midsession_pulse"
+  },
+  {
+    "mutation": "windows task action read on every SessionStart (no check throttle)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if _measure_facade.time.time() - last >= _measure_facade._daemon_ensure_throttle_seconds():\n        try:\n            _measure_facade._write_config_flag(\"last_windows_task_action_check\"",
+    "new": "    if True:\n        try:\n            _measure_facade._write_config_flag(\"last_windows_task_action_check\"",
+    "symbol": "_heal_windows_console_flash"
+  },
+  {
+    "mutation": "setup-daemon after --uninstall leaves the tombstone on Windows/Linux",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        # and Linux `setup-daemon` after `--uninstall` left the daemon dead.\n        try:\n            if _measure_facade.DAEMON_THRASH_BREADCRUMB.exists():",
+    "new": "        # and Linux `setup-daemon` after `--uninstall` left the daemon dead.\n        try:\n            if False and _measure_facade.DAEMON_THRASH_BREADCRUMB.exists():",
+    "symbol": "setup_daemon"
+  },
+  {
+    "mutation": "kill-stale no longer spares its own process and parent",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "             and s[\"pid\"] != my_pid\n             and s[\"pid\"] != my_ppid\n",
+    "new": "",
+    "symbol": "kill_stale_sessions"
+  },
+  {
+    "mutation": "kill-stale no longer spares the session it runs inside of",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "             and s[\"pid\"] not in my_ancestors\n             and s.get(\"identity\", \"unknown\") in killable]",
+    "new": "             and s.get(\"identity\", \"unknown\") in killable]",
+    "symbol": "kill_stale_sessions"
+  },
+  {
+    "mutation": "ensure_dashboard_daemon queries the scheduler job before its health probe (143f9841)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    _measure_facade = _compat.facade()\n    if _measure_facade._daemon_snapshot_sandboxed():\n        return \"noop-sandbox\"\n    # Claude Code cloud VM: no browser to open the URL in",
+    "new": "    _measure_facade = _compat.facade()\n    if _measure_facade._scheduler_install_refused():\n        return \"noop-sandbox\"\n    # Claude Code cloud VM: no browser to open the URL in",
+    "symbol": "_ensure_dashboard_daemon"
+  },
+  {
+    "mutation": "restart_dashboard_daemon queries the scheduler job before the already-current check (143f9841)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    _measure_facade = _compat.facade()\n    if _measure_facade._daemon_snapshot_sandboxed():\n        return \"noop-sandbox\"\n    try:\n        # Already current (a sibling session fixed it)?",
+    "new": "    _measure_facade = _compat.facade()\n    if _measure_facade._scheduler_install_refused():\n        return \"noop-sandbox\"\n    try:\n        # Already current (a sibling session fixed it)?",
+    "symbol": "_restart_dashboard_daemon"
+  },
+  {
+    "mutation": "heal_windows_task_action queries the scheduler job before its resurrection gate (143f9841)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    _measure_facade = _compat.facade()\n    if _measure_facade._daemon_snapshot_sandboxed():\n        return False\n    try:\n        if _measure_facade.os.name != \"nt\":",
+    "new": "    _measure_facade = _compat.facade()\n    if _measure_facade._scheduler_install_refused():\n        return False\n    try:\n        if _measure_facade.os.name != \"nt\":",
+    "symbol": "_heal_windows_task_action"
+  },
+  {
+    "mutation": "dashboard-launcher.cmd is read in the OEM code page and garbles non-ASCII paths",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        \"chcp 65001\\r\\n\"\n",
+    "new": "",
+    "symbol": "_generate_windows_launcher_cmd"
+  }
+]

@@ -14,6 +14,7 @@ percentage. These tests pin the provenance to the output.
 
 Run: python3 -m pytest tests/test_context_window_disclosure.py -v
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import os
 import sys
@@ -287,7 +288,7 @@ def test_display_fill_for_checkpoints_is_the_model_share():
 
 def test_every_context_nudge_uses_the_shared_phrase():
     """Source guard: the verbosity nudges must not hand-build the fill number."""
-    src = Path(measure.__file__).read_text(encoding="utf-8")
+    src = _split_measure_source(Path(measure.__file__))
     assert "{fill_pct:.0f}%{window_note}" not in src
     nudges = re.findall(r'f"\[Token Optimizer\] Context (?:at )?\{([^}]*)\}', src)
     assert nudges, "context nudges not found"

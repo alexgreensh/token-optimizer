@@ -73,7 +73,8 @@ def test_compact_restore_exits_clean_tiny_budget(tmp_path):
 def test_compact_restore_dispatch_installs_a_budget(src):
     """Guard: the compact-restore CLI branch must install a hook budget, in both
     the canonical and the codex-mirror source trees."""
-    text = src.read_text(encoding="utf-8")
+    from helpers.measure_split import measure_source
+    text = measure_source(src)
     idx = text.find('args[0] == "compact-restore"')
     assert idx != -1, "compact-restore dispatch not found"
     # Bound to exactly the compact-restore branch: slice up to the NEXT dispatch

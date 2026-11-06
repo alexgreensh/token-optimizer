@@ -57,6 +57,16 @@ SKILL_INSTALL_FILES = (
 )
 
 
+# Completeness is separate from the legacy healthy-output counts.
+_MEASURE_PACKAGE_FILES = (
+    "_measure/__init__.py", "_measure/_compat.py", "_measure/runtime.py",
+    "_measure/pricing.py", "_measure/audit.py", "_measure/dashboard.py",
+    "_measure/lifecycle.py", "_measure/sessions.py", "_measure/trends.py",
+    "_measure/cache_policy.py", "_measure/daemon.py", "_measure/quality_archive.py",
+    "_measure/continuity.py", "_measure/savings.py", "_measure/cli.py",
+)
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
@@ -207,6 +217,8 @@ def _command_mentions_missing_path(root: Path, command: str) -> bool:
 
 def _required_file_checks(root: Path) -> list[dict[str, str]]:
     missing = [rel for rel in REQUIRED_FILES if not (root / rel).exists()]
+    missing += ['skills/token-optimizer/scripts/' + rel for rel in _MEASURE_PACKAGE_FILES
+                if not (root / 'skills/token-optimizer/scripts' / rel).is_file()]
     if missing:
         return [_check("FAIL", "Required files", ", ".join(missing))]
     return [_check("OK", "Required files", f"{len(REQUIRED_FILES)} present")]
@@ -215,6 +227,8 @@ def _required_file_checks(root: Path) -> list[dict[str, str]]:
 def _skill_install_checks() -> list[dict[str, str]]:
     root = _skill_root()
     missing = [rel for rel in SKILL_INSTALL_FILES if not (root / rel).exists()]
+    missing += ['scripts/' + rel for rel in _MEASURE_PACKAGE_FILES
+                if not (root / 'scripts' / rel).is_file()]
     if missing:
         return [_check("FAIL", "Installed skill files", ", ".join(missing))]
     return [

@@ -15,6 +15,7 @@ same pattern test_session_locale_and_hooks.py already uses.
 
 Run: python3 -m pytest tests/test_nudge_guards_behavioral.py -v
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import subprocess
 import sys
@@ -326,7 +327,7 @@ print("CACHES:" + ",".join(sorted(
 
 def test_quality_cache_receives_the_hook_session_id():
     """The payload carries session_id; the caller used to drop it."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     assert "session_id_from_hook = payload.get(\"session_id\")" in src
     assert "session_id=session_id_from_hook" in src
 

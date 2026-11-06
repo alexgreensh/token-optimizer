@@ -399,13 +399,15 @@ def _rollup_lease_held(home: Path) -> bool:
         return False
 
 
-def _touch_rollup_lease(home: Path) -> None:
+def _touch_rollup_lease(home: Path) -> bool:
+    """Touch the rollup lease; False when the write failed (degraded dir)."""
     lease = _to_dir(home) / "rollup.lease"
     try:
         lease.parent.mkdir(parents=True, exist_ok=True)
         lease.touch()
+        return True
     except OSError:
-        pass
+        return False
 
 
 def handle_stop(payload: dict) -> dict:
@@ -421,7 +423,13 @@ def handle_stop(payload: dict) -> dict:
     if measure_py is None:
         return {}
 
-    _touch_rollup_lease(home)
+    if not _touch_rollup_lease(home):
+        # Fail closed (the Cursor bridge's throttle-state rule, R12): on a
+        # read-only/full data dir the lease can never be observed held, so
+        # without this guard EVERY stop would spawn a detached
+        # rollup+dashboard pair - a process storm under exactly the degraded
+        # conditions the lease exists to contain.
+        return {}
 
     try:
         from spawn_utils import spawn_detached

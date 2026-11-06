@@ -542,8 +542,72 @@ class SessionStore:
                 entry["ranges_seen"] = []
         return entry
 
-    def upsert_file_entry(self, file_path: str, entry: dict[str, Any]) -> None:
+    def get_reset_epoch(self) -> int:
+        """Current context-reset epoch (0 before any reset). U2 race guard."""
+        v = self.get_meta("reset_epoch")
+        try:
+            return int(v) if v is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def upsert_file_entry(
+        self,
+        file_path: str,
+        entry: dict[str, Any],
+        expected_reset_epoch: Optional[int] = None,
+    ) -> bool:
+        """Record a file read; returns False when the write was dropped.
+
+        When ``expected_reset_epoch`` is given, the write is conditional: if a
+        context reset (/clear, compaction, subagent ledger clear) committed
+        after the caller snapshotted the epoch at judgment time, the write is
+        dropped instead of resurrecting a pre-clear ``file_reads`` row. A
+        resurrected row would make the next Read of a file the model no longer
+        holds be judged "unchanged and already in context" and denied or
+        outline-served -- silent context loss (U2). The check and the insert
+        run in one IMMEDIATE transaction so the reset cannot slip between them.
+        ``None`` keeps the legacy unconditional write.
+        """
         conn = self._connect()
+        if expected_reset_epoch is None:
+            self._insert_file_entry(conn, file_path, entry)
+            conn.commit()
+            return True
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT value FROM session_meta WHERE key = 'reset_epoch'"
+            ).fetchone()
+            # A corrupt stored epoch must DROP, never be normalized to 0:
+            # "no reset since the corruption" and "a real reset landed, THEN the
+            # value was corrupted" are indistinguishable from the value alone,
+            # and normalizing to 0 would accept a stale epoch-0 writer in the
+            # second case -- resurrecting the pre-reset row this guard exists
+            # to drop. Dropping is fail-open (the read/edit proceeds; only the
+            # ledger write is skipped), and the next reset bump CASTs the value
+            # to a clean integer, re-engaging the guard. An unparseable
+            # expected epoch drops too: a writer that cannot state its epoch
+            # has no business writing conditionally.
+            try:
+                current = int(row[0]) if row and row[0] is not None else 0
+                expected = int(expected_reset_epoch)
+            except (TypeError, ValueError):
+                conn.rollback()
+                return False
+            if current != expected:
+                conn.rollback()
+                return False
+            self._insert_file_entry(conn, file_path, entry)
+            conn.commit()
+            return True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+
+    def _insert_file_entry(self, conn, file_path: str, entry: dict[str, Any]) -> None:
         ranges_json = json.dumps(entry.get("ranges_seen", []))
         conn.execute(
             """INSERT INTO file_reads
@@ -585,7 +649,6 @@ class SessionStore:
                 entry.get("last_tool_use_id", ""),
             ),
         )
-        conn.commit()
 
     def delete_file_entry(self, file_path: str) -> None:
         conn = self._connect()
@@ -608,8 +671,15 @@ class SessionStore:
 
     def clear_file_entries(self) -> None:
         conn = self._connect()
-        conn.execute("DELETE FROM file_reads")
-        conn.commit()
+        with conn:
+            conn.execute("DELETE FROM file_reads")
+            # U2: same epoch contract as reset_context_state for the
+            # subagent-ledger reset path.
+            conn.execute(
+                "INSERT INTO session_meta (key, value) VALUES ('reset_epoch', '1') "
+                "ON CONFLICT(key) DO UPDATE SET "
+                "value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+            )
 
     def reset_context_state(self) -> None:
         """Forget everything that records what the model currently holds.
@@ -634,6 +704,14 @@ class SessionStore:
             conn.execute(
                 "DELETE FROM session_meta WHERE key GLOB 'shadow_fr:*' "
                 "OR key GLOB 'active_fr:*'"
+            )
+            # U2: bump the reset epoch in the same transaction so a writer
+            # that judged pre-reset state can detect the reset landed before
+            # its record write (see upsert_file_entry's expected_reset_epoch).
+            conn.execute(
+                "INSERT INTO session_meta (key, value) VALUES ('reset_epoch', '1') "
+                "ON CONFLICT(key) DO UPDATE SET "
+                "value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
             )
 
     # ----- cached_content -----

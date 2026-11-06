@@ -623,6 +623,7 @@ def _check_escape_hatch(
     summary: Any,
     save_hook_context_enabled: bool,
     quiet: bool,
+    reset_epoch: Any = None,
 ) -> bool:
     """Allow the read if consecutive denials reach the threshold. Returns True if escaped."""
     consecutive_denials = int(entry.get("consecutive_denials", 0) or 0) + 1
@@ -632,7 +633,7 @@ def _check_escape_hatch(
 
     entry["consecutive_denials"] = 0
     _reset_replacement_state(entry)
-    store.upsert_file_entry(file_path, entry)
+    store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
     _log_decision(
         "allow",
         file_path,
@@ -1506,6 +1507,15 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
     except Exception:
         pass
 
+    # U2: snapshot the context-reset epoch AFTER the compaction scan above
+    # (which may itself have reset this session); if a /clear or compaction
+    # reset lands between the judgment below and the record write, the
+    # guarded upsert drops the write instead of resurrecting a pre-clear
+    # ledger row for content the model no longer holds.
+    try:
+        reset_epoch = store.get_reset_epoch()
+    except Exception:
+        reset_epoch = None
     try:
         entry = store.get_file_entry(file_path)
     except Exception:
@@ -1557,7 +1567,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             except Exception:
                 pass
         _reset_replacement_state(entry)
-        store.upsert_file_entry(file_path, entry)
+        store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
         # U5: first-read skeleton. Active cohorts serve a skeleton (returns True,
         # we stop here); others fall through to serve the full file + shadow-log.
         # Reuses content delta mode already read this turn (even when too large to
@@ -1748,7 +1758,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
                             else:
                                 entry["content_hash"] = None
                                 store.delete_cached_content(file_path)
-                            store.upsert_file_entry(file_path, entry)
+                            store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
 
                             net_saved = max(0, old_tokens - delta_tokens)
 
@@ -1858,7 +1868,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             except Exception:
                 pass
         _reset_replacement_state(entry)
-        store.upsert_file_entry(file_path, entry)
+        store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
         _log_decision(
             "allow",
             file_path,
@@ -1900,7 +1910,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         decision = "warn" if mode == "warn" else "allow"
         entry["last_structure_reason"] = reason_code
         entry["last_structure_confidence"] = summary.confidence if summary else 0.0
-        store.upsert_file_entry(file_path, entry)
+        store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
         _log_decision(
             decision,
             file_path,
@@ -1930,6 +1940,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         if _check_escape_hatch(
             entry, store, file_path, session_id, mode, offset, limit,
             tokens_est, language, True, summary, save_hook_context_enabled, quiet,
+            reset_epoch=reset_epoch,
         ):
             return
 
@@ -1940,7 +1951,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         entry["repeat_replacement_count"] = repeat_count
         entry["last_structure_reason"] = reason_code
         entry["last_structure_confidence"] = summary.confidence
-        store.upsert_file_entry(file_path, entry)
+        store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
 
         if repeat_count == 1:
             replacement_tokens_est = summary.replacement_tokens_est
@@ -2023,10 +2034,11 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         if _check_escape_hatch(
             entry, store, file_path, session_id, mode, offset, limit,
             tokens_est, language, False, summary, save_hook_context_enabled, quiet,
+            reset_epoch=reset_epoch,
         ):
             return
 
-        store.upsert_file_entry(file_path, entry)
+        store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
         block_net_saved = max(0, tokens_est - REASON_ONLY_TOKENS_EST)
         _log_decision(
             "block",
@@ -2211,6 +2223,13 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
     if store is None:
         return
 
+    # Same U2 contract as handle_read: a reset landing between this hook's start
+    # and the rewrite below must drop the write, not resurrect a pre-clear row.
+    try:
+        _invalidate_epoch = store.get_reset_epoch()
+    except Exception:
+        _invalidate_epoch = None
+
     # Checkpoints can predate this edit. Preserve its path independently of
     # cache entries, including edits to files that have never been read.
     try:
@@ -2313,7 +2332,7 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
                 existing["content_hash"] = None
                 store.delete_cached_content(file_path)
 
-        store.upsert_file_entry(file_path, existing)
+        store.upsert_file_entry(file_path, existing, expected_reset_epoch=_invalidate_epoch)
         if not quiet:
             print(f"[Read Cache] Refreshed after edit: {file_path}", file=sys.stderr)
     except Exception:

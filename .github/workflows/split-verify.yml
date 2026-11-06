@@ -1,0 +1,125 @@
+name: Split verify (L4 installed, L5 upgrade, L7 performance)
+
+# measure.py split gate layers L4, L5 and L7 (TEST-PLAN.md, 2026-11-06).
+# Harness: scripts/split_verify/, reusing U0's golden capture and probe.
+# Dispatch, or a push to the two verification branches (same defaults, with
+# the pushed commit as candidate). The harness comes from the dispatched ref; BASE and candidate
+# are materialized from base_ref and candidate_ref, so one harness can verify
+# any aggregate SHA. Each layer x OS writes its own receipt; the report job
+# fails unless every selected cell is PASS. A missing receipt is CANNOT-MEASURE.
+on:
+  push:
+    branches: [cloud/split-verify, cloud/split-aggregate]
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: BASE commit or ref (5.13.64)
+        required: true
+        default: 55da0b1179afa98455fa1b1c6e3dd372afa8ec3f
+      candidate_ref:
+        description: Candidate commit or branch (for example cloud/split-u0 or the aggregate SHA)
+        required: true
+      layers:
+        description: Comma-separated layers to run
+        required: false
+        default: L4,L5,L7
+      samples:
+        description: L7 paired samples per arm (TEST-PLAN n=30)
+        required: false
+        default: '30'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: split-verify-${{ inputs.candidate_ref || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: ${{ matrix.layer }} ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        layer: [L4, L5, L7]
+    env:
+      LAYER: ${{ matrix.layer }}
+      SELECTED: ${{ inputs.layers || 'L4,L5,L7' }}
+      BASE_REF: ${{ inputs.base_ref || '55da0b1179afa98455fa1b1c6e3dd372afa8ec3f' }}
+      CANDIDATE_REF: ${{ inputs.candidate_ref || github.sha }}
+      SAMPLES: ${{ inputs.samples || '30' }}
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v7
+        if: contains(env.SELECTED, matrix.layer)
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        if: contains(env.SELECTED, matrix.layer)
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        if: contains(env.SELECTED, matrix.layer)
+        with:
+          node-version: '22'
+      - name: Start a systemd user manager for the real daemon check
+        if: contains(env.SELECTED, matrix.layer) && runner.os == 'Linux' && matrix.layer == 'L5'
+        shell: bash
+        run: |
+          uid="$(id -u)"
+          sudo loginctl enable-linger "$USER"
+          for _ in $(seq 1 30); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
+          XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user is-system-running || true
+      - name: Run ${{ matrix.layer }}
+        if: contains(env.SELECTED, matrix.layer)
+        shell: bash
+        run: |
+          set -o pipefail
+          python --version
+          work=".scratch-u0/split-verify/$LAYER"
+          case "$LAYER" in
+            L4) python scripts/split_verify/l4_installed.py --base-ref "$BASE_REF" --candidate-ref "$CANDIDATE_REF" --work "$work" ;;
+            L5) python scripts/split_verify/l5_upgrade.py --base-ref "$BASE_REF" --candidate-ref "$CANDIDATE_REF" --work "$work" --real-home-daemon ;;
+            L7) python scripts/split_verify/l7_perf.py --base-ref "$BASE_REF" --candidate-ref "$CANDIDATE_REF" --work "$work" --samples "$SAMPLES" ;;
+          esac
+      - name: Job summary
+        if: always() && contains(env.SELECTED, matrix.layer)
+        shell: bash
+        run: cat .scratch-u0/split-verify/"$LAYER"/"$LAYER"-summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "no receipt written" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && contains(env.SELECTED, matrix.layer)
+        with:
+          name: split-verify-${{ matrix.layer }}-${{ runner.os }}
+          path: |
+            .scratch-u0/split-verify/*/L*-result.json
+            .scratch-u0/split-verify/*/L*-summary.md
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    needs: verify
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      SELECTED: ${{ inputs.layers || 'L4,L5,L7' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: split-verify-*
+          path: receipts
+      - name: Verdict table (every selected layer x OS must PASS)
+        shell: bash
+        run: |
+          status=0
+          python scripts/split_verify/report.py receipts --layers "$SELECTED" --out verdict.md || status=$?
+          cat verdict.md >> "$GITHUB_STEP_SUMMARY"
+          exit $status

@@ -3,15 +3,15 @@
     "mutation": "fill phrase leads with the auto-compact share again",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "        return (f\"{model_fill:.0f}% of {_format_window_size(model_window)} window \"",
-    "new": "        return (f\"{fill_pct:.0f}% of {_format_window_size(model_window)} window \"",
+    "old": "        return (f\"{model_fill:.0f}% of {_measure_facade._format_window_size(model_window)} window \"",
+    "new": "        return (f\"{fill_pct:.0f}% of {_measure_facade._format_window_size(model_window)} window \"",
     "symbol": "_format_context_fill"
   },
   {
     "mutation": "verbosity nudge hand-builds the fill number from fill_pct",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "f\"[Token Optimizer] Context {_format_context_fill(fill_pct, cached)}, resource health",
+    "old": "f\"[Token Optimizer] Context {_measure_facade._format_context_fill(fill_pct, cached)}, resource health",
     "new": "f\"[Token Optimizer] Context {fill_pct:.0f}%{window_note}, resource health",
     "symbol": "_verbosity_nudge_text"
   },
@@ -35,8 +35,8 @@
     "mutation": "#249 compact-window % labelled with the model window",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    if not cached.get(\"compact_window_reduced\"):\n        return \"\"\n",
-    "new": "    return \"\"\n",
+    "old": "    _measure_facade = _compat.facade()\n    if not cached.get(\"compact_window_reduced\"):\n        return \"\"\n",
+    "new": "    _measure_facade = _compat.facade()\n    return \"\"\n",
     "symbol": "_format_reduced_window_note"
   },
   {
@@ -67,7 +67,7 @@
     "mutation": "post-compact restore fences on a stale PreCompact capture",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "            if (now - anchor).total_seconds() <= _COMPACT_RESTORE_ANCHOR_MAX_AGE_S:\n",
+    "old": "            if (now - anchor).total_seconds() <= _measure_facade._COMPACT_RESTORE_ANCHOR_MAX_AGE_S:\n",
     "new": "            if True:\n",
     "symbol": "compact_restore"
   },
@@ -76,30 +76,29 @@
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
     "old": "    ordered = sorted(checkpoint_dicts or [], key=_key)\n",
-    "new": "    ordered = sorted(checkpoint_dicts or [], key=lambda cp: (cp.get(\"trigger\", \"auto\") != \"auto\", _key(cp)))\n",
+    "new": "    ordered = sorted(checkpoint_dicts or [], key=lambda cp: ((_measure_facade := _compat.facade()), (cp.get(\"trigger\", \"auto\") != \"auto\", _key(cp)))[1])\n",
     "symbol": "_order_checkpoints_for_restore"
   },
   {
     "mutation": "#246 module-level threshold call raises a NameError the fallback swallows",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    return _TOOL_CALL_WARN_THRESHOLDS\n\n# Configurable via env vars\n",
-    "new": "    return _TOOL_CALL_WARN_THRESHOLDS\n\n_TOOL_CALL_WARN, _TOOL_CALL_CRITICAL = _scaled_tool_call_thresholds()\n\n# Configurable via env vars\n",
-    "symbol": "_tool_call_warn_thresholds"
+    "old": "_tool_call_warn_thresholds = _measure_compat.bind(_measure_providers['quality_archive']._tool_call_warn_thresholds, __name__)\n\n# Configurable via env vars\n",
+    "new": "_tool_call_warn_thresholds = _measure_compat.bind(_measure_providers['quality_archive']._tool_call_warn_thresholds, __name__)\n\n_TOOL_CALL_WARN, _TOOL_CALL_CRITICAL = _scaled_tool_call_thresholds()\n\n# Configurable via env vars\n"
   },
   {
     "mutation": "#278 Codex Stop writes a 'No transcript data available' placeholder",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "        if _use_codex_session_adapter(transcript_path or None):\n",
-    "new": "        if not session_id and _use_codex_session_adapter():\n",
+    "old": "        if _measure_facade._use_codex_session_adapter(transcript_path or None):\n",
+    "new": "        if not session_id and _measure_facade._use_codex_session_adapter():\n",
     "symbol": "compact_capture"
   },
   {
     "mutation": "purge --force on Windows asks POSIX ps and never stops the daemon",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "            if os.name == \"nt\":\n                # No `ps` on Windows",
+    "old": "            if _measure_facade.os.name == \"nt\":\n                # No `ps` on Windows",
     "new": "            if False:\n                # No `ps` on Windows",
     "symbol": "_purge_all_data"
   },
@@ -107,7 +106,7 @@
     "mutation": "#253 compact-capture exits 0 without writing the checkpoint",
     "edit": 0,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "    if not _write_checkpoint_atomic(checkpoint_path, checkpoint_content):\n        return None",
+    "old": "    if not _measure_facade._write_checkpoint_atomic(checkpoint_path, checkpoint_content):\n        return None",
     "new": "    if True:\n        return None",
     "symbol": "compact_capture"
   }

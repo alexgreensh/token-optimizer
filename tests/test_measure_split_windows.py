@@ -192,3 +192,30 @@ def test_internal_hook_spawn_is_approved_for_a_windows_command_line(tmp_path, mo
     golden.capture(source, work / 'fixed-path', work / 'capture', [row])
     stdout = (work / 'capture' / row['id'] / 'stdout').read_bytes()
     assert b'fixture continuity hint' in stdout and b'hookSpecificOutput' in stdout
+
+
+@pytest.mark.parametrize('audit', ['posix', 'windows'])
+def test_precompact_checkpoint_persists_under_windows_command_line_audit(monkeypatch, audit):
+    """Lane V shakedown: on Windows BASE capture raised 'PreCompact returned without
+    persisting its checkpoint'. Same cause as the empty hooks: the approved
+    run.py -> module_runner re-entry was blocked when audited as a string."""
+    site = REPO / '.scratch-u0' / ('cmdline-site-' + uuid.uuid4().hex)
+    site.mkdir(parents=True)
+    (site / 'sitecustomize.py').write_text(
+        'import subprocess, sys\n'
+        '_child = subprocess.Popen._execute_child\n'
+        'def _execute_child(self, args, executable, *rest):\n'
+        '    if not isinstance(args, str):\n'
+        '        sys.audit("subprocess.Popen", executable, subprocess.list2cmdline(args), None, None)\n'
+        '    return _child(self, args, executable, *rest)\n'
+        'subprocess.Popen._execute_child = _execute_child\n', encoding='utf-8')
+    if audit == 'windows':
+        environment = golden.environment
+        monkeypatch.setattr(golden, 'environment', lambda *args: {**environment(*args), 'PYTHONPATH': str(site)})
+    case = 'hook-skills_token-optimizer_scripts_measure.py-compact-capture---trigger-auto---quiet-PreCompact-success-claude'
+    row = next(row for row in json.loads(golden.CASES.read_text())['cases'] if row['id'] == case)
+    work = REPO / '.scratch-u0' / ('precompact-test-' + uuid.uuid4().hex)
+    # capture() itself raises 'PreCompact returned without persisting its checkpoint'.
+    assert golden.capture(REPO, work / 'fixed-path', work / 'capture', [row]) == 1
+    files = work / 'capture' / case / 'files'
+    assert any('checkpoints' in path.parts for path in files.rglob('*.md'))

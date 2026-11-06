@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -146,16 +147,28 @@ def _release_token(install):
     return None
 
 
+# Only the versioned component of the installed cache path may ever normalize:
+# '<sep>token-optimizer*<sep><release><sep>'. A bare release string anywhere
+# else -- a topic, a session id, a non-path argv value -- stays byte-exact.
+_SEGMENT = r'(?:^|[/\\])token-optimizer[^/\\]*[/\\]'
+
+
+def _unversion(text, version):
+    if not version:
+        return text
+    return re.sub(_SEGMENT + re.escape(version) + r'(?=[/\\])', '\x00release\x00', text)
+
+
 def _unversioned_rows(rows, version):
     if not version:
         return rows
-    return [{**row, 'argv': [a.replace(version, '\x00release\x00') for a in (row['argv'] or [])]}
+    return [{**row, 'argv': [_unversion(a, version) for a in (row['argv'] or [])]}
             for row in rows]
 
 
 def _unversioned_errors(errors, before, after, before_version, after_version):
-    """Drop capture diffs whose only change is each side's own release token.
-    Anything else in the file still fails: normalization is one exact token."""
+    """Drop capture diffs whose only change is the install-path version segment.
+    Anything else in the file still fails: normalization is that one component."""
     real = []
     for entry in errors:
         marker = 'bytes differ: '
@@ -163,8 +176,10 @@ def _unversioned_errors(errors, before, after, before_version, after_version):
             real.append(entry)
             continue
         rel = entry[len(marker):]
-        left = (before / rel).read_bytes().replace(before_version.encode(), b'\x00release\x00')
-        right = (after / rel).read_bytes().replace(after_version.encode(), b'\x00release\x00')
+        left = _unversion((before / rel).read_bytes().decode('utf-8', 'surrogateescape'),
+                          before_version)
+        right = _unversion((after / rel).read_bytes().decode('utf-8', 'surrogateescape'),
+                           after_version)
         if left != right:
             real.append(entry)
     return real

@@ -265,19 +265,42 @@ def test_next_patch():
 
 
 def test_pinned_version_normalization_keeps_real_differences(tmp_path):
-    """L4 normalizes ONLY the release token: a versioned path may differ, any
-    other byte may not (known-bad: a planted non-version change still fails)."""
+    """L4 normalizes ONLY the versioned install-path segment (Sol audit F1).
+    (a) the release in a topic/id/non-path arg still FAILS; (b) the
+    install-path segment alone PASSES; (c) any other diff still FAILS."""
     import l4_installed as l4
     base, cand = tmp_path / 'base', tmp_path / 'cand'
     (base / 'case-a').mkdir(parents=True)
     (cand / 'case-a').mkdir(parents=True)
-    (base / 'case-a' / 'stdout').write_bytes(b'run /home/u/token-optimizer/5.13.64/run.py\n')
-    (cand / 'case-a' / 'stdout').write_bytes(b'run /home/u/token-optimizer/5.13.66/run.py\n')
-    (base / 'case-a' / 'exit').write_bytes(b'0\n')
-    (cand / 'case-a' / 'exit').write_bytes(b'1\n')
+    roots = ('/home/u/.claude/plugins/cache/mkt/token-optimizer/',
+             'C:\\Users\\u\\.claude\\plugins\\cache\\mkt\\token-optimizer-cowork\\')
+
+    # (b) install-path segment only: normalized on both separators.
+    for root in roots:
+        (base / 'case-a' / 'stdout').write_bytes(('run ' + root + '5.13.64/hooks/run.py\n').encode())
+        (cand / 'case-a' / 'stdout').write_bytes(('run ' + root + '5.13.66/hooks/run.py\n').encode())
+        assert l4._unversioned_errors(
+            ['bytes differ: case-a/stdout'], base, cand, '5.13.64', '5.13.66') == []
+    assert l4._unversioned_rows(
+        [{'argv': [roots[0] + '5.13.64/hooks/run.py']}], '5.13.64'
+    ) == l4._unversioned_rows([{'argv': [roots[0] + '5.13.66/hooks/run.py']}], '5.13.66')
+
+    # (a) release-shaped data outside the install path: still a real diff.
+    (base / 'case-a' / 'stdout').write_bytes(b'{"session_id": "job-5.13.64-x"}')
+    (cand / 'case-a' / 'stdout').write_bytes(b'{"session_id": "job-5.13.66-x"}')
+    (base / 'case-a' / 'exit').write_bytes(b'topic 5.13.640\n')
+    (cand / 'case-a' / 'exit').write_bytes(b'topic 5.13.660\n')
     errors = ['bytes differ: case-a/stdout', 'bytes differ: case-a/exit', 'missing: case-b']
-    assert l4._unversioned_errors(errors, base, cand, '5.13.64', '5.13.66') == [
-        'bytes differ: case-a/exit', 'missing: case-b']
+    assert l4._unversioned_errors(errors, base, cand, '5.13.64', '5.13.66') == errors
+    assert l4._unversioned_rows([{'argv': ['--session-id', '5.13.64']}], '5.13.64'
+                              ) != l4._unversioned_rows([{'argv': ['--session-id', '5.13.66']}], '5.13.66')
+
+    # (c) a planted non-version change: still a real diff.
+    (base / 'case-a' / 'stdout').write_bytes(b'{"cost": 18}')
+    (cand / 'case-a' / 'stdout').write_bytes(b'{"cost": 19}')
+    assert l4._unversioned_errors(
+        ['bytes differ: case-a/stdout'], base, cand, '5.13.64', '5.13.66'
+    ) == ['bytes differ: case-a/stdout']
 
 
 # ----------------------------------------------------------------- report

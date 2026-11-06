@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
 from contextlib import closing
 import hashlib
 import json
@@ -38,54 +39,60 @@ _CODE_FIELD = re.compile(r'^\s*(?:export\s+)?(?:const|var|let)?\s*'
 
 
 def _version_field(line):
-    """(field-key, value) when the line is an exact version field, else None."""
+    """(field-key, value, value-span) when the line is an exact version field,
+    else None. The span is what a rewrite may touch -- nothing else on the line."""
     match = _JSON_FIELD.match(line)
     if match:
-        return 'version', match.group(1)
+        return 'version', match.group(1), match.span(1)
     match = _CODE_FIELD.match(line)
     if match:
-        return match.group(1), match.group(2)
+        return match.group(1), match.group(2), match.span(2)
     return None
 
 
 def bump_version_fields(repo):
-    """(file, field-key) pairs the release bumps changed, derived from the
-    afab5255 bump diff and the 184df97d merge diff -- never hand-listed."""
-    fields = set()
+    """Counter of (file, field-key) version-field occurrences the release bumps
+    changed, derived from the afab5255 bump diff and the 184df97d merge diff --
+    never hand-listed. Two fields in one file are two items."""
+    fields = Counter()
     for old, new in (('afab5255^', 'afab5255'), ('184df97d^1', '184df97d')):
         out = subprocess.run(['git', '-C', str(repo), 'diff', '--unified=0', old, new],
                              capture_output=True, text=True, check=True).stdout
-        rel = None
+        rel, seen = None, Counter()
         for line in out.splitlines():
             if line.startswith('+++'):
                 rel = line[4:].lstrip('b/')
             elif line.startswith('+') and rel and not rel.endswith(_MD):
                 field = _version_field(line[1:])
                 if field:
-                    fields.add((rel, field[0]))
+                    seen[(rel, field[0])] += 1
+        # The merge and the bump describe the same logical fields (5.13.65 then
+        # 5.13.66 on the same lines): union by per-diff max, never a sum.
+        for key, count in seen.items():
+            fields[key] = max(fields[key], count)
     return fields
 
 
 def _plan(tree, fields, cand_version):
-    """(file, field-key) -> lineno of every exact version field whose value is
-    the candidate release, inside the expected files only."""
-    planned = {}
+    """Counter of (file, field-key) occurrences whose value is the candidate
+    release, inside the expected files only."""
+    planned = Counter()
     for rel in sorted({r for r, _ in fields}):
         path = Path(tree) / rel
         if not path.is_file():
             continue
-        for lineno, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+        for line in path.read_text(encoding='utf-8').splitlines():
             field = _version_field(line)
             if field and field[1] == cand_version:
-                planned[(rel, field[0])] = lineno
+                planned[(rel, field[0])] += 1
     return planned
 
 
 def restamp(tree, base_version, surfaces=None):
-    """Re-stamp only exact version fields to BASE's release, nothing else.
+    """Re-stamp only the matched quoted value spans of exact version fields.
 
-    Validates BEFORE any write: the planned (file, field) edits must equal the
-    version-field set the release bumps changed; a drifted surface set raises.
+    Validates BEFORE any write: the planned (file, field) occurrence counts must
+    equal the version-field multiset the release bumps changed; drift raises.
     With an explicit ``surfaces`` list (tests), those files are edited under the
     same field rule and the bump-set validation is the caller's."""
     tree = Path(tree)
@@ -94,12 +101,12 @@ def restamp(tree, base_version, surfaces=None):
     if cand_version == base_version:
         return []
     expected = bump_version_fields(ROOT) if surfaces is None else None
-    fields = expected if expected is not None else {
-        (rel, 'version') for rel in surfaces}
+    fields = expected if expected is not None else Counter(
+        (rel, 'version') for rel in surfaces)
     planned = _plan(tree, fields, cand_version)
-    if expected is not None and set(planned) != expected:
+    if expected is not None and planned != expected:
         raise RuntimeError('restamp plan != release-bump fields: '
-                           f'expected {sorted(expected)}, planned {sorted(planned)}')
+                           f'expected {dict(expected)}, planned {dict(planned)}')
     changed = []
     for rel in sorted({r for r, _ in planned}):
         path = tree / rel
@@ -107,8 +114,8 @@ def restamp(tree, base_version, surfaces=None):
         for index, line in enumerate(lines):
             field = _version_field(line)
             if field and field[1] == cand_version:
-                lines[index] = (line.replace(f'"{cand_version}"', f'"{base_version}"')
-                                .replace(f"'{cand_version}'", f"'{base_version}'"))
+                start, end = field[2]
+                lines[index] = line[:start] + base_version + line[end:]
         path.write_text(''.join(lines), encoding='utf-8')
         changed.append(rel)
     return sorted(changed)

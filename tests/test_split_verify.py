@@ -312,13 +312,52 @@ def test_restamp_keeps_a_planted_non_version_change_failing(tmp_path):
 
 def test_real_tree_restamp_plan_equals_the_bump_fields():
     """Actual default discovery on THIS tree: every planned edit equals exactly
-    a version-field line the release bump changed (N edits == N bump fields)."""
+    the version-field multiset the release bumps changed (counts included)."""
     import measure_split_golden as golden  # noqa: E402
     fields = golden.bump_version_fields(REPO)
     assert len(fields) >= 9, fields
+    assert fields[('.claude-plugin/marketplace.json', 'version')] == 2  # :16 and :58
     cand = json.loads((REPO / '.claude-plugin' / 'plugin.json').read_text())['version']
     planned = golden._plan(REPO, fields, cand)
-    assert set(planned) == fields, (sorted(set(planned) - fields), sorted(fields - set(planned)))
+    assert planned == fields, (dict(planned), dict(fields))
+
+
+def test_restamp_counts_each_field_occurrence(tmp_path):
+    """Two version fields in one file are two items (Sol A3 finding 2): damage
+    only ONE of marketplace.json's pair and the validated plan must diverge."""
+    import measure_split_golden as golden  # noqa: E402
+    cand = tmp_path / 'cand'
+    fields = golden.bump_version_fields(REPO)
+    version = json.loads((REPO / '.claude-plugin' / 'plugin.json').read_text())['version']
+    for rel in sorted({r for r, _ in fields}):
+        dst = cand / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes((REPO / rel).read_bytes())
+    assert golden._plan(cand, fields, version) == fields, 'clean copy must plan equal'
+
+    market = cand / '.claude-plugin/marketplace.json'
+    market.write_text(market.read_text().replace(
+        f'"version": "{version}"', f'"version": "{version}-x"', 1))
+    assert golden._plan(cand, fields, version) != fields
+    with pytest.raises(RuntimeError, match='release-bump fields'):
+        golden.restamp(cand, '5.13.64')
+
+
+def test_restamp_writes_only_the_matched_span(tmp_path):
+    """Only the matched quoted value span is rewritten (Sol A3 finding 1): a
+    same-line literal carrying the same release bytes keeps them, and the
+    resulting difference still fails the byte compare."""
+    import measure_split_golden as golden  # noqa: E402
+    base, cand = tmp_path / 'base', tmp_path / 'cand'
+    for side, version, alias in ((base, '5.13.64', '5.13.64'), (cand, '5.13.66', '5.13.66')):
+        (side / '.claude-plugin').mkdir(parents=True)
+        (side / '.claude-plugin' / 'plugin.json').write_text(f'{{\n  "version": "{version}"\n}}\n')
+        (side / 'code.ts').write_text(
+            f'const CORE_VERSION_FALLBACK = "{version}"; const ALIAS = "{alias}";\n')
+    golden.restamp(cand, '5.13.64', surfaces=['code.ts'])
+    assert (cand / 'code.ts').read_text() == (
+        'const CORE_VERSION_FALLBACK = "5.13.64"; const ALIAS = "5.13.66";\n')
+    assert golden.compare(base, cand) != [], 'the untouched literal must still differ'
 
 
 def test_sandbox_roots_are_lexical_only(monkeypatch):

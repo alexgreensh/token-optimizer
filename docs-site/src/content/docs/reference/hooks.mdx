@@ -14,7 +14,6 @@ The plugin registers eleven hook events. Several events use a consolidated runne
 | Hook event | Fires | What it does |
 |---|---|---|
 | `PreToolUse: Read` | `read_cache.py` | Intercepts file re-reads and substitutes a delta or structure map for unchanged content |
-| `PreToolUse: Bash` | `bash_hook.py` | Always silent: it returns no permission decision. Bash output is compressed after the command runs |
 | `PreToolUse: Agent\|Task` | `checkpoint-trigger` | Saves a milestone checkpoint before a sub-agent dispatch |
 | `PreToolUse: mcp__.*` | `refetch_guard.py` | Denies an exact repeat of an MCP call whose large result was already archived, and hands back the `expand` command |
 | `PreCompact` | `dynamic-compact-instructions` | Injects mode-aware PRESERVE/DROP guidance into the compact prompt |
@@ -44,7 +43,7 @@ The plugin registers eleven hook events. Several events use a consolidated runne
 
 ## What runs automatically, grouped by purpose
 
-**Compression on the way in.** The `PreToolUse: Read` and `PreToolUse: Bash` hooks are where active compression happens. A re-read returns a diff or skeleton instead of the full file; an eligible Bash command returns a compressed summary. Both are wall-clock guarded and fail open: on any error the original result passes through unchanged.
+**Compression on the way in and out.** The `PreToolUse: Read` hook is where inbound compression happens: a re-read returns a diff or skeleton instead of the full file. Bash output is compressed after the command runs, inside the consolidated `PostToolUse` dispatcher. Both paths are wall-clock guarded and fail open: on any error the original result passes through unchanged.
 
 **Checkpoint capture and restore.** `PreCompact`, `Stop`, and `StopFailure` capture checkpoints. The two `SessionStart` restore triggers inject the right one back: the full checkpoint after a compaction, or a keyword-matched checkpoint on a fresh session.
 
@@ -83,7 +82,7 @@ Plugin users do not need `setup-all-hooks`; the plugin loads `hooks/hooks.json` 
 
 ### Individual compression features
 
-The compression that runs inside the Read and Bash hooks is gated by feature flags, not by removing the hook. Turn a feature off without touching the hook wiring:
+The compression that runs in the `PreToolUse: Read` hook and in the `PostToolUse` dispatcher's Bash branch is gated by feature flags, not by removing hook wiring. Turn a feature off without touching the wiring:
 
 ```bash
 python3 measure.py v5 disable bash_compress

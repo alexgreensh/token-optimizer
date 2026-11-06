@@ -1,18 +1,18 @@
 ---
 title: Bash output compression
-description: "A PreToolUse hook rewrites verbose read-only CLI output into compact summaries before it reaches the model, while preserving credentials verbatim. A 564-token pytest run becomes 115 tokens."
+description: "A PostToolUse hook condenses verbose CLI output into compact summaries after each command runs, while preserving credentials verbatim. A 564-token pytest run becomes 115 tokens."
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-Bash output compression intercepts safe, read-only CLI commands and replaces their verbose output with a compact summary, so routine `git status`, `pytest`, and lint runs stop flooding your context.
+Bash output compression condenses the output of safe, read-only CLI commands into compact summaries, so routine `git status`, `pytest`, and lint runs stop flooding your context.
 
 ## What it does
 
 ![Bash output compression: a verbose command condensed to a compact summary, credentials preserved](/images/bash-compression.svg)
 
 
-Many commands produce far more output than the model needs to act. A test run prints every passing case; a lint run repeats the same rule across hundreds of lines; a directory listing scrolls for pages. Bash output compression catches these through the PreToolUse Bash hook and routes them through a compressor that keeps the signal and drops the repetition. A 564-token pytest run becomes about 115 tokens. Savings depend on command mix and whether the output is eligible; fixture ratios are not universal session coverage.
+Many commands produce far more output than the model needs to act. A test run prints every passing case; a lint run repeats the same rule across hundreds of lines; a directory listing scrolls for pages. Bash output compression catches these after each command runs, inside the consolidated PostToolUse dispatcher, and routes the captured output through a compressor that keeps the signal and drops the repetition. A 564-token pytest run becomes about 115 tokens. Savings depend on command mix and whether the output is eligible; fixture ratios are not universal session coverage.
 
 The hook only touches commands it recognizes as safe and read-only. Anything ambiguous passes through untouched and full.
 
@@ -31,15 +31,15 @@ The compressor has a dedicated handler per command family, so each kind of outpu
 | Build | JS/TS and Go build output | Errors and summary view |
 | Misc | `tree`, `docker pull` | Depth truncation, progress filtering |
 
-A second PostToolUse pass covers build, test, and run commands that are not read-only (gcc, cargo, npm, make, go, mvn, and more). The command already ran, so the hook collapses repetition in the captured output while preserving every distinct error line, exit status, and summary. A credential-redacted, size-capped recovery copy is archived behind an expand pointer.
+The same PostToolUse pass also covers build, test, and run commands that are not read-only (gcc, cargo, npm, make, go, mvn, and more). The command already ran, so the hook collapses repetition in the captured output while preserving every distinct error line, exit status, and summary. A credential-redacted, size-capped recovery copy is archived behind an expand pointer.
 
 ## When it fires
 
-Automatically, on the PreToolUse Bash hook, when you run a recognized read-only command. The hook tokenizes the command with `shlex.split()`, checks it against a whitelist, and rewrites the output through the compression wrapper. Commands it does not recognize run normally with full output. Build and test commands are compressed PostToolUse on the not-read-only branch, after the command has executed.
+Automatically, after a recognized read-only command runs, inside the consolidated PostToolUse dispatcher. The compressor tokenizes the command with `shlex.split()`, checks it against a whitelist, and returns a compact summary of the captured output. Commands it does not recognize keep their full output. Build and test commands are compressed on the not-read-only branch of the same pass.
 
 ## Default state
 
-On by default on Claude Code (CLI and VS Code). Approximated or unavailable on platforms with reduced PreToolUse hook support; see the [capability matrix](/reference/capability-matrix/).
+On by default on Claude Code (CLI and VS Code), where it runs after each command in the PostToolUse dispatcher. On Codex it is an experimental opt-in (a gated PreToolUse rewrite); on Grok Build a gated PreToolUse rewrite is contract-tested. Other platforms vary; see the [capability matrix](/reference/capability-matrix/).
 
 ## How to turn off
 
@@ -115,7 +115,7 @@ Low. The hook fails open: unrecognized commands, compound commands, and timed-ou
 
 ## Platform availability
 
-Full on Claude Code CLI and VS Code. Other platforms vary with their PreToolUse Bash hook support; see the [capability matrix](/reference/capability-matrix/).
+Full on Claude Code CLI and VS Code, where compression runs in the PostToolUse dispatcher. Codex has an experimental opt-in PreToolUse rewrite; Grok Build has a contract-tested, not live-verified PreToolUse rewrite. See the [capability matrix](/reference/capability-matrix/).
 
 ## Related pages
 

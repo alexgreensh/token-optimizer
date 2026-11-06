@@ -336,7 +336,7 @@ Based on 1,644 main work sessions and 3 delegated sessions. Your dashboard compu
 
 Nine features that actively reduce context, all on by default, all automatic, all toggleable from the dashboard or CLI.
 
-Under the hood, **PreToolUse hooks** intercept every Read and Bash call before it enters your context. If the file was already read, only the diff comes back. If it's a code file re-read, a structural skeleton replaces the full content. If it's a CLI command, the output is compressed. **PostToolUse hooks** archive the full original to disk and log a compression event to SQLite. Nothing is lost, and everything is retrievable. **You do nothing. The hooks handle it all.**
+Under the hood, **PreToolUse hooks** intercept every Read call before it enters your context. If the file was already read, only the diff comes back. If it's a code file re-read, a structural skeleton replaces the full content. **PostToolUse hooks** compress CLI command output, archive the full original to disk, and log a compression event to SQLite. Nothing is lost, and everything is retrievable. **You do nothing. The hooks handle it all.**
 
 ![Active Compression overview](skills/token-optimizer/assets/active-compression-hero.svg)
 

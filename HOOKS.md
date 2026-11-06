@@ -25,7 +25,6 @@ Host platform tool call
 | Event | Target Script | Purpose | Data Read | Data Written |
 |-------|--------------|---------|-----------|-------------|
 | **PreToolUse[Read]** | `read_cache.py --quiet` | Detect redundant file reads, serve structure maps | Session store SQLite, target file | Session store (file entry, cached content) |
-| **PreToolUse[Bash]** | `bash_hook.py --quiet` | Always silent. Returns no permission decision, so your prompts and auto mode checks run as normal. Bash output is compressed after the command runs (PostToolUse) | None | None |
 | **PreToolUse[Agent\|Task]** | `measure.py checkpoint-trigger --milestone pre-fanout` | Checkpoint before sub-agent fan-out | Session transcript | Checkpoint markdown file |
 | **PreToolUse[mcp__.*]** | `refetch_guard.py --quiet` | Deny an exact duplicate MCP call after a large result was archived, and hand back the `expand` command | Session archive manifest (session store) | None |
 | **PreCompact** (x3) | `measure.py dynamic-compact-instructions` | Generate context-aware compaction instructions | Session transcript, trends.db | Compact instructions (stdout) |

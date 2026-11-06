@@ -12,7 +12,7 @@ Status key: **Yes** works, **Part** partly works (reason given), **No** not avai
 
 | Capability | Claude Code | Codex | Hermes before 0.2.0 | Hermes hook | Hermes now |
 |---|---|---|---|---|---|
-| Terminal output compression (git, find, ls, logs, lint, JSON, CSV, docker, k8s, cloud CLIs, stack traces) | Yes (PreToolUse rewrite + PostToolUse) | Experimental opt-in | No | `transform_terminal_output` | Yes. The captured output goes through the Claude Code PostToolUse pipeline (`bash_compress_hook`). |
+| Terminal output compression (git, find, ls, logs, lint, JSON, CSV, docker, k8s, cloud CLIs, stack traces) | Yes (PostToolUse output compression) | Experimental opt-in | No | `transform_terminal_output` | Yes. The captured output goes through the Claude Code PostToolUse pipeline (`bash_compress_hook`). |
 | Build and test output compression (pytest, jest, cargo, npm, make, gcc, go, mvn) | Yes (PostToolUse) | Experimental opt-in | No | `transform_terminal_output` | Yes, same engine. |
 | Search result compression (grep, rg run in a shell) | Yes | Experimental opt-in | No | `transform_terminal_output` | Yes for searches run in the terminal. Hermes's own `search_files` tool results are archived, not trimmed, matching Claude Code's Grep tool. |
 | Cross-turn dedup of a repeated command's output | Yes | Experimental opt-in | No | `transform_terminal_output` | Yes |
@@ -23,7 +23,7 @@ Status key: **Yes** works, **Part** partly works (reason given), **No** not avai
 | MCP re-fetch guard | Yes (PreToolUse) | No | No | `pre_tool_call` (block) | Yes |
 | Read, search and agent results archived for recovery | Yes | Stop-time backfill | No | `transform_tool_result` | Yes |
 | Savings accounting per session | Yes | Yes | No | engines write `compression_events` | Yes, attributed to the Hermes session id. |
-| Bash command rewrite before it runs | Yes (PreToolUse `bash_hook`) | Experimental opt-in | No | `pre_tool_call` (modify) | Not needed. Compressing the captured output covers every command, read-only or not, without changing what runs. |
+| Bash command rewrite before it runs | No | Experimental opt-in | No | `pre_tool_call` (modify) | Not needed. Compressing the captured output covers every command, read-only or not, without changing what runs. |
 
 ## Reads
 

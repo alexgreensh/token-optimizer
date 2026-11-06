@@ -33,7 +33,14 @@ def assert_sparse_paths(script):
         env = dict(os.environ, ARG_LOG=str(log), INSTALL_DIR=work, candidate_dir=work, clone_log=str(Path(work)/'clone.log'))
         probe = ('git() { printf "%s\\0" "$@" >> "$ARG_LOG"; printf "\n" >> "$ARG_LOG"; };\n'
                  + sparse_assignment(script) + '\n' + '\n'.join(commands))
-        subprocess.run(['bash', '-c', probe], env=env, check=True, capture_output=True)
+        run = subprocess.run(['bash', '-c', 'set -ex\n: > "$ARG_LOG"\n: > "$clone_log"\n'
+                              'test -d "$INSTALL_DIR"\ntest -d "$candidate_dir"\n' + probe], env=env,
+                             cwd=work, capture_output=True, text=True)
+        if run.returncode:
+            # This is infrastructure failure, never a caught missing-path
+            # mutation. Preserve stderr instead of CalledProcessError hiding it.
+            raise RuntimeError(f"sparse probe failed ({run.returncode})\n"
+                               f"stdout: {run.stdout}\nstderr: {run.stderr}")
         calls = [row.split(b'\0')[:-1] for row in log.read_bytes().splitlines()]
     assert len(calls) == 6
     for args in calls:

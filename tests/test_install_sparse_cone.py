@@ -160,3 +160,22 @@ def test_semantic_sparse_guard_catches_each_missing_release_template_path(path_i
     source = source[:start] + broken + source[cursor:]
     with pytest.raises(AssertionError):
         assert_sparse_paths(source)
+
+
+
+def test_semantic_sparse_guard_control_reaches_all_six_commands(monkeypatch):
+    import tempfile
+    from helpers.install_sparse import assert_sparse_paths
+    original = tempfile.TemporaryDirectory
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", lambda: original(prefix="sparse probe é "))
+    assert_sparse_paths(_src())
+
+
+
+def test_sparse_probe_execution_error_is_not_a_caught_mutation():
+    from helpers.install_sparse import assert_sparse_paths, sparse_assignment
+    source = _src()
+    assignment = sparse_assignment(source)
+    broken = assignment.split('#', 1)[0] + '; ARG_LOG="$INSTALL_DIR/missing-parent/argv"'
+    with pytest.raises(RuntimeError, match="stderr:"):
+        assert_sparse_paths(source.replace(assignment, broken, 1))

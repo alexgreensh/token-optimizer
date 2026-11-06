@@ -86,9 +86,9 @@ MUTATIONS = [
      [WIRE + "::test_hooks_run_when_path_has_no_bash[claude]"],
      CLAUDE_HOOKS,
      [(_BASH_LOOP + ' command -v \\"$b\\" >/dev/null 2>&1 || continue; ' + _RESOLVER
-       + ' skills/token-optimizer/scripts/bash_hook.py',
+       + ' skills/token-optimizer/scripts/read_cache.py',
        'for b in bash; do command -v \\"$b\\" >/dev/null 2>&1 || continue; ' + _RESOLVER
-       + ' skills/token-optimizer/scripts/bash_hook.py')]),
+       + ' skills/token-optimizer/scripts/read_cache.py')]),
     ("#80 class in the cloud kit: settings hook execs bare `sh` (stripped PATH -> exit 127)",
      [WIRE + "::test_hooks_run_when_path_has_no_bash[cloud-kit]"],
      CLOUD_KIT,

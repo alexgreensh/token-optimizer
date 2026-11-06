@@ -695,7 +695,7 @@ def test_hooks_run_when_path_has_no_bash(harness, sandbox):
     path = scheduler_shim_dirs()
     entries = harness_entries(harness, sandbox)
     failures = []
-    for event, mp in (("SessionStart", None), ("PreToolUse", "Bash"), ("PostToolUse", None)):
+    for event, mp in (("SessionStart", None), ("PreToolUse", "Read"), ("PostToolUse", None)):
         try:
             e = pick(entries, event, matcher_prefix=mp)
         except AssertionError:
@@ -754,7 +754,7 @@ def test_codex_plugin_hooks_survive_an_upgrade_mid_session(sandbox):
     new.symlink_to(CODEX_PLUGIN_ROOT, target_is_directory=True)
     entries = harness_entries("codex-plugin", sandbox)
     failures = []
-    for event, mp in (("SessionStart", None), ("PreToolUse", "Bash"), ("PostToolUse", None),
+    for event, mp in (("SessionStart", None), ("PreToolUse", "Read"), ("PostToolUse", None),
                       ("Stop", None), ("UserPromptSubmit", None)):
         e = pick(entries, event, matcher_prefix=mp)
         env = harness_env("codex-plugin", sandbox)
@@ -838,7 +838,7 @@ def test_claude_plugin_hooks_pick_the_highest_semver_sibling(sandbox):
     base, old, _new = _version_cache(sandbox, REPO, host_dir=".claude")
     for v in ("5.9.0", "5.13.9", "5.13.10"):
         (base / v).symlink_to(REPO, target_is_directory=True)
-    e = pick(harness_entries("claude", sandbox), "PreToolUse", matcher_prefix="Bash")
+    e = pick(harness_entries("claude", sandbox), "PreToolUse", matcher_prefix="Read")
     env = harness_env("claude", sandbox)
     env["CLAUDE_PLUGIN_ROOT"] = str(old)
     r = fire_entry(sandbox, e, env)

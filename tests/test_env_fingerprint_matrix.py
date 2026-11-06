@@ -929,15 +929,15 @@ def test_worktree_isolated_session_bash_commands_pass_through(machine, name):
     wt = project / ".claude" / "worktrees" / "feat-x"
     wt.mkdir(parents=True)
     (wt / ".git").write_text(f"gitdir: {project}/.git/worktrees/feat-x\n")
-    payload = {"session_id": SID, "transcript_path": str(transcript_for(machine, h, project)), "cwd": str(wt),
-               "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "toolu_01WT",
-               "tool_input": {"command": "ls src"}}
-    cmds = claude_hook_commands("PreToolUse", "Bash")
-    assert cmds, "hooks.json has no PreToolUse Bash entry: nothing to check"
-    for cmd in cmds:
-        proc = run_shell(cmd, env, wt, payload)
-        assert proc.returncode == 0, proc.stderr[-500:]
-        assert proc.stdout.strip() == "", proc.stdout
+    payload = {"session_id": SID, "cwd": str(wt), "hook_event_name": "PreToolUse",
+               "tool_name": "Bash", "tool_input": {"command": "ls src"}}
+    assert claude_hook_commands("PreToolUse", "Bash") == []
+    # Keep the shared module silent even when invoked directly by an old setup.
+    proc = subprocess.run([sys.executable, str(SCRIPTS / "bash_hook.py"), "--quiet"],
+                          env=env, cwd=wt, input=json.dumps(payload),
+                          capture_output=True, text=True, timeout=10)
+    assert proc.returncode == 0, proc.stderr[-500:]
+    assert proc.stdout.strip() == "", proc.stdout
 
 
 # --------------------------------------------------------------------------- #

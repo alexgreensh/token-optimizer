@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Remove the silent Bash PreToolUse hook registration so each Bash call no longer waits for a no-op Python process. Shared gates and post-command compression are unchanged.
+
 ## [5.13.66] - 2026-11-06
 
 - Token Optimizer's engine is now split into smaller modules, so it loads faster and is easier to keep reliable. Same results, same savings.

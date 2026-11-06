@@ -87,19 +87,11 @@ def test_posttoolusefailure_matcher_is_bash_and_powershell():
     assert entry["matcher"] == "Bash|PowerShell"
 
 
-def test_pretooluse_bash_hook_stays_bash_only():
-    """bash_hook.py advises on/rewrites the Bash command line -- PowerShell
-    syntax is not valid input for it, so it must NOT gain the matcher."""
+def test_pretooluse_has_no_silent_bash_hook_for_any_shell():
+    """Neither Bash nor PowerShell should spawn the retired no-op hook."""
     cfg = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
-    for entry in cfg["hooks"]["PreToolUse"]:
-        for hook in entry["hooks"]:
-            if "bash_hook.py" in hook["command"]:
-                assert entry["matcher"] == "Bash", (
-                    "the PreToolUse command-rewrite hook must stay Bash-only; "
-                    "a PowerShell command line is not valid Bash"
-                )
-                return
-    raise AssertionError("no PreToolUse entry dispatches bash_hook.py")
+    assert all("bash_hook.py" not in hook["command"]
+               for entry in cfg["hooks"]["PreToolUse"] for hook in entry["hooks"])
 
 
 # --------------------------------------------------------------------------- #

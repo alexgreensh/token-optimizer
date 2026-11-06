@@ -38,6 +38,10 @@ concurrency:
 
 jobs:
   measure-split:
+    # Split-migration gates: they compare against the pre-split 5.13.64 release, so any intended
+    # behaviour change fails them. Since 5.13.66 shipped they run only for further split work
+    # (cloud/split-* branches) or by hand; the regular suite and guards cover everything else.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'cloud/split')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -99,6 +103,10 @@ jobs:
   # measure.py split (5.13.65): each extraction lane's proof files, one lane per machine. They replay the
   # lane's mover against pinned inputs, so they are minutes each and do not fit the regular shards.
   split-lane-proofs:
+    # Split-migration gates: they compare against the pre-split 5.13.64 release, so any intended
+    # behaviour change fails them. Since 5.13.66 shipped they run only for further split work
+    # (cloud/split-* branches) or by hand; the regular suite and guards cover everything else.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'cloud/split')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:

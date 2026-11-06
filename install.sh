@@ -1233,10 +1233,10 @@ rollback_install_update() {
         local attempted_head
         attempted_head=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
         warn "Rolling back unverified update from ${attempted_head} to ${INSTALL_OLD_HEAD}"
-        if git -C "$INSTALL_DIR" reset --hard "$INSTALL_OLD_HEAD" >/dev/null 2>&1; then
+        if git -C "$INSTALL_DIR" checkout --no-overwrite-ignore --detach "$INSTALL_OLD_HEAD" >/dev/null 2>&1; then
             info "Rollback succeeded"
         else
-            warn "Rollback failed. Re-clone from: https://github.com/${GITHUB_REPO}"
+            warn "Rollback refused or failed; local edits were not discarded. Inspect: git -C \"${INSTALL_DIR}\" status. After saving local work, retry: git -C \"${INSTALL_DIR}\" checkout --no-overwrite-ignore --detach \"${INSTALL_OLD_HEAD}\""
         fi
     fi
 }

@@ -336,3 +336,143 @@ def test_payload_repair_widens_without_deleting_ignored_extra_data(remote, tmp_p
     assert result.returncode == 0, result.stderr
     assert database.read_bytes() == b'payload repair fixture'
     assert subprocess.run(['git', 'config', '--bool', 'core.sparseCheckout'], cwd=dest, capture_output=True, text=True).stdout.strip() != 'true'
+
+
+@pytest.mark.parametrize('edit', ['unstaged', 'staged', 'mixed', 'binary', 'deleted', 'mode'])
+def test_failed_verification_rollback_preserves_untouched_tracked_edits(remote, tmp_path, edit):
+    from helpers.install_sparse import install_bash, shell_function
+    import os
+    dest = tmp_path / 'rollback é install'
+    _git('clone', remote.as_uri(), str(dest))
+    local = dest / 'local.txt'
+    local.write_bytes(b'original\n')
+    _git('add', 'local.txt', cwd=dest)
+    _git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'local tracked file', cwd=dest)
+    old_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    (dest / 'install.sh').write_bytes(b'unverified new release\n')
+    _git('add', 'install.sh', cwd=dest)
+    _git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'new release', cwd=dest)
+    new_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    _git('checkout', '--detach', old_head, cwd=dest)
+    if edit == 'deleted':
+        local.unlink()
+    elif edit == 'mode':
+        if os.name == 'nt':
+            pytest.skip('POSIX executable-bit edit')
+        _git('config', 'core.fileMode', 'true', cwd=dest)
+        local.chmod(0o755)
+    else:
+        local.write_bytes(b'local\x00\xff' if edit == 'binary' else b'local staged\n')
+    if edit in ('staged', 'mixed', 'deleted'):
+        _git('add', '-A', 'local.txt', cwd=dest)
+    if edit == 'mixed':
+        local.write_bytes(b'local unstaged after staging\n')
+    database = dest / 'openclaw/store/private.db'
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b'ignored rollback fixture')
+    (dest / '.git/info/exclude').write_text('openclaw/store/\n')
+    before_status = _git('status', '--porcelain', '--untracked-files=no', cwd=dest).stdout
+    before_index = _git('ls-files', '--stage', cwd=dest).stdout
+    before_bytes = local.read_bytes() if local.exists() else None
+    before_mode = local.stat().st_mode if local.exists() else None
+    # The update can switch commits because the release leaves local.txt untouched.
+    _git('checkout', '--detach', new_head, cwd=dest)
+    assert _git('status', '--porcelain', '--untracked-files=no', cwd=dest).stdout == before_status
+    source = _src()
+    functions = '\n'.join(shell_function(source, name) for name in
+                          ('rollback_install_update', 'fail_verified_install'))
+    script = ('warn() { printf "%s\n" "$1"; }; info() { printf "%s\n" "$1"; }; '
+              'fail() { exit 41; }; ' + functions + '\nif (cd \"$INSTALL_DIR\" && sha256sum -c \"$CHECKSUM_FILE\" --quiet); then exit 93; fi; fail_verified_install "checksum failed"')
+    result = subprocess.run([install_bash(), '-c', script], capture_output=True, text=True,
+                            env=dict(os.environ, INSTALL_DIR=str(dest), INSTALL_OLD_HEAD=old_head,
+                                     INSTALL_UPDATED='1', CHECKSUM_FILE=str(remote / 'CHECKSUMS.sha256')))
+    assert result.returncode == 41, result.stderr
+    assert _git('rev-parse', 'HEAD', cwd=dest).stdout.strip() == old_head
+    assert _git('status', '--porcelain', '--untracked-files=no', cwd=dest).stdout == before_status
+    # Compare the local file's index entry: the release's install.sh entry changes on rollback.
+    assert [row for row in _git('ls-files', '--stage', cwd=dest).stdout.splitlines() if row.endswith('\tlocal.txt')] == [row for row in before_index.splitlines() if row.endswith('\tlocal.txt')]
+    assert (local.read_bytes() if local.exists() else None) == before_bytes
+    assert (local.stat().st_mode if local.exists() else None) == before_mode
+    assert database.read_bytes() == b'ignored rollback fixture'
+
+
+@pytest.mark.parametrize('failure', ['conflict-unstaged', 'conflict-staged', 'unknown-target',
+                                     'not-updated', 'missing-target', 'non-git'])
+def test_rollback_refusal_or_no_update_keeps_work_and_reports_recovery(remote, tmp_path, failure):
+    from helpers.install_sparse import install_bash, shell_function
+    import os
+    dest = tmp_path / 'rollback recovery é path'
+    _git('clone', remote.as_uri(), str(dest))
+    old_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    changed = dest / 'install.sh'
+    changed.write_bytes(b'new release\n')
+    _git('add', 'install.sh', cwd=dest)
+    _git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'release', cwd=dest)
+    new_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    changed.write_bytes(b'local edit after update\n')
+    if failure == 'conflict-staged':
+        _git('add', 'install.sh', cwd=dest)
+    before_status = _git('status', '--porcelain', '--untracked-files=no', cwd=dest).stdout
+    before_index = _git('ls-files', '--stage', cwd=dest).stdout
+    if failure == 'non-git':
+        (dest / '.git').rename(dest / 'saved-git')
+    target = 'nonexistent-recovery-target' if failure == 'unknown-target' else old_head
+    if failure == 'missing-target':
+        target = ''
+    script = ('warn() { printf "%s\n" "$1"; }; info() { printf "%s\n" "$1"; }; '
+              + shell_function(_src(), 'rollback_install_update') + '\nrollback_install_update')
+    result = subprocess.run([install_bash(), '-c', script], capture_output=True, text=True,
+                            env=dict(os.environ, INSTALL_DIR=str(dest), INSTALL_OLD_HEAD=target,
+                                     INSTALL_UPDATED='0' if failure == 'not-updated' else '1'))
+    assert result.returncode == 0, result.stderr
+    assert changed.read_bytes() == b'local edit after update\n'
+    if failure == 'non-git':
+        (dest / 'saved-git').rename(dest / '.git')
+    assert _git('rev-parse', 'HEAD', cwd=dest).stdout.strip() == new_head
+    assert _git('status', '--porcelain', '--untracked-files=no', cwd=dest).stdout == before_status
+    assert _git('ls-files', '--stage', cwd=dest).stdout == before_index
+    if failure.startswith('conflict') or failure == 'unknown-target':
+        assert 'Rollback succeeded' not in result.stdout
+        assert 'Rollback refused or failed' in result.stdout
+        assert 'After saving local work' in result.stdout
+        assert f'git -C "{dest}" checkout --no-overwrite-ignore --detach "{target}"' in result.stdout
+    else:
+        assert result.stdout == ''
+
+
+@pytest.mark.parametrize('collision', ['ignored-file', 'ignored-directory', 'ordinary-file'])
+def test_rollback_refuses_to_overwrite_local_file_removed_by_release(remote, tmp_path, collision):
+    from helpers.install_sparse import install_bash, shell_function
+    import os
+    dest = tmp_path / 'rollback ignored é collision'
+    _git('clone', remote.as_uri(), str(dest))
+    target = dest / 'user.db'
+    target.write_bytes(b'old tracked release content')
+    _git('add', 'user.db', cwd=dest)
+    _git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'old tracked database', cwd=dest)
+    old_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    _git('rm', 'user.db', cwd=dest)
+    _git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'release removes database', cwd=dest)
+    new_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    if collision == 'ignored-directory':
+        target.mkdir()
+        private = target / 'private.db'
+    else:
+        private = target
+    private.write_bytes(b'private binary\x00\xff')
+    if collision.startswith('ignored'):
+        (dest / '.git/info/exclude').write_text('user.db\n')
+        assert _git('check-ignore', str(private.relative_to(dest)), cwd=dest).returncode == 0
+    before_index = _git('ls-files', '--stage', cwd=dest).stdout
+    script = ('warn() { printf "%s\n" "$1"; }; info() { printf "%s\n" "$1"; }; '
+              + shell_function(_src(), 'rollback_install_update') + '\nrollback_install_update')
+    result = subprocess.run([install_bash(), '-c', script], capture_output=True, text=True,
+                            env=dict(os.environ, INSTALL_DIR=str(dest), INSTALL_OLD_HEAD=old_head,
+                                     INSTALL_UPDATED='1'))
+    assert result.returncode == 0, result.stderr
+    assert _git('rev-parse', 'HEAD', cwd=dest).stdout.strip() == new_head
+    assert _git('ls-files', '--stage', cwd=dest).stdout == before_index
+    assert private.read_bytes() == b'private binary\x00\xff'
+    assert 'Rollback succeeded' not in result.stdout
+    assert 'Rollback refused or failed' in result.stdout
+    assert 'After saving local work' in result.stdout

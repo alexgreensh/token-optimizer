@@ -161,3 +161,17 @@ class ResetEpochMixin:
                 entry.get("last_tool_use_id", ""),
             ),
         )
+
+
+def refresh_message(file_path: str, written: Any) -> str:
+    """Stderr line for a post-edit cache refresh, truthful about the guarded write.
+
+    ``upsert_file_entry`` returns False only when the reset-epoch guard dropped
+    the write: a context reset committed after the snapshot, or the stored or
+    expected epoch was unreadable. Both mean the ledger row was NOT refreshed.
+    Any other value (True, or None from a legacy store) keeps the old wording.
+    """
+    if written is False:
+        return (f"[Read Cache] Refresh skipped (reset-epoch guard dropped the write: "
+                f"context reset or unreadable epoch since the edit): {file_path}")
+    return f"[Read Cache] Refreshed after edit: {file_path}"

@@ -9,7 +9,7 @@ name: Split verify (L4 installed, L5 upgrade, L7 performance)
 # fails unless every selected cell is PASS. A missing receipt is CANNOT-MEASURE.
 on:
   push:
-    branches: [cloud/split-verify, cloud/split-aggregate]
+    branches: [cloud/split-verify, cloud/split-aggregate, cloud/split-final]
   workflow_dispatch:
     inputs:
       base_ref:
@@ -51,7 +51,7 @@ jobs:
       BASE_REF: ${{ inputs.base_ref || '55da0b1179afa98455fa1b1c6e3dd372afa8ec3f' }}
       CANDIDATE_REF: ${{ inputs.candidate_ref || github.sha }}
       # TEST-PLAN amendment 2026-11-06: the gate run on the aggregate uses n=100 pairs per OS.
-      SAMPLES: ${{ inputs.samples || (github.ref == 'refs/heads/cloud/split-aggregate' && '100' || '30') }}
+      SAMPLES: ${{ inputs.samples || ((github.ref == 'refs/heads/cloud/split-aggregate' || github.ref == 'refs/heads/cloud/split-final') && '100' || '30') }}
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v7

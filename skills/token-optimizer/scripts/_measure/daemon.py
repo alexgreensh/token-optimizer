@@ -1734,18 +1734,13 @@ def session_health():
         print("\nSession health check is not supported on this platform.")
         return
 
-    installed_version = health["installed_version"]
-    running_sessions = health["running_sessions"]
-    automated = health["automated"]
-    recommendations = health["recommendations"]
+    installed_version, running_sessions, automated, recommendations = (
+        health[k] for k in ("installed_version", "running_sessions", "automated", "recommendations"))
 
     print("\nSESSION HEALTH CHECK")
     print("=" * 55)
 
-    if installed_version:
-        print(f"\n  Installed version: {installed_version}")
-    else:
-        print("\n  Installed version: unknown (could not run 'claude --version')")
+    print(f"\n  Installed version: {installed_version or 'unknown (could not run ' + repr('claude --version') + ')'}")
 
     if not running_sessions:
         print("\n  No running Claude Code CLI sessions found.")
@@ -1770,6 +1765,11 @@ def session_health():
         print("\nAUTOMATED PROCESSES")
         for proc in automated:
             print(f"  {proc}")
+    try:  # hooks the malformed-hook healer left alone (heal_report.py)
+        for _line in __import__("heal_report").health_lines(_measure_facade):
+            print(_line)
+    except Exception:
+        pass  # health must never fail on this optional section
 
     print()
 

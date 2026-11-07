@@ -3110,28 +3110,12 @@ def doctor(as_json=None):
         checks.append(("OK", "Dashboard daemon", "status unknown (probe failed)"))
         score += 1
 
-    # Settings self-heal history (visible to anyone who runs doctor).
+    # Settings self-heal history, plus one line per hook the malformed-hook
+    # healer left alone because Token Optimizer cannot prove it wrote it.
+    # Informational rows: they never change the score (heal_report.py).
     try:
-        _heal_log = _measure_facade._settings_heal_dir() / "heal_log.jsonl"
-        if _heal_log.is_file():
-            _heal_entries = [
-                _measure_facade.json.loads(l) for l in _heal_log.read_text(encoding="utf-8").strip().split("\n")
-                if l.strip()
-            ]
-            _restores = [e for e in _heal_entries if e.get("action") == "restore"]
-            if _restores:
-                _last = _restores[-1]
-                _keys = ", ".join(_last.get("restored_keys", [])[:5])
-                if len(_last.get("restored_keys", [])) > 5:
-                    _keys += f" (+{len(_last['restored_keys']) - 5} more)"
-                checks.append((
-                    "OK", "Settings self-heal",
-                    f"{len(_restores)} restore(s), last: {_keys} at {_last.get('timestamp', '?')[:19]}",
-                ))
-            else:
-                checks.append(("OK", "Settings self-heal", "no restores needed"))
-        else:
-            checks.append(("OK", "Settings self-heal", "no heal history yet"))
+        import heal_report
+        checks.extend(heal_report.doctor_rows(_measure_facade))
     except Exception:
         pass  # doctor must never fail on heal history
 

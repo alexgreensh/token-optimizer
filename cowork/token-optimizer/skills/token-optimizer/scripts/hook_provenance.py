@@ -298,6 +298,7 @@ class Provenance:
     def __init__(self, ledger_path, settings_path, proven_templates, current_commands,
                  darwin, script_names=()):
         self.ledger_path = Path(ledger_path)
+        self.settings_path = str(settings_path)
         self.key = settings_key(settings_path)
         self.proven_templates = frozenset(proven_templates)
         self.current_commands = frozenset(current_commands)
@@ -363,8 +364,9 @@ class Provenance:
             return REMOVE
         return UNPROVEN
 
-    def _worth_reporting(self, command):
+    def reportable(self, command):
         # Diagnostics only: the entries the old heuristic would have weighed.
+        # Never consulted for a removal.
         return any(name in command for name in self.script_names)
 
     def finish(self, present, unproven, log=None):
@@ -382,7 +384,7 @@ class Provenance:
             reports, seen = [], set()
             for event, command in unproven:
                 digest = command_digest(command)
-                if digest in self._reported or digest in seen or not self._worth_reporting(command):
+                if digest in self._reported or digest in seen or not self.reportable(command):
                     continue
                 seen.add(digest)
                 reports.append((event, command, digest))
@@ -415,6 +417,7 @@ class Provenance:
             if written:
                 for event, command, digest in logged:
                     log("hook_unproven", event=event, sha256=digest, command=command[:200],
+                        settings=self.settings_path,
                         reason="not recorded by Token Optimizer and not a shipped template; left in place")
         except Exception:
             return

@@ -926,12 +926,13 @@ def _is_compaction_runner(cmd, event):
 
 
 def _is_hook_installed(settings=None, settings_only=None):
-    """Check if the SessionEnd measure.py collect hook is installed.
+    """Check if Token Optimizer's own SessionEnd hook is installed.
 
-    Returns True if any SessionEnd hook command contains 'measure.py collect'.
-    Recognizes both old (collect-only) and new (collect + dashboard) hook commands.
-    Also checks plugin cache hooks (auto-installed via marketplace plugin), unless
-    ``settings_only`` asks only whether settings.json carries it (doctor's label).
+    Counts only settings.json SessionEnd entries owned_hooks proves are ours
+    (old collect, collect + dashboard and session-end-flush shapes alike), so
+    a user's own measure.py never reads as ours. Also checks plugin cache
+    hooks (auto-installed via marketplace plugin), unless ``settings_only``
+    asks only whether settings.json carries it (doctor's label).
     """
     # Check user settings.json
     _measure_facade = _compat.facade()
@@ -945,8 +946,8 @@ def _is_hook_installed(settings=None, settings_only=None):
         else:
             settings = {}
 
-    hooks = settings.get("hooks", {})
-    session_end = hooks.get("SessionEnd", [])
+    import owned_hooks
+    session_end = owned_hooks.session_end_view(_measure_facade, settings)["hooks"]["SessionEnd"]
     if isinstance(session_end, list):
         for entry in session_end:
             hook_list = entry.get("hooks", []) if isinstance(entry, dict) else []
@@ -1007,7 +1008,8 @@ def _sessionend_cmd_is_collect_fossil(cmd) -> bool:
 
 
 def _is_hook_current(settings=None):
-    """True when the installed SessionEnd hook is the session-end-flush shape.
+    """True when our own installed SessionEnd hook (owned_hooks) is the
+    session-end-flush shape.
 
     The collect-then-dashboard fossil is never current: it runs the
     heavy flush inline and unbounded. The pre-v5.11 win32 cmd-null-redirect
@@ -1024,11 +1026,8 @@ def _is_hook_current(settings=None):
         except (_measure_facade.json.JSONDecodeError, PermissionError, OSError):
             return False
 
-    hooks = settings.get("hooks", {})
-    session_end = hooks.get("SessionEnd", [])
-    if not isinstance(session_end, list):
-        return False
-    for entry in session_end:
+    import owned_hooks
+    for entry in owned_hooks.session_end_view(_measure_facade, settings)["hooks"]["SessionEnd"]:
         hook_list = entry.get("hooks", []) if isinstance(entry, dict) else []
         for hook in hook_list:
             cmd = hook.get("command", "") if isinstance(hook, dict) else ""
@@ -1870,12 +1869,9 @@ def setup_hook(dry_run=None, uninstall=None, user_initiated=None):
             _measure_facade.sys.exit(1)
         return
 
-    # Installed / up to date counts only our own SessionEnd hook, never a
-    # user's own measure.py session-end-flush.
-    import owned_hooks
-    ours = owned_hooks.session_end_view(_measure_facade, settings)
-    installed = _measure_facade._is_hook_installed(ours)
-    current = _measure_facade._is_hook_current(ours)
+    # Installed / up to date counts only our own SessionEnd hook (owned_hooks).
+    installed = _measure_facade._is_hook_installed(settings)
+    current = _measure_facade._is_hook_current(settings)
 
     # Plugin users get this hook from hooks.json — skip writing to settings.json
     is_plugin = _measure_facade._is_running_from_plugin_cache() or _measure_facade._is_plugin_installed()
@@ -1903,6 +1899,7 @@ def setup_hook(dry_run=None, uninstall=None, user_initiated=None):
 
     # Replace our own collect/dashboard fossil with session-end-flush; with
     # none of ours there (a user's own measure.py), install alongside it.
+    import owned_hooks
     upgrading = upgrading and owned_hooks.replace_session_end_fossil(_measure_facade, hooks, new_hook)
     if not upgrading and "SessionEnd" not in hooks:
         hooks["SessionEnd"] = [{"hooks": [new_hook]}]

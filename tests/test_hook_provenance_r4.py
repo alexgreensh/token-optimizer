@@ -304,6 +304,27 @@ def test_setup_hook_installs_ours_beside_the_users_own_flush(m, installed, capsy
     assert m._sessionend_has_current_flush({"hooks": {"SessionEnd": [{"hooks": [_hook(users)]}]}}) is False
 
 
+@pytest.mark.parametrize("users", [
+    "python3 /home/me/mytool/measure.py session-end-flush --trigger end",
+    "python3 '/home/me/mytool/measure.py' session-end-flush --trigger end",
+    "/home/me/mytool/measure.py session-end-flush",
+])
+def test_hook_labels_never_count_the_users_own_flush(m, installed, users):
+    theirs = {"hooks": {"SessionEnd": [{"hooks": [_hook(users)]}]}}
+    assert m._is_hook_installed(theirs, settings_only=True) is False
+    assert m._is_hook_installed(theirs) is False
+    assert m._is_hook_current(theirs) is False
+    ours = {"hooks": {"SessionEnd": [{"hooks": [_hook(users), _hook(m.HOOK_COMMAND)]}]}}
+    assert m._is_hook_installed(ours, settings_only=True) is True
+    assert m._is_hook_current(ours) is True
+
+
+def test_hook_labels_count_the_shipped_session_end_entry_setup_all_hooks_wrote(m, installed):
+    data = json.loads(installed.read_text())
+    assert data["hooks"]["SessionEnd"]
+    assert m._is_hook_installed(data, settings_only=True) is True
+
+
 def test_setup_hook_still_skips_when_ours_is_current(m, installed, capsys):
     installed.write_text(json.dumps({"hooks": {"SessionEnd": [{"hooks": [_hook(m.HOOK_COMMAND)]}]}}))
     m.setup_hook(dry_run=False)

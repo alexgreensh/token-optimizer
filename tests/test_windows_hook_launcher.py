@@ -723,38 +723,41 @@ def _load_full_measure():
     return module
 
 
+def _session_end(command):
+    return {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": command}]}]}}
+
+
 def test_windows_legacy_nul_sessionend_hook_reads_as_not_current(monkeypatch):
     """The pre-fix >NUL SessionEnd command matched all three
     substrings and read as 'current', so existing broken Windows installs were
     never healed ('already up to date. Nothing to do.'). It must now read as
-    NOT current on win32 so setup_hook's upgrade branch rewrites it."""
+    NOT current on win32 so setup_hook's upgrade branch rewrites it. Each
+    command is the exact one setup_hook generated on Windows (sys.executable,
+    this install's measure.py); the same text at a path that is not an
+    install is a user's own and never counts."""
     measure = _load_full_measure()
+    import owned_hooks
     monkeypatch.setattr(measure.sys, "platform", "win32")
-    legacy = (
-        "python.exe C:/p/measure.py collect --quiet && "
-        "python.exe C:/p/measure.py dashboard --quiet >NUL 2>&1"
-    )
-    legacy_settings = {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": legacy}]}]}}
-    assert measure._is_hook_current(legacy_settings) is False
+    py, mp = "C:/Python311/python.exe", str(MEASURE_PATH)
+    legacy, good_fossil, _, flush = (shape(py, mp) for shape in owned_hooks.SESSION_END_SHAPES[3:7])
+    assert ">NUL 2>&1" in legacy and ">/dev/null 2>&1" in good_fossil
+    assert measure._is_hook_current(_session_end(legacy)) is False
     # The collect/dashboard shape is never current, even with bash-safe redirect.
-    good_fossil = legacy.replace(">NUL 2>&1", ">/dev/null 2>&1")
-    good_fossil_settings = {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": good_fossil}]}]}}
-    assert measure._is_hook_current(good_fossil_settings) is False
-    flush = "python.exe C:/p/measure.py session-end-flush --trigger end >/dev/null 2>&1"
-    flush_settings = {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": flush}]}]}}
-    assert measure._is_hook_current(flush_settings) is True
+    assert measure._is_hook_current(_session_end(good_fossil)) is False
+    assert measure._is_hook_current(_session_end(flush)) is True
+    assert measure._is_hook_current(_session_end(flush.replace(mp, "C:/p/measure.py"))) is False
 
 
 def test_posix_nul_sessionend_hook_is_win32_gated(monkeypatch):
-    """The >NUL staleness heuristic is win32-only; POSIX never emits >NUL."""
+    """The >NUL staleness check is win32-only: on POSIX our generated
+    commands read as they are (fossil never current, flush current)."""
     measure = _load_full_measure()
+    import owned_hooks
     monkeypatch.setattr(measure.sys, "platform", "linux")
-    fossil = "python3 /p/measure.py collect --quiet && python3 /p/measure.py dashboard --quiet >NUL 2>&1"
-    fossil_settings = {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": fossil}]}]}}
-    assert measure._is_hook_current(fossil_settings) is False
-    flush = "python3 /p/measure.py session-end-flush --trigger end >NUL 2>&1"
-    flush_settings = {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": flush}]}]}}
-    assert measure._is_hook_current(flush_settings) is True
+    mp = str(MEASURE_PATH)
+    fossil, flush = owned_hooks.SESSION_END_SHAPES[2]("python3", mp), owned_hooks.SESSION_END_SHAPES[5]("python3", mp)
+    assert measure._is_hook_current(_session_end(fossil)) is False
+    assert measure._is_hook_current(_session_end(flush)) is True
 
 
 def test_windows_resolved_command_matches_native_root_after_normalization():

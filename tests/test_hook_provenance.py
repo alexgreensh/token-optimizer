@@ -234,7 +234,7 @@ def test_unproven_entries_logged_once_and_never_counted(m, hp, installed, capsys
     entries = [e for e in _heal_log(m) if e["action"] == "hook_unproven"]
     assert len(entries) == 1
     assert entries[0]["sha256"] == hp.command_digest(claude)
-    assert entries[0]["command"] == claude[:200] and entries[0]["event"] == "PreToolUse"
+    assert entries[0]["command"] == hp.echo_command(claude, 200) and entries[0]["event"] == "PreToolUse"
     assert claude in _commands(installed) and unrelated in _commands(installed)
     out = capsys.readouterr()
     assert "Removed" not in out.out + out.err

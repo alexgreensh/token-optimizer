@@ -382,3 +382,41 @@ def test_codex_project_install_and_heal_leave_only_hooks_json_in_the_repo(home, 
     ledger = ci._codex_proof(path).ledger_path
     assert ledger.parent == home / "token-optimizer"
     assert hp.settings_key(path) in hp.load_ledger(ledger)[0]["contexts"]
+
+
+# --- command echoes in the heal log and doctor never carry a likely secret --------
+
+SECRET = "sk-abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def _unproven_with_secret(m, installed):
+    command = 'OPENAI_API_KEY=%s bash -c "$(cat /opt/me/run)" %s/measure.py collect' % (SECRET, "/opt/me")
+    data = json.loads(installed.read_text())
+    data["hooks"].setdefault("Stop", []).append({"hooks": [{"type": "command", "command": command}]})
+    installed.write_text(json.dumps(data))
+    return command
+
+
+def test_heal_log_and_doctor_redact_a_secret_in_an_unproven_hook(m, hp, installed):
+    command = _unproven_with_secret(m, installed)
+    m._fix_malformed_hook_commands()
+    logged = _heal_actions(m, "hook_unproven")
+    assert [e["sha256"] for e in logged] == [hp.command_digest(command)]
+    assert SECRET not in json.dumps(logged) and "REDACTED" in logged[0]["command"]
+    import heal_report
+    rows = heal_report.doctor_rows(m) + [("", "", line) for line in heal_report.health_lines(m)]
+    left_alone = [r for r in rows if "left it alone" in r[2]]
+    assert left_alone and not [r for r in rows if SECRET in r[2]]
+
+
+def test_echo_shows_nothing_when_redaction_is_unavailable(hp, monkeypatch):
+    monkeypatch.setitem(sys.modules, "credential_patterns", None)
+    assert hp.echo_command("TOKEN=%s run" % SECRET, 200) == "(command not shown)"
+
+
+def test_codex_doctor_redacts_a_secret_in_an_unrecognized_hook(home, semver_root):
+    import codex_doctor
+    command = "GITHUB_TOKEN=ghp_%s python3 ~/.codex/token-optimizer/measure.py stop" % ("a1" * 18)
+    _codex_write(home, {"Stop": [{"hooks": [{"type": "command", "command": command}]}]})
+    details = [c["detail"] for c in codex_doctor._unproven_hook_checks()]
+    assert len(details) == 1 and "ghp_" + "a1" * 18 not in details[0] and "REDACTED" in details[0]

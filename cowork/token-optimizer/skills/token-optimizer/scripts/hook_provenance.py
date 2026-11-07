@@ -515,6 +515,21 @@ def record(ledger_path, settings_path, commands, source):
 
 # --- facade glue ----------------------------------------------------------------
 
+def echo_command(command, limit):
+    """A hook command as a heal-log field or doctor line: likely secrets
+    (tokens, keys, passwords, URL credentials) redacted first by
+    credential_patterns, then cut to ``limit``. Redacting before cutting
+    keeps a half-cut secret from slipping past the patterns. When redaction
+    is unavailable nothing of the command is shown. Display only; never
+    consulted for a removal."""
+    try:
+        from credential_patterns import redact_credentials
+        shown = redact_credentials(command, command=True)
+    except Exception:
+        return "(command not shown)"
+    return shown if len(shown) <= limit else shown[:limit - 3] + "..."
+
+
 def _same_path(a, b):
     try:
         return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
@@ -833,7 +848,7 @@ class Provenance:
                 log("hook_provenance_reset", reason="corrupt ledger moved aside; template-only proof")
             if written:
                 for event, command, digest in logged:
-                    log("hook_unproven", event=event, sha256=digest, command=command[:200],
+                    log("hook_unproven", event=event, sha256=digest, command=echo_command(command, 200),
                         settings=self.settings_path,
                         reason="not recorded by Token Optimizer and not a shipped template; left in place")
         except Exception:

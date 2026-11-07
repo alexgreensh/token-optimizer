@@ -49,7 +49,7 @@ def unproven_hooks(facade):
 
 def describe(event, command, settings_path):
     """One plain line: what it is, where it lives, what to do."""
-    shown = command if len(command) <= _SHOWN else command[:_SHOWN - 3] + "..."
+    shown = hp.echo_command(command, _SHOWN)
     return (f"{event} hook `{shown}` in {settings_path} looks broken but was not written by "
             "Token Optimizer, so Token Optimizer left it alone. Delete it there if you don't want it.")
 

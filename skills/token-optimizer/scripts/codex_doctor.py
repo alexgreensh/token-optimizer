@@ -15,6 +15,7 @@ import codex_compact_prompt
 import codex_install
 import codex_state
 import codex_statusline
+from hook_provenance import echo_command
 
 SUPPORTED_HOOK_EVENTS = {
     "PreToolUse",
@@ -312,7 +313,7 @@ def _unproven_hook_checks() -> list[dict[str, str]]:
         return []
     names = ("token-optimizer", "measure.py", "_runner.py", "run.py", "python-launcher.sh")
     proof = codex_install._codex_proof(hooks_path)
-    return [_check("WARN", "Unrecognized hook", f"{command[:120]} in {hooks_path}: not written by this "
+    return [_check("WARN", "Unrecognized hook", f"{echo_command(command, 120)} in {hooks_path}: not written by this "
                    "Token Optimizer install, so it was left alone; delete it there if you do not want it")
             for command in proof.unproven(data, names)]
 

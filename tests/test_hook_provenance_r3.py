@@ -430,3 +430,125 @@ def test_fifo_at_lock_path_never_blocks(hp, tmp_path):
     out = _run("import sys; sys.path.insert(0, sys.argv[1]); import hook_provenance as hp\n"
                "print(hp.record(sys.argv[2], 'settings.json', ['x'], 't'))", ledger, timeout=15)
     assert out.stdout.strip() == "False", out.stderr
+
+
+# --- 6. Sol P2-5: every hook-writing path records exactly what it writes -----
+
+_CLOUD_RUN = "/cache/token-optimizer-cloud/token-optimizer-cloud-run.sh hooks/run.py"
+_CLOUD_WRITE = '''import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("cloud_kit", sys.argv[1])
+ck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ck)
+print(ck.write_settings_hooks(Path(sys.argv[2]), json.loads(sys.argv[3])))
+'''
+
+
+def _clean_env(**extra):
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("TOKEN_OPTIMIZER_SNAPSHOT_DIR", "CLAUDE_PLUGIN_DATA", "CLAUDE_CONFIG_DIR")}
+    env.update(extra)
+    return env
+
+
+def test_cloud_settings_write_records_only_what_it_adds(hp, tmp_path):
+    """Sol's repro inverted: cloud_kit.write_settings_hooks wrote hooks and no
+    ledger. It runs under python -I with no sibling imports on sys.path, so
+    this loads it by path exactly that way."""
+    claude = tmp_path / "cloud-profile"
+    claude.mkdir()
+    path = claude / "settings.json"
+    twin = {"type": "command", "command": _CLOUD_RUN + " --twin"}
+    path.write_text(json.dumps({"keep": 1, "hooks": {
+        "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "theirs $(x)"}]}],
+        "Stop": [{"hooks": [dict(twin)]}]}}))
+    hook_map = {"Stop": [{"hooks": [{"type": "command", "command": _CLOUD_RUN}, dict(twin)]}]}
+    out = subprocess.run([sys.executable, "-I", "-c", _CLOUD_WRITE, str(SCRIPTS / "cloud_kit.py"),
+                          str(path), json.dumps(hook_map)], capture_output=True, text=True,
+                         timeout=60, env=_clean_env())
+    assert out.returncode == 0 and out.stdout.strip() == "True", out.stderr
+    ledger = claude / "token-optimizer" / "settings_heal" / hp.LEDGER_NAME
+    data, status = hp.load_ledger(ledger)
+    assert status == "ok"
+    entries = data["contexts"][hp.settings_key(path)]
+    assert set(entries) == {hp.context_digest(("Stop", "", "command", _CLOUD_RUN))}
+    assert {v["source"] for v in entries.values()} == {"cloud_kit"}
+    # The healer in that profile reads the same ledger under the same key.
+    probe = ("import sys; sys.path.insert(0, sys.argv[1]); import measure as m, hook_provenance as hp\n"
+             "p = hp.Provenance.from_facade(m)\n"
+             "print(hp.ledger_path_for(m) == __import__('pathlib').Path(sys.argv[2]),"
+             " p.proof(sys.argv[3], ('Stop', '', 'command')))")
+    out = subprocess.run([sys.executable, "-c", probe, str(SCRIPTS), str(ledger), _CLOUD_RUN],
+                         capture_output=True, text=True, timeout=60,
+                         env=_clean_env(CLAUDE_CONFIG_DIR=str(claude), TOKEN_OPTIMIZER_RUNTIME="claude"))
+    assert out.stdout.strip() == "True ledger", out.stdout + out.stderr
+
+
+def test_stale_path_rewrite_records_only_entries_already_proven_ours(m, hp, installed, monkeypatch, tmp_path):
+    """_fix_stale_settings_paths substitutes text inside ANY hook naming an
+    old plugin-cache root, foreign ones included, so its output can be part
+    foreign. A rewritten entry is recorded only when the entry it replaced
+    was already proven ours in that context."""
+    stale = tmp_path / "x" / "plugins" / "cache" / "org" / "token-optimizer" / "1.0.0"
+    ours = "python3 %s/skills/token-optimizer/scripts/measure.py ensure-health $(true)" % stale
+    foreign = "python3 %s/vendor/tool.py $(echo hi)" % stale
+    data = json.loads(installed.read_text(encoding="utf-8"))
+    data["hooks"].setdefault("Notification", []).append(
+        {"matcher": "x", "hooks": [{"type": "command", "command": ours}]})
+    data["hooks"].setdefault("Notification", []).append(
+        {"matcher": "y", "hooks": [{"type": "command", "command": foreign}]})
+    installed.write_text(json.dumps(data), encoding="utf-8")
+    assert hp.record_contexts(hp.ledger_path_for(m), installed,
+                              [("Notification", "x", "command", ours)], "setup_all_hooks")
+    monkeypatch.setattr(m, "_is_running_from_plugin_cache", lambda: True)
+    assert m._fix_stale_settings_paths() == 1
+    root = str(Path(m.__file__).resolve().parents[3])
+    new_ours, new_foreign = ours.replace(str(stale), root), foreign.replace(str(stale), root)
+    assert {new_ours, new_foreign} <= set(_commands(installed))
+    entries = hp.load_ledger(hp.ledger_path_for(m))[0]["contexts"][hp.settings_key(installed)]
+    assert hp.context_digest(("Notification", "x", "command", new_ours)) in entries
+    assert hp.context_digest(("Notification", "y", "command", new_foreign)) not in entries
+    assert entries[hp.context_digest(("Notification", "x", "command", new_ours))]["source"] == "fix_stale_settings_paths"
+
+
+def test_sessionend_fossil_rewrite_records_hook_command_in_its_entry(m, hp, installed):
+    own = m._get_measure_py_path()
+    fossil = "python3 %s collect --quiet && python3 %s dashboard --quiet" % (own, own)
+    data = json.loads(installed.read_text(encoding="utf-8"))
+    data["hooks"]["SessionEnd"] = [{"hooks": [{"type": "command", "command": fossil, "timeout": 30}]}]
+    data["hooks"].setdefault("Notification", []).append(
+        {"hooks": [{"type": "command", "command": m.HOOK_COMMAND}]})  # preserved twin elsewhere
+    installed.write_text(json.dumps(data), encoding="utf-8")
+    assert m._reconcile_sessionend_fossils()["rewritten"] == 1
+    entries = hp.load_ledger(hp.ledger_path_for(m))[0]["contexts"][hp.settings_key(installed)]
+    mine = hp.context_digest(("SessionEnd", "", "command", m.HOOK_COMMAND))
+    assert mine in entries and entries[mine]["source"] == "sessionend_fossil_reconcile"
+    assert hp.context_digest(("Notification", "", "command", m.HOOK_COMMAND)) not in entries
+
+
+def test_codex_launcher_repair_never_rewrites_or_records_a_foreign_handler(hp, tmp_path):
+    """Pin (already true since d7fed0d1): the Codex launcher repair touches a
+    group only when EVERY handler in it is proven ours, and records only
+    the commands it rewrote there."""
+    sys.path.insert(0, str(SCRIPTS))
+    import codex_install
+    path = tmp_path / ".codex" / "hooks.json"
+    path.parent.mkdir()
+    ours = '"C:\\\\Py\\\\python.exe" "C:\\\\TO\\\\%s.py" --baked-root "C:\\\\TO\\\\5.13.0" stop' % (
+        codex_install._LAUNCHER_MARKER)
+    ours2, foreign = ours.replace("stop", "start"), ours.replace("stop", "theirs")
+    path.write_text(json.dumps({"hooks": {
+        "Stop": [{"hooks": [{"type": "command", "command": ours}]}],
+        "SessionStart": [{"hooks": [{"type": "command", "command": ours2},
+                                    {"type": "command", "command": foreign}]}]}}))
+    led = path.parent / hp.CODEX_LEDGER_NAME
+    assert hp.record(led, path, [ours, ours2], "codex_install")
+    assert codex_install.heal_quoted_launcher_commands(paths=[path]) == 1
+    after = json.loads(path.read_text())
+    fixed = after["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert fixed == codex_install._WIN_UNQUOTED_PREFIX + " " + ours
+    assert [h["command"] for h in after["hooks"]["SessionStart"][0]["hooks"]] == [ours2, foreign]
+    recorded = set(hp.load_ledger(led)[0]["files"][hp.settings_key(path)])
+    assert hp.command_digest(fixed) in recorded
+    assert hp.command_digest(foreign) not in recorded
+    assert hp.command_digest(codex_install._WIN_UNQUOTED_PREFIX + " " + foreign) not in recorded

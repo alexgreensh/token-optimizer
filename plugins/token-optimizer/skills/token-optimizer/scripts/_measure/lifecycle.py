@@ -1886,12 +1886,16 @@ def _reconcile_sessionend_fossils():
             if not isinstance(fresh.get("hooks"), dict):
                 result["reason"] = "no_hooks"
                 return result
+            import hook_provenance
+            before = hook_provenance.contexts_of(fresh)
             if not _measure_facade._apply_sessionend_fossil_reconcile(fresh, result):
                 result["reason"] = "nothing_to_do"
                 return result
             if not _measure_facade._write_settings_atomic_locked(fresh):
                 result["reason"] = "write_skipped"
                 return result
+            hook_provenance.record_written(_measure_facade, before, fresh, [_measure_facade.HOOK_COMMAND],
+                                           "sessionend_fossil_reconcile")
         return result
     except Exception:
         result["reason"] = "fail_open"
@@ -3243,7 +3247,8 @@ def _fix_stale_settings_paths():
             return 0
     except Exception:
         return 0
-
+    import hook_provenance  # records only rewrites of entries already proven ours
+    hook_provenance.record_rewrites(_measure_facade, settings, new_settings, "fix_stale_settings_paths")
     return len(stale_roots)
 
 

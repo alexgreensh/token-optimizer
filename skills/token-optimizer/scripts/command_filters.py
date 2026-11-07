@@ -473,7 +473,8 @@ class CommandFilterConfig:
     def find_add(self, command_str: str) -> Optional[AddEntry]:
         """Return the first add entry whose command matches ``command_str``,
         or None. Never matches a destructive command."""
-        if is_destructive_command(command_str):
+        # No entries means no match; skip the tokenizing check on the hot path.
+        if not self.adds or is_destructive_command(command_str):
             return None
         for entry in self.adds:
             if entry.command == command_str:
@@ -499,8 +500,9 @@ class EffectiveFilters:
 
     def find_user_add(self, command_str: str) -> Optional[AddEntry]:
         # A glob in an add entry must never make a destructive command
-        # eligible for compression (the wrapper would run it).
-        if is_destructive_command(command_str):
+        # eligible for compression (the wrapper would run it). No entries means
+        # no match, so the tokenizing check is skipped on the hot path.
+        if not self.user_adds or is_destructive_command(command_str):
             return None
         for entry in self.user_adds:
             if entry.command == command_str:

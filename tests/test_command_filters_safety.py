@@ -510,3 +510,42 @@ def test_env_unwrap_end_to_end_not_whitelisted(tmp_path, monkeypatch):
     for cmd in _ENV_UNWRAP_BYPASSES:
         assert bash_whitelist.is_whitelisted(cmd) is False, cmd
     cf.reset_cache()
+
+
+# ---------------------------------------------------------------------------
+# Hot path: zero add entries skips the tokenizing destructive check entirely,
+# and with entries present the verdict is exactly what it was before.
+# ---------------------------------------------------------------------------
+
+def _count_destructive_calls(monkeypatch):
+    calls = []
+    real = cf.is_destructive_command
+
+    def spy(command_str):
+        calls.append(command_str)
+        return real(command_str)
+
+    monkeypatch.setattr(cf, "is_destructive_command", spy)
+    return calls
+
+
+@pytest.mark.parametrize("command", ["ls -la", "rm -rf target", "cat x | tee out"])
+def test_no_add_entries_skips_destructive_check(monkeypatch, command):
+    calls = _count_destructive_calls(monkeypatch)
+    assert cf.EffectiveFilters().find_user_add(command) is None
+    assert cf.CommandFilterConfig().find_add(command) is None
+    assert calls == []
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("ls -la", "lsall"),
+    ("rm -rf target", None),
+    ("ls -la > out", None),
+])
+def test_add_entries_keep_destructive_verdict(monkeypatch, command, expected):
+    calls = _count_destructive_calls(monkeypatch)
+    entry = cf.AddEntry(name="lsall", command="*", handler="disk_stats")
+    for found in (cf.EffectiveFilters(user_adds=(entry,)).find_user_add(command),
+                  cf.CommandFilterConfig(adds=(entry,)).find_add(command)):
+        assert (found.name if found else None) == expected, command
+    assert calls == [command, command]

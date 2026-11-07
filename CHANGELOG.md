@@ -2,11 +2,14 @@
 
 ## [Unreleased]
 
-- Custom command filters (`command-filters.toml`) now load on Python 3.9 and 3.10. Before, the file was silently ignored there because those versions have no built-in TOML reader. On those older Pythons only, a file that uses TOML syntax outside the supported subset (multi-line strings, arrays of tables, floats, dates, hex or underscored numbers) is skipped with a one-time warning naming the line, and the built-in filters keep working. Python 3.11 and later read the full TOML syntax as before.
-- Remove the silent Bash PreToolUse hook registration so each Bash call no longer waits for a no-op Python process. Shared gates and post-command compression are unchanged.
-- Read full Codex TOML configuration and validate compact-prompt placement on Python 3.9 and 3.10 without installing an extra dependency. Python 3.11+ keeps its standard-library parser.
-- Preserve the native missing-global `NameError` contract on Python 3.9 instead of raising a constructor `TypeError`.
-- Fix the installer failing its own integrity check on older git. On git versions where `sparse-checkout set` does not default to cone mode (verified on git 2.34.1), the sparse checkout silently dropped root files including install.sh, so the release checksums did not match and every verified install aborted with "Your install may be compromised". Cone mode is now enabled explicitly for new clones, update candidates and existing non-cone installs.
+## [5.13.67] - 2026-11-07
+
+- Python 3.9 and 3.10 are fully supported again: custom command filters and Codex config load there, and CI now tests both.
+- Hooks start faster: Bash calls no longer wait on a silent no-op hook, and users with no custom filter rules skip filter parsing entirely.
+- Custom command filters never compress destructive commands, even when a user rule matches them.
+- Hook cleanup in settings.json only removes hooks Token Optimizer can prove it wrote, so other tools' hooks stay put.
+- Verified installs work on older git, and a failed update returns you to the branch you started on.
+- Steadier data: the read cache stays correct after /clear, keep-warm sends one ping instead of duplicates, and Antigravity copes with a read-only data folder.
 
 ## [5.13.66] - 2026-11-06
 

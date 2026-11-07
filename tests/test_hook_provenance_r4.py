@@ -255,10 +255,11 @@ def test_our_fossil_is_still_rewritten(m, installed, where):
 @pytest.mark.parametrize("variant", [
     lambda c: c + " ; echo mine",                 # the user appended to our command
     lambda c: c.replace("--quiet", "--loud", 1),  # an edited copy
-    lambda c: c.replace("token-optimizer/scripts", "token-optimizer/other", 1),
+    lambda c: c.replace(os.path.join("token-optimizer", "scripts"), os.path.join("token-optimizer", "other"), 1),
 ])
 def test_anything_but_our_exact_fossil_is_kept(m, installed, variant):
     command = variant(_our_fossil(m))
+    assert command != _our_fossil(m)
     changed, _, after = _reconcile(m, {"SessionEnd": [{"hooks": [_hook(command)]}]})
     assert not changed and after["SessionEnd"][0]["hooks"][0]["command"] == command
 

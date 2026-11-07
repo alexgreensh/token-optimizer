@@ -470,7 +470,7 @@ class _NoStdlibToml(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, _NoStdlibToml())
 sys.path.insert(0, sys.argv[1])
 import measure
-parser = "_measure._vendor.tomli._parser"
+parser = "_tomli"
 before = parser in sys.modules
 data = measure.tomllib.loads("a = 1\n[b]\nc = [1.5]\n")
 after = parser in sys.modules
@@ -478,6 +478,18 @@ from _measure._vendor import tomli
 print(before, after, data == {"a": 1, "b": {"c": [1.5]}}, tomli is measure.tomllib,
       issubclass(measure.tomllib.TOMLDecodeError, ValueError))
 '''
+
+
+def test_vendored_tomli_package_is_a_shim_over_flat_module():
+    """_measure._vendor.tomli re-exports _tomli; no second parser copy may return."""
+    import importlib
+    import _tomli
+    from _measure._vendor import tomli
+    assert tomli.loads is _tomli.loads
+    assert tomli.load is _tomli.load
+    assert tomli.TOMLDecodeError is _tomli.TOMLDecodeError
+    with pytest.raises(ImportError):
+        importlib.import_module("_measure._vendor.tomli._parser")
 
 
 def test_vendored_tomli_fallback_runs_only_on_first_parse(tmp_path):

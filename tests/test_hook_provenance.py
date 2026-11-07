@@ -255,7 +255,7 @@ def test_missing_ledger_falls_back_to_templates_only(m, hp, installed):
 
 @pytest.mark.parametrize("garbage", [b"{not json", b"\xff\xfe", b"[]",
                                      b'{"version": 1, "files": {"k": []}}',
-                                     b'{"version": 2, "files": {}}'])
+                                     b'{"version": "2", "files": {}}'])
 def test_corrupt_ledger_template_only_then_reset_once(m, hp, installed, garbage):
     ledger_only, template = _ours_and_template(m, hp, installed)
     path = hp.ledger_path_for(m)

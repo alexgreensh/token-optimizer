@@ -257,6 +257,9 @@ def load_ledger(path):
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return _empty(), "corrupt"
+    version = data.get("version") if isinstance(data, dict) else None
+    if isinstance(version, int) and not isinstance(version, bool) and version != LEDGER_VERSION:
+        return _empty(), "unreadable"  # another version's ledger: never ours to move or rewrite
     if not _valid(data):
         return _empty(), "corrupt"
     for section in ("seeded", "reported", "contexts", "contexts_seeded"):

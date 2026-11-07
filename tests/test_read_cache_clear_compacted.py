@@ -17,6 +17,7 @@ json on every compaction.
 
 Run: python3 -m pytest tests/test_read_cache_clear_compacted.py -v
 """
+from __future__ import annotations
 
 import json
 import os

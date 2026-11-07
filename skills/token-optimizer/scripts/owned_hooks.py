@@ -56,6 +56,7 @@ SESSION_END_SHAPES = (
 
 # setup_smart_compact's commands, every shape it shipped.
 _COMPACT_SUBCOMMANDS = ("compact-capture --trigger auto", "compact-restore",
+                        "compact-restore --new-session-only",
                         "compact-capture --trigger stop", "compact-capture --trigger end")
 COMPACT_SHAPES = tuple(
     shape for sub in _COMPACT_SUBCOMMANDS for shape in (

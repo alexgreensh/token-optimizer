@@ -380,6 +380,35 @@ def test_smart_compact_uninstall_removes_ours_and_keeps_the_users(m, installed, 
     assert "%d hook(s) removed" % ours in capsys.readouterr().out
 
 
+def _pre_ledger_smart_compact(m, hp, installed, users):
+    """setup_smart_compact's entries as an install from before the ledger
+    left them: no record, so only the generated shapes can prove them."""
+    installed.write_text(json.dumps({"_test_marker": True}))
+    m.setup_smart_compact()
+    hp.ledger_path_for(m).unlink()
+    data = json.loads(installed.read_text())
+    assert any("--new-session-only" in h["command"] for g in data["hooks"]["SessionStart"] for h in g["hooks"])
+    data["hooks"]["SessionStart"].append({"hooks": [_hook(c) for c in users]})
+    installed.write_text(json.dumps(data))
+    return data
+
+
+NEW_SESSION_USERS = ["python3 /home/me/mytool/measure.py compact-restore --new-session-only"]
+
+
+def test_smart_compact_uninstall_removes_a_pre_ledger_new_session_restore(m, hp, installed):
+    _pre_ledger_smart_compact(m, hp, installed, NEW_SESSION_USERS)
+    m.setup_smart_compact(uninstall=True)
+    after = json.loads(installed.read_text()).get("hooks", {})
+    assert [h["command"] for groups in after.values() for g in groups for h in g["hooks"]] == NEW_SESSION_USERS
+
+
+def test_cleanup_removes_a_pre_ledger_new_session_restore(m, hp, installed):
+    data = _pre_ledger_smart_compact(m, hp, installed, NEW_SESSION_USERS)
+    m._remove_our_settings_entries(data)
+    assert [h["command"] for groups in data["hooks"].values() for g in groups for h in g["hooks"]] == NEW_SESSION_USERS
+
+
 # --- Codex: our command is ours only in the entry we wrote it to -----------------
 
 from test_codex_hook_provenance import ci, chp, home, semver_root  # noqa: E402,F401

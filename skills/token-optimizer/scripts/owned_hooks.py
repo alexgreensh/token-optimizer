@@ -91,7 +91,7 @@ def is_install_script(facade, path):
     if path == _PLACEHOLDER_SCRIPT:
         return True
     text = str(path).replace("\\", "/")
-    if not (text.startswith("/") or (len(text) > 2 and text[1] == ":" and text[2] == "/")):
+    if not _absolute(text):
         return False
     parts = _path_parts(text)
     if parts[-4:] != _path_parts("/".join(_SCRIPT_TAIL)) or "." in parts or ".." in parts:
@@ -101,6 +101,38 @@ def is_install_script(facade, path):
         return True
     cache = _path_parts(Path(facade.CLAUDE_DIR) / "plugins" / "cache")
     return len(head) == len(cache) + 3 and head[:len(cache)] == cache and head[-2] == "token-optimizer"
+
+
+def _absolute(text):
+    text = str(text).replace("\\", "/")
+    return text.startswith("/") or (len(text) > 2 and text[1] == ":" and text[2] == "/")
+
+
+_SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".sh", ".ps1")
+
+
+def _inside_install(facade, path):
+    """True when absolute ``path`` lies inside a Token Optimizer install."""
+    parts = _path_parts(path)
+    roots = [Path(facade.CLAUDE_DIR) / "skills" / "token-optimizer"] + _install_roots(facade)[1:]
+    if any(parts[:len(root)] == root for root in map(_path_parts, roots)):
+        return True
+    cache = _path_parts(Path(facade.CLAUDE_DIR) / "plugins" / "cache")
+    return (len(parts) > len(cache) + 3 and parts[:len(cache)] == cache
+            and parts[len(cache) + 1] == "token-optimizer")
+
+
+def runs_a_foreign_script(facade, command):
+    """True when ``command`` runs a script by absolute path outside every
+    Token Optimizer install: someone else's tool, whatever names it shares
+    with ours. measure.py cleanup leaves such an entry alone."""
+    if not isinstance(command, str):
+        return False
+    for tokens in _token_views(command):
+        for token in tokens:
+            if token.endswith(_SCRIPT_SUFFIXES) and _absolute(token) and not _inside_install(facade, token):
+                return True
+    return False
 
 
 def matches_shape(facade, command, shapes):

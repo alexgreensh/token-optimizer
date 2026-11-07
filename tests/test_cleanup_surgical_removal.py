@@ -24,6 +24,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
+# Our hooks run an install's measure.py (here: this checkout's). A command
+# running a measure.py outside every install is the user's own tool.
+MP = str(SCRIPTS / "measure.py")
 
 
 @pytest.fixture()
@@ -59,7 +62,7 @@ def reconcile(monkeypatch):
 def test_empty_user_group_is_not_deleted_or_miscounted(measure):
     settings = {"hooks": {"UserPromptSubmit": [
         {"matcher": "mine", "hooks": []},                      # user's, empty
-        {"hooks": [{"command": "python3 /x/measure.py quality-cache"}]},  # ours
+        {"hooks": [{"command": f"python3 {MP} quality-cache"}]},  # ours
     ]}}
 
     removed = measure._remove_our_settings_entries(settings)
@@ -74,7 +77,7 @@ def test_empty_user_group_is_not_deleted_or_miscounted(measure):
 def test_foreign_group_in_a_shared_event_survives(measure):
     settings = {"hooks": {"SessionStart": [
         {"hooks": [{"command": "node /home/u/my-own-tool.js"}]},
-        {"hooks": [{"command": "python3 /p/token-optimizer/measure.py ensure-health"}]},
+        {"hooks": [{"command": f"python3 {MP} ensure-health"}]},
     ]}}
 
     measure._remove_our_settings_entries(settings)
@@ -98,8 +101,8 @@ def test_user_hook_merely_mentioning_us_is_kept(measure):
 
 def test_hook_entry_ownership_predicate(measure):
     ours = [
-        {"command": "python3 '/p/token-optimizer/measure.py' compact-capture --trigger auto"},
-        {"command": "python3 /p/measure.py quality-cache --force"},
+        {"command": f"python3 '{MP}' compact-capture --trigger auto"},
+        {"command": f"python3 {MP} quality-cache --force"},
         {"command": "bash launcher.sh read_cache.py --clear-compacted --quiet"},
     ]
     theirs = [
@@ -120,7 +123,7 @@ def test_hook_entry_ownership_predicate(measure):
 # ---------------------------------------------------------------------------
 
 def test_smart_compact_family_is_removed(measure):
-    mp = "/p/token-optimizer/skills/token-optimizer/scripts/measure.py"
+    mp = MP
     settings = {"hooks": {
         "PreCompact": [{"hooks": [{"command": f"python3 '{mp}' compact-capture --trigger auto"}]}],
         "SessionStart": [{"hooks": [{"command": f"python3 '{mp}' compact-restore"}]}],

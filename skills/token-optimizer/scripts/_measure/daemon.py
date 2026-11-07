@@ -5431,28 +5431,27 @@ def _backup_settings_file(dest_dir: Path) -> Path | None:
 
 
 def _is_our_hook_entry(entry) -> bool:
-    """True when a settings.json hook entry is one WE installed.
+    """True when a settings.json hook entry is one WE installed (for cleanup).
 
-    Ownership markers, all anchored on our own script names rather than a bare
-    "token-optimizer" substring (a user hook may legitimately mention us in a
-    path or a comment without being ours to delete):
+    Never an entry that runs a script by absolute path outside every Token
+    Optimizer install (a user's own /home/me/tool/measure.py). Otherwise:
       * the command invokes one of our scripts (measure.py / read_cache.py /
         statusline.js / archive_result.py / context_intel.py) AND references
         token-optimizer, or
       * it carries one of our distinctive subcommands (quality-cache,
         compact-capture, compact-restore, ensure-health, clear-compacted,
         session-end-flush, dynamic-compact-instructions).
-
-    Conservative by construction: unrecognized shapes are NOT ours, so a hook
-    we cannot positively identify is left in place. The cost of a false
-    negative is a dangling entry the user can delete; the cost of a false
-    positive is silently deleting their automation.
+    Unrecognized shapes are NOT ours: a dangling entry the user can delete
+    beats silently deleting their automation.
     """
     _measure_facade = _compat.facade()
     if not isinstance(entry, dict):
         return False
     cmd = entry.get("command")
     if not isinstance(cmd, str) or not cmd:
+        return False
+    import owned_hooks
+    if owned_hooks.runs_a_foreign_script(_measure_facade, cmd):
         return False
     low = cmd.lower()
     our_subcommands = (

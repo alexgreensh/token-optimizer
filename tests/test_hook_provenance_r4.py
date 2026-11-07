@@ -432,3 +432,16 @@ def test_doctor_lists_the_same_unproven_command_once_per_entry(m, hp, installed)
         data["hooks"].setdefault(event, []).append({"hooks": [_hook(command), _hook(command)]})
     installed.write_text(json.dumps(data))
     assert [e for e, c, _ in heal_report.unproven_hooks(m) if c == command] == ["Stop", "Notification"]
+
+
+# --- measure.py cleanup never takes a user's own tool that shares our names --------
+
+def test_cleanup_keeps_a_users_own_measure_py_and_removes_ours(m, installed):
+    users = [FOREIGN, "python3 /home/me/mytool/measure.py session-end-flush --trigger end",
+             "python3 /home/me/tools/read_cache.py --clear-compacted token-optimizer"]
+    stop = "python3 /home/me/mytool/measure.py session-end-flush --trigger stop"
+    settings = {"hooks": {"SessionEnd": [{"hooks": [_hook(c) for c in users] + [_hook(m.HOOK_COMMAND)]}],
+                          "Stop": [{"hooks": [_hook(stop)]}]}}
+    m._remove_our_settings_entries(settings)
+    assert settings["hooks"] == {"SessionEnd": [{"hooks": [_hook(c) for c in users]}],
+                                 "Stop": [{"hooks": [_hook(stop)]}]}

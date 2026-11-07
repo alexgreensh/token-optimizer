@@ -491,3 +491,48 @@ def test_vendored_tomli_fallback_runs_only_on_first_parse(tmp_path):
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.split() == ["False", "True", "True", "True", "True"], out.stdout
+
+
+_LAZY_TOMLI_THREADS_PROBE = r'''
+import sys, threading, importlib.abc
+class _NoStdlibToml(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name == "tomllib":
+            raise ImportError("simulated Python 3.9/3.10")
+sys.meta_path.insert(0, _NoStdlibToml())
+sys.path.insert(0, sys.argv[1])
+import measure
+barrier = threading.Barrier(8)
+errors = []
+def worker():
+    try:
+        barrier.wait(timeout=10)
+        for _ in range(10):
+            assert measure.tomllib.loads("a = 1\n[b]\nc = [1.5]\n") == {"a": 1, "b": {"c": [1.5]}}
+    except Exception as exc:
+        errors.append(repr(exc))
+threads = [threading.Thread(target=worker) for _ in range(8)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+print("errors", len(errors), errors[:1])
+'''
+
+
+def test_vendored_tomli_first_parse_is_thread_safe(tmp_path):
+    """Concurrent first parses must not observe a half-loaded lazy module.
+
+    Python 3.9/3.10's importlib LazyLoader is lock-free; eight threads racing
+    the first attribute access used to raise AttributeError on the lazy
+    module. The locked lazy loader must serialize the first exec instead.
+    """
+    import os
+    import subprocess
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    out = subprocess.run(
+        [sys.executable, "-c", _LAZY_TOMLI_THREADS_PROBE, str(SCRIPTS)],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split()[:2] == ["errors", "0"], out.stdout

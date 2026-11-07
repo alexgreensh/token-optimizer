@@ -1,18 +1,42 @@
 """Private, license-preserving runtime dependencies; no runtime installation."""
 import importlib.util as _util
 import sys as _sys
+import threading as _threading
 
 
 def _lazy(name):
-    """Return module ``name`` with its code deferred to first attribute access."""
+    """Return module ``name`` deferred to first attribute access.
+
+    The module object is registered in sys.modules immediately, but its code
+    runs only on the first attribute miss, serialized by a lock. importlib's
+    LazyLoader is lock-free on Python 3.9/3.10, where a second thread could
+    observe the module mid-exec and raise AttributeError.
+    """
     module = _sys.modules.get(name)
     if module is not None:
         return module
     spec = _util.find_spec(name)
-    spec.loader = _util.LazyLoader(spec.loader)
+    loader = spec.loader
     module = _util.module_from_spec(spec)
+    lock = _threading.Lock()
+    loaded = False
+
+    def _getattr(attr):
+        nonlocal loaded
+        if not loaded:
+            with lock:
+                if not loaded:
+                    loader.exec_module(module)
+                    loaded = True
+                    module.__dict__.pop('__getattr__', None)
+        try:
+            return module.__dict__[attr]
+        except KeyError:
+            raise AttributeError(
+                "module {!r} has no attribute {!r}".format(name, attr)) from None
+
+    module.__dict__['__getattr__'] = _getattr
     _sys.modules[name] = module
-    spec.loader.exec_module(module)
     return module
 
 

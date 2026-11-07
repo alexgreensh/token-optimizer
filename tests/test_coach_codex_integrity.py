@@ -459,3 +459,35 @@ def test_bundled_toml_reader_rejects_invalid_documents(text):
     from _measure._vendor import tomli
     with pytest.raises(tomli.TOMLDecodeError):
         tomli.loads(text)
+
+
+_LAZY_TOMLI_PROBE = r'''
+import sys, importlib.abc
+class _NoStdlibToml(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name == "tomllib":
+            raise ImportError("simulated Python 3.9/3.10")
+sys.meta_path.insert(0, _NoStdlibToml())
+sys.path.insert(0, sys.argv[1])
+import measure
+parser = "_measure._vendor.tomli._parser"
+before = parser in sys.modules
+data = measure.tomllib.loads("a = 1\n[b]\nc = [1.5]\n")
+after = parser in sys.modules
+from _measure._vendor import tomli
+print(before, after, data == {"a": 1, "b": {"c": [1.5]}}, tomli is measure.tomllib,
+      issubclass(measure.tomllib.TOMLDecodeError, ValueError))
+'''
+
+
+def test_vendored_tomli_fallback_runs_only_on_first_parse(tmp_path):
+    """3.9/3.10 facade import must not execute Tomli; the first parse does."""
+    import os
+    import subprocess
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    out = subprocess.run(
+        [sys.executable, "-c", _LAZY_TOMLI_PROBE, str(SCRIPTS)],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == ["False", "True", "True", "True", "True"], out.stdout

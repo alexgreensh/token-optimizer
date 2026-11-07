@@ -60,6 +60,9 @@ _PAYLOAD_MODULES = (
     # Dependency-free whitelist gate shared by bash_hook + bash_compress.
     "bash_whitelist.py",
     "command_filters.py",
+    # The 3.9/3.10 TOML parser command_filters lazy-imports when tomllib is
+    # absent; without it load_filters() silently returns an empty config.
+    "_tomli.py",
     "spawn_utils.py",
     "utf8_io.py",
     # credential_patterns: bash_compress's credential-preservation patterns

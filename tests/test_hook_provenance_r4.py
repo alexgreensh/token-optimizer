@@ -420,3 +420,15 @@ def test_codex_doctor_redacts_a_secret_in_an_unrecognized_hook(home, semver_root
     _codex_write(home, {"Stop": [{"hooks": [{"type": "command", "command": command}]}]})
     details = [c["detail"] for c in codex_doctor._unproven_hook_checks()]
     assert len(details) == 1 and "ghp_" + "a1" * 18 not in details[0] and "REDACTED" in details[0]
+
+
+# --- the doctor lists each unproven entry, not each unproven command ---------------
+
+def test_doctor_lists_the_same_unproven_command_once_per_entry(m, hp, installed):
+    import heal_report
+    command = 'bash -c "$(cat /opt/me/run)" /opt/me/measure.py collect'
+    data = json.loads(installed.read_text())
+    for event in ("Stop", "Notification"):
+        data["hooks"].setdefault(event, []).append({"hooks": [_hook(command), _hook(command)]})
+    installed.write_text(json.dumps(data))
+    assert [e for e, c, _ in heal_report.unproven_hooks(m) if c == command] == ["Stop", "Notification"]

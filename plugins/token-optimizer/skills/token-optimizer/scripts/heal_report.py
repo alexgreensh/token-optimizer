@@ -37,10 +37,12 @@ def unproven_hooks(facade):
             for group in groups if isinstance(groups, list) else ():
                 for hook in (group.get("hooks") or []) if isinstance(group, dict) else ():
                     command = hook.get("command") if isinstance(hook, dict) else None
-                    if not isinstance(command, str) or command in seen:
+                    # One row per entry: the same command in two events is two hooks to look at.
+                    key = hp.entry_context(event, group, hook) or (event, command)
+                    if not isinstance(command, str) or key in seen:
                         continue
                     if prov.verdict_entry(event, group, hook) == hp.UNPROVEN and prov.reportable(command):
-                        seen.add(command)
+                        seen.add(key)
                         found.append((str(event), command, str(path)))
         return found
     except Exception:

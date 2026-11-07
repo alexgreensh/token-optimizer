@@ -26,7 +26,9 @@ def __getattr__(attr):
         def value(*args, **kwargs):
             target = getattr(_importlib.import_module("_tomli"), attr, None)
             if target is None:
-                return None
+                raise RuntimeError(
+                    "_tomli is still executing its first import; "
+                    "tomli.{}() cannot run re-entrantly".format(attr))
             globals()[attr] = target
             return target(*args, **kwargs)
         return value

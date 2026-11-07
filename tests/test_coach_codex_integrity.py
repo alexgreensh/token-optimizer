@@ -548,3 +548,21 @@ def test_vendored_tomli_first_parse_is_thread_safe(tmp_path):
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.split()[:2] == ["errors", "0"], out.stdout
+
+
+def test_vendored_tomli_reentrant_loads_during_parser_exec_raises(monkeypatch):
+    """A resolver captured while _tomli is mid-exec must fail loudly, not return None.
+
+    ``tomli.loads()`` invoked re-entrantly during ``_tomli``'s own first import
+    used to hand back ``None`` (the partial module has no ``loads`` yet). It
+    must raise instead of silently producing a wrong result.
+    """
+    import types
+    from _measure._vendor import tomli
+    tomli._EXPORTS  # exec the shim without importing _tomli
+    partial = types.ModuleType("_tomli")  # stands in for the still-executing parser
+    monkeypatch.setitem(sys.modules, "_tomli", partial)
+    resolver = tomli.__dict__["__getattr__"]("loads")
+    assert callable(resolver)
+    with pytest.raises(RuntimeError, match="_tomli is still executing"):
+        resolver("a = 1")

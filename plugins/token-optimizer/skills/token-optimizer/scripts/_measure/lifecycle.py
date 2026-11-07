@@ -3509,104 +3509,17 @@ def _heal_keepwarm_plist_path():
 def _fix_malformed_hook_commands():
     """Remove malformed hook entries Token Optimizer can prove it wrote.
 
-    An entry goes only when its exact command bytes are recorded in the hook
-    provenance ledger for this settings file, or are byte-identical to a
-    shipped hooks.json template instantiated for this install, AND it is
-    malformed (a subshell/backtick beyond the exact installer resolver, or a
-    doubled $HOME on macOS). Everything else is left alone; unproven
-    malformed-looking entries naming our scripts are logged once to the heal
-    log. See hook_provenance.py for the rule and the ledger.
-
-    After a removal, script installs are re-provisioned via setup_all_hooks
-    (plugin users get hooks from hooks.json) and last_hook_heal_check is reset
-    so the next session runs the full heal cycle.
-
-    Returns the number of removed (proven) hook entries.
+    Proof is the provenance ledger or a byte-identical shipped template; the
+    pass reads, proves and writes ONE resolved settings file under the
+    settings lock. Script installs are re-provisioned after a removal. Returns
+    the number removed. See hook_provenance.heal_settings.
     """
     _measure_facade = _compat.facade()
-    try:
-        # Writes `new_settings` (built from `current`) back.
-        current, _ok = _measure_facade._read_settings_for_write()
-        if not _ok:
-            return 0
-    except Exception:
-        return 0
-
-    current_hooks = current.get("hooks") if current else None
-    if not current_hooks or not isinstance(current_hooks, dict):
-        return 0
-
     import hook_provenance
-    prov = hook_provenance.Provenance.from_facade(_measure_facade)
-    removed = 0
-    new_hooks = {}
-    kept_commands, unproven = [], []
-
-    for event, handler_groups in current_hooks.items():
-        if not isinstance(handler_groups, list):
-            new_hooks[event] = handler_groups
-            continue
-        new_groups = []
-        for group in handler_groups:
-            if not isinstance(group, dict):
-                new_groups.append(group)
-                continue
-            original_hook_list = group.get("hooks", [])
-            if not isinstance(original_hook_list, list):
-                new_groups.append(group)
-                continue
-            kept_hooks = []
-            for h in original_hook_list:
-                if not isinstance(h, dict):
-                    kept_hooks.append(h)
-                    continue
-                cmd = h.get("command", "")
-                verdict = prov.verdict(cmd)
-                if verdict == "remove":
-                    removed += 1
-                    continue
-                if verdict == "unproven":
-                    unproven.append((event, cmd))
-                kept_commands.append(cmd)
-                kept_hooks.append(h)
-            if kept_hooks:
-                new_group = dict(group)
-                new_group["hooks"] = kept_hooks
-                new_groups.append(new_group)
-        if new_groups:
-            new_hooks[event] = new_groups
-
-    if removed:
-        new_settings = dict(current)
-        new_settings["hooks"] = new_hooks
-        try:
-            if not _measure_facade._write_settings_atomic(new_settings):
-                return 0
-        except (PermissionError, OSError):
-            return 0
-    # First pass seeds the ledger from exact template matches; unproven
-    # entries are reported once. Silent, and never counted as removals.
-    prov.finish(kept_commands, unproven, log=_measure_facade._settings_heal_log)
-    if not removed:
-        return 0
-
-    # Reset 24h throttle so next session re-runs the full hook heal cycle.
     try:
-        _measure_facade._write_config_flag("last_hook_heal_check", 0)
+        return hook_provenance.heal_settings(_measure_facade)
     except Exception:
-        pass
-
-    # Script-install users need immediate reprovisioning (plugin users
-    # get hooks from hooks.json automatically, no gap).
-    if not _measure_facade._is_plugin_installed():
-        try:
-            heal_result = _measure_facade.setup_all_hooks(dry_run=False, verbose=False)
-            if heal_result.get("error"):
-                print(f"  [Token Optimizer] Warning: hook re-provisioning failed after cleanup: {heal_result['error']}", file=_measure_facade.sys.stderr)
-        except Exception as _e:
-            print(f"  [Token Optimizer] Warning: hook re-provisioning failed after cleanup: {_e}", file=_measure_facade.sys.stderr)
-
-    return removed
+        return 0
 
 
 def _is_malformed_to_hook(cmd):

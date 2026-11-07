@@ -132,3 +132,102 @@ def test_live_hooks_json_only_feeds_keep_current(m, hp, monkeypatch, tmp_path):
         assert resolved not in prov.proven_templates
         assert prov.proof(resolved) is None
     assert m._resolve_hook_command(template, live.parent.parent) in prov.current_commands
+
+
+# --- 3. Sol P1-2: read, proof key and write bound to one settings file -------
+
+_RACE_CMD = "echo $(printf CONTEXT_BOUND_COMMAND)"
+_B_ONLY = "echo DO_NOT_LOSE_PROFILE_B_HOOK"
+
+
+def _prove(hp, m, settings, command, event="Stop", matcher=""):
+    """Record ``command`` as written by Token Optimizer into ``settings``."""
+    assert hp.record(hp.ledger_path_for(m), settings, [command], "setup_all_hooks")
+
+
+def _race_profiles(m, hp, monkeypatch, tmp_path, prove_in):
+    def payload(commands):
+        return {"sentinel": True, "hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": c} for c in commands]}]}}
+    a, b = tmp_path / "profile-a.json", tmp_path / "profile-b.json"
+    a.write_text(json.dumps(payload([_RACE_CMD])))
+    b.write_text(json.dumps(payload([_RACE_CMD, _B_ONLY])))
+    for path in prove_in:
+        _prove(hp, m, {"a": a, "b": b}[path], _RACE_CMD)
+    link = tmp_path / "settings.json"
+    link.symlink_to(a)
+    monkeypatch.setattr(m, "SETTINGS_PATH", link)
+    monkeypatch.setattr(m, "CLAUDE_DIR", tmp_path)
+    monkeypatch.setattr(m, "_is_plugin_installed", lambda: True)
+    monkeypatch.setattr(m, "_find_plugin_hooks_json", lambda: REPO / "hooks" / "hooks.json")
+
+    def retarget():
+        link.unlink()
+        link.symlink_to(b)
+    return a, b, link, retarget
+
+
+def _assert_untouched(a, b, a_before, b_before):
+    assert a.read_bytes() == a_before, "profile A changed"
+    assert b.read_bytes() == b_before, "profile B changed (A-derived payload written into B)"
+
+
+def test_retarget_before_proof_lookup_cannot_borrow_other_files_proof(m, hp, monkeypatch, tmp_path):
+    """Sol's repro: A's unrecorded hook judged with B's ledger key, and the
+    A-derived payload written into B (B's unrelated hook lost)."""
+    a, b, link, retarget = _race_profiles(m, hp, monkeypatch, tmp_path, prove_in=("b",))
+    a_before, b_before = a.read_bytes(), b.read_bytes()
+    real = hp.Provenance.from_facade.__func__
+    fired = []
+
+    def from_facade(cls, *args, **kwargs):
+        if not fired:
+            fired.append(retarget())
+        return real(cls, *args, **kwargs)
+    monkeypatch.setattr(hp.Provenance, "from_facade", classmethod(from_facade))
+    assert m._fix_malformed_hook_commands() == 0
+    assert fired
+    _assert_untouched(a, b, a_before, b_before)
+
+
+def test_retarget_at_settings_lock_refuses_the_write(m, hp, monkeypatch, tmp_path):
+    """A's hook IS proven under A; the link moves to B while the healer waits
+    for the settings lock. Writing the A-derived payload would wipe B."""
+    a, b, link, retarget = _race_profiles(m, hp, monkeypatch, tmp_path, prove_in=("a",))
+    a_before, b_before = a.read_bytes(), b.read_bytes()
+    real_lock = m._settings_lock
+    fired = []
+
+    def lock(*args, **kwargs):
+        if not fired:
+            fired.append(retarget())
+        return real_lock(*args, **kwargs)
+    monkeypatch.setattr(m, "_settings_lock", lock)
+    assert m._fix_malformed_hook_commands() == 0
+    assert fired
+    _assert_untouched(a, b, a_before, b_before)
+
+
+def test_retarget_just_before_replace_is_refused(m, hp, monkeypatch, tmp_path):
+    a, b, link, retarget = _race_profiles(m, hp, monkeypatch, tmp_path, prove_in=("a",))
+    a_before, b_before = a.read_bytes(), b.read_bytes()
+    real_write = m._write_settings_atomic_locked
+    fired = []
+
+    def write(*args, **kwargs):
+        if not fired:
+            fired.append(retarget())
+        return real_write(*args, **kwargs)
+    monkeypatch.setattr(m, "_write_settings_atomic_locked", write)
+    assert m._fix_malformed_hook_commands() == 0
+    assert fired
+    _assert_untouched(a, b, a_before, b_before)
+
+
+def test_stable_symlink_still_heals_its_target(m, hp, monkeypatch, tmp_path):
+    a, b, link, _retarget = _race_profiles(m, hp, monkeypatch, tmp_path, prove_in=("a",))
+    b_before = b.read_bytes()
+    assert m._fix_malformed_hook_commands() == 1
+    assert link.is_symlink() and link.resolve() == a.resolve()
+    assert _commands(a) == [] and json.loads(a.read_text())["sentinel"] is True
+    assert b.read_bytes() == b_before

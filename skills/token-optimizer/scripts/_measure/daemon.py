@@ -5430,50 +5430,19 @@ def _backup_settings_file(dest_dir: Path) -> Path | None:
         return None
 
 
-def _is_our_hook_entry(entry) -> bool:
-    """True when a settings.json hook entry is one WE installed (for cleanup).
+def _is_our_hook_entry(entry, event="", group=None) -> bool:
+    """True when a settings.json hook entry is one Token Optimizer wrote (cleanup).
 
-    Never an entry that runs a script by absolute path outside every Token
-    Optimizer install (a user's own /home/me/tool/measure.py). Otherwise:
-      * the command invokes one of our scripts (measure.py / read_cache.py /
-        statusline.js / archive_result.py / context_intel.py) AND references
-        token-optimizer, or
-      * it carries one of our distinctive subcommands (quality-cache,
-        compact-capture, compact-restore, ensure-health, clear-compacted,
-        session-end-flush, dynamic-compact-instructions).
-    Unrecognized shapes are NOT ours: a dangling entry the user can delete
+    Proof only (owned_hooks.cleanup_owner): recorded in the provenance ledger,
+    a shipped hooks.json entry for an install root, or byte-identical to a
+    command setup_hook / setup_smart_compact / setup_quality_bar generated for
+    an install's measure.py. A command that merely names our subcommands or
+    scripts proves nothing and stays: a dangling entry the user can delete
     beats silently deleting their automation.
     """
     _measure_facade = _compat.facade()
-    if not isinstance(entry, dict):
-        return False
-    cmd = entry.get("command")
-    if not isinstance(cmd, str) or not cmd:
-        return False
     import owned_hooks
-    if owned_hooks.runs_a_foreign_script(_measure_facade, cmd):
-        return False
-    low = cmd.lower()
-    our_subcommands = (
-        "quality-cache", "compact-capture", "compact-restore", "ensure-health",
-        "clear-compacted", "session-end-flush", "dynamic-compact-instructions",
-    )
-    if any(sub in low for sub in our_subcommands):
-        return True
-    our_scripts = (
-        "measure.py", "read_cache.py", "statusline.js", "archive_result.py",
-        "context_intel.py", "activity_tracker.py",
-        # the UserPromptSubmit dispatcher. Without it a hook that
-        # runs userpromptsubmit_runner.py (+ token-optimizer) is not recognised
-        # as ours, so ownership-gated repair/reconciliation skips it. Whitelisting
-        # the script name here is inert until the dispatcher ships (it is not yet
-        # in this branch) and never matches a foreign hook (the token-optimizer
-        # substring is still required alongside it).
-        "userpromptsubmit_runner.py",
-    )
-    if "token-optimizer" in low and any(s in low for s in our_scripts):
-        return True
-    return False
+    return owned_hooks.cleanup_owner(_measure_facade)(event, {"hooks": [entry]} if group is None else group, entry)
 
 
 def _remove_our_settings_entries(settings: dict) -> list[str]:
@@ -5521,6 +5490,8 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
     # filtered with the same ownership predicate.
     hooks = settings.get("hooks")
     if isinstance(hooks, dict):
+        import owned_hooks
+        owns = owned_hooks.cleanup_owner(_measure_facade)  # proof only, as _is_our_hook_entry
         for event in list(hooks.keys()):
             groups = hooks.get(event)
             if not isinstance(groups, list):
@@ -5535,7 +5506,7 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
                 if not isinstance(entries, list):
                     new_groups.append(group)
                     continue
-                kept = [h for h in entries if not _measure_facade._is_our_hook_entry(h)]
+                kept = [h for h in entries if not owns(event, group, h)]
                 n_ours = len(entries) - len(kept)
                 if n_ours == 0:
                     # Nothing of ours here -- leave the group exactly as-is,

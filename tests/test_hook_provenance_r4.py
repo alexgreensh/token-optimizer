@@ -502,3 +502,43 @@ def test_stray_files_in_the_queue_never_keep_it_pending(hp, tmp_path):
     assert hp.record(ledger, "s.json", ["x"], "t")
     assert not hp.has_pending(ledger) and not bad.exists()
     assert (qdir / ".DS_Store").exists() and (qdir / "notes.txt").exists()  # not ours: never deleted
+
+
+# --- measure.py cleanup removes proven entries only -------------------------------
+
+CLEANUP_USERS = ["curl -fsS http://localhost:8080/ensure-health", "mytool ensure-health --all",
+                 "kubectl get pods # quality-cache warm", "/usr/local/bin/session-end-flush",
+                 "bash launcher.sh read_cache.py --clear-compacted --quiet"]
+
+
+def test_cleanup_keeps_hooks_that_only_name_our_subcommands(m, installed):
+    settings = {"hooks": {"SessionEnd": [{"hooks": [_hook(c) for c in CLEANUP_USERS]}],
+                          "UserPromptSubmit": [{"hooks": [_hook(c) for c in CLEANUP_USERS]}]}}
+    before = json.loads(json.dumps(settings))
+    assert m._remove_our_settings_entries(settings) == []
+    assert settings == before
+
+
+def test_cleanup_still_removes_everything_setup_all_hooks_and_the_installers_wrote(m, hp, installed):
+    installed.write_text(json.dumps({"_test_marker": True}))
+    m.setup_all_hooks(dry_run=False, verbose=False)
+    m.setup_smart_compact()
+    data = json.loads(installed.read_text())
+    data["hooks"].setdefault("UserPromptSubmit", []).append(
+        {"hooks": [_hook("python3 '%s' quality-cache --quiet" % m.MEASURE_PY_PATH)]})
+    data["hooks"].setdefault("Stop", []).append({"hooks": [_hook(c) for c in CLEANUP_USERS]})
+    m._remove_our_settings_entries(data)
+    left = [h["command"] for gs in data["hooks"].values() for g in gs for h in g["hooks"]]
+    assert left == CLEANUP_USERS
+
+
+def test_cleanup_removes_a_shipped_entry_baked_for_a_removed_plugin_version(m, hp, installed):
+    old_root = m.CLAUDE_DIR / "plugins" / "cache" / "mkt" / "token-optimizer" / "5.0.1"  # never on disk
+    context = sorted(hp.instantiate_contexts(hp.SHIPPED_HOOK_CONTEXTS, [str(old_root)]), key=repr)[0]
+    event, matcher, hook_type, command = context
+    group = {"hooks": [{"type": hook_type, "command": command}]}
+    if matcher:
+        group["matcher"] = matcher
+    settings = {"hooks": {event: [group]}}
+    m._remove_our_settings_entries(settings)
+    assert settings["hooks"] == {}

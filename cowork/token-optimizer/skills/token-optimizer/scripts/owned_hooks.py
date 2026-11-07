@@ -64,6 +64,13 @@ COMPACT_SHAPES = tuple(
     ))
 
 
+# setup_quality_bar's UserPromptSubmit command, every shape it shipped.
+QUALITY_SHAPES = (
+    lambda py, mp: "python3 %s quality-cache --quiet" % _sq(mp),
+    lambda py, mp: "%s %s quality-cache --quiet" % (_sh(py), _sh(mp)),
+)
+
+
 def _path_parts(path):
     text = str(path).replace("\\", "/")
     if os.name == "nt":
@@ -110,33 +117,6 @@ def is_install_script(facade, path):
 def _absolute(text):
     text = str(text).replace("\\", "/")
     return text.startswith("/") or (len(text) > 2 and text[1] == ":" and text[2] == "/")
-
-
-_SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".sh", ".ps1")
-
-
-def _inside_install(facade, path):
-    """True when absolute ``path`` lies inside a Token Optimizer install."""
-    parts = _path_parts(path)
-    roots = [Path(facade.CLAUDE_DIR) / "skills" / "token-optimizer"] + _install_roots(facade)[1:]
-    if any(parts[:len(root)] == root for root in map(_path_parts, roots)):
-        return True
-    cache = _path_parts(Path(facade.CLAUDE_DIR) / "plugins" / "cache")
-    return (len(parts) > len(cache) + 3 and parts[:len(cache)] == cache
-            and parts[len(cache) + 1] == "token-optimizer")
-
-
-def runs_a_foreign_script(facade, command):
-    """True when ``command`` runs a script by absolute path outside every
-    Token Optimizer install: someone else's tool, whatever names it shares
-    with ours. measure.py cleanup leaves such an entry alone."""
-    if not isinstance(command, str):
-        return False
-    for tokens in _token_views(command):
-        for token in tokens:
-            if token.endswith(_SCRIPT_SUFFIXES) and _absolute(token) and not _inside_install(facade, token):
-                return True
-    return False
 
 
 def matches_shape(facade, command, shapes):
@@ -359,3 +339,56 @@ def remove_smart_compact(facade, settings):
             and ("compact-capture" in hook["command"] or "compact-restore" in hook["command"])
             and owns(event, group, hook)))
     return removed
+
+
+def _cache_roots_named(facade, command):
+    """Plugin-cache version roots (.../plugins/cache/<m>/token-optimizer/<v>)
+    a command names, removed versions included. Candidates only."""
+    roots = []
+    for cache in {str(Path(facade.CLAUDE_DIR) / "plugins" / "cache"),
+                  str(Path(facade.CLAUDE_DIR) / "plugins" / "cache").replace("\\", "/")}:
+        start = 0
+        while True:
+            at = command.find(cache, start)
+            if at < 0:
+                break
+            start = at + len(cache)
+            rest = command[start:].replace("\\", "/").split("/")
+            if len(rest) > 3 and rest[0] == "" and rest[2] == "token-optimizer":
+                version = rest[3]
+                for stop in ("'", '"', " ", ";", ")"):
+                    version = version.split(stop)[0]
+                if version and version not in (".", ".."):
+                    roots.append(str(Path(cache) / rest[1] / "token-optimizer" / version))
+    return roots
+
+
+def cleanup_owner(facade):
+    """``owns(event, group, hook)`` for measure.py cleanup: proven ours only.
+
+    Ours when the entry is proven in its context (ledger, or a shipped
+    hooks.json entry for this install), or is a shipped hooks.json entry
+    instantiated for an install root the command itself names (a removed
+    plugin version, the script-install clone, the ${CLAUDE_PLUGIN_ROOT}
+    spelling), or is byte-identical to a SessionEnd, smart-compact or
+    quality-bar command we generated for an install's measure.py. Naming our
+    subcommands or scripts proves nothing."""
+    base = owner(facade, SESSION_END_SHAPES + COMPACT_SHAPES + QUALITY_SHAPES)
+    fixed = [str(r) for r in _install_roots(facade)] + ["${CLAUDE_PLUGIN_ROOT}"]
+    cache = {}
+
+    def instantiated(roots):
+        key = tuple(sorted(set(roots)))
+        if key not in cache:
+            cache[key] = hp.instantiate_contexts(hp.SHIPPED_HOOK_CONTEXTS, list(key),
+                                                 getattr(facade, "_resolve_hook_command", None))
+        return cache[key]
+
+    def owns(event, group, hook):
+        if base(event, group, hook):
+            return True
+        context = hp.entry_context(event, group, hook)
+        if context is None:
+            return False
+        return context in instantiated(fixed + _cache_roots_named(facade, context[3]))
+    return owns

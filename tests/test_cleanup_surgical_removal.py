@@ -62,7 +62,7 @@ def reconcile(monkeypatch):
 def test_empty_user_group_is_not_deleted_or_miscounted(measure):
     settings = {"hooks": {"UserPromptSubmit": [
         {"matcher": "mine", "hooks": []},                      # user's, empty
-        {"hooks": [{"command": f"python3 {MP} quality-cache"}]},  # ours
+        {"hooks": [{"command": f"python3 '{MP}' quality-cache --quiet"}]},  # ours
     ]}}
 
     removed = measure._remove_our_settings_entries(settings)
@@ -77,7 +77,7 @@ def test_empty_user_group_is_not_deleted_or_miscounted(measure):
 def test_foreign_group_in_a_shared_event_survives(measure):
     settings = {"hooks": {"SessionStart": [
         {"hooks": [{"command": "node /home/u/my-own-tool.js"}]},
-        {"hooks": [{"command": f"python3 {MP} ensure-health"}]},
+        {"hooks": [{"command": f"python3 '{MP}' quality-cache --quiet"}]},
     ]}}
 
     measure._remove_our_settings_entries(settings)
@@ -102,10 +102,12 @@ def test_user_hook_merely_mentioning_us_is_kept(measure):
 def test_hook_entry_ownership_predicate(measure):
     ours = [
         {"command": f"python3 '{MP}' compact-capture --trigger auto"},
+        {"command": f"python3 '{MP}' quality-cache --quiet"},
+    ]
+    theirs = [  # naming our subcommands or scripts proves nothing
         {"command": f"python3 {MP} quality-cache --force"},
         {"command": "bash launcher.sh read_cache.py --clear-compacted --quiet"},
-    ]
-    theirs = [
+        {"command": "curl -fsS http://localhost:8080/ensure-health"},
         {"command": "node /home/u/statusline.js"},          # their own statusline
         {"command": "echo token-optimizer is great"},        # mentions us only
         {"command": ""},
@@ -128,7 +130,7 @@ def test_smart_compact_family_is_removed(measure):
         "PreCompact": [{"hooks": [{"command": f"python3 '{mp}' compact-capture --trigger auto"}]}],
         "SessionStart": [{"hooks": [{"command": f"python3 '{mp}' compact-restore"}]}],
         "Stop": [{"hooks": [{"command": f"python3 '{mp}' compact-capture --trigger stop"}]}],
-        "UserPromptSubmit": [{"hooks": [{"command": f"python3 '{mp}' quality-cache"}]}],
+        "UserPromptSubmit": [{"hooks": [{"command": f"python3 '{mp}' quality-cache --quiet"}]}],
     }}
 
     measure._remove_our_settings_entries(settings)

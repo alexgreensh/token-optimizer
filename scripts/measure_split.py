@@ -10,6 +10,7 @@ import ast
 import hashlib
 import json
 import symtable
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -24,6 +25,14 @@ LANES = {'runtime': 1, 'pricing': 1, 'trends': 1, 'sessions': 2, 'cli': 2,
          'continuity': 6, 'daemon': 7, 'dashboard': 8, 'lifecycle': 8}
 DEFINITION = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 RETAINED = frozenset({'_redirect_bytecode_out_of_repo'})
+MIN_PYTHON = (3, 11)
+
+
+def require_mover_python():
+    if sys.version_info < MIN_PYTHON:
+        raise RuntimeError('measure_split.py requires Python 3.11 or newer; runtime supports Python 3.9+')
+
+
 HEADER = '"""Definition-only implementations; mutable state belongs to measure."""\nfrom __future__ import annotations\nfrom . import _compat\n'
 
 
@@ -64,6 +73,7 @@ def _dispatch_moved(path, mtime_ns, size):
 class Qualifier(ast.NodeVisitor):
     """Use CPython's symbol tables; retain all untouched text byte for byte."""
     def __init__(self, source, table, globals_, *, tree=None):
+        require_mover_python()
         self.source = source
         self.lines = source.splitlines(keepends=True)
         self.offsets = [0]
@@ -161,7 +171,7 @@ class Qualifier(ast.NodeVisitor):
                         ast.Try(body=handler.body, handlers=[], orelse=[],
                                 finalbody=ast.parse(target + ' = None\ndel ' + target).body)]
         rendered = ast.unparse(ast.fix_missing_locations(handler))
-        if isinstance(wrapper, ast.TryStar):
+        if isinstance(wrapper, getattr(ast, "TryStar", ())):
             rendered = rendered.replace('except ', 'except* ', 1)
         rendered = rendered.replace('\n', '\n' + ' ' * node.col_offset)
         self.edits = [edit for edit in self.edits if edit not in contained]
@@ -278,6 +288,7 @@ class Qualifier(ast.NodeVisitor):
 
 
 def extract_definition(source, name, module, *, tree=None, table=None):
+    require_mover_python()
     if name in RETAINED:
         raise ValueError('retained facade definition: ' + name)
     tree = tree or ast.parse(source)
@@ -322,6 +333,7 @@ def extract_definition(source, name, module, *, tree=None, table=None):
 
 
 def move(scripts, names):
+    require_mover_python()
     if RETAINED.intersection(names):
         raise ValueError('retained facade definitions: ' + ', '.join(sorted(RETAINED.intersection(names))))
     scripts = Path(scripts)
@@ -338,16 +350,17 @@ def move(scripts, names):
         existing = target.read_text(encoding='utf-8')
         if any(isinstance(n, DEFINITION) and n.name == name for n in ast.parse(existing).body):
             raise ValueError(f'duplicate implementation: {name}')
-        target.write_text(existing.rstrip() + '\n\n\n' + moved, encoding='utf-8', newline='\n')
+        target.write_bytes((existing.rstrip() + '\n\n\n' + moved).encode('utf-8'))
         changes.append((min([node.lineno] + [d.lineno for d in node.decorator_list]), node.end_lineno, binding))
     lines = source.splitlines(keepends=True)
     for first, last, binding in sorted(changes, reverse=True):
         lines[first-1:last] = [binding + '\n']
-    path.write_text(''.join(lines), encoding='utf-8', newline='\n')
+    path.write_bytes(''.join(lines).encode('utf-8'))
 
 
 def move_cli(scripts):
     """The dispatch retains module-global assignments and conditional exports."""
+    require_mover_python()
     scripts = Path(scripts)
     path = scripts / 'measure.py'
     source = path.read_text(encoding='utf-8')
@@ -372,11 +385,14 @@ def move_cli(scripts):
     facade = source[:qualifier.offset(guard.lineno, guard.col_offset)] + replacement + source[end:]
     compile(provider, str(target), 'exec')
     compile(facade, str(path), 'exec')
-    target.write_text(provider, encoding='utf-8', newline='\n')
-    path.write_text(facade, encoding='utf-8', newline='\n')
+    target.write_bytes(provider.encode('utf-8'))
+    path.write_bytes(facade.encode('utf-8'))
 
 
 def main():
+    if sys.version_info < MIN_PYTHON:
+        print('measure_split.py requires Python 3.11 or newer; runtime supports Python 3.9+', file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scripts', type=Path, default=SCRIPTS)
     parser.add_argument('--move', nargs='+')
@@ -392,4 +408,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

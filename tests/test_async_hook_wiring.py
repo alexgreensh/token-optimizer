@@ -42,7 +42,9 @@ MIRROR_HOOKS_JSON = REPO / "plugins" / "token-optimizer" / "hooks" / "hooks.json
 # Order within an event matters when matcher is None (Stop's three hooks share no matcher).
 EXPECTED_ASYNC = {
     ("PreToolUse", "Read", "read_cache.py --quiet"): False,
-    ("PreToolUse", "Bash", "bash_hook.py --quiet"): False,
+    # The PreToolUse Bash entry that ran bash_hook.py was removed: since the
+    # "never approve from a hook" fix its main() is an intentional no-op, so
+    # the registration only cost every Bash call a spawned Python process.
     ("PreToolUse", "Agent|Task", "checkpoint-trigger"): True,
     # MUST be sync: the re-fetch guard's whole job is to return a permissionDecision
     # (deny) BEFORE the duplicate MCP call runs. An async guard couldn't block it.

@@ -87,13 +87,34 @@ def test_claude_code_pretooluse_scripts_never_emit_allow():
                 name = token.strip('";').rsplit("/", 1)[-1]
                 if name.endswith(".py") and name != "run.py" and (SCRIPTS / name).is_file():
                     wired.add(name)
-    assert {"bash_hook.py", "read_cache.py", "refetch_guard.py"} <= wired
+    assert {"read_cache.py", "refetch_guard.py"} <= wired
+    # bash_hook.py must stay UNWIRED: its main() is deliberately silent (a
+    # hook "allow" would skip the permission prompt), so registering it only
+    # taxed every Bash call with a no-op Python process.
+    assert "bash_hook.py" not in wired
     for name in sorted(wired - {"measure.py"}):
         source = (SCRIPTS / name).read_text(encoding="utf-8")
         assert '"permissionDecision": "allow"' not in source, name
         assert "permission_decision=\"allow\"" not in source, name
         assert '_emit_pretool_response("allow"' not in source, name
         assert '_emit_pretool_response(\n        "allow"' not in source, name
+
+
+@pytest.mark.parametrize("relative", [
+    "hooks/hooks.json",
+    "plugins/token-optimizer/hooks/hooks.json",
+    "cowork/token-optimizer/hooks/hooks.json",
+    "skills/token-optimizer/examples/hooks-starter.json",
+    "plugins/token-optimizer/skills/token-optimizer/examples/hooks-starter.json",
+    "cowork/token-optimizer/skills/token-optimizer/examples/hooks-starter.json",
+])
+def test_no_manifest_registers_the_silent_bash_hook(relative):
+    """Keep the shared gate module, but never spawn its no-op CLI per Bash call."""
+    doc = json.loads((REPO / relative).read_text(encoding="utf-8"))
+    for event, groups in doc["hooks"].items():
+        for group in groups:
+            for hook in group.get("hooks", []):
+                assert "bash_hook.py" not in hook.get("command", ""), (relative, event)
 
 
 @pytest.mark.parametrize("command", DESTRUCTIVE_WHITELISTED)

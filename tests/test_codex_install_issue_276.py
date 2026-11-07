@@ -25,7 +25,10 @@ import codex_compact_prompt as ccp  # noqa: E402
 import codex_doctor  # noqa: E402
 import codex_install  # noqa: E402
 
-tomllib = pytest.importorskip("tomllib")
+try:
+    import tomllib
+except ImportError:
+    from _measure._vendor import tomli as tomllib
 
 PROMPT = Path("/home/u/.codex/token-optimizer/codex-compact-prompt.md")
 WIN_PROMPT = r"C:\Users\u\.codex\token-optimizer\codex-compact-prompt.md"
@@ -98,6 +101,15 @@ def test_array_line_that_looks_like_a_header_is_not_used():
     updated, _ = ccp._replace_or_append_config(text, PROMPT, force=False)
     assert _root_value(updated) == str(PROMPT)
     assert tomllib.loads(updated)["paths"] == [["a"]]
+
+
+
+def test_multiline_string_header_is_not_used_for_compact_prompt():
+    text = 'notes = """first\n[not_a_table]\nlast"""\n\n[tui]\ntheme = "dark"\n'
+    updated, _ = ccp._replace_or_append_config(text, PROMPT, force=False)
+    parsed = tomllib.loads(updated)
+    assert parsed["experimental_compact_prompt_file"] == str(PROMPT)
+    assert parsed["notes"] == "first\n[not_a_table]\nlast"
 
 
 def test_status_decodes_escaped_windows_path():

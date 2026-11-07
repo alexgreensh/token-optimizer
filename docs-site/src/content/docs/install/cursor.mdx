@@ -5,7 +5,7 @@ description: "Install Token Optimizer for Cursor via a shallow clone. It read-me
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Cursor support is in beta. Hooks are observed at runtime rather than version-gated, and the doctor reports readiness and observed events; a synthetic probe validates installed command execution, not live host firing. Native-Windows hooks are refused. The install path depends on whether you already have Token Optimizer on this machine.
+Cursor support is in beta. Hooks are observed at runtime rather than version-gated, and the doctor reports readiness and observed events; a synthetic probe validates installed command execution, not live host firing. The installer writes native-Windows hook commands for PowerShell and cmd.exe (the Windows note below has the details); Windows execution has not been validated on a live host. The install path depends on whether you already have Token Optimizer on this machine.
 
 ## Prerequisites
 
@@ -45,6 +45,8 @@ bash ~/.claude/token-optimizer/install.sh --cursor
 </Tabs>
 
 The install is idempotent. It read-merges user-level hooks into `~/.cursor/hooks.json` (Cursor has one shared hooks file, so foreign entries are preserved verbatim) and copies the adapter to `~/.cursor/token-optimizer/plugin/`. It never writes repo-level hooks.
+
+Because the adapter lives in your user-level hooks file, it covers the Cursor IDE and the local agent CLI only. Cursor cloud agents and self-hosted background workers do not load `~/.cursor/hooks.json`; they run project-level `.cursor/hooks.json` and Enterprise team or managed hooks instead, so Token Optimizer does not observe those runs.
 
 <Aside type="caution" title="Windows">
 On native Windows the installer writes hook commands that PowerShell and cmd.exe both run (a bare interpreter path and double-quoted arguments, the same form the Codex hooks use). A folder name holding `$`, a backtick, `%` or `!` goes through its short 8.3 name; if there is none, the installer says what to move.

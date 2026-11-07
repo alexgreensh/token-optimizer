@@ -22,6 +22,7 @@ import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -444,6 +445,12 @@ def _write_checkpoint(cpdir, sid, name="auto"):
     fn = f"{sid}-20261105-120000-{name}.md"
     p = cpdir / fn
     p.write_text("# Session State Checkpoint\nGenerated: fixture\n\n## Active Task\nFinish the fixture task.\n")
+    # The advisory requires created <= time.time(). A file stamped "now" can
+    # read a hair AFTER time.time() on Windows (clock vs filesystem timestamp
+    # precision), which made "fresh checkpoint" tests flaky there. Backdate it
+    # well inside the 30-minute window; tests that need an age set their own.
+    stamp = time.time() - 60
+    os.utime(p, (stamp, stamp))
     return p
 
 
@@ -576,12 +583,16 @@ def test_advisory_suppressed_by_remedy_keeps_its_slot(m):
     assert "tokens in use" in msg
 
 
-def test_advisory_shadow_logs_all_three_thresholds(m):
+def test_advisory_shadow_logs_all_three_thresholds(m, monkeypatch):
     """Shadow evaluation runs for 300K/350K/400K regardless of the configured
     threshold, so the weekly eval can compare candidates."""
     mod, qc, tmp_path, cpdir = m
     sid = "sess-adv-9"
-    _write_checkpoint(cpdir, sid)
+    cp = _write_checkpoint(cpdir, sid)
+    # This test compares token thresholds, not filesystem/wall-clock precision.
+    now = 1_800_000_000.0
+    monkeypatch.setattr(mod.time, "time", lambda: now)
+    os.utime(cp, (now - 60, now - 60))
     cache_path = qc / f"quality-cache-{sid}.json"
     qd = _advisory_qdata(tokens=360_000)
     events = []
@@ -594,11 +605,36 @@ def test_advisory_shadow_logs_all_three_thresholds(m):
     shadow = [e for e in events if e.get("feature") == "context_advisory_shadow"]
     assert shadow, "expected a context_advisory_shadow event"
     detail = json.loads(shadow[-1]["detail"])
+    assert detail["tokens"] == 360_000
+    assert detail["blockers"] == {}, detail
     assert set(detail["thresholds"]) == {"300000", "350000", "400000"}
     # 360K clears 300K and 350K, not 400K
-    assert detail["thresholds"]["300000"]["eligible"] is True
+    assert detail["thresholds"]["300000"]["eligible"] is True, detail
     assert detail["thresholds"]["350000"]["eligible"] is True
-    assert detail["thresholds"]["400000"]["below"] is True
+    assert detail["thresholds"]["400000"] == {"below": True, "eligible": False}
+
+
+@pytest.mark.parametrize("age,expected", [(60, True), (1800, True),
+                                          (1800.001, False), (-0.001, False)])
+def test_advisory_shadow_keeps_checkpoint_freshness_gate(m, monkeypatch, age, expected):
+    mod, _qc, _tmp, cpdir = m
+    now = 1_800_000_000.0
+    monkeypatch.setattr(mod.time, "time", lambda: now)
+    sid = "fixture-shadow-clock"
+    cp = _write_checkpoint(cpdir, sid)
+    os.utime(cp, (now - age, now - age))
+    events = []
+    monkeypatch.setattr(mod, "_log_compression_event", lambda **kw: events.append(kw))
+    qd = _advisory_qdata(tokens=360_000)
+    telemetry = mod._absolute_context_tokens(qd, sid)
+    mod._log_context_advisory_shadow(sid, telemetry, {}, qd)
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["tokens"] == 360_000
+    assert detail["blockers"] == ({} if expected else {"no_checkpoint": True}), detail
+    assert detail["thresholds"]["300000"]["eligible"] is expected, detail
+    assert detail["thresholds"]["350000"]["eligible"] is expected, detail
+    assert detail["thresholds"]["400000"] == {"below": True, "eligible": False}
 
 
 # ---------------------------------------------------------------------------
@@ -709,13 +745,21 @@ def test_advisory_checkpoint_freshness_and_body(m, age, boundary, body, expected
     assert mod._session_has_current_checkpoint("fixture-current", qd) is expected
 
 
-def test_advisory_accepts_restorable_checkpoint_sidecar(m):
+def test_advisory_accepts_restorable_checkpoint_sidecar(m, monkeypatch):
     mod, _qc, _tmp, cpdir = m
     cp = _write_checkpoint(cpdir, "fixture-sidecar")
     cp.write_text("# Session State Checkpoint\nGenerated: fixture\n")
     cp.with_suffix(".json").write_text(json.dumps({"objective": "Finish fixture"}))
+    # Sidecar eligibility is independent of filesystem/wall-clock precision.
+    # Explicitly place this checkpoint inside the 30-minute current window.
+    now = 1_800_000_000.0
+    monkeypatch.setattr(mod.time, "time", lambda: now)
+    os.utime(cp, (now - 60, now - 60))
     assert mod._checkpoint_has_restorable_body(cp)
-    assert mod._session_has_current_checkpoint("fixture-sidecar", _advisory_qdata())
+    assert mod._session_has_current_checkpoint("fixture-sidecar", _advisory_qdata()), {
+        "now": now, "mtime": cp.stat().st_mtime,
+        "checkpoints": mod.list_checkpoints(),
+    }
 
 
 @pytest.mark.parametrize("tail,expected", [
@@ -765,6 +809,34 @@ def test_advisory_row_is_estimated_and_does_not_claim_verified(m, monkeypatch):
 def test_recovery_restore_marker_contract(m):
     mod, *_ = m
     assert mod._REC_RESTORE_NOTICE_RE.search("[Token Optimizer] Post-compact recovery (auto checkpoint): fixture")
+
+
+@pytest.mark.parametrize("age,query_sid,sidecar,body_ok,expected", [
+    (60, "fixture-sidecar", '{"objective": "Finish fixture"}', True, True),
+    (1800, "fixture-sidecar", '{"objective": "Finish fixture"}', True, True),
+    (1800.001, "fixture-sidecar", '{"objective": "Finish fixture"}', True, False),
+    (-0.001, "fixture-sidecar", '{"objective": "Finish fixture"}', True, False),
+    (60, "wrong-session", '{"objective": "Finish fixture"}', True, False),
+    (60, "fixture-sidecar", None, False, False),
+    (60, "fixture-sidecar", "{broken", False, False),
+    (60, "fixture-sidecar", "{}", False, False),
+])
+def test_advisory_sidecar_current_window_and_validity(
+        m, monkeypatch, age, query_sid, sidecar, body_ok, expected):
+    mod, _qc, _tmp, cpdir = m
+    now = 1_800_000_000.0
+    monkeypatch.setattr(mod.time, "time", lambda: now)
+    cp = _write_checkpoint(cpdir, "fixture-sidecar")
+    cp.write_text("# Session State Checkpoint\nGenerated: fixture\n")
+    if sidecar is not None:
+        cp.with_suffix(".json").write_text(sidecar)
+    os.utime(cp, (now - age, now - age))
+    checkpoints = mod.list_checkpoints()
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["path"] == cp
+    assert checkpoints[0]["created"].timestamp() == pytest.approx(now - age, rel=0, abs=0.000001)
+    assert mod._checkpoint_has_restorable_body(cp) is body_ok
+    assert mod._session_has_current_checkpoint(query_sid, _advisory_qdata()) is expected
 
 
 @pytest.mark.parametrize("tail,expected", [

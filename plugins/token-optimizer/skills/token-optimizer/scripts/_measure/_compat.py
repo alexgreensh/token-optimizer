@@ -27,7 +27,7 @@ def read_global(module, name):
     try:
         return builtins[name]
     except KeyError:
-        raise NameError(f"name '{name}' is not defined", name=name) from None
+        raise NameError(f"name '{name}' is not defined", **({'name': name} if sys.version_info >= (3, 10) else {})) from None
 
 
 def prepare(module):
@@ -147,7 +147,7 @@ def _lookups(namespace, providers):
             providers.load(binding.domain)
             if name in namespace:
                 return namespace[name]
-        raise AttributeError(f"module {namespace.get('__name__')!r} has no attribute {name!r}", name=name)
+        error = AttributeError(f"module {namespace.get('__name__')!r} has no attribute {name!r}"); error.name = name; raise error  # name= is 3.10+
 
     def __dir__():
         return sorted(set(namespace) | set(providers.pending))

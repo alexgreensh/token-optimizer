@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import importlib.util
 import os
 from pathlib import Path
+import re
 import sys
 from functools import lru_cache
 
@@ -130,8 +131,18 @@ def definition_nodes(names, namespace, path=None):
     return ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
 
 
+def _fstring_inspection(segment):
+    """The facade-prefix edits below, applied to one whole f-string's text."""
+    segment = re.sub(r"_compat\.read_global\((?:_measure_facade|_compat\.facade\(\)),\s*(['\"])(\w+)\1\)",
+                     r"\2", segment)
+    segment = re.sub(r"\b_measure_facade\.__dict__\b", "globals()", segment)
+    return re.sub(r"(?:\b_measure_facade|_compat\.facade\(\))\.", "", segment)
+
+
 def _inspection_text(text):
-    # AST positions also cover expressions inside f-strings on Python 3.11.
+    # Python 3.9 reports wrong positions for expressions INSIDE f-strings (exact
+    # from 3.10), so each outermost f-string is rewritten as a whole from its
+    # own (correct) span and the nodes inside it are skipped below.
     prefix = 'if True:\n' if text[:1].isspace() else ''
     code = prefix + text
     def positions(value):
@@ -163,7 +174,7 @@ def _inspection_text(text):
                 continue
             restored = ast.ExceptHandler(type=handler.type, name=target.attr, body=guarded.body)
             rendered = ast.unparse(ast.fix_missing_locations(restored))
-            if any(isinstance(parent, ast.TryStar) and handler in parent.handlers for parent in ast.walk(tree)):
+            if any(isinstance(parent, getattr(ast, "TryStar", ())) and handler in parent.handlers for parent in ast.walk(tree)):
                 rendered = rendered.replace('except ', 'except* ', 1)
             rendered = rendered.replace('\n', '\n' + ' ' * handler.col_offset)
             _, _, position = positions(code)
@@ -187,7 +198,16 @@ def _inspection_text(text):
         code = code[:position(wrapper.lineno, wrapper.col_offset)] + original + code[position(wrapper.end_lineno, wrapper.end_col_offset):]
     lines, offsets, position = positions(code)
     edits = []
-    for node in ast.walk(ast.parse(code)):
+    tree = ast.parse(code)
+    in_fstring = set()
+    for node in ast.walk(tree):  # breadth-first: an outer f-string comes first
+        if isinstance(node, ast.JoinedStr) and id(node) not in in_fstring:
+            in_fstring.update(id(n) for n in ast.walk(node))
+            left, right = position(node.lineno, node.col_offset), position(node.end_lineno, node.end_col_offset)
+            edits.append((left, right, _fstring_inspection(code[left:right])))
+    for node in ast.walk(tree):
+        if id(node) in in_fstring:
+            continue
         if (isinstance(node, ast.Call) and ast.unparse(node.func) == '_compat.read_global'
                 and len(node.args) == 2 and ast.unparse(node.args[0]) in ('_measure_facade', '_compat.facade()')
                 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)

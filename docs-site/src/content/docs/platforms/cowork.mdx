@@ -55,7 +55,7 @@ The Cowork packager retains a subset of Claude Code hook events. These are the a
 | Event | What rides it in Cowork |
 |---|---|
 | `UserPromptSubmit` | Per-turn: prompt-continuity hint, verbosity steer, quality-cache warn. Plus the run-once features that normally ride SessionStart: ensure-health, forced cache warm, compact-restore pointer. |
-| `PreToolUse` | `read_cache` on Read, `bash_hook` on Bash, checkpoint trigger on Agent and Task, refetch guard on MCP. |
+| `PreToolUse` | `read_cache` on Read, checkpoint trigger on Agent and Task, refetch guard on MCP. |
 | `PostToolUse` | Large-result archiving and post-tool bookkeeping. |
 | `Stop` | compact-capture and session-end flush. |
 

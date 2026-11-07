@@ -24,7 +24,6 @@ Plugin install wires every hook automatically through `hooks/hooks.json`. No man
 | Hook event | What it does |
 |---|---|
 | `PreToolUse: Read` | Returns a delta diff or structure-map skeleton instead of re-reading a full file |
-| `PreToolUse: Bash` | Always silent. It never returns a permission decision |
 | `PreCompact` | Injects PRESERVE and DROP guidance into the compact prompt, then saves a checkpoint |
 | `SessionStart` | Restores the matching checkpoint and installs the status line when the slot is empty |
 | `UserPromptSubmit` | Updates the quality cache that feeds the status bar |

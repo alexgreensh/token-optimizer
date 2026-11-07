@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Token Optimizer v5: Bash Output Compression Wrapper.
 
-Invoked by bash_hook.py via PreToolUse command rewriting:
+Shared PostToolUse and host-bridge compression; optional direct wrapper:
   bash_compress.py git status
   bash_compress.py pytest tests/
 
-Runs the command, captures output, applies pattern-matched compression.
-On ANY error, returns raw output unchanged (fail-open).
+The legacy bash_hook.py no longer rewrites PreToolUse commands. Direct calls
+capture and compress output; errors retain raw output unchanged (fail-open).
 
 Security:
 - shell=True is NEVER used

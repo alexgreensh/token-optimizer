@@ -44,6 +44,25 @@ openclaw plugins install token-optimizer
 
 </Steps>
 
+## Grant conversation access
+
+The in-session continuity hints, cold-resume and nudges run on OpenClaw's `agent_turn_prepare` hook. OpenClaw lets a non-bundled plugin use that hook only with an explicit grant in `openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "token-optimizer-openclaw": {
+        "enabled": true,
+        "hooks": { "allowConversationAccess": true }
+      }
+    }
+  }
+}
+```
+
+Merge the entry into your existing config; with the default hybrid reload mode the policy change hot-reloads. Without the grant the plugin still installs and the CLI, detectors and dashboard work, but the in-session contributions stay silent. See the [OpenClaw hook permissions](https://docs.openclaw.ai/plugins/hooks#permissions-and-scope) for the upstream rule.
+
 ## Verify the install
 
 ```bash

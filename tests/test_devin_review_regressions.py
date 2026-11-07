@@ -474,8 +474,8 @@ d._atomic=atomic;d.install()
 
 def test_all_verified_sparse_paths_cover_release_template():
     script=(SCRIPTS.parents[2]/'install.sh').read_text()
-    assert 'skills/ hooks/ .claude-plugin/' not in script
-    assert script.count('skills/ hooks/ devin/ .claude-plugin/')>=5
+    from helpers.install_sparse import assert_sparse_paths
+    assert_sparse_paths(script)
 
 def test_hard_interrupted_refresh_restores_and_retries(tmp_path):
     env=dict(os.environ,HOME=str(tmp_path))
@@ -505,21 +505,14 @@ def test_verified_release_sparse_checksum_end_to_end(tmp_path,mode):
     def git(*args):return subprocess.run(['git','-C',str(repo),*args],check=True,capture_output=True)
     git('init');git('add','.')
     git('-c','user.name=Test','-c','user.email=test@example.invalid','commit','-m','fixture')
-    git('sparse-checkout','init','--cone')
+    git('config', 'core.autocrlf', 'false'); git('tag', 'v1.0.0')
     source=(repo/'install.sh').read_text()
-    cone=source.split('sparse-checkout set',1)[1].split('\\\n',1)[1].split('\\\n',1)[0].strip().split()
-    git('sparse-checkout','set',*cone)
     paths=['install.sh','devin/SKILL.md','skills/source','hooks/source','.claude-plugin/source','.codex-plugin/source','.codex/source']
     manifest=tmp_path/'CHECKSUMS.sha256'
-    manifest.write_text(''.join(hashlib.sha256((repo/p).read_bytes()).hexdigest()+'  '+p+'\n' for p in paths))
-    functions=tmp_path/'verifier-functions.sh'
-    start=source.index('verify_checksum_manifest_coverage()')
-    end=source.index('verify_release_candidate_before_live_update()',start)
-    functions.write_text('warn() { printf "%s\\n" "$1"; }\n'+source[start:end])
-    script='source "$1"; CHECKSUM_FILE="$2"; TMP_DIR="$4"; verify_checksums_in_dir "$3"'
-    env=dict(os.environ,_TO_INSTALL_SH_TEST_MODE='1')
-    run=subprocess.run(['bash','-c',script,'test',str(functions),str(manifest),str(repo),str(tmp_path)],env=env,capture_output=True)
-    assert run.returncode==0,run.stderr
+    manifest.write_bytes(''.join(hashlib.sha256((repo/p).read_bytes()).hexdigest()+'  '+p+'\n' for p in paths).encode())
+    from helpers.install_sparse import verify_sparse_clone
+    verify_sparse_clone(source, repo, manifest, tmp_path, mode)
+    assert git('status', '--porcelain').stdout == b''
 
 def test_pending_recovery_preserves_foreign_leaf(tmp_path):
     env=dict(os.environ,HOME=str(tmp_path))

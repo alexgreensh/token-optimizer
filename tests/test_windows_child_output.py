@@ -11,6 +11,7 @@ import importlib.util
 import io
 import os
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -151,9 +152,26 @@ def test_read_cache_stats_still_prints_on_this_platform(tmp_path):
     env["CLAUDE_CONFIG_DIR"] = str(home / ".claude")
     env["TOKEN_OPTIMIZER_SNAPSHOT_DIR"] = str(tmp_path / "snap")
     env["PYTHONUTF8"] = "1"
+    started = time.monotonic()
     proc = subprocess.run(
         [sys.executable, str(MEASURE_PATH), "read-cache-stats", "--session", "r3d-test"],
         capture_output=True, text=True, timeout=60, env=env, cwd=str(tmp_path),
     )
-    assert proc.returncode == 0, proc.stderr
+    cli_s = round(time.monotonic() - started, 2)
+
+    def diagnostics():
+        # Failure-only. The product keeps its own 5s child bound; this only times the same child run
+        # directly with a longer limit, so a log can tell "slow cold start" from "hung".
+        probe = ""
+        try:
+            t0 = time.monotonic()
+            direct = subprocess.run(
+                [sys.executable, str(MEASURE_PATH.parent / "read_cache.py"), "--stats", "--session", "r3d-test"],
+                capture_output=True, text=True, timeout=30, env=env, cwd=str(tmp_path))
+            probe = "direct read_cache --stats: rc=%s elapsed_s=%s" % (direct.returncode, round(time.monotonic() - t0, 2))
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never mask the real failure
+            probe = "direct probe failed: %s" % type(exc).__name__
+        return "cli_elapsed_s=%s rc=%s; %s; stderr_tail=%r" % (cli_s, proc.returncode, probe, proc.stderr[-300:])
+
+    assert proc.returncode == 0, diagnostics() + "\nstderr: " + proc.stderr  # message is lazy: built only on failure
     assert (proc.stdout + proc.stderr).strip(), "read-cache-stats printed nothing"

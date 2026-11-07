@@ -3,7 +3,7 @@
 
 Lets a user opt NEW read-only commands into existing compression handlers
 and exclude commands from compression, without weakening safety. The loader
-is pure stdlib (tomllib with a no-tomllib fallback), performs no file writes,
+is pure stdlib (tomllib, or a strict subset reader on Python 3.9/3.10), performs no file writes,
 and gates every ``add`` entry through ``_is_safe_add`` before it reaches the
 effective allowlist.
 
@@ -37,7 +37,9 @@ Rules:
 from __future__ import annotations
 
 import fnmatch
+import functools
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +49,310 @@ try:
     import tomllib
 except ImportError:
     tomllib = None  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
+# TOML subset fallback (Python 3.9 and 3.10 have no tomllib)
+# ---------------------------------------------------------------------------
+# The command-filters file only needs tables, bare/quoted/dotted keys, strings,
+# booleans, integers, arrays and single-line inline tables. This reader accepts
+# exactly that and raises on anything else (multi-line strings, arrays of
+# tables, floats, dates, ...), so an unsupported file fails open instead of
+# being half-read. On Python 3.11+ the stdlib parser is always used.
+
+class _SubsetError(ValueError):
+    """The file uses TOML syntax outside the supported subset, or is invalid."""
+
+
+_MAX_DEPTH = 32  # nesting of arrays / inline tables; real filter files use 2
+_BARE_KEY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+_ESCAPES = {"b": "\b", "t": "\t", "n": "\n", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
+
+
+class _SubsetReader:
+    def __init__(self, text: str):
+        self.s = text
+        self.i = 0
+        # TOML forbids reopening a table that a dotted key or an inline table
+        # created, and defining the same [header] twice. Track those by identity.
+        self.inline_ids = set()
+        self.dotted_ids = set()
+        self.header_ids = set()
+        self.depth = 0
+
+    def fail(self, msg: str):
+        line = self.s.count("\n", 0, self.i) + 1
+        raise _SubsetError(f"{msg} (line {line})")
+
+    def peek(self) -> str:
+        return self.s[self.i] if self.i < len(self.s) else ""
+
+    def skip_inline_ws(self):
+        while self.peek() in (" ", "\t"):
+            self.i += 1
+
+    def newline(self) -> bool:
+        """Consume one LF or CRLF; a lone CR is not a newline in TOML."""
+        if self.peek() == "\n":
+            self.i += 1
+            return True
+        if self.peek() == "\r" and self.s[self.i + 1:self.i + 2] == "\n":
+            self.i += 2
+            return True
+        return False
+
+    def skip_comment(self):
+        if self.peek() == "#":
+            while self.peek() not in ("", "\n") and self.s[self.i:self.i + 2] != "\r\n":
+                ch = self.peek()
+                if ord(ch) < 0x20 and ch != "\t" or ch == "\x7f":
+                    self.fail("control character in comment")
+                self.i += 1
+
+    def skip_ws_and_newlines(self):
+        # Inside arrays: whitespace, newlines and comments are all insignificant.
+        while True:
+            self.skip_inline_ws()
+            if self.peek() == "#":
+                self.skip_comment()
+            elif not self.newline():
+                return
+
+    def end_of_line(self):
+        self.skip_inline_ws()
+        self.skip_comment()
+        if self.peek() != "" and not self.newline():
+            self.fail("unexpected text after value")
+
+    def key_part(self) -> str:
+        self.skip_inline_ws()
+        c = self.peek()
+        if c == '"':
+            return self.basic_string()
+        if c == "'":
+            return self.literal_string()
+        start = self.i
+        while self.peek() and self.peek() in _BARE_KEY_CHARS:
+            self.i += 1
+        if start == self.i:
+            self.fail("expected a key")
+        return self.s[start:self.i]
+
+    def dotted_key(self) -> list:
+        parts = [self.key_part()]
+        self.skip_inline_ws()
+        while self.peek() == ".":
+            self.i += 1
+            parts.append(self.key_part())
+            self.skip_inline_ws()
+        return parts
+
+    def basic_string(self) -> str:
+        if self.s.startswith('"""', self.i):
+            self.fail("multi-line strings are not supported")
+        self.i += 1
+        out = []
+        while True:
+            c = self.peek()
+            if c in ("", "\n", "\r"):
+                self.fail("unterminated string")
+            self.i += 1
+            if c == '"':
+                return "".join(out)
+            if c == "\\":
+                e = self.peek()
+                self.i += 1
+                if e in _ESCAPES:
+                    out.append(_ESCAPES[e])
+                elif e in ("u", "U"):
+                    n = 4 if e == "u" else 8
+                    digits = self.s[self.i:self.i + n]
+                    if len(digits) != n or any(d not in "0123456789abcdefABCDEF" for d in digits):
+                        self.fail("invalid unicode escape")
+                    code = int(digits, 16)
+                    if code > 0x10FFFF or 0xD800 <= code <= 0xDFFF:
+                        self.fail("invalid unicode escape")
+                    out.append(chr(code))
+                    self.i += n
+                else:
+                    self.fail("invalid escape sequence")
+            elif ord(c) < 0x20 and c != "\t" or c == "\x7f":
+                self.fail("control character in string")
+            else:
+                out.append(c)
+
+    def literal_string(self) -> str:
+        if self.s.startswith("'''", self.i):
+            self.fail("multi-line strings are not supported")
+        end = self.i + 1
+        while end < len(self.s) and self.s[end] not in ("'", "\n", "\r"):
+            end += 1
+        if end >= len(self.s) or self.s[end] != "'":
+            self.fail("unterminated string")
+        text = self.s[self.i + 1:end]
+        if any(ord(ch) < 0x20 and ch != "\t" or ch == "\x7f" for ch in text):
+            self.fail("control character in string")
+        self.i = end + 1
+        return text
+
+    def value(self):
+        self.skip_inline_ws()
+        c = self.peek()
+        if c == '"':
+            return self.basic_string()
+        if c == "'":
+            return self.literal_string()
+        if c == "[":
+            return self.array()
+        if c == "{":
+            return self.inline_table()
+        for word, val in (("true", True), ("false", False)):
+            if self.s.startswith(word, self.i):
+                after = self.s[self.i + len(word):self.i + len(word) + 1]
+                if after == "" or after in " \t\r\n,]}#":
+                    self.i += len(word)
+                    return val
+        start = self.i
+        if self.peek() in ("+", "-"):
+            self.i += 1
+        digits_start = self.i
+        while self.peek().isdigit() and self.peek().isascii():
+            self.i += 1
+        text = self.s[digits_start:self.i]
+        after = self.peek()
+        if not text or (len(text) > 1 and text[0] == "0") or (after and after not in " \t\r\n,]}#"):
+            self.i = start
+            self.fail("unsupported value")
+        return int(self.s[start:self.i])
+
+    def enter(self):
+        self.depth += 1
+        if self.depth > _MAX_DEPTH:
+            self.fail("arrays and inline tables nested too deeply")
+
+    def array(self) -> list:
+        self.enter()
+        try:
+            return self._array()
+        finally:
+            self.depth -= 1
+
+    def _array(self) -> list:
+        self.i += 1
+        items = []
+        while True:
+            self.skip_ws_and_newlines()
+            if self.peek() == "]":
+                self.i += 1
+                return items
+            items.append(self.value())
+            self.skip_ws_and_newlines()
+            if self.peek() == ",":
+                self.i += 1
+            elif self.peek() != "]":
+                self.fail("expected ',' or ']' in array")
+
+    def inline_table(self) -> dict:
+        self.enter()
+        try:
+            return self._inline_table()
+        finally:
+            self.depth -= 1
+
+    def _inline_table(self) -> dict:
+        self.i += 1
+        table: dict = {}
+        self.inline_ids.add(id(table))
+        self.skip_inline_ws()
+        if self.peek() == "}":
+            self.i += 1
+            return table
+        while True:
+            keys = self.dotted_key()
+            self.skip_inline_ws()
+            if self.peek() != "=":
+                self.fail("expected '='")
+            self.i += 1
+            self.assign(table, keys, self.value(), "inline table")
+            self.skip_inline_ws()
+            c = self.peek()
+            self.i += 1
+            if c == "}":
+                return table
+            if c != ",":
+                self.fail("expected ',' or '}' in inline table")
+            self.skip_inline_ws()
+            if self.peek() == "}":
+                self.fail("trailing comma in inline table")
+
+    def assign(self, table: dict, keys: list, val, what: str):
+        for part in keys[:-1]:
+            if part in table:
+                nxt = table[part]
+                # A dotted key may extend a table made by dotted keys or created
+                # implicitly as the parent of a [header]; not one a header, an
+                # inline table or a value defined itself.
+                if (not isinstance(nxt, dict) or id(nxt) in self.inline_ids
+                        or id(nxt) in self.header_ids):
+                    self.fail(f"key conflicts with an existing value in {what}")
+                self.dotted_ids.add(id(nxt))
+            else:
+                nxt = table[part] = {}
+                self.dotted_ids.add(id(nxt))
+            table = nxt
+        if keys[-1] in table:
+            self.fail(f"duplicate key in {what}")
+        table[keys[-1]] = val
+
+    def parse(self) -> dict:
+        root: dict = {}
+        current = root
+        while True:
+            self.skip_inline_ws()
+            c = self.peek()
+            if c == "":
+                return root
+            if c == "#":
+                self.skip_comment()
+            if self.newline():
+                continue
+            if self.peek() == "":
+                return root
+            if self.peek() == "[":
+                if self.s.startswith("[[", self.i):
+                    self.fail("arrays of tables are not supported")
+                self.i += 1
+                keys = self.dotted_key()
+                self.skip_inline_ws()
+                if self.peek() != "]":
+                    self.fail("expected ']'")
+                self.i += 1
+                current = root
+                for n, part in enumerate(keys):
+                    nxt = current.setdefault(part, {})
+                    # A table made by dotted keys can still gain sub-tables, but
+                    # the header may not name it itself; inline tables are closed.
+                    if (not isinstance(nxt, dict) or id(nxt) in self.inline_ids
+                            or (n == len(keys) - 1 and id(nxt) in self.dotted_ids)):
+                        self.fail("table conflicts with an existing value")
+                    current = nxt
+                if id(current) in self.header_ids:
+                    self.fail("table defined twice")
+                self.header_ids.add(id(current))
+                self.end_of_line()
+                continue
+            keys = self.dotted_key()
+            self.skip_inline_ws()
+            if self.peek() != "=":
+                self.fail("expected '='")
+            self.i += 1
+            self.assign(current, keys, self.value(), "table")
+            self.end_of_line()
+
+
+def _loads_subset(text: str) -> dict:
+    """Parse the supported TOML subset; raise _SubsetError on anything else."""
+    return _SubsetReader(text).parse()
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -71,6 +377,7 @@ _UNSAFE_INTERPRETERS = frozenset({
     "bash", "sh", "zsh", "dash", "ksh", "fish", "csh", "tcsh",
     "python", "python3", "python2", "ruby", "perl", "node", "deno", "bun",
     "lua", "tcl", "awk", "sed", "eval", "exec", "source", ".",
+    "osascript", "php", "gawk", "mawk", "nawk", "rscript",
 })
 _UNSAFE_PREFIXES = frozenset({"sudo", "su", "doas", "pkexec", "gksudo"})
 _UNSAFE_WRITE_SUBCMDS = frozenset({
@@ -79,6 +386,75 @@ _UNSAFE_WRITE_SUBCMDS = frozenset({
     "shutdown", "reboot", "halt", "poweroff",
 })
 _DANGEROUS_CHARS = frozenset(";|&`$(){}><\n\r\x00")
+
+# git subcommands that write. Superset of bash_whitelist._GIT_WRITE_SUBCMDS
+# (a test pins the superset relation; importing it here would create a
+# circular dependency on the hot path). Bounded, not a full git grammar:
+# ambiguous subcommands that can write with the right flag (``branch -D``,
+# ``config``, ``reflog delete``) are treated as writes outright.
+_GIT_WRITE_SUBCMDS = frozenset({
+    "commit", "push", "pull", "merge", "rebase", "reset", "checkout",
+    "switch", "stash", "tag", "cherry-pick", "revert", "am", "apply",
+    "add", "rm", "mv", "restore", "bisect", "clean", "fetch", "clone",
+    "init", "remote", "submodule", "worktree",
+    "branch", "config", "gc", "prune", "reflog", "notes", "replace",
+    "filter-branch", "update-ref", "symbolic-ref", "repack", "write-tree",
+    "commit-tree", "update-index", "read-tree", "hash-object",
+})
+# git subcommands treated as read-only. Anything outside
+# _GIT_WRITE_SUBCMDS | _GIT_READONLY_SUBCMDS (aliases, plumbing, new
+# subcommands) is refused, matching the compress hook's own stance that an
+# unknown git invocation is not provably read-only.
+_GIT_READONLY_SUBCMDS = frozenset({
+    "status", "log", "diff", "show", "ls-files", "ls-tree", "blame",
+    "annotate", "grep", "rev-parse", "rev-list", "describe", "shortlog",
+    "show-ref", "cat-file", "count-objects", "var", "version", "whatchanged",
+})
+# find flags that delete, write or run another program.
+_FIND_DESTRUCTIVE_FLAGS = frozenset({
+    "-delete", "-exec", "-execdir", "-ok", "-okdir",
+    "-fprint", "-fprint0", "-fls", "-fprintf",
+})
+_GLOB_CHARS = frozenset("*?[")
+# Runner / wrapper commands: they exec another command (``timeout 5 rm -rf x``,
+# ``nice rm x``, ``xargs rm``), so the real command is not argv[0]. Refused
+# outright (fail closed) rather than unwrapped, since each has its own option
+# grammar. Windows shells are interpreters too.
+_LAUNCHERS = frozenset({
+    "timeout", "nice", "ionice", "nohup", "stdbuf", "time", "chrt", "taskset",
+    "watch", "xargs", "parallel", "command", "exec", "builtin", "setsid",
+    "unbuffer", "strace", "ltrace", "nsenter", "chroot", "flock", "busybox",
+    "script", "runuser", "systemd-run", "at", "batch", "ssh", "wsl", "cmd",
+    "powershell", "pwsh", "start", "sh.exe",
+})
+# Minimum set of known writers that are not in _UNSAFE_WRITE_SUBCMDS. This is
+# a bounded denylist, not a claim that every other command is read-only.
+_KNOWN_WRITERS = frozenset({
+    "tee", "truncate", "shred", "touch", "unlink", "install", "rsync", "patch",
+    "sponge", "scp", "rename", "del", "erase", "rd", "move", "copy", "ren",
+})
+_NEVER_COMPRESS_CMD0 = (
+    _UNSAFE_INTERPRETERS | _UNSAFE_PREFIXES | _UNSAFE_WRITE_SUBCMDS
+    | _LAUNCHERS | _KNOWN_WRITERS
+)
+# Interpreters named by version (python3.12.1, python3.13t, python3.12m,
+# pypy3.10-v7.3) and the Windows ``py`` launcher; fullmatch on the normalized
+# word, so python3-config, pyright, pytest and pyenv do not match.
+_VERSIONED_INTERPRETER_RE = re.compile(
+    r"python\d+(?:\.\d+)*[a-z]*|pypy\d*(?:\.\d+)*(?:[-.][a-z0-9.]+)?|py")
+_EXE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
+# fnmatch candidates: bare names plus their Windows executable spellings, so
+# ``rm.*`` / ``r*.exe`` are caught as well as ``r*``. Versioned interpreter
+# spellings carry ABI suffixes (t, m, d) so ``python3.13?`` is caught too.
+# Built on first use: only the add-entry gate needs it, not per-command matching.
+@functools.lru_cache(maxsize=1)
+def _glob_names() -> frozenset:
+    return frozenset(
+        n + ext for n in _NEVER_COMPRESS_CMD0 | {"py", "pypy", "pypy2", "pypy3"}
+        | {f"{p}{m}.{n}{abi}" for p in ("python", "pypy") for m in (2, 3)
+           for n in range(20) for abi in ("", "t", "m", "d", "td")}
+        for ext in ("",) + _EXE_SUFFIXES
+    )
 
 _warned_paths: set = set()
 
@@ -110,7 +486,10 @@ class CommandFilterConfig:
 
     def find_add(self, command_str: str) -> Optional[AddEntry]:
         """Return the first add entry whose command matches ``command_str``,
-        or None."""
+        or None. Never matches a destructive command."""
+        # No entries means no match; skip the tokenizing check on the hot path.
+        if not self.adds or is_destructive_command(command_str):
+            return None
         for entry in self.adds:
             if entry.command == command_str:
                 return entry
@@ -134,6 +513,11 @@ class EffectiveFilters:
         return False
 
     def find_user_add(self, command_str: str) -> Optional[AddEntry]:
+        # A glob in an add entry must never make a destructive command
+        # eligible for compression (the wrapper would run it). No entries means
+        # no match, so the tokenizing check is skipped on the hot path.
+        if not self.user_adds or is_destructive_command(command_str):
+            return None
         for entry in self.user_adds:
             if entry.command == command_str:
                 return entry
@@ -153,20 +537,28 @@ def _is_all_wildcard(token: str) -> bool:
     return bool(token) and set(token) <= {"*"}
 
 
-def _effective_cmd0(tokens: List[str]) -> Optional[str]:
-    """Return the basename of the REAL command being run.
+def _effective_cmd_token(tokens: List[str]) -> Optional[str]:
+    """Return the token of the REAL command being run.
 
     Normalizes away the path (so ``/bin/bash``, ``./python``, ``/usr/bin/sudo``
     are recognized as ``bash``/``python``/``sudo``) and resolves a leading
     ``env`` invocation by skipping ``VAR=val`` assignments and env's own options
-    (``-i``, and the operand-taking ``-u``/``-C``/``-S``) to reach the command
-    env would exec. Returns None when no command token remains.
+    (``-i``, and the operand-taking ``-u``/``-C``/``--chdir``) to reach the
+    command env would exec, looping through nested ``env``. ``-S`` /
+    ``--split-string`` and any unrecognized ``-`` option fail closed (None).
+    Returns None when no command token remains.
     """
     if not tokens:
         return None
     i = 0
-    if os.path.basename(tokens[0]) == "env":
-        i = 1
+    # ``env`` may be nested (``env env rm x``) and may carry assignments and
+    # options before the real command, so unwrap repeatedly. Any option token
+    # this parser does not model exactly -- ``--opt=val``, joined
+    # ``-uVAL``/``-CVAL``/``-SVAL``, or ``-S``/``--split-string`` whose operand
+    # is itself a command string -- fails closed by returning None rather
+    # than guessing which later token is the command.
+    while i < len(tokens) and _norm_cmd(tokens[i]) == "env":
+        i += 1
         while i < len(tokens):
             tok = tokens[i]
             if "=" in tok and not tok.startswith("-"):
@@ -175,13 +567,203 @@ def _effective_cmd0(tokens: List[str]) -> Optional[str]:
             if tok in ("-i", "--ignore-environment", "-", "-v", "--debug"):
                 i += 1
                 continue
-            if tok in ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"):
-                i += 2  # option consumes its operand
+            if tok in ("-u", "--unset", "-C", "--chdir"):
+                i += 2  # option consumes its operand (``--`` included: it is
+                # a legal operand, e.g. ``env -u -- rm`` unsets ``--``)
                 continue
+            if tok == "--":
+                i += 1
+                break  # env end-of-options: the next token is the command
+            if tok.startswith("-"):
+                return None
             break  # first non-option, non-assignment token = the command
     if i >= len(tokens):
         return None
-    return os.path.basename(tokens[i])
+    return tokens[i]
+
+
+def _effective_cmd0(tokens: List[str]) -> Optional[str]:
+    tok = _effective_cmd_token(tokens)
+    return None if tok is None else _norm_cmd(tok)
+
+
+def _raw_cmd_word(tokens: List[str]) -> str:
+    """Lower-cased basename of the command word, backslash paths included,
+    WITHOUT stripping an executable suffix (so ``rm.*`` stays a glob)."""
+    cmd = _effective_cmd_token(tokens)
+    return os.path.basename(cmd.replace("\\", "/")).lower() if cmd else ""
+
+
+def _norm_cmd(token: str) -> str:
+    """Basename, lower-cased, without a Windows executable suffix, so
+    ``RM``, ``/bin/rm`` and ``rm.exe`` all compare as ``rm``."""
+    name = os.path.basename(token.replace("\\", "/")).lower()
+    for ext in (".exe", ".com", ".bat", ".cmd"):
+        if name.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
+def _git_subcommand_tokens(tokens: List[str]) -> List[str]:
+    """Return the tokens after ``git``'s global options, starting at the
+    subcommand word (skips ``-C <dir>``, ``-c k=v``, ``--git-dir <d>``...)."""
+    idx = next((i for i, t in enumerate(tokens) if _norm_cmd(t) == "git"), None)
+    if idx is None:
+        return []
+    rest = tokens[idx + 1:]
+    j = 0
+    while j < len(rest) and rest[j].startswith("-"):
+        j += 2 if rest[j] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+    return rest[j:]
+
+
+def _git_writes_output(sub: List[str]) -> bool:
+    """``git diff/log/show --output[=]FILE`` writes FILE: treat it as a write."""
+    return any(t == "--output" or t.startswith("--output=") for t in sub[1:])
+
+
+def _git_has_config_options(tokens: List[str]) -> bool:
+    """True when git global options other than ``-C <dir>`` / ``--no-pager``
+    / ``--no-optional-locks`` precede the subcommand. ``-c alias.x=!cmd``,
+    ``--config-env``, ``--exec-path`` and friends can run arbitrary programs."""
+    idx = next((i for i, t in enumerate(tokens) if _norm_cmd(t) == "git"), None)
+    if idx is None:
+        return False
+    rest = tokens[idx + 1:]
+    j = 0
+    while j < len(rest) and rest[j].startswith("-"):
+        if rest[j] == "-C":
+            j += 2
+        elif rest[j] in ("--no-pager", "--no-optional-locks"):
+            j += 1
+        else:
+            return True
+    return False
+
+
+def is_destructive_command(command_str: str) -> bool:
+    """True when ``command_str`` runs something that writes, deletes or
+    launches another program (rm, mv, sudo, an interpreter, a git write
+    subcommand, find -delete/-exec, ...).
+
+    Used at match time so a glob in a user ``add`` entry can never make such
+    a command eligible for compression, whatever the glob expands to.
+    Fails closed: an unparseable command counts as destructive, and unknown
+    git subcommands (possible aliases) count as writes.
+
+    Bounded by design: this module ships inside the Devin payload closed
+    set, so it cannot depend on the hook's read-only classifier
+    (pipeline_analyzer); the closed-set policy test forbids that import.
+    The checks are self-contained denylists, not a full shell parser;
+    commands they do not recognize stay eligible for user ``add`` entries,
+    as before.
+    """
+    # Multi-line input hides extra commands (``mytool --flag\nrm -rf x``)
+    # and command/process substitution executes whatever it nests
+    # (``echo $(rm -rf x)``, ``cat <(rm -rf x)``): refuse on the raw string.
+    if any(c in command_str for c in ("\n", "\r")):
+        return True
+    if "$(" in command_str or "`" in command_str or "<(" in command_str:
+        return True
+    import shlex
+    try:
+        # punctuation_chars splits glued shell operators (``cat;rm -rf x``)
+        # into real separator tokens so the per-stage checks below see them.
+        tokens = list(shlex.shlex(command_str, posix=True,
+                                  punctuation_chars="|&;<>(){}"))
+    except ValueError:
+        return True
+    # POSIX shlex eats backslashes (``C:\\bin\\rm.exe`` -> ``C:binrm.exe``), so
+    # also judge the raw whitespace split; destructive if either view is.
+    raw = command_str.split()
+    if raw != tokens and _tokens_destructive(raw):
+        return True
+    return _tokens_destructive(tokens)
+
+
+def _segment_destructive(tokens: List[str]) -> bool:
+    # Skip leading VAR=val assignments; _effective_cmd0 then resolves env.
+    start = 0
+    while start < len(tokens) and "=" in tokens[start] and not tokens[start].startswith("-"):
+        start += 1
+    tokens = tokens[start:]
+    # A bare ``--`` ends option parsing, but inside ``env`` it is also a
+    # legal option operand (``env -u -- rm`` unsets a var named ``--`` and
+    # runs ``rm``) or env's own end-of-options marker, so only non-env
+    # segments get the blanket strip; the env unwrapper models ``--``.
+    if not tokens or _norm_cmd(tokens[0]) != "env":
+        tokens = [t for t in tokens if t != "--"]
+    if not tokens:
+        return False
+    cmd0 = _effective_cmd0(tokens)
+    if (cmd0 is None or cmd0 in _NEVER_COMPRESS_CMD0
+            or _VERSIONED_INTERPRETER_RE.fullmatch(cmd0)):
+        return True
+    if tokens and tokens[0] in _SHELL_STRUCT_TOKENS:
+        return True
+    if cmd0 == "git":
+        if _git_has_config_options(tokens):
+            return True
+        sub = _git_subcommand_tokens(tokens)
+        if not sub:
+            return True
+        name = sub[0].lower()
+        if name in _GIT_WRITE_SUBCMDS or _git_writes_output(sub):
+            return True
+        if name not in _GIT_READONLY_SUBCMDS:
+            # Unknown subcommand: could be an alias defined in repo config.
+            return True
+    if cmd0 == "find" and any(t in _FIND_DESTRUCTIVE_FLAGS for t in tokens):
+        return True
+    if cmd0 == "sed" and any(t == "-i" or t.startswith("-i")
+                             or t.startswith("--in-place") for t in tokens):
+        return True
+    return False
+
+
+_PIPELINE_SEPARATORS = frozenset({
+    "|", "||", "&", "&&", ";", ";;", ";&", ";;&", "|&", "(", ")", "{", "}",
+})
+_PUNCT_CHARS = frozenset("|&;<>(){}")
+# Shell grammar keywords and groupers: a segment LED by one of these hides
+# the real command behind it (``if true; then rm x; fi``, ``{ rm x; }``).
+# Refused outright (fail closed on recognized grammar) rather than
+# mini-interpreting the shell.
+_SHELL_STRUCT_TOKENS = frozenset({
+    "if", "then", "else", "elif", "fi", "for", "while", "until", "do",
+    "done", "case", "esac", "select", "coproc", "!", "{", "}", "(", ")",
+})
+
+
+def _tokens_destructive(tokens: List[str]) -> bool:
+    # shlex splits runs of punctuation into single tokens (``|&``, ``;;``).
+    # Only the exact recognized separators split a stage; ANY other
+    # all-punctuation run (every redirect, fd dup, glued or invalid grammar)
+    # fails closed rather than risking an exception that hides a writer.
+    segments = [[]]
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t and all(c in _PUNCT_CHARS for c in t):
+            if t in _PIPELINE_SEPARATORS:
+                segments.append([])
+                i += 1
+                continue
+            # Unrecognized punctuation run (incl. all redirects): fail closed.
+            return True
+        segments[-1].append(t)
+        i += 1
+    # Check every pipeline stage, not just argv[0]: ``ls | tee out`` writes
+    # through the second stage.
+    return any(_segment_destructive(seg) for seg in segments if seg)
+
+
+def _glob_can_match_unsafe(token: str, names) -> bool:
+    """True when ``token`` contains a glob and fnmatch could expand it to one
+    of ``names`` (e.g. ``r*``, ``?m``, ``[r]m`` all match ``rm``)."""
+    if not any(ch in _GLOB_CHARS for ch in token):
+        return False
+    return any(fnmatch.fnmatchcase(name, token) for name in names)
 
 
 def _is_safe_add(command: str, handler: str) -> bool:
@@ -221,12 +803,35 @@ def _is_safe_add(command: str, handler: str) -> bool:
         return False
     if _is_all_wildcard(cmd0):
         return False
-    if cmd0 in _UNSAFE_INTERPRETERS:
+    cmd0 = cmd0.lower()
+    # _raw_cmd_word already lower-cases and takes the basename of any
+    # backslash path, so one glob check against the dangerous names suffices.
+    raw0 = _raw_cmd_word(tokens)
+    if raw0 and _glob_can_match_unsafe(raw0, _glob_names()):
+        return False
+    if cmd0 in _SHELL_STRUCT_TOKENS or _glob_can_match_unsafe(cmd0, _SHELL_STRUCT_TOKENS):
+        return False
+    if raw0 and _glob_can_match_unsafe(raw0, _SHELL_STRUCT_TOKENS):
+        return False
+    if cmd0 in _UNSAFE_INTERPRETERS or _VERSIONED_INTERPRETER_RE.fullmatch(cmd0):
         return False
     if cmd0 in _UNSAFE_PREFIXES:
         return False
     if cmd0 in _UNSAFE_WRITE_SUBCMDS:
         return False
+    # Globs: the command string is later matched with fnmatch, so ``r*`` also
+    # matches ``rm -rf target``. Reject a glob command word that could match
+    # any destructive / interpreter / privilege command name.
+    if cmd0 in _NEVER_COMPRESS_CMD0 or _glob_can_match_unsafe(cmd0, _glob_names()):
+        return False
+    # ``git <glob>``: the subcommand word must not be able to match a write.
+    if cmd0 == "git":
+        if _git_has_config_options(tokens):
+            return False
+        sub = _git_subcommand_tokens(tokens)
+        if sub and (sub[0].lower() in _GIT_WRITE_SUBCMDS or _git_writes_output(sub)
+                    or _glob_can_match_unsafe(sub[0].lower(), _GIT_WRITE_SUBCMDS)):
+            return False
     return True
 
 
@@ -278,14 +883,19 @@ def load_filters() -> CommandFilterConfig:
     path = _filters_path()
     if path is None or not path.exists():
         return CommandFilterConfig()
-    if tomllib is None:
-        _warn_once(path, "tomllib not available; ignoring")
-        return CommandFilterConfig()
     try:
-        with open(path, "rb") as handle:
-            data = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        _warn_once(path, f"malformed TOML ({exc}); ignoring")
+        if tomllib is not None:
+            with open(path, "rb") as handle:
+                data = tomllib.load(handle)
+        else:
+            # Python 3.9/3.10: no stdlib TOML. Read the supported subset, and
+            # fail open on anything outside it.
+            with open(path, "rb") as handle:
+                data = _loads_subset(handle.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        # tomllib.TOMLDecodeError and _SubsetError are both ValueError; a deeply
+        # nested file can also exhaust the stdlib parser's recursion.
+        _warn_once(path, f"malformed or unsupported TOML ({exc}); ignoring")
         return CommandFilterConfig()
     return _parse_filters(data, path)
 
@@ -380,6 +990,7 @@ __all__ = [
     "EffectiveFilters",
     "VALID_HANDLERS",
     "get_effective_filters",
+    "is_destructive_command",
     "load_filters",
     "merge_filters",
     "reset_cache",

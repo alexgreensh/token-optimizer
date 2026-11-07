@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -258,3 +259,61 @@ def test_handler_exception_is_logged_then_fails_open(ab, monkeypatch, capsys):
     assert rc == 0
     err = capsys.readouterr().err
     assert "boom" in err or "RuntimeError" in err
+
+
+# ---------------------------------------------------------------------------
+# K3: rollup lease must fail closed on a degraded data dir
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows dir perms don't block file creation; seam test below covers it")
+def test_stop_fails_closed_when_lease_touch_fails(ab, monkeypatch, tmp_path):
+    """A read-only/full data dir must NOT turn every stop into a spawn.
+
+    Pre-fix, _touch_rollup_lease swallowed OSError, so the lease never existed,
+    _rollup_lease_held kept returning False, and EVERY stop spawned a detached
+    rollup+dashboard pair - a process storm under exactly the degraded
+    conditions (full/read-only disk) the 30s lease exists to contain. The
+    Cursor bridge's throttle fails closed for this reason; Antigravity must
+    match.
+    """
+    import spawn_utils
+    spawned = []
+    monkeypatch.setattr(spawn_utils, "spawn_detached", lambda argv, **k: spawned.append(argv))
+    # Degrade the data dir: the bridge's _to_dir points at a read-only dir, so
+    # lease.touch() raises PermissionError (sandbox runs non-root).
+    to_dir = tmp_path / "token-optimizer"
+    to_dir.mkdir(parents=True, exist_ok=True)
+    to_dir.chmod(0o500)
+    try:
+        ab.handle_stop({})
+        ab.handle_stop({})
+    finally:
+        to_dir.chmod(0o700)
+    assert spawned == [], f"degraded data dir spawned {len(spawned)} detached processes"
+
+
+def test_stop_still_spawns_when_lease_writeable(ab, monkeypatch, tmp_path):
+    """Fail-closed must not break the healthy path: free lease + writeable dir
+    still spawns rollup+dashboard (mirrors the pre-existing lease-free test)."""
+    import spawn_utils
+    spawned = []
+    monkeypatch.setattr(spawn_utils, "spawn_detached", lambda argv, **k: spawned.append(argv))
+    ab.handle_stop({})
+    assert len(spawned) == 2
+
+
+def test_stop_fails_closed_when_lease_touch_raises(ab, monkeypatch, tmp_path):
+    """Portable seam version: any OSError from the lease touch fails closed."""
+    import spawn_utils
+    spawned = []
+    monkeypatch.setattr(spawn_utils, "spawn_detached", lambda argv, **k: spawned.append(argv))
+    real_touch = Path.touch
+    def failing_touch(self, *a, **k):
+        if self.name == "rollup.lease":
+            raise OSError("simulated degraded data dir")
+        return real_touch(self, *a, **k)
+    monkeypatch.setattr(Path, "touch", failing_touch)
+    ab.handle_stop({})
+    ab.handle_stop({})
+    assert spawned == [], f"touch failure spawned {len(spawned)} detached processes"

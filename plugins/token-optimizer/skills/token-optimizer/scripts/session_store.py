@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from plugin_env import resolve_snapshot_dir
+from reset_epoch import ResetEpochMixin, bump_reset_epoch
 
 SNAPSHOT_DIR = resolve_snapshot_dir()
 SESSION_STORE_DIR = SNAPSHOT_DIR / "session-store"
@@ -191,7 +192,7 @@ def _bound_tool_output_index(text: Optional[str]):
     return head + _INDEX_TRUNCATED_MARKER + tail, 1
 
 
-class SessionStore:
+class SessionStore(ResetEpochMixin):
     """Per-session SQLite store for tool output caching."""
 
     def __init__(
@@ -542,51 +543,6 @@ class SessionStore:
                 entry["ranges_seen"] = []
         return entry
 
-    def upsert_file_entry(self, file_path: str, entry: dict[str, Any]) -> None:
-        conn = self._connect()
-        ranges_json = json.dumps(entry.get("ranges_seen", []))
-        conn.execute(
-            """INSERT INTO file_reads
-               (file_path, mtime_ns, size_bytes, ranges_seen, tokens_est,
-                read_count, content_hash, last_access,
-                last_replacement_fingerprint, last_replacement_type,
-                repeat_replacement_count, last_structure_reason,
-                last_structure_confidence, last_tool_use_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(file_path) DO UPDATE SET
-                 mtime_ns=excluded.mtime_ns,
-                 size_bytes=excluded.size_bytes,
-                 ranges_seen=excluded.ranges_seen,
-                 tokens_est=excluded.tokens_est,
-                 read_count=excluded.read_count,
-                 content_hash=excluded.content_hash,
-                 last_access=excluded.last_access,
-                 last_replacement_fingerprint=excluded.last_replacement_fingerprint,
-                 last_replacement_type=excluded.last_replacement_type,
-                 repeat_replacement_count=excluded.repeat_replacement_count,
-                 last_structure_reason=excluded.last_structure_reason,
-                 last_structure_confidence=excluded.last_structure_confidence,
-                 last_tool_use_id=excluded.last_tool_use_id
-            """,
-            (
-                file_path,
-                int(entry.get("mtime_ns", 0)),
-                int(entry.get("size_bytes", 0)),
-                ranges_json,
-                int(entry.get("tokens_est", 0)),
-                int(entry.get("read_count", 1)),
-                entry.get("content_hash"),
-                float(entry.get("last_access", time.time())),
-                entry.get("last_replacement_fingerprint", ""),
-                entry.get("last_replacement_type", ""),
-                int(entry.get("repeat_replacement_count", 0)),
-                entry.get("last_structure_reason", ""),
-                float(entry.get("last_structure_confidence", 0.0)),
-                entry.get("last_tool_use_id", ""),
-            ),
-        )
-        conn.commit()
-
     def delete_file_entry(self, file_path: str) -> None:
         conn = self._connect()
         conn.execute("DELETE FROM file_reads WHERE file_path = ?", (file_path,))
@@ -608,8 +564,11 @@ class SessionStore:
 
     def clear_file_entries(self) -> None:
         conn = self._connect()
-        conn.execute("DELETE FROM file_reads")
-        conn.commit()
+        with conn:
+            conn.execute("DELETE FROM file_reads")
+            # U2: same epoch contract as reset_context_state for the
+            # subagent-ledger reset path.
+            bump_reset_epoch(conn)
 
     def reset_context_state(self) -> None:
         """Forget everything that records what the model currently holds.
@@ -635,6 +594,10 @@ class SessionStore:
                 "DELETE FROM session_meta WHERE key GLOB 'shadow_fr:*' "
                 "OR key GLOB 'active_fr:*'"
             )
+            # U2: bump the reset epoch in the same transaction so a writer
+            # that judged pre-reset state can detect the reset landed before
+            # its record write (see upsert_file_entry's expected_reset_epoch).
+            bump_reset_epoch(conn)
 
     # ----- cached_content -----
 

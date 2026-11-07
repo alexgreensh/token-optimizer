@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [5.13.67] - 2026-11-07
+
+- Python 3.9 and 3.10 are fully supported again: custom command filters and Codex config load there, and CI now tests both.
+- Hooks start faster: Bash calls no longer wait on a silent no-op hook, and users with no custom filter rules skip filter parsing entirely.
+- Custom command filters never compress destructive commands, even when a user rule matches them.
+- Hook cleanup in settings.json only removes hooks Token Optimizer can prove it wrote, so other tools' hooks stay put.
+- Verified installs work on older git, and a failed update returns you to the branch you started on.
+- Steadier data: the read cache stays correct after /clear, keep-warm sends one ping instead of duplicates, and Antigravity copes with a read-only data folder.
+
 ## [5.13.66] - 2026-11-06
 
 - Token Optimizer's engine is now split into smaller modules, so it loads faster and is easier to keep reliable. Same results, same savings.

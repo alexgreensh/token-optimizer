@@ -1,6 +1,6 @@
 # Token Optimizer for OpenClaw
 
-Version: `2.4.21`
+Version: `2.4.26`
 
 **Your AI is getting dumber and you can't see it.**
 
@@ -32,6 +32,29 @@ To register the built checkout with OpenClaw's plugin manager, run from the
 ```sh
 openclaw plugins install ./
 ```
+
+Then grant conversation access in `openclaw.json`. The in-session continuity
+hints, cold-resume and nudges run on OpenClaw's `agent_turn_prepare` hook, which
+a non-bundled plugin may use only with this explicit grant:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "token-optimizer-openclaw": {
+        "enabled": true,
+        "hooks": { "allowConversationAccess": true }
+      }
+    }
+  }
+}
+```
+
+Merge the entry into your existing config. Without the grant the plugin still
+installs and the CLI, detectors and dashboard work, but the in-session
+contributions stay silent. See the [OpenClaw hook
+permissions](https://docs.openclaw.ai/plugins/hooks#permissions-and-scope) for
+the upstream rule.
 
 Inside OpenClaw, run `/token-optimizer` for a guided audit with coaching.
 

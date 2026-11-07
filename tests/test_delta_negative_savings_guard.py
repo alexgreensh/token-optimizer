@@ -20,6 +20,7 @@ mode of its primary trigger (read -> edit -> re-read).
 
 Run: python3 -m pytest tests/test_delta_negative_savings_guard.py -v
 """
+from __future__ import annotations
 
 import json
 import os

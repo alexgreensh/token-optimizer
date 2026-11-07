@@ -491,7 +491,9 @@ def test_clone_hook_is_removed_by_setup_hook_uninstall_from_another_copy(m, inst
 
 # --- a wrapper in front of our measure.py is not a command we wrote ---------------
 
-@pytest.mark.parametrize("wrapper", ["sudo", "env", "nice", "/usr/bin/sudo", "py", "/opt/me/python-wrapper"])
+@pytest.mark.parametrize("wrapper", ["sudo", "env", "nice", "/usr/bin/sudo", "py", "/opt/me/python-wrapper",
+                                     "pypy3", "python3.13t", "/opt/me/pypy-wrapper", "/usr/bin/python3.13x",
+                                     "/usr/bin/pythonista", "/usr/bin/python3.13-dbg-wrapper", "C:/Py/py.exe"])
 def test_wrapped_measure_py_is_not_our_shape(m, installed, wrapper):
     import owned_hooks
     sh = owned_hooks._sh
@@ -500,7 +502,13 @@ def test_wrapped_measure_py_is_not_our_shape(m, installed, wrapper):
 
 
 @pytest.mark.parametrize("python", ["/usr/bin/python3", "/opt/homebrew/bin/python3.14",
-                                    "C:/Program Files/Python312/python.exe", "C:/Py/pythonw.exe"])
+                                    "C:/Program Files/Python312/python.exe", "C:/Py/pythonw.exe",
+                                    "/usr/local/bin/python3.13t", "/usr/local/bin/python3.14t",
+                                    "C:/Py313/python3.13t.exe", "C:/Py313/pythonw3.13t.exe",
+                                    "/usr/local/bin/python3.13d", "/usr/local/bin/python3.13td",
+                                    "/usr/bin/python3.12-dbg", "/usr/bin/python3-dbg", "C:/Py/python_d.exe",
+                                    "C:/Py313/python3.13t_d.exe", "/usr/bin/pypy3", "/usr/bin/pypy",
+                                    "/opt/pypy/bin/pypy3.10", "C:/pypy3.10/pypy3.exe", "C:/pypy/pypy.exe"])
 def test_generated_interpreters_still_match(m, installed, python):
     import owned_hooks
     sh = owned_hooks._sh

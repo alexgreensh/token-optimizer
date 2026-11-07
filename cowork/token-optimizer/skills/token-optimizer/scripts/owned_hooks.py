@@ -142,22 +142,32 @@ def matches_shape(facade, command, shapes):
 
 def _our_interpreter(token):
     """An interpreter token our generators wrote: bare python3 (POSIX shapes)
-    or sys.executable, an absolute path to a python / python3 / python3.N
-    (``w``, ``.exe``) binary (Windows shapes). Never a ``py`` launcher: no
-    generator emitted one."""
+    or sys.executable, an absolute path to a CPython or PyPy binary (Windows
+    shapes): python / python3 / python3.N, free-threaded or debug builds
+    (python3.13t, python3.13d, python3.12-dbg, python_d.exe), pythonw, and
+    pypy / pypy3 / pypy3.N, each with or without .exe. Never a ``py``
+    launcher or a wrapper: no generator emitted one."""
     if token == "python3":
         return True
     if not _absolute(token):
         return False
-    name = _path_parts(token)[-1] if _path_parts(token) else ""
-    if os.name != "nt":
-        name = name.lower()
-    for suffix in (".exe", "w"):
+    parts = _path_parts(token)
+    name = parts[-1].lower() if parts else ""
+    for suffix in (".exe", "-dbg", "_d", "w"):
         if name[-len(suffix):] == suffix:
             name = name[:-len(suffix)]
-    version = name[len("python"):]
-    return name[:len("python")] == "python" and all(c.isdigit() or c == "." for c in version) \
-        and ".." not in version and version[:1] != "."
+    for family in ("python", "pypy"):
+        if name[:len(family)] != family:
+            continue
+        version = name[len(family):]
+        if family == "python" and version[:1] == "w":
+            version = version[1:]  # pythonw3.13t.exe
+        for flag in ("d", "t"):  # ABI flags, in CPython's order (3.13td)
+            if version[-1:] == flag and version[:-1]:
+                version = version[:-1]
+        return all(c.isdigit() or c == "." for c in version) and ".." not in version \
+            and version[:1] != "." and version[-1:] != "."
+    return False
 
 
 def _token_views(command):

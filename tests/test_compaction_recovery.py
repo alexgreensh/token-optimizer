@@ -576,12 +576,16 @@ def test_advisory_suppressed_by_remedy_keeps_its_slot(m):
     assert "tokens in use" in msg
 
 
-def test_advisory_shadow_logs_all_three_thresholds(m):
+def test_advisory_shadow_logs_all_three_thresholds(m, monkeypatch):
     """Shadow evaluation runs for 300K/350K/400K regardless of the configured
     threshold, so the weekly eval can compare candidates."""
     mod, qc, tmp_path, cpdir = m
     sid = "sess-adv-9"
-    _write_checkpoint(cpdir, sid)
+    cp = _write_checkpoint(cpdir, sid)
+    # This test compares token thresholds, not filesystem/wall-clock precision.
+    now = 1_800_000_000.0
+    monkeypatch.setattr(mod.time, "time", lambda: now)
+    os.utime(cp, (now - 60, now - 60))
     cache_path = qc / f"quality-cache-{sid}.json"
     qd = _advisory_qdata(tokens=360_000)
     events = []
@@ -594,11 +598,36 @@ def test_advisory_shadow_logs_all_three_thresholds(m):
     shadow = [e for e in events if e.get("feature") == "context_advisory_shadow"]
     assert shadow, "expected a context_advisory_shadow event"
     detail = json.loads(shadow[-1]["detail"])
+    assert detail["tokens"] == 360_000
+    assert detail["blockers"] == {}, detail
     assert set(detail["thresholds"]) == {"300000", "350000", "400000"}
     # 360K clears 300K and 350K, not 400K
-    assert detail["thresholds"]["300000"]["eligible"] is True
+    assert detail["thresholds"]["300000"]["eligible"] is True, detail
     assert detail["thresholds"]["350000"]["eligible"] is True
-    assert detail["thresholds"]["400000"]["below"] is True
+    assert detail["thresholds"]["400000"] == {"below": True, "eligible": False}
+
+
+@pytest.mark.parametrize("age,expected", [(60, True), (1800, True),
+                                          (1800.001, False), (-0.001, False)])
+def test_advisory_shadow_keeps_checkpoint_freshness_gate(m, monkeypatch, age, expected):
+    mod, _qc, _tmp, cpdir = m
+    now = 1_800_000_000.0
+    monkeypatch.setattr(mod.time, "time", lambda: now)
+    sid = "fixture-shadow-clock"
+    cp = _write_checkpoint(cpdir, sid)
+    os.utime(cp, (now - age, now - age))
+    events = []
+    monkeypatch.setattr(mod, "_log_compression_event", lambda **kw: events.append(kw))
+    qd = _advisory_qdata(tokens=360_000)
+    telemetry = mod._absolute_context_tokens(qd, sid)
+    mod._log_context_advisory_shadow(sid, telemetry, {}, qd)
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["tokens"] == 360_000
+    assert detail["blockers"] == ({} if expected else {"no_checkpoint": True}), detail
+    assert detail["thresholds"]["300000"]["eligible"] is expected, detail
+    assert detail["thresholds"]["350000"]["eligible"] is expected, detail
+    assert detail["thresholds"]["400000"] == {"below": True, "eligible": False}
 
 
 # ---------------------------------------------------------------------------

@@ -203,7 +203,7 @@ These Claude Code mechanisms need Codex API changes before they can work identic
 |---------|------------|-------|---------|
 | Delta read substitution | PreToolUse Read returns diff instead of full file | Not active | Codex PreToolUse Read hook doesn't support `updatedInput` |
 | Structure-map substitution | PreToolUse Read returns AST skeleton for re-reads | Not active | Same blocker |
-| Invisible Bash compression | PreToolUse Bash rewrites commands transparently | Experimental opt-in only | Codex hooks can't rewrite tool input silently |
+| Invisible Bash compression | PostToolUse replaces the captured output; the command and its permission flow are unchanged | Experimental opt-in (gated PreToolUse rewrite) | Codex hooks can't rewrite tool input silently |
 | Cache-write TTL breakdowns | Full 1h/5m cache-write split visible | Cached input shown, no TTL split | Codex logs don't expose cache-write TTL fields |
 | StopFailure recovery | Dedicated hook fires on crash/timeout | Approximated with Stop + compact prompt | No StopFailure hook in Codex |
 | Skill usage telemetry | Per-skill invocation tracking from trends | Partial, limited log signals | Codex logs don't expose all skill invocation events |

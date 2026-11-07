@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Custom command filters (`command-filters.toml`) now load on Python 3.9 and 3.10. Before, the file was silently ignored there because those versions have no built-in TOML reader. On those older Pythons only, a file that uses TOML syntax outside the supported subset (multi-line strings, arrays of tables, floats, dates, hex or underscored numbers) is skipped with a one-time warning naming the line, and the built-in filters keep working. Python 3.11 and later read the full TOML syntax as before.
+- Remove the silent Bash PreToolUse hook registration so each Bash call no longer waits for a no-op Python process. Shared gates and post-command compression are unchanged.
 
 ## [5.13.66] - 2026-11-06
 

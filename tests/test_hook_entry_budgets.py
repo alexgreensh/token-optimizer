@@ -121,7 +121,6 @@ sys.stdout.write("SHOULD-NEVER-BE-PRINTED")
 
 EXPECTED = {
     ("PreToolUse", "read_cache", "--quiet"): BUDGET_PRETOOL,
-    ("PreToolUse", "bash_hook", "--quiet"): BUDGET_PRETOOL,
     ("PreToolUse", "refetch_guard", "--quiet"): BUDGET_PRETOOL,
     ("PreToolUse", "measure", "checkpoint-trigger"): BUDGET_PRETOOL_MEASURE,
     # hooks.json now registers ONE consolidated PostToolUse dispatcher in place

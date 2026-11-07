@@ -2,9 +2,8 @@
 """Token Optimizer v5.12: PostToolUse Bash Compression Hook.
 
 Compresses Bash tool output AFTER execution via Claude Code's
-``updatedToolOutput`` mechanism. This is the UNIT B expansion: it handles
-pipeline and metachar-containing commands that PreToolUse bash_hook.py
-categorically rejects.
+``updatedToolOutput`` mechanism. Handles eligible simple commands and
+pipelines after execution, without rewriting or approving the original call.
 
 Architecture:
   CC runs Bash tool → PostToolUse fires → this hook receives tool_response
@@ -13,11 +12,11 @@ Architecture:
   enforce the baseline-size invariant → updatedToolOutput replaces what
   Claude sees.
 
-The existing PreToolUse bash_hook.py continues to handle simple (metachar-free)
-commands. This hook handles everything else — pipes, &&, ||, ;, redirections,
-heredocs, and command substitutions.
+The legacy PreToolUse bash_hook.py entry point is silent and is not registered.
+PostToolUse compression covers read-only simple commands and supported pipelines,
+including commands with pipes, &&, ||, ;, redirections, heredocs, and substitutions.
 
-Safety (same stack as bash_hook.py):
+Safety:
   - Fail-open: any exception → exit 0 with no output → Claude sees raw result
   - Read-only only: pipeline_analyzer rejects any side-effecting stage
   - No double-execution: command already ran; we only compress captured output

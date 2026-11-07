@@ -293,7 +293,7 @@ def test_restamp_edits_exact_version_fields_only(tmp_path):
 
 
 def test_restamp_keeps_a_planted_non_version_change_failing(tmp_path):
-    """Sol's planted description survives restamp and still fails the byte
+    """A planted description survives restamp and still fails the byte
     compare: job-5.13.64-x -> job-5.13.66-x is a real product change."""
     import measure_split_golden as golden  # noqa: E402
     base, cand = tmp_path / 'base', tmp_path / 'cand'

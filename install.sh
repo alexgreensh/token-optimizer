@@ -1234,6 +1234,12 @@ rollback_install_update() {
         attempted_head=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
         warn "Rolling back unverified update from ${attempted_head} to ${INSTALL_OLD_HEAD}"
         if git -C "$INSTALL_DIR" checkout --no-overwrite-ignore --detach "$INSTALL_OLD_HEAD" >/dev/null 2>&1; then
+            # Re-attach the starting branch (ref-only; moved back only if this update moved it) so SKIP_VERIFY can pull again.
+            local b="${INSTALL_OLD_BRANCH:-}" now tip
+            if [ -n "$b" ] && now=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) && tip=$(git -C "$INSTALL_DIR" rev-parse -q --verify "refs/heads/${b}^{commit}" 2>/dev/null) &&
+               { [ "$tip" = "$now" ] || { [ "$tip" = "$attempted_head" ] && git -C "$INSTALL_DIR" update-ref -m "token-optimizer rollback" "refs/heads/${b}" "$now" "$tip" 2>/dev/null; }; }; then
+                git -C "$INSTALL_DIR" symbolic-ref HEAD "refs/heads/${b}" 2>/dev/null || true
+            fi
             info "Rollback succeeded"
         else
             warn "Rollback refused or failed; local edits were not discarded. Inspect: git -C \"${INSTALL_DIR}\" status. After saving local work, retry: git -C \"${INSTALL_DIR}\" checkout --no-overwrite-ignore --detach \"${INSTALL_OLD_HEAD}\""
@@ -1475,6 +1481,7 @@ update_repo() {
 if [ -d "${INSTALL_DIR}/.git" ]; then
     info "Existing install found. Updating..."
     INSTALL_OLD_HEAD=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)
+    INSTALL_OLD_BRANCH=$(git -C "$INSTALL_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)
 
     # Never narrow a live checkout: Git may delete ignored data in an extra
     # selected folder. Legacy non-cone patterns cannot be safely translated.
@@ -1490,10 +1497,6 @@ if [ -d "${INSTALL_DIR}/.git" ]; then
     if [ ! -d "${INSTALL_DIR}/skills" ] || [ ! -d "${INSTALL_DIR}/hooks" ]; then
         warn "Broken sparse checkout detected (skills/ or hooks/ missing). Repairing..."
         git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
-        if [ ! -d "${INSTALL_DIR}/skills" ]; then
-            warn "Sparse checkout repair failed. Disabling sparse checkout..."
-            git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
-        fi
         if [ -d "${INSTALL_DIR}/skills" ]; then
             info "Sparse checkout repaired"
         else
@@ -1507,10 +1510,6 @@ if [ -d "${INSTALL_DIR}/.git" ]; then
     if [ ! -d "${INSTALL_DIR}/skills" ] || [ ! -d "${INSTALL_DIR}/hooks" ]; then
         warn "Broken sparse checkout detected after update. Repairing..."
         git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
-        if [ ! -d "${INSTALL_DIR}/skills" ]; then
-            warn "Sparse checkout repair failed. Disabling sparse checkout..."
-            git -C "$INSTALL_DIR" sparse-checkout disable 2>/dev/null || true
-        fi
         [ -d "${INSTALL_DIR}/skills" ] || fail_verified_install "Could not restore skills/ directory. Try re-cloning from: https://github.com/${GITHUB_REPO}"
         # Verify the skill payload (not just the directory) after the dir repair.
         repair_and_verify_skill_payload

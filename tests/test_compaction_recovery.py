@@ -22,6 +22,7 @@ import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -444,6 +445,12 @@ def _write_checkpoint(cpdir, sid, name="auto"):
     fn = f"{sid}-20261105-120000-{name}.md"
     p = cpdir / fn
     p.write_text("# Session State Checkpoint\nGenerated: fixture\n\n## Active Task\nFinish the fixture task.\n")
+    # The advisory requires created <= time.time(). A file stamped "now" can
+    # read a hair AFTER time.time() on Windows (clock vs filesystem timestamp
+    # precision), which made "fresh checkpoint" tests flaky there. Backdate it
+    # well inside the 30-minute window; tests that need an age set their own.
+    stamp = time.time() - 60
+    os.utime(p, (stamp, stamp))
     return p
 
 

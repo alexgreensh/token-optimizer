@@ -325,6 +325,36 @@ def test_hook_labels_count_the_shipped_session_end_entry_setup_all_hooks_wrote(m
     assert m._is_hook_installed(data, settings_only=True) is True
 
 
+def _shipped_session_end_runner(installed):
+    groups = json.loads(installed.read_text())["hooks"]["SessionEnd"]
+    entries = [(g, h) for g in groups for h in g["hooks"] if "stop_runner.py" in h["command"]]
+    assert len(entries) == 1, entries
+    return entries[0]
+
+
+@pytest.mark.parametrize("mutate", [lambda c: c.replace("hooks/stop_runner.py", "hooks/not_stop_runner.py"),
+                                    lambda c: c.replace("stop_runner.py;", "stop_runner.py.backup;")],
+                         ids=["renamed", "backup-suffix"])
+@pytest.mark.parametrize("recorded", [False, True], ids=["unproven", "ledger-proven"])
+def test_hook_labels_never_count_a_mutated_shipped_runner(m, hp, installed, mutate, recorded):
+    """A mutated copy of the real shipped SessionEnd entry is not our hook:
+    unproven it fails ownership; proven in the ledger it still does not run
+    stop_runner.py, so the runner filename check refuses it."""
+    group, hook = _shipped_session_end_runner(installed)
+    real = {"hooks": {"SessionEnd": [{"hooks": [hook]}]}}
+    assert m._is_hook_installed(real, settings_only=True) is True  # control
+    assert m._is_hook_current(real) is False  # the runner is not the flush shape
+    mutated = dict(hook, command=mutate(hook["command"]))
+    assert mutated["command"] != hook["command"]
+    if recorded:
+        context = hp.entry_context("SessionEnd", group, mutated)
+        assert hp.record_contexts(hp.ledger_path_for(m), m.SETTINGS_PATH, [context], "test")
+    settings = {"hooks": {"SessionEnd": [dict(group, hooks=[mutated])]}}
+    assert m._is_hook_installed(settings, settings_only=True) is False
+    assert m._is_hook_installed(settings) is False
+    assert m._is_hook_current(settings) is False
+
+
 def test_setup_hook_still_skips_when_ours_is_current(m, installed, capsys):
     installed.write_text(json.dumps({"hooks": {"SessionEnd": [{"hooks": [_hook(m.HOOK_COMMAND)]}]}}))
     m.setup_hook(dry_run=False)

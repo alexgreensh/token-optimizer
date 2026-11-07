@@ -375,6 +375,7 @@ _UNSAFE_INTERPRETERS = frozenset({
     "bash", "sh", "zsh", "dash", "ksh", "fish", "csh", "tcsh",
     "python", "python3", "python2", "ruby", "perl", "node", "deno", "bun",
     "lua", "tcl", "awk", "sed", "eval", "exec", "source", ".",
+    "osascript", "php", "gawk", "mawk", "nawk", "rscript",
 })
 _UNSAFE_PREFIXES = frozenset({"sudo", "su", "doas", "pkexec", "gksudo"})
 _UNSAFE_WRITE_SUBCMDS = frozenset({
@@ -383,6 +384,63 @@ _UNSAFE_WRITE_SUBCMDS = frozenset({
     "shutdown", "reboot", "halt", "poweroff",
 })
 _DANGEROUS_CHARS = frozenset(";|&`$(){}><\n\r\x00")
+
+# git subcommands that write. Superset of bash_whitelist._GIT_WRITE_SUBCMDS
+# (a test pins the superset relation; importing it here would create a
+# circular dependency on the hot path). Bounded, not a full git grammar:
+# ambiguous subcommands that can write with the right flag (``branch -D``,
+# ``config``, ``reflog delete``) are treated as writes outright.
+_GIT_WRITE_SUBCMDS = frozenset({
+    "commit", "push", "pull", "merge", "rebase", "reset", "checkout",
+    "switch", "stash", "tag", "cherry-pick", "revert", "am", "apply",
+    "add", "rm", "mv", "restore", "bisect", "clean", "fetch", "clone",
+    "init", "remote", "submodule", "worktree",
+    "branch", "config", "gc", "prune", "reflog", "notes", "replace",
+    "filter-branch", "update-ref", "symbolic-ref", "repack", "write-tree",
+    "commit-tree", "update-index", "read-tree", "hash-object",
+})
+# git subcommands treated as read-only. Anything outside
+# _GIT_WRITE_SUBCMDS | _GIT_READONLY_SUBCMDS (aliases, plumbing, new
+# subcommands) is refused, matching the compress hook's own stance that an
+# unknown git invocation is not provably read-only.
+_GIT_READONLY_SUBCMDS = frozenset({
+    "status", "log", "diff", "show", "ls-files", "ls-tree", "blame",
+    "annotate", "grep", "rev-parse", "rev-list", "describe", "shortlog",
+    "show-ref", "cat-file", "count-objects", "var", "version", "whatchanged",
+})
+# find flags that delete, write or run another program.
+_FIND_DESTRUCTIVE_FLAGS = frozenset({
+    "-delete", "-exec", "-execdir", "-ok", "-okdir",
+    "-fprint", "-fprint0", "-fls", "-fprintf",
+})
+_GLOB_CHARS = frozenset("*?[")
+# Runner / wrapper commands: they exec another command (``timeout 5 rm -rf x``,
+# ``nice rm x``, ``xargs rm``), so the real command is not argv[0]. Refused
+# outright (fail closed) rather than unwrapped, since each has its own option
+# grammar. Windows shells are interpreters too.
+_LAUNCHERS = frozenset({
+    "timeout", "nice", "ionice", "nohup", "stdbuf", "time", "chrt", "taskset",
+    "watch", "xargs", "parallel", "command", "exec", "builtin", "setsid",
+    "unbuffer", "strace", "ltrace", "nsenter", "chroot", "flock", "busybox",
+    "script", "runuser", "systemd-run", "at", "batch", "ssh", "wsl", "cmd",
+    "powershell", "pwsh", "start", "sh.exe",
+})
+# Minimum set of known writers that are not in _UNSAFE_WRITE_SUBCMDS. This is
+# a bounded denylist, not a claim that every other command is read-only.
+_KNOWN_WRITERS = frozenset({
+    "tee", "truncate", "shred", "touch", "unlink", "install", "rsync", "patch",
+    "sponge", "scp", "rename", "del", "erase", "rd", "move", "copy", "ren",
+})
+_NEVER_COMPRESS_CMD0 = (
+    _UNSAFE_INTERPRETERS | _UNSAFE_PREFIXES | _UNSAFE_WRITE_SUBCMDS
+    | _LAUNCHERS | _KNOWN_WRITERS
+)
+_EXE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
+# fnmatch candidates: bare names plus their Windows executable spellings, so
+# ``rm.*`` / ``r*.exe`` are caught as well as ``r*``.
+_GLOB_NAMES = frozenset(
+    n + ext for n in _NEVER_COMPRESS_CMD0 for ext in ("",) + _EXE_SUFFIXES
+)
 
 _warned_paths: set = set()
 
@@ -414,7 +472,9 @@ class CommandFilterConfig:
 
     def find_add(self, command_str: str) -> Optional[AddEntry]:
         """Return the first add entry whose command matches ``command_str``,
-        or None."""
+        or None. Never matches a destructive command."""
+        if is_destructive_command(command_str):
+            return None
         for entry in self.adds:
             if entry.command == command_str:
                 return entry
@@ -438,6 +498,10 @@ class EffectiveFilters:
         return False
 
     def find_user_add(self, command_str: str) -> Optional[AddEntry]:
+        # A glob in an add entry must never make a destructive command
+        # eligible for compression (the wrapper would run it).
+        if is_destructive_command(command_str):
+            return None
         for entry in self.user_adds:
             if entry.command == command_str:
                 return entry
@@ -457,20 +521,28 @@ def _is_all_wildcard(token: str) -> bool:
     return bool(token) and set(token) <= {"*"}
 
 
-def _effective_cmd0(tokens: List[str]) -> Optional[str]:
-    """Return the basename of the REAL command being run.
+def _effective_cmd_token(tokens: List[str]) -> Optional[str]:
+    """Return the token of the REAL command being run.
 
     Normalizes away the path (so ``/bin/bash``, ``./python``, ``/usr/bin/sudo``
     are recognized as ``bash``/``python``/``sudo``) and resolves a leading
     ``env`` invocation by skipping ``VAR=val`` assignments and env's own options
-    (``-i``, and the operand-taking ``-u``/``-C``/``-S``) to reach the command
-    env would exec. Returns None when no command token remains.
+    (``-i``, and the operand-taking ``-u``/``-C``/``--chdir``) to reach the
+    command env would exec, looping through nested ``env``. ``-S`` /
+    ``--split-string`` and any unrecognized ``-`` option fail closed (None).
+    Returns None when no command token remains.
     """
     if not tokens:
         return None
     i = 0
-    if os.path.basename(tokens[0]) == "env":
-        i = 1
+    # ``env`` may be nested (``env env rm x``) and may carry assignments and
+    # options before the real command, so unwrap repeatedly. Any option token
+    # this parser does not model exactly -- ``--opt=val``, joined
+    # ``-uVAL``/``-CVAL``/``-SVAL``, or ``-S``/``--split-string`` whose operand
+    # is itself a command string -- fails closed by returning None rather
+    # than guessing which later token is the command.
+    while i < len(tokens) and _norm_cmd(tokens[i]) == "env":
+        i += 1
         while i < len(tokens):
             tok = tokens[i]
             if "=" in tok and not tok.startswith("-"):
@@ -479,13 +551,197 @@ def _effective_cmd0(tokens: List[str]) -> Optional[str]:
             if tok in ("-i", "--ignore-environment", "-", "-v", "--debug"):
                 i += 1
                 continue
-            if tok in ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"):
-                i += 2  # option consumes its operand
+            if tok in ("-u", "--unset", "-C", "--chdir"):
+                i += 2  # option consumes its operand (``--`` included: it is
+                # a legal operand, e.g. ``env -u -- rm`` unsets ``--``)
                 continue
+            if tok == "--":
+                i += 1
+                break  # env end-of-options: the next token is the command
+            if tok.startswith("-"):
+                return None
             break  # first non-option, non-assignment token = the command
     if i >= len(tokens):
         return None
-    return os.path.basename(tokens[i])
+    return tokens[i]
+
+
+def _effective_cmd0(tokens: List[str]) -> Optional[str]:
+    tok = _effective_cmd_token(tokens)
+    return None if tok is None else _norm_cmd(tok)
+
+
+def _raw_cmd_word(tokens: List[str]) -> str:
+    """Lower-cased basename of the command word, backslash paths included,
+    WITHOUT stripping an executable suffix (so ``rm.*`` stays a glob)."""
+    cmd = _effective_cmd_token(tokens)
+    return os.path.basename(cmd.replace("\\", "/")).lower() if cmd else ""
+
+
+def _norm_cmd(token: str) -> str:
+    """Basename, lower-cased, without a Windows executable suffix, so
+    ``RM``, ``/bin/rm`` and ``rm.exe`` all compare as ``rm``."""
+    name = os.path.basename(token.replace("\\", "/")).lower()
+    for ext in (".exe", ".com", ".bat", ".cmd"):
+        if name.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
+def _git_subcommand_tokens(tokens: List[str]) -> List[str]:
+    """Return the tokens after ``git``'s global options, starting at the
+    subcommand word (skips ``-C <dir>``, ``-c k=v``, ``--git-dir <d>``...)."""
+    idx = next((i for i, t in enumerate(tokens) if _norm_cmd(t) == "git"), None)
+    if idx is None:
+        return []
+    rest = tokens[idx + 1:]
+    j = 0
+    while j < len(rest) and rest[j].startswith("-"):
+        j += 2 if rest[j] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+    return rest[j:]
+
+
+def _git_has_config_options(tokens: List[str]) -> bool:
+    """True when git global options other than ``-C <dir>`` / ``--no-pager``
+    / ``--no-optional-locks`` precede the subcommand. ``-c alias.x=!cmd``,
+    ``--config-env``, ``--exec-path`` and friends can run arbitrary programs."""
+    idx = next((i for i, t in enumerate(tokens) if _norm_cmd(t) == "git"), None)
+    if idx is None:
+        return False
+    rest = tokens[idx + 1:]
+    j = 0
+    while j < len(rest) and rest[j].startswith("-"):
+        if rest[j] == "-C":
+            j += 2
+        elif rest[j] in ("--no-pager", "--no-optional-locks"):
+            j += 1
+        else:
+            return True
+    return False
+
+
+def is_destructive_command(command_str: str) -> bool:
+    """True when ``command_str`` runs something that writes, deletes or
+    launches another program (rm, mv, sudo, an interpreter, a git write
+    subcommand, find -delete/-exec, ...).
+
+    Used at match time so a glob in a user ``add`` entry can never make such
+    a command eligible for compression, whatever the glob expands to.
+    Fails closed: an unparseable command counts as destructive, and unknown
+    git subcommands (possible aliases) count as writes.
+
+    Bounded by design: this module ships inside the Devin payload closed
+    set, so it cannot depend on the hook's read-only classifier
+    (pipeline_analyzer); the closed-set policy test forbids that import.
+    The checks are self-contained denylists, not a full shell parser;
+    commands they do not recognize stay eligible for user ``add`` entries,
+    as before.
+    """
+    # Multi-line input hides extra commands (``mytool --flag\nrm -rf x``)
+    # and command/process substitution executes whatever it nests
+    # (``echo $(rm -rf x)``, ``cat <(rm -rf x)``): refuse on the raw string.
+    if any(c in command_str for c in ("\n", "\r")):
+        return True
+    if "$(" in command_str or "`" in command_str or "<(" in command_str:
+        return True
+    import shlex
+    try:
+        # punctuation_chars splits glued shell operators (``cat;rm -rf x``)
+        # into real separator tokens so the per-stage checks below see them.
+        tokens = list(shlex.shlex(command_str, posix=True,
+                                  punctuation_chars="|&;<>(){}"))
+    except ValueError:
+        return True
+    # POSIX shlex eats backslashes (``C:\\bin\\rm.exe`` -> ``C:binrm.exe``), so
+    # also judge the raw whitespace split; destructive if either view is.
+    raw = command_str.split()
+    if raw != tokens and _tokens_destructive(raw):
+        return True
+    return _tokens_destructive(tokens)
+
+
+def _segment_destructive(tokens: List[str]) -> bool:
+    # Skip leading VAR=val assignments; _effective_cmd0 then resolves env.
+    start = 0
+    while start < len(tokens) and "=" in tokens[start] and not tokens[start].startswith("-"):
+        start += 1
+    tokens = tokens[start:]
+    # A bare ``--`` ends option parsing, but inside ``env`` it is also a
+    # legal option operand (``env -u -- rm`` unsets a var named ``--`` and
+    # runs ``rm``) or env's own end-of-options marker, so only non-env
+    # segments get the blanket strip; the env unwrapper models ``--``.
+    if not tokens or _norm_cmd(tokens[0]) != "env":
+        tokens = [t for t in tokens if t != "--"]
+    if not tokens:
+        return False
+    cmd0 = _effective_cmd0(tokens)
+    if cmd0 is None or cmd0 in _NEVER_COMPRESS_CMD0:
+        return True
+    if tokens and tokens[0] in _SHELL_STRUCT_TOKENS:
+        return True
+    if cmd0 == "git":
+        if _git_has_config_options(tokens):
+            return True
+        sub = _git_subcommand_tokens(tokens)
+        if not sub:
+            return True
+        name = sub[0].lower()
+        if name in _GIT_WRITE_SUBCMDS:
+            return True
+        if name not in _GIT_READONLY_SUBCMDS:
+            # Unknown subcommand: could be an alias defined in repo config.
+            return True
+    if cmd0 == "find" and any(t in _FIND_DESTRUCTIVE_FLAGS for t in tokens):
+        return True
+    if cmd0 == "sed" and any(t == "-i" or t.startswith("-i")
+                             or t.startswith("--in-place") for t in tokens):
+        return True
+    return False
+
+
+_PIPELINE_SEPARATORS = frozenset({
+    "|", "||", "&", "&&", ";", ";;", ";&", ";;&", "|&", "(", ")", "{", "}",
+})
+_PUNCT_CHARS = frozenset("|&;<>(){}")
+# Shell grammar keywords and groupers: a segment LED by one of these hides
+# the real command behind it (``if true; then rm x; fi``, ``{ rm x; }``).
+# Refused outright (fail closed on recognized grammar) rather than
+# mini-interpreting the shell.
+_SHELL_STRUCT_TOKENS = frozenset({
+    "if", "then", "else", "elif", "fi", "for", "while", "until", "do",
+    "done", "case", "esac", "select", "coproc", "!", "{", "}", "(", ")",
+})
+
+
+def _tokens_destructive(tokens: List[str]) -> bool:
+    # shlex splits runs of punctuation into single tokens (``|&``, ``;;``).
+    # Only the exact recognized separators split a stage; ANY other
+    # all-punctuation run (every redirect, fd dup, glued or invalid grammar)
+    # fails closed rather than risking an exception that hides a writer.
+    segments = [[]]
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t and all(c in _PUNCT_CHARS for c in t):
+            if t in _PIPELINE_SEPARATORS:
+                segments.append([])
+                i += 1
+                continue
+            # Unrecognized punctuation run (incl. all redirects): fail closed.
+            return True
+        segments[-1].append(t)
+        i += 1
+    # Check every pipeline stage, not just argv[0]: ``ls | tee out`` writes
+    # through the second stage.
+    return any(_segment_destructive(seg) for seg in segments if seg)
+
+
+def _glob_can_match_unsafe(token: str, names) -> bool:
+    """True when ``token`` contains a glob and fnmatch could expand it to one
+    of ``names`` (e.g. ``r*``, ``?m``, ``[r]m`` all match ``rm``)."""
+    if not any(ch in _GLOB_CHARS for ch in token):
+        return False
+    return any(fnmatch.fnmatchcase(name, token) for name in names)
 
 
 def _is_safe_add(command: str, handler: str) -> bool:
@@ -525,12 +781,35 @@ def _is_safe_add(command: str, handler: str) -> bool:
         return False
     if _is_all_wildcard(cmd0):
         return False
+    cmd0 = cmd0.lower()
+    # _raw_cmd_word already lower-cases and takes the basename of any
+    # backslash path, so one glob check against the dangerous names suffices.
+    raw0 = _raw_cmd_word(tokens)
+    if raw0 and _glob_can_match_unsafe(raw0, _GLOB_NAMES):
+        return False
+    if cmd0 in _SHELL_STRUCT_TOKENS or _glob_can_match_unsafe(cmd0, _SHELL_STRUCT_TOKENS):
+        return False
+    if raw0 and _glob_can_match_unsafe(raw0, _SHELL_STRUCT_TOKENS):
+        return False
     if cmd0 in _UNSAFE_INTERPRETERS:
         return False
     if cmd0 in _UNSAFE_PREFIXES:
         return False
     if cmd0 in _UNSAFE_WRITE_SUBCMDS:
         return False
+    # Globs: the command string is later matched with fnmatch, so ``r*`` also
+    # matches ``rm -rf target``. Reject a glob command word that could match
+    # any destructive / interpreter / privilege command name.
+    if cmd0 in _NEVER_COMPRESS_CMD0 or _glob_can_match_unsafe(cmd0, _GLOB_NAMES):
+        return False
+    # ``git <glob>``: the subcommand word must not be able to match a write.
+    if cmd0 == "git":
+        if _git_has_config_options(tokens):
+            return False
+        sub = _git_subcommand_tokens(tokens)
+        if sub and (sub[0].lower() in _GIT_WRITE_SUBCMDS
+                    or _glob_can_match_unsafe(sub[0].lower(), _GIT_WRITE_SUBCMDS)):
+            return False
     return True
 
 
@@ -689,6 +968,7 @@ __all__ = [
     "EffectiveFilters",
     "VALID_HANDLERS",
     "get_effective_filters",
+    "is_destructive_command",
     "load_filters",
     "merge_filters",
     "reset_cache",

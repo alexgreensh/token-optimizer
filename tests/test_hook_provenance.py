@@ -442,6 +442,7 @@ def test_current_installer_commands_never_removed_even_if_resolver_drifts(m, hp,
 # --- Python 3.9 ------------------------------------------------------------------
 
 @pytest.mark.parametrize("path", [SCRIPTS / "hook_provenance.py", SCRIPTS / "shipped_hook_templates.py",
+                                  SCRIPTS / "shipped_starter_hooks.py",
                                   REPO / "scripts" / "gen_shipped_hook_templates.py"])
 def test_new_modules_parse_as_python_39(path):
     ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 9))

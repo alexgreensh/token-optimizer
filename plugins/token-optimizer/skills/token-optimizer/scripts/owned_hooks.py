@@ -24,6 +24,7 @@ from pathlib import Path
 
 import hook_heal
 import hook_provenance as hp
+from shipped_starter_hooks import STARTER_HOOK_CONTEXTS
 
 
 _PLACEHOLDER_SCRIPT = "${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py"
@@ -381,9 +382,10 @@ def cleanup_owner(facade):
     hooks.json entry for this install), or is a shipped hooks.json entry
     instantiated for an install root the command itself names (a removed
     plugin version, the script-install clone, the ${CLAUDE_PLUGIN_ROOT}
-    spelling), or is byte-identical to a SessionEnd, smart-compact or
-    quality-bar command we generated for an install's measure.py. Naming our
-    subcommands or scripts proves nothing."""
+    spelling), or is an examples/hooks-starter.json entry pasted as shipped,
+    or is byte-identical to a SessionEnd, smart-compact or quality-bar command
+    we generated for an install's measure.py. Naming our subcommands or
+    scripts proves nothing."""
     base = owner(facade, SESSION_END_SHAPES + COMPACT_SHAPES + QUALITY_SHAPES)
     fixed = [str(r) for r in _install_roots(facade)] + ["${CLAUDE_PLUGIN_ROOT}"]
     cache = {}
@@ -401,5 +403,7 @@ def cleanup_owner(facade):
         context = hp.entry_context(event, group, hook)
         if context is None:
             return False
+        if context in STARTER_HOOK_CONTEXTS:
+            return True
         return context in instantiated(fixed + _cache_roots_named(facade, context[3]))
     return owns

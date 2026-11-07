@@ -564,3 +564,50 @@ def test_cleanup_removes_a_shipped_entry_baked_for_a_removed_plugin_version(m, h
     settings = {"hooks": {event: [group]}}
     m._remove_our_settings_entries(settings)
     assert settings["hooks"] == {}
+
+
+# --- measure.py cleanup removes hooks-starter.json entries pasted as shipped -------
+
+STARTER = REPO / "skills" / "token-optimizer" / "examples" / "hooks-starter.json"
+
+
+def _starter_hooks():
+    return json.loads(STARTER.read_text(encoding="utf-8"))["hooks"]
+
+
+def _commands(hooks):
+    return [h["command"] for groups in hooks.values() for g in groups for h in g["hooks"]]
+
+
+def test_cleanup_removes_a_pasted_hooks_starter_and_keeps_its_echo_prompts(m, installed):
+    settings = {"hooks": _starter_hooks()}
+    m._remove_our_settings_entries(settings)
+    assert all(c.startswith("echo ") for c in _commands(settings.get("hooks", {})))
+    assert len(_commands(settings.get("hooks", {}))) == sum(
+        c.startswith("echo ") for c in _commands(_starter_hooks()))
+
+
+def test_cleanup_removes_every_historical_starter_entry_and_keeps_lookalikes(m, installed):
+    import shipped_starter_hooks
+    assert len(shipped_starter_hooks.STARTER_HOOK_CONTEXTS) >= 40
+    for event, matcher, hook_type, command in sorted(shipped_starter_hooks.STARTER_HOOK_CONTEXTS):
+        group = {"matcher": matcher, "hooks": [{"type": hook_type, "command": command}]} if matcher \
+            else {"hooks": [{"type": hook_type, "command": command}]}
+        moved = dict(group, matcher="Other") if matcher != "Other" else dict(group, matcher="Else")
+        tweaked = {"hooks": [{"type": hook_type, "command": command.replace(".claude/token-optimizer", ".claude/mytool")
+                                                        .replace("$MEASURE_PY", "$MY_PY")}]}
+        if matcher:
+            tweaked["matcher"] = matcher
+        settings = {"hooks": {event: [group, moved, tweaked]}}
+        m._remove_our_settings_entries(settings)
+        assert settings["hooks"] == {event: [moved, tweaked]}, (event, matcher, command)
+
+
+def test_frozen_starter_set_has_every_current_starter_entry_that_runs_our_code():
+    import shipped_starter_hooks
+    for event, groups in _starter_hooks().items():
+        for group in groups:
+            for hook in group["hooks"]:
+                if not hook["command"].startswith("echo "):
+                    context = (event, group.get("matcher", ""), hook.get("type"), hook["command"])
+                    assert context in shipped_starter_hooks.STARTER_HOOK_CONTEXTS, context

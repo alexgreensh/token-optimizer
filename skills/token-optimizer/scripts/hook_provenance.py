@@ -37,6 +37,7 @@ stay importable on Python 3.9 with the standard library only.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -296,7 +297,14 @@ def _write_atomic(path, data):
                 pass
 
 
+# Errors that mean another process holds the lock: worth waiting for. Any
+# other error (a filesystem without locks, a bad descriptor) never clears.
+_BUSY = (frozenset((errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR)) if fcntl is not None
+         else frozenset((errno.EACCES, getattr(errno, "EDEADLOCK", errno.EDEADLK))))
+
+
 def _try_lock(fd):
+    """True: locked. False: held by another process. None: unusable here."""
     try:
         if fcntl is not None:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -304,8 +312,8 @@ def _try_lock(fd):
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
         return True
-    except OSError:
-        return False
+    except OSError as exc:
+        return False if exc.errno in _BUSY else None
 
 
 def _unlock(fd):
@@ -343,8 +351,11 @@ def _exclusive(lock_path, timeout=2.0):
             yield False
             return
         deadline = time.monotonic() + timeout
-        while not _try_lock(fd):
-            if time.monotonic() >= deadline:
+        while True:
+            got = _try_lock(fd)
+            if got:
+                break
+            if got is None or time.monotonic() >= deadline:
                 yield False
                 return
             time.sleep(0.01)

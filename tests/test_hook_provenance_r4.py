@@ -42,3 +42,37 @@ def test_versionless_or_garbage_ledger_is_still_corrupt(hp, tmp_path):
     for raw in (b'{"files": {}}', b'{"version": "1", "files": {}}', b'{"version": false}', b"[1]", b"{nope"):
         ledger.write_bytes(raw)
         assert hp.load_ledger(ledger)[1] == "corrupt", raw
+
+
+# --- only a lock another process holds is waited on ------------------------------
+
+_POSIX_LOCK = pytest.mark.skipif(sys.platform == "win32", reason="injects fcntl.flock errors")
+
+
+def _flock_raising(code):
+    import fcntl
+
+    def flock(fd, op):
+        if op != fcntl.LOCK_UN:
+            raise OSError(code, os.strerror(code))
+    return flock
+
+
+@_POSIX_LOCK
+@pytest.mark.parametrize("code", [errno.ENOTSUP, errno.ENOLCK, errno.EBADF])
+def test_lock_error_that_is_not_busy_fails_at_once(hp, tmp_path, monkeypatch, code):
+    import fcntl
+    monkeypatch.setattr(fcntl, "flock", _flock_raising(code))
+    t0 = time.monotonic()
+    assert hp.record(tmp_path / "hook_provenance.json", "s.json", ["x"], "t") is False
+    assert time.monotonic() - t0 < 0.5
+    assert not (tmp_path / "hook_provenance.json").exists()
+
+
+@_POSIX_LOCK
+def test_busy_lock_is_still_waited_for(hp, tmp_path, monkeypatch):
+    import fcntl
+    monkeypatch.setattr(fcntl, "flock", _flock_raising(errno.EWOULDBLOCK))
+    t0 = time.monotonic()
+    assert hp.record(tmp_path / "hook_provenance.json", "s.json", ["x"], "t") is False
+    assert time.monotonic() - t0 >= 1.9

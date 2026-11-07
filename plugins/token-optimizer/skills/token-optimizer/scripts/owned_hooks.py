@@ -100,6 +100,9 @@ def is_install_script(facade, path):
     head = parts[:-4]
     if any(head == _path_parts(root) for root in _install_roots(facade)):
         return True
+    # Any marketplace: Claude Code names the cache dir after the plugin, our
+    # marketplace has been renamed and mirrored, and this path only proposes a
+    # candidate; the whole command must still equal one we generated.
     cache = _path_parts(Path(facade.CLAUDE_DIR) / "plugins" / "cache")
     return len(head) == len(cache) + 3 and head[:len(cache)] == cache and head[-2] == "token-optimizer"
 
@@ -145,6 +148,8 @@ def matches_shape(facade, command, shapes):
             if not token.endswith("measure.py") or not is_install_script(facade, token):
                 continue
             for py in {"python3", tokens[i - 1] if i else "python3"}:
+                if not _our_interpreter(py):
+                    continue  # a wrapper (sudo, env, nice) is not a command we wrote
                 for shape in shapes:
                     try:
                         if shape(py, token) == command:
@@ -152,6 +157,26 @@ def matches_shape(facade, command, shapes):
                     except Exception:
                         continue
     return False
+
+
+def _our_interpreter(token):
+    """An interpreter token our generators wrote: bare python3 (POSIX shapes)
+    or sys.executable, an absolute path to a python / python3 / python3.N
+    (``w``, ``.exe``) binary (Windows shapes). Never a ``py`` launcher: no
+    generator emitted one."""
+    if token == "python3":
+        return True
+    if not _absolute(token):
+        return False
+    name = _path_parts(token)[-1] if _path_parts(token) else ""
+    if os.name != "nt":
+        name = name.lower()
+    for suffix in (".exe", "w"):
+        if name[-len(suffix):] == suffix:
+            name = name[:-len(suffix)]
+    version = name[len("python"):]
+    return name[:len("python")] == "python" and all(c.isdigit() or c == "." for c in version) \
+        and ".." not in version and version[:1] != "."
 
 
 def _token_views(command):

@@ -465,3 +465,22 @@ def test_clone_hook_is_removed_by_setup_hook_uninstall_from_another_copy(m, inst
     settings = {"hooks": {"SessionEnd": [{"hooks": [_hook(clone_hook), _hook(FOREIGN)]}]}}
     assert m._remove_token_optimizer_session_end_hooks(settings) == 1
     assert settings["hooks"]["SessionEnd"] == [{"hooks": [_hook(FOREIGN)]}]
+
+
+# --- a wrapper in front of our measure.py is not a command we wrote ---------------
+
+@pytest.mark.parametrize("wrapper", ["sudo", "env", "nice", "/usr/bin/sudo", "py", "/opt/me/python-wrapper"])
+def test_wrapped_measure_py_is_not_our_shape(m, installed, wrapper):
+    import owned_hooks
+    sh = owned_hooks._sh
+    command = "%s %s session-end-flush --trigger end >/dev/null 2>&1" % (sh(wrapper), sh(str(m.MEASURE_PY_PATH)))
+    assert not owned_hooks.matches_shape(m, command, owned_hooks.SESSION_END_SHAPES)
+
+
+@pytest.mark.parametrize("python", ["/usr/bin/python3", "/opt/homebrew/bin/python3.14",
+                                    "C:/Program Files/Python312/python.exe", "C:/Py/pythonw.exe"])
+def test_generated_interpreters_still_match(m, installed, python):
+    import owned_hooks
+    sh = owned_hooks._sh
+    command = "%s %s session-end-flush --trigger end >/dev/null 2>&1" % (sh(python), sh(str(m.MEASURE_PY_PATH)))
+    assert owned_hooks.matches_shape(m, command, owned_hooks.SESSION_END_SHAPES)

@@ -3588,19 +3588,197 @@ def _fix_malformed_hook_commands():
 def _is_malformed_to_hook(cmd):
     """Check if a hook command is a malformed token-optimizer entry.
 
-    Returns True if the command references a known TO script AND contains
-    either a subshell pattern or a double-$HOME expansion.
+    Returns True only when the command's executed script is provably THIS
+    install's payload AND the command carries a subshell pattern or a
+    double-$HOME expansion.
+
+    Ownership proof anchors on the actual path token carrying a known TO
+    script basename (the script the hook will run) and requires it to
+    resolve to skills/token-optimizer/scripts/<name> under one of exactly
+    two runtime-proven roots: the running install root (this module's own
+    __file__; for a plugin-cache install that IS the current cache version
+    directory) or the resolved $CLAUDE_PLUGIN_ROOT environment value. The
+    Claude config dir is never a root by itself: another skill, another
+    plugin's cache entry, a same-named plugin from a different marketplace,
+    or a stale version of this plugin under it is not provably ours and is
+    preserved. A root string in an argument, comment, env assignment, or
+    redirect proves nothing (comments are stripped before tokenizing).
+    Home-relative spellings (~, $HOME, ${HOME}) expand against the real
+    home; a literal $CLAUDE_PLUGIN_ROOT resolves through the environment
+    when set and is unprovable (preserved) when unset. The macOS
+    doubled-$HOME corruption is corrected by stripping the known doubled
+    prefix, then the same full proof applies. A relative script argument
+    resolves only against a literal D="<root>" assignment in the same
+    command (the installer's written form). Every basename-carrying token
+    must resolve to our payload: a command mixing our script with a foreign
+    one is ambiguous and preserved. Deleting the user's own hook is
+    irreversible, so unknown ownership means leave it alone.
     """
     _measure_facade = _compat.facade()
     if not cmd:
         return False
+    re_mod = _measure_facade.re
+    os_mod = _measure_facade.os
+    Path_mod = _measure_facade.Path
+    names = _measure_facade._TO_SCRIPT_NAMES
+    # The exact version-resolver assignment every installer-written hook
+    # command carries (hooks/hooks.json, bash-loop wrapper). Kept as a
+    # function local: the split-module policy forbids module-level state in
+    # providers. The regression test asserts behaviour (an installer-shaped
+    # command is not flagged) so hooks.json drift fails loudly.
+    _TO_VERSION_RESOLVER = 'D="$(ls -d "${D%[/\\\\]*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"'
     has_to_script = any(
-        _measure_facade.re.search(r'(?:^|[/\s])' + _measure_facade.re.escape(name) + r'(?:$|[\s])', cmd)
-        for name in _measure_facade._TO_SCRIPT_NAMES
+        re_mod.search(r'(?:^|[/\s])' + re_mod.escape(name) + r'(?:$|[\s])', cmd)
+        for name in names
     )
     if not has_to_script:
         return False
-    has_subshell = "$(" in cmd or "`" in cmd
+
+    # POSIX, drive-letter (C:/ or C:\) and UNC absolutes; hook commands on
+    # Windows installs carry Windows paths.
+    abs_re = re_mod.compile(r'^(?:/|[A-Za-z]:[\\/]|\\\\)')
+    # Doubled-home prefixes written by Claude on macOS when it expands $HOME
+    # and prepends it again: raw ($HOME/Users/<u>/<abs>) and already-expanded
+    # (/Users/<u>/Users/<u>/...). Stripping yields the intended absolute
+    # path, which still has to pass the full ownership proof.
+    doubled_re = re_mod.compile(
+        r'^(?:\$HOME|\$\{HOME\}|~)/(?:Users|home)/[^/]+?(?=/|[A-Za-z]:[\\/])'
+        r'|^/(?:Users|home)/[^/]+(?=/(?:Users|home)/)'
+    )
+
+    def _canon(path):
+        # normcase: case-insensitive + separator-normalized on Windows,
+        # identity on POSIX.
+        return os_mod.path.normcase(str(path)).replace("\\", "/").rstrip("/")
+
+    def _owned_roots():
+        install_root = None
+        try:
+            # The facade lives at <root>/skills/token-optimizer/scripts/
+            # measure.py, so parents[3] is the install root the installer
+            # writes into hook commands.
+            install_root = Path_mod(_measure_facade.__file__).resolve().parents[3]
+        except Exception:
+            pass
+        roots = [] if install_root is None else [install_root]
+        try:
+            # $CLAUDE_PLUGIN_ROOT is environment input, not proof: it counts
+            # as an owned root only when it resolves to THIS running
+            # install (the same root derived from __file__ above, which for
+            # a plugin-cache install IS the current cache version dir). A
+            # foreign or stale env root - another marketplace's same-named
+            # plugin, an old checkout - must never make its hooks ours.
+            plugin_root = os_mod.environ.get("CLAUDE_PLUGIN_ROOT")
+            if plugin_root and install_root is not None:
+                resolved = Path_mod(plugin_root).expanduser().resolve()
+                if _canon(resolved) == _canon(install_root):
+                    roots.append(resolved)
+        except Exception:
+            pass
+        return [_canon(r) for r in roots]
+
+    def _owned_script_path(candidate):
+        canon = _canon(candidate)
+        name = canon.rsplit("/", 1)[-1]
+        if name not in names:
+            return False
+        suffix = "skills/token-optimizer/scripts/" + name
+        return any(len(root) >= 4 and canon == root + "/" + suffix
+                   for root in _owned_roots())
+
+    def _proves_ownership():
+        try:
+            home = str(Path_mod.home())
+        except Exception:
+            home = ""
+        try:
+            plugin_root = os_mod.environ.get("CLAUDE_PLUGIN_ROOT") or ""
+        except Exception:
+            plugin_root = ""
+
+        # Shell comments never execute: a root or script path mentioned only
+        # in a comment cannot prove (or veto) ownership.
+        probe = re_mod.sub(r'(?m)(^|[\s;|&])#.*$', r'\1', cmd)
+
+        def _expand(path):
+            if home and home != "~":
+                for prefix in ("${HOME}/", "$HOME/", "~/"):
+                    if path.startswith(prefix):
+                        return home.rstrip("/") + "/" + path[len(prefix):]
+            if plugin_root:
+                for prefix in ("${CLAUDE_PLUGIN_ROOT}/", "$CLAUDE_PLUGIN_ROOT/"):
+                    if path.startswith(prefix):
+                        return plugin_root.rstrip("/") + "/" + path[len(prefix):]
+            return path
+
+        # Literal D="<root>" assignments the installer prefixes hook commands
+        # with; the base for the relative script argument that follows them.
+        d_roots = [
+            _expand(m.group(1)).rstrip("/")
+            for m in re_mod.finditer(r'(?:^|[;\s])D="([^"]+)"', probe)
+        ]
+
+        try:
+            import shlex
+            tokens = shlex.split(probe, posix=True)
+        except Exception:
+            tokens = [t.strip('"').strip("'").rstrip(";").replace("\\", "/")
+                      for t in probe.split()]
+        anchors = []
+        for tok in tokens:
+            tok = tok.rstrip(";")
+            for name in names:
+                if tok == name or tok.endswith("/" + name):
+                    anchors.append(tok)
+                    break
+        if not anchors:
+            return False
+
+        def _resolve_candidates(tok):
+            if tok.startswith("$D/"):
+                tok = tok[len("$D/"):]
+            candidates = []
+            expanded = _expand(tok)
+            if abs_re.match(expanded):
+                candidates.append(expanded)
+            for variant in (tok, expanded):
+                stripped = doubled_re.sub("", variant)
+                if stripped != variant:
+                    stripped = _expand(stripped)
+                    if abs_re.match(stripped):
+                        candidates.append(stripped)
+            if not candidates and d_roots:
+                candidates.append(d_roots[0] + "/" + expanded)
+            return candidates
+
+        for tok in anchors:
+            owned = False
+            for candidate in _resolve_candidates(tok):
+                try:
+                    candidate = str(Path_mod(candidate).resolve())
+                except Exception:
+                    candidate = os_mod.path.normpath(candidate)
+                if _owned_script_path(candidate):
+                    owned = True
+                    break
+            if not owned:
+                return False
+        return True
+
+    if not _proves_ownership():
+        return False
+    # The installer's version resolver is recognized plumbing, not
+    # malformation. Recognize the EXACT template hooks/hooks.json writes
+    # (_TO_VERSION_RESOLVER, kept in sync with hooks.json by
+    # tests/test_malformed_detector_installer_resolver.py) and remove ONE
+    # occurrence before the subshell check. A character-class regex is not
+    # acceptable here: this predicate is a rejection gate, and a loose match
+    # would let crafted content hide a real subshell inside a resolver-shaped
+    # string. Any deviation from the template, any second resolver-shaped
+    # subshell, and any other subshell or backtick (Claude-written shapes)
+    # leaves "$(" or "`" in the probe and is still rejected.
+    probe = cmd.replace(_TO_VERSION_RESOLVER, 'D=""', 1)
+    has_subshell = "$(" in probe or "`" in probe
     has_double_home = False
     if _measure_facade.platform.system() == "Darwin":
         has_double_home = (

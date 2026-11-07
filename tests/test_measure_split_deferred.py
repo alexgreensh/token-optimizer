@@ -216,3 +216,35 @@ def test_review2_hook_to_default_reload_retires_the_lazy_handlers(tmp_path):
         assert '__getattr__' not in vars(m) and '__dir__' not in vars(m)
         del m.savings_report
         assert not hasattr(m, 'savings_report')
+
+
+_MISSING_ATTR_PROBE = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+import _measure
+_measure.HOOK_IMPORT = sys.argv[2] == "hook"
+import measure
+missing = "_no_such_facade_attribute"
+try:
+    getattr(measure, missing)
+except AttributeError as error:
+    name = getattr(error, "name", None)
+print(hasattr(measure, missing), getattr(measure, missing, "default"), name)
+'''
+
+
+@pytest.mark.parametrize("mode", ["hook", "eager"])
+def test_missing_facade_attribute_is_a_plain_attribute_error(tmp_path, mode):
+    """hasattr() and getattr(default) on the facade must work on the RUNNING
+    interpreter. The hook-import __getattr__ raised AttributeError(name=...),
+    a keyword that only exists from 3.10, so on 3.9 every missing lookup became
+    TypeError: hasattr crashed instead of returning False."""
+    import subprocess
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    out = subprocess.run([sys.executable, "-c", _MISSING_ATTR_PROBE, str(SCRIPTS), mode],
+                         capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=120)
+    assert out.returncode == 0, out.stderr[-2000:]
+    hasattr_result, default, name = out.stdout.split()
+    assert (hasattr_result, default) == ("False", "default"), out.stdout
+    if mode == "hook":
+        assert name == "_no_such_facade_attribute", out.stdout

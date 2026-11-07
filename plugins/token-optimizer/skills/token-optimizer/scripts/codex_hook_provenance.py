@@ -35,13 +35,18 @@ foreign hook loses only ours.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import hook_provenance as hp
 
 _MARK = "TOSENT"
-_TEMPLATES_FILE = Path(__file__).resolve().parent / "shipped_codex_hook_templates.json"
+# os.path, not Path(): Path() dispatches on os.name, so under an os.name="nt"
+# simulation on POSIX it instantiates WindowsPath, which raises here.
+_TEMPLATES_FILE = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)),
+    "shipped_codex_hook_templates.json")
 _SHIPPED = []
 
 
@@ -49,7 +54,8 @@ def shipped():
     """The frozen harvest (loaded once). Unreadable => nothing proves by template."""
     if not _SHIPPED:
         try:
-            _SHIPPED.append(json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8")))
+            with open(_TEMPLATES_FILE, encoding="utf-8") as fh:
+                _SHIPPED.append(json.load(fh))
         except (OSError, ValueError):
             _SHIPPED.append({"placeholders": {}, "templates": {}, "versions": []})
     return _SHIPPED[0]

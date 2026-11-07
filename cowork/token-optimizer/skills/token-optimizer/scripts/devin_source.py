@@ -34,7 +34,7 @@ REPO_MODULES = frozenset((
     'hermes_state', 'hermes_tool_hooks', 'hook_io', 'hook_runtime', 'injection', 'install_reconcile', 'measure',
     'outline', 'pipeline_analyzer', 'plugin_env', 'py_trust', 'quality_cache_gate',
     'read_cache', 'recovery_output', 'refetch_fingerprint', 'refetch_guard', 'routing_advisor',
-    'runtime_env', 'session_activity', 'session_store', 'spawn_utils', 'structure_map', 'structure_map_ts',
+    'reset_epoch', 'runtime_env', 'session_activity', 'session_store', 'spawn_utils', 'structure_map', 'structure_map_ts',
     'structure_replay', 'thrash_guard', 'token_estimate', 'tool_search_diagnostic', 'utf8_io', 'archive_window', 'checkpoint_state',
 ))
 

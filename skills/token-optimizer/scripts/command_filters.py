@@ -3,7 +3,7 @@
 
 Lets a user opt NEW read-only commands into existing compression handlers
 and exclude commands from compression, without weakening safety. The loader
-is pure stdlib (tomllib with a no-tomllib fallback), performs no file writes,
+is pure stdlib (tomllib, or a strict subset reader on Python 3.9/3.10), performs no file writes,
 and gates every ``add`` entry through ``_is_safe_add`` before it reaches the
 effective allowlist.
 
@@ -47,6 +47,310 @@ try:
     import tomllib
 except ImportError:
     tomllib = None  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
+# TOML subset fallback (Python 3.9 and 3.10 have no tomllib)
+# ---------------------------------------------------------------------------
+# The command-filters file only needs tables, bare/quoted/dotted keys, strings,
+# booleans, integers, arrays and single-line inline tables. This reader accepts
+# exactly that and raises on anything else (multi-line strings, arrays of
+# tables, floats, dates, ...), so an unsupported file fails open instead of
+# being half-read. On Python 3.11+ the stdlib parser is always used.
+
+class _SubsetError(ValueError):
+    """The file uses TOML syntax outside the supported subset, or is invalid."""
+
+
+_MAX_DEPTH = 32  # nesting of arrays / inline tables; real filter files use 2
+_BARE_KEY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+_ESCAPES = {"b": "\b", "t": "\t", "n": "\n", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
+
+
+class _SubsetReader:
+    def __init__(self, text: str):
+        self.s = text
+        self.i = 0
+        # TOML forbids reopening a table that a dotted key or an inline table
+        # created, and defining the same [header] twice. Track those by identity.
+        self.inline_ids = set()
+        self.dotted_ids = set()
+        self.header_ids = set()
+        self.depth = 0
+
+    def fail(self, msg: str):
+        line = self.s.count("\n", 0, self.i) + 1
+        raise _SubsetError(f"{msg} (line {line})")
+
+    def peek(self) -> str:
+        return self.s[self.i] if self.i < len(self.s) else ""
+
+    def skip_inline_ws(self):
+        while self.peek() in (" ", "\t"):
+            self.i += 1
+
+    def newline(self) -> bool:
+        """Consume one LF or CRLF; a lone CR is not a newline in TOML."""
+        if self.peek() == "\n":
+            self.i += 1
+            return True
+        if self.peek() == "\r" and self.s[self.i + 1:self.i + 2] == "\n":
+            self.i += 2
+            return True
+        return False
+
+    def skip_comment(self):
+        if self.peek() == "#":
+            while self.peek() not in ("", "\n") and self.s[self.i:self.i + 2] != "\r\n":
+                ch = self.peek()
+                if ord(ch) < 0x20 and ch != "\t" or ch == "\x7f":
+                    self.fail("control character in comment")
+                self.i += 1
+
+    def skip_ws_and_newlines(self):
+        # Inside arrays: whitespace, newlines and comments are all insignificant.
+        while True:
+            self.skip_inline_ws()
+            if self.peek() == "#":
+                self.skip_comment()
+            elif not self.newline():
+                return
+
+    def end_of_line(self):
+        self.skip_inline_ws()
+        self.skip_comment()
+        if self.peek() != "" and not self.newline():
+            self.fail("unexpected text after value")
+
+    def key_part(self) -> str:
+        self.skip_inline_ws()
+        c = self.peek()
+        if c == '"':
+            return self.basic_string()
+        if c == "'":
+            return self.literal_string()
+        start = self.i
+        while self.peek() and self.peek() in _BARE_KEY_CHARS:
+            self.i += 1
+        if start == self.i:
+            self.fail("expected a key")
+        return self.s[start:self.i]
+
+    def dotted_key(self) -> list:
+        parts = [self.key_part()]
+        self.skip_inline_ws()
+        while self.peek() == ".":
+            self.i += 1
+            parts.append(self.key_part())
+            self.skip_inline_ws()
+        return parts
+
+    def basic_string(self) -> str:
+        if self.s.startswith('"""', self.i):
+            self.fail("multi-line strings are not supported")
+        self.i += 1
+        out = []
+        while True:
+            c = self.peek()
+            if c in ("", "\n", "\r"):
+                self.fail("unterminated string")
+            self.i += 1
+            if c == '"':
+                return "".join(out)
+            if c == "\\":
+                e = self.peek()
+                self.i += 1
+                if e in _ESCAPES:
+                    out.append(_ESCAPES[e])
+                elif e in ("u", "U"):
+                    n = 4 if e == "u" else 8
+                    digits = self.s[self.i:self.i + n]
+                    if len(digits) != n or any(d not in "0123456789abcdefABCDEF" for d in digits):
+                        self.fail("invalid unicode escape")
+                    code = int(digits, 16)
+                    if code > 0x10FFFF or 0xD800 <= code <= 0xDFFF:
+                        self.fail("invalid unicode escape")
+                    out.append(chr(code))
+                    self.i += n
+                else:
+                    self.fail("invalid escape sequence")
+            elif ord(c) < 0x20 and c != "\t" or c == "\x7f":
+                self.fail("control character in string")
+            else:
+                out.append(c)
+
+    def literal_string(self) -> str:
+        if self.s.startswith("'''", self.i):
+            self.fail("multi-line strings are not supported")
+        end = self.i + 1
+        while end < len(self.s) and self.s[end] not in ("'", "\n", "\r"):
+            end += 1
+        if end >= len(self.s) or self.s[end] != "'":
+            self.fail("unterminated string")
+        text = self.s[self.i + 1:end]
+        if any(ord(ch) < 0x20 and ch != "\t" or ch == "\x7f" for ch in text):
+            self.fail("control character in string")
+        self.i = end + 1
+        return text
+
+    def value(self):
+        self.skip_inline_ws()
+        c = self.peek()
+        if c == '"':
+            return self.basic_string()
+        if c == "'":
+            return self.literal_string()
+        if c == "[":
+            return self.array()
+        if c == "{":
+            return self.inline_table()
+        for word, val in (("true", True), ("false", False)):
+            if self.s.startswith(word, self.i):
+                after = self.s[self.i + len(word):self.i + len(word) + 1]
+                if after == "" or after in " \t\r\n,]}#":
+                    self.i += len(word)
+                    return val
+        start = self.i
+        if self.peek() in ("+", "-"):
+            self.i += 1
+        digits_start = self.i
+        while self.peek().isdigit() and self.peek().isascii():
+            self.i += 1
+        text = self.s[digits_start:self.i]
+        after = self.peek()
+        if not text or (len(text) > 1 and text[0] == "0") or (after and after not in " \t\r\n,]}#"):
+            self.i = start
+            self.fail("unsupported value")
+        return int(self.s[start:self.i])
+
+    def enter(self):
+        self.depth += 1
+        if self.depth > _MAX_DEPTH:
+            self.fail("arrays and inline tables nested too deeply")
+
+    def array(self) -> list:
+        self.enter()
+        try:
+            return self._array()
+        finally:
+            self.depth -= 1
+
+    def _array(self) -> list:
+        self.i += 1
+        items = []
+        while True:
+            self.skip_ws_and_newlines()
+            if self.peek() == "]":
+                self.i += 1
+                return items
+            items.append(self.value())
+            self.skip_ws_and_newlines()
+            if self.peek() == ",":
+                self.i += 1
+            elif self.peek() != "]":
+                self.fail("expected ',' or ']' in array")
+
+    def inline_table(self) -> dict:
+        self.enter()
+        try:
+            return self._inline_table()
+        finally:
+            self.depth -= 1
+
+    def _inline_table(self) -> dict:
+        self.i += 1
+        table: dict = {}
+        self.inline_ids.add(id(table))
+        self.skip_inline_ws()
+        if self.peek() == "}":
+            self.i += 1
+            return table
+        while True:
+            keys = self.dotted_key()
+            self.skip_inline_ws()
+            if self.peek() != "=":
+                self.fail("expected '='")
+            self.i += 1
+            self.assign(table, keys, self.value(), "inline table")
+            self.skip_inline_ws()
+            c = self.peek()
+            self.i += 1
+            if c == "}":
+                return table
+            if c != ",":
+                self.fail("expected ',' or '}' in inline table")
+            self.skip_inline_ws()
+            if self.peek() == "}":
+                self.fail("trailing comma in inline table")
+
+    def assign(self, table: dict, keys: list, val, what: str):
+        for part in keys[:-1]:
+            if part in table:
+                nxt = table[part]
+                # A dotted key may extend a table made by dotted keys or created
+                # implicitly as the parent of a [header]; not one a header, an
+                # inline table or a value defined itself.
+                if (not isinstance(nxt, dict) or id(nxt) in self.inline_ids
+                        or id(nxt) in self.header_ids):
+                    self.fail(f"key conflicts with an existing value in {what}")
+                self.dotted_ids.add(id(nxt))
+            else:
+                nxt = table[part] = {}
+                self.dotted_ids.add(id(nxt))
+            table = nxt
+        if keys[-1] in table:
+            self.fail(f"duplicate key in {what}")
+        table[keys[-1]] = val
+
+    def parse(self) -> dict:
+        root: dict = {}
+        current = root
+        while True:
+            self.skip_inline_ws()
+            c = self.peek()
+            if c == "":
+                return root
+            if c == "#":
+                self.skip_comment()
+            if self.newline():
+                continue
+            if self.peek() == "":
+                return root
+            if self.peek() == "[":
+                if self.s.startswith("[[", self.i):
+                    self.fail("arrays of tables are not supported")
+                self.i += 1
+                keys = self.dotted_key()
+                self.skip_inline_ws()
+                if self.peek() != "]":
+                    self.fail("expected ']'")
+                self.i += 1
+                current = root
+                for n, part in enumerate(keys):
+                    nxt = current.setdefault(part, {})
+                    # A table made by dotted keys can still gain sub-tables, but
+                    # the header may not name it itself; inline tables are closed.
+                    if (not isinstance(nxt, dict) or id(nxt) in self.inline_ids
+                            or (n == len(keys) - 1 and id(nxt) in self.dotted_ids)):
+                        self.fail("table conflicts with an existing value")
+                    current = nxt
+                if id(current) in self.header_ids:
+                    self.fail("table defined twice")
+                self.header_ids.add(id(current))
+                self.end_of_line()
+                continue
+            keys = self.dotted_key()
+            self.skip_inline_ws()
+            if self.peek() != "=":
+                self.fail("expected '='")
+            self.i += 1
+            self.assign(current, keys, self.value(), "table")
+            self.end_of_line()
+
+
+def _loads_subset(text: str) -> dict:
+    """Parse the supported TOML subset; raise _SubsetError on anything else."""
+    return _SubsetReader(text).parse()
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -278,14 +582,19 @@ def load_filters() -> CommandFilterConfig:
     path = _filters_path()
     if path is None or not path.exists():
         return CommandFilterConfig()
-    if tomllib is None:
-        _warn_once(path, "tomllib not available; ignoring")
-        return CommandFilterConfig()
     try:
-        with open(path, "rb") as handle:
-            data = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        _warn_once(path, f"malformed TOML ({exc}); ignoring")
+        if tomllib is not None:
+            with open(path, "rb") as handle:
+                data = tomllib.load(handle)
+        else:
+            # Python 3.9/3.10: no stdlib TOML. Read the supported subset, and
+            # fail open on anything outside it.
+            with open(path, "rb") as handle:
+                data = _loads_subset(handle.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        # tomllib.TOMLDecodeError and _SubsetError are both ValueError; a deeply
+        # nested file can also exhaust the stdlib parser's recursion.
+        _warn_once(path, f"malformed or unsupported TOML ({exc}); ignoring")
         return CommandFilterConfig()
     return _parse_filters(data, path)
 

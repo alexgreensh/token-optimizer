@@ -260,3 +260,16 @@ def test_windows_command_led_by_a_wrapper_is_not_ours(wrapper):
 def test_posix_proof_never_reads_the_interpreter_from_the_command():
     posix = chp.CodexProof(None, WIN_ROOT, windows=False, executable=NEW_PY)
     assert posix._interpreters('"%s" x' % OLD_PY) == [NEW_PY]
+
+
+@pytest.mark.parametrize("command,flagged", [
+    ("python ~/tools/run.py", False),
+    ("python3 ~/tools/my_runner.py --go", False),
+    ("python3 ~/old/token-optimizer-copy/hooks/stop_runner.py", True),
+    (r"py C:\old\hooks\run.py hooks/stop_runner.py", True),
+])
+def test_doctor_flags_only_hooks_naming_our_hook_scripts(home, semver_root, command, flagged):
+    path = home / "hooks.json"
+    path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}),
+                    encoding="utf-8")
+    assert len(codex_doctor._unproven_hook_checks()) == int(flagged)

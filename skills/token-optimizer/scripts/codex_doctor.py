@@ -304,6 +304,13 @@ def _has_our_hooks(data: dict[str, Any], hooks_path=None) -> bool:
     return False
 
 
+# Our hook scripts as a hook names them (hooks/<script>, either separator), so a
+# user's own run.py or *_runner.py elsewhere is not called one of ours.
+_OUR_HOOK_SCRIPTS = tuple(sep.join(("hooks", name)) for name in (
+    "run.py", "module_runner.py", "posttooluse_runner.py", "sessionstart_runner.py",
+    "stop_runner.py", "userpromptsubmit_runner.py") for sep in ("/", "\\"))
+
+
 def _unproven_hook_checks() -> list[dict[str, str]]:
     """One line per hook that names our scripts but that Token Optimizer
     cannot prove it wrote: installs and uninstalls leave it alone."""
@@ -311,7 +318,7 @@ def _unproven_hook_checks() -> list[dict[str, str]]:
     data, error = _load_json(hooks_path)
     if error or not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
         return []
-    names = ("token-optimizer", "measure.py", "_runner.py", "run.py", "python-launcher.sh")
+    names = ("token-optimizer", "measure.py", "python-launcher.sh") + _OUR_HOOK_SCRIPTS
     proof = codex_install._codex_proof(hooks_path)
     return [_check("WARN", "Unrecognized hook", f"{echo_command(command, 120)} in {hooks_path}: not written by this "
                    "Token Optimizer install, so it was left alone; delete it there if you do not want it")

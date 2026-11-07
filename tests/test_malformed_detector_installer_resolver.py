@@ -469,7 +469,7 @@ def test_foreign_plugin_root_env_never_proves_ownership(m, monkeypatch, tmp_path
 
 
 def test_sol_v8_foreign_spellings_are_preserved(m, installed, tmp_path):
-    """Sol's six foreign executions must survive: spellings that only mention
+    """Six foreign executions must survive: spellings that only mention
     our path (quoted, partially quoted, literal apostrophe/backslash, or as a
     driver argument) are not ownership proof, and the healer removes none."""
     own = f'{REPO}/skills/token-optimizer/scripts/measure.py'

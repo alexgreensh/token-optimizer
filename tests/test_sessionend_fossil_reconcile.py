@@ -19,11 +19,16 @@ SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+# The fossil reconcile touches only Token Optimizer's own entries, so these
+# carry a real install path (this checkout's measure.py), exactly as
+# setup_hook wrote them. A user's own measure.py elsewhere is left alone
+# (tests/test_hook_provenance_r4.py).
+MP = str((SCRIPTS / "measure.py").resolve())
 FOSSIL = (
-    "python3 '/x/measure.py' collect --quiet && "
-    "python3 '/x/measure.py' dashboard --quiet"
+    f"python3 '{MP}' collect --quiet && "
+    f"python3 '{MP}' dashboard --quiet"
 )
-CURRENT = "python3 '/x/measure.py' session-end-flush --trigger end"
+CURRENT = f"python3 '{MP}' session-end-flush --trigger end"
 UNRELATED = "echo user-own-keep-me"
 
 
@@ -119,8 +124,8 @@ def test_remove_fossil_when_current_shape_already_present(measure_mod, tmp_path,
 
 def test_remove_legacy_stop_duplicate_when_plugin_provides_it(measure_mod, tmp_path, monkeypatch):
     settings_path = tmp_path / "settings.json"
-    stop_fossil = "python3 '/x/measure.py' collect --quiet"
-    stop_flush = "python3 '/x/measure.py' session-end-flush --trigger stop --quiet"
+    stop_fossil = f"python3 '{MP}' collect --quiet"
+    stop_flush = f"python3 '{MP}' session-end-flush --trigger stop --quiet"
     payload = _settings(
         [_hook(CURRENT, **{"async": True})],
         stop_hooks=[_hook(stop_fossil), _hook(stop_flush), _hook(UNRELATED)],

@@ -1584,42 +1584,14 @@ def _is_token_optimizer_session_end_hook(hook: dict) -> bool:
 def _remove_token_optimizer_session_end_hooks(settings: dict) -> int:
     """Strip Token Optimizer's SessionEnd hooks from ``settings`` in place.
 
-    Mirrors the proven filter pattern in ``setup_smart_compact --uninstall``:
-    iterate the ``SessionEnd`` event only, drop hook entries whose command is
-    Token Optimizer's, keep every other hook (the user's own SessionEnd hooks
-    and ALL other hook events are left intact). Empty groups are removed; if
-    ``SessionEnd`` ends up empty, the key is dropped. Returns the count of
-    Token Optimizer hook entries removed. Never raises.
+    Only entries Token Optimizer can prove are its own (owned_hooks.remove_session_end):
+    a user's own measure.py hook and ALL other hook events are left intact.
+    Empty groups are removed; if ``SessionEnd`` ends up empty, the key is
+    dropped. Returns the count of hook entries removed. Never raises.
     """
     _measure_facade = _compat.facade()
-    if not isinstance(settings, dict):
-        return 0
-    hooks = settings.get("hooks")
-    if not isinstance(hooks, dict):
-        return 0
-    session_end = hooks.get("SessionEnd")
-    if not isinstance(session_end, list) or not session_end:
-        return 0
-    removed = 0
-    new_groups = []
-    for group in session_end:
-        if not isinstance(group, dict):
-            new_groups.append(group)
-            continue
-        hook_list = group.get("hooks")
-        if not isinstance(hook_list, list):
-            new_groups.append(group)
-            continue
-        kept_hooks = [h for h in hook_list if not _measure_facade._is_token_optimizer_session_end_hook(h)]
-        removed += len(hook_list) - len(kept_hooks)
-        if kept_hooks:
-            group["hooks"] = kept_hooks
-            new_groups.append(group)
-    if new_groups:
-        hooks["SessionEnd"] = new_groups
-    else:
-        hooks.pop("SessionEnd", None)
-    return removed
+    import owned_hooks
+    return owned_hooks.remove_session_end(_measure_facade, settings)
 
 
 def _sessionend_has_current_flush(settings: dict) -> bool:
@@ -1656,133 +1628,17 @@ def _rewrite_collect_fossil_hook(hook: dict) -> dict:
 
 
 def _apply_sessionend_fossil_reconcile(settings, result):
-    """Apply the fossil heal mutation to ``settings`` in place.
+    """Apply the fossil heal mutation to ``settings`` in place, on entries
+    Token Optimizer can prove are its own only (owned_hooks.apply_fossil_reconcile).
 
     Returns True if anything changed. The ``result`` counters (``rewritten`` /
     ``removed`` / ``stop_removed``) are incremented for the changes made in
-    THIS call only. Idempotent: a second call on an already-healed settings
-    is a no-op and returns False.
-
-    Extracted from ``_reconcile_sessionend_fossils`` so the caller can re-read
-    fresh under the lease and re-apply instead of writing a
-    snapshot that was read unlocked. If a current-shape session-end-flush
-    SessionEnd hook already exists, collect/dashboard fossils are removed.
-    Otherwise each fossil is rewritten in place to HOOK_COMMAND (preserving
-    async/timeout; adding async:true when absent). Also drops Stop-event
-    collect / bare session-end-flush duplicates when the plugin already
-    provides Stop.
+    THIS call only. Idempotent. Extracted from ``_reconcile_sessionend_fossils``
+    so the caller can re-read fresh under the lease and re-apply.
     """
     _measure_facade = _compat.facade()
-    hooks = settings.get("hooks") if isinstance(settings, dict) else None
-    if not isinstance(hooks, dict):
-        return False
-
-    has_current = _measure_facade._sessionend_has_current_flush(settings)
-    mutated = False
-
-    session_end = hooks.get("SessionEnd")
-    if isinstance(session_end, list) and session_end:
-        new_groups = []
-        for group in session_end:
-            if not isinstance(group, dict):
-                new_groups.append(group)
-                continue
-            hook_list = group.get("hooks")
-            if not isinstance(hook_list, list):
-                new_groups.append(group)
-                continue
-            kept = []
-            for hook in hook_list:
-                if not isinstance(hook, dict):
-                    kept.append(hook)
-                    continue
-                cmd = hook.get("command", "")
-                if not _measure_facade._sessionend_cmd_is_collect_fossil(cmd):
-                    kept.append(hook)
-                    continue
-                if has_current:
-                    result["removed"] += 1
-                    mutated = True
-                    continue
-                kept.append(_measure_facade._rewrite_collect_fossil_hook(hook))
-                result["rewritten"] += 1
-                mutated = True
-                has_current = True
-            if kept:
-                group = dict(group)
-                group["hooks"] = kept
-                new_groups.append(group)
-        if mutated:
-            if new_groups:
-                hooks["SessionEnd"] = new_groups
-            else:
-                hooks.pop("SessionEnd", None)
-
-    # Stop event: drop collect fossils and extra session-end-flush entries
-    # when a plugin-provided (or already-present) Stop flush exists. The
-    # first flush-shaped Stop hook is kept; extras and collect fossils go.
-    stop = hooks.get("Stop")
-    if isinstance(stop, list) and stop:
-        plugin_provides_stop_flush = False
-        try:
-            if _measure_facade._is_plugin_installed():
-                plugin_hooks_path = _measure_facade._find_plugin_hooks_json()
-                if plugin_hooks_path:
-                    plugin_hooks = _measure_facade.json.loads(plugin_hooks_path.read_text(encoding="utf-8"))
-                    for group in (plugin_hooks.get("hooks") or {}).get("Stop") or []:
-                        if not isinstance(group, dict):
-                            continue
-                        for hook in group.get("hooks") or []:
-                            if isinstance(hook, dict) and _measure_facade._sessionend_cmd_is_flush(
-                                hook.get("command", "")
-                            ):
-                                plugin_provides_stop_flush = True
-                                break
-        except (OSError, _measure_facade.json.JSONDecodeError, TypeError, ValueError):
-            plugin_provides_stop_flush = False
-
-        saw_stop_flush = False
-        new_stop_groups = []
-        stop_mutated = False
-        for group in stop:
-            if not isinstance(group, dict):
-                new_stop_groups.append(group)
-                continue
-            hook_list = group.get("hooks")
-            if not isinstance(hook_list, list):
-                new_stop_groups.append(group)
-                continue
-            kept = []
-            for hook in hook_list:
-                if not isinstance(hook, dict):
-                    kept.append(hook)
-                    continue
-                cmd = hook.get("command", "")
-                is_collect = _measure_facade._sessionend_cmd_is_collect_fossil(cmd)
-                is_flush = _measure_facade._sessionend_cmd_is_flush(cmd)
-                if is_collect:
-                    result["stop_removed"] += 1
-                    stop_mutated = True
-                    continue
-                if is_flush:
-                    if plugin_provides_stop_flush or saw_stop_flush:
-                        result["stop_removed"] += 1
-                        stop_mutated = True
-                        continue
-                    saw_stop_flush = True
-                kept.append(hook)
-            if kept:
-                group = dict(group)
-                group["hooks"] = kept
-                new_stop_groups.append(group)
-        if stop_mutated:
-            mutated = True
-            if new_stop_groups:
-                hooks["Stop"] = new_stop_groups
-            else:
-                hooks.pop("Stop", None)
-
-    return mutated
+    import owned_hooks
+    return owned_hooks.apply_fossil_reconcile(_measure_facade, settings, result)
 
 
 def _reconcile_sessionend_fossils():
@@ -2052,22 +1908,13 @@ def setup_hook(dry_run=None, uninstall=None, user_initiated=None):
 
     hooks = settings["hooks"]
 
-    if upgrading:
-        # Replace the collect/dashboard fossil with session-end-flush.
-        session_end = hooks.get("SessionEnd", [])
-        if isinstance(session_end, list):
-            for entry in session_end:
-                hook_list = entry.get("hooks", []) if isinstance(entry, dict) else []
-                for i, hook in enumerate(hook_list):
-                    cmd = hook.get("command", "") if isinstance(hook, dict) else ""
-                    if _measure_facade._sessionend_cmd_is_collect_fossil(cmd) or (
-                        "measure.py" in cmd and "collect" in cmd
-                    ):
-                        hook_list[i] = new_hook
-                        break
-    elif "SessionEnd" not in hooks:
+    # Replace our own collect/dashboard fossil with session-end-flush; with
+    # none of ours there (a user's own measure.py), install alongside it.
+    import owned_hooks
+    upgrading = upgrading and owned_hooks.replace_session_end_fossil(_measure_facade, hooks, new_hook)
+    if not upgrading and "SessionEnd" not in hooks:
         hooks["SessionEnd"] = [{"hooks": [new_hook]}]
-    else:
+    elif not upgrading:
         session_end = hooks["SessionEnd"]
         if isinstance(session_end, list) and len(session_end) > 0:
             first_entry = session_end[0]
@@ -2947,34 +2794,14 @@ def setup_smart_compact(dry_run=None, uninstall=None, status_only=None,
         return
 
     if uninstall:
-        hooks = settings.get("hooks", {})
-        removed = 0
-        for event in ("PreCompact", "SessionStart", "Stop", "SessionEnd"):
-            if event not in hooks:
-                continue
-            new_groups = []
-            for group in hooks[event]:
-                new_hooks = [
-                    h for h in group.get("hooks", [])
-                    if "compact-capture" not in h.get("command", "")
-                    and "compact-restore" not in h.get("command", "")
-                ]
-                if new_hooks:
-                    group["hooks"] = new_hooks
-                    new_groups.append(group)
-                else:
-                    removed += 1
-            if new_groups:
-                hooks[event] = new_groups
-            elif event in hooks:
-                del hooks[event]
+        import owned_hooks  # our entries only: a user's own compact-capture hook stays
+        removed = owned_hooks.remove_smart_compact(_measure_facade, settings)
 
         if dry_run:
             print(f"\n  [Dry run] Would remove {removed} smart compact hook(s) from {settings_path}")
             print("  Run without --dry-run to apply.\n")
             return
 
-        settings["hooks"] = hooks
         # setup-smart-compact also installed compactInstructions; take ours
         # back out (a user-written part stays).
         ci_removed = _measure_facade._remove_our_compact_instructions(settings)

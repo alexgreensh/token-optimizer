@@ -199,3 +199,108 @@ def test_cloud_record_failure_is_logged_in_the_profile_heal_log(hp, tmp_path, mo
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     assert [(e["action"], e["source"], e["queued"]) for e in entries] == [
         ("hook_provenance_record_failed", "cloud_kit", True)]
+
+
+# --- the fossil reconcile and the uninstall paths touch only our own entries ------
+
+FOREIGN = "python3 /home/me/mytool/measure.py collect --my-flag"
+
+
+def _hook(command, **extra):
+    return dict({"type": "command", "command": command}, **extra)
+
+
+def _our_fossil(m, mp=None):
+    mp = str(m.MEASURE_PY_PATH) if mp is None else mp
+    return "python3 '{0}' collect --quiet && python3 '{0}' dashboard --quiet".format(mp)
+
+
+def _reconcile(m, hooks):
+    settings = {"hooks": json.loads(json.dumps(hooks))}
+    result = {"rewritten": 0, "removed": 0, "stop_removed": 0}
+    changed = m._apply_sessionend_fossil_reconcile(settings, result)
+    return changed, result, settings["hooks"]
+
+
+def test_users_own_measure_py_is_untouched_in_session_end_and_stop(m, installed):
+    hooks = {"SessionEnd": [{"hooks": [_hook(FOREIGN)]}],
+             "Stop": [{"hooks": [_hook(FOREIGN + " --stop")]}]}
+    changed, result, after = _reconcile(m, hooks)
+    assert (changed, result) == (False, {"rewritten": 0, "removed": 0, "stop_removed": 0})
+    assert after == hooks
+
+
+def test_users_own_measure_py_survives_the_real_reconcile_pass(m, installed):
+    data = json.loads(installed.read_text())
+    data["hooks"]["SessionEnd"] = [{"hooks": [_hook(FOREIGN)]}]
+    data["hooks"]["Stop"] = data["hooks"].get("Stop", []) + [{"hooks": [_hook(FOREIGN + " --stop")]}]
+    installed.write_text(json.dumps(data))
+    m._reconcile_sessionend_fossils()
+    after = json.loads(installed.read_text())["hooks"]
+    assert after["SessionEnd"] == [{"hooks": [_hook(FOREIGN)]}]
+    assert {"hooks": [_hook(FOREIGN + " --stop")]} in after["Stop"]
+
+
+@pytest.mark.parametrize("where", ["running", "removed_plugin_version", "script_install"])
+def test_our_fossil_is_still_rewritten(m, installed, where):
+    mp = {"running": str(m.MEASURE_PY_PATH),
+          "removed_plugin_version": str(m.CLAUDE_DIR / "plugins" / "cache" / "mkt" / "token-optimizer"
+                                        / "5.1.0" / "skills" / "token-optimizer" / "scripts" / "measure.py"),
+          "script_install": str(m.CLAUDE_DIR / "skills" / "token-optimizer" / "scripts" / "measure.py")}[where]
+    changed, result, after = _reconcile(m, {"SessionEnd": [{"hooks": [_hook(_our_fossil(m, mp)), _hook("echo mine")]}]})
+    assert changed and result["rewritten"] == 1
+    assert [h["command"] for h in after["SessionEnd"][0]["hooks"]] == [m.HOOK_COMMAND, "echo mine"]
+
+
+@pytest.mark.parametrize("variant", [
+    lambda c: c + " ; echo mine",                 # the user appended to our command
+    lambda c: c.replace("--quiet", "--loud", 1),  # an edited copy
+    lambda c: c.replace("token-optimizer/scripts", "token-optimizer/other", 1),
+])
+def test_anything_but_our_exact_fossil_is_kept(m, installed, variant):
+    command = variant(_our_fossil(m))
+    changed, _, after = _reconcile(m, {"SessionEnd": [{"hooks": [_hook(command)]}]})
+    assert not changed and after["SessionEnd"][0]["hooks"][0]["command"] == command
+
+
+def test_stop_drops_our_fossil_and_keeps_the_users(m, installed):
+    ours = "python3 '%s' collect --quiet" % m.MEASURE_PY_PATH
+    changed, result, after = _reconcile(m, {"Stop": [{"hooks": [_hook(ours), _hook(FOREIGN)]}]})
+    assert changed and result["stop_removed"] == 1
+    assert after["Stop"] == [{"hooks": [_hook(FOREIGN)]}]
+
+
+def test_a_users_flush_is_not_mistaken_for_ours(m, installed):
+    """A user's own session-end-flush must not make our fossil 'redundant'."""
+    users_flush = "python3 /home/me/mytool/measure.py session-end-flush --trigger end"
+    changed, result, after = _reconcile(m, {"SessionEnd": [{"hooks": [_hook(users_flush), _hook(_our_fossil(m))]}]})
+    assert result["rewritten"] == 1 and result["removed"] == 0
+    assert [h["command"] for h in after["SessionEnd"][0]["hooks"]] == [users_flush, m.HOOK_COMMAND]
+
+
+def test_session_end_uninstall_keeps_the_users_measure_py(m, installed):
+    settings = {"hooks": {"SessionEnd": [{"hooks": [_hook(FOREIGN), _hook(m.HOOK_COMMAND)]}]}}
+    assert m._remove_token_optimizer_session_end_hooks(settings) == 1
+    assert settings["hooks"]["SessionEnd"] == [{"hooks": [_hook(FOREIGN)]}]
+
+
+def test_setup_hook_upgrade_never_replaces_the_users_hook(m, installed):
+    installed.write_text(json.dumps({"hooks": {"SessionEnd": [{"hooks": [_hook(FOREIGN)]}]}}))
+    m.setup_hook(dry_run=False)
+    commands = [h["command"] for g in json.loads(installed.read_text())["hooks"]["SessionEnd"] for h in g["hooks"]]
+    assert commands == [FOREIGN, m.HOOK_COMMAND]
+
+
+def test_smart_compact_uninstall_removes_ours_and_keeps_the_users(m, installed, capsys):
+    users = ["python3 /home/me/mytool/measure.py compact-capture --trigger stop", "echo compact-restore notes"]
+    installed.write_text(json.dumps({"_test_marker": True}))
+    m.setup_smart_compact()
+    data = json.loads(installed.read_text())
+    ours = sum(len(g["hooks"]) for groups in data["hooks"].values() for g in groups)
+    data["hooks"]["Stop"].append({"hooks": [_hook(c) for c in users]})
+    installed.write_text(json.dumps(data))
+    m.setup_smart_compact(uninstall=True)
+    after = json.loads(installed.read_text()).get("hooks", {})
+    left = [h["command"] for groups in after.values() for g in groups for h in g["hooks"]]
+    assert left == users
+    assert "%d hook(s) removed" % ours in capsys.readouterr().out

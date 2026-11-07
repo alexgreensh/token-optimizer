@@ -513,7 +513,7 @@ def test_stale_path_rewrite_records_only_entries_already_proven_ours(m, hp, inst
 
 def test_sessionend_fossil_rewrite_records_hook_command_in_its_entry(m, hp, installed):
     own = m._get_measure_py_path()
-    fossil = "python3 %s collect --quiet && python3 %s dashboard --quiet" % (own, own)
+    fossil = "python3 '%s' collect --quiet && python3 '%s' dashboard --quiet" % (own, own)  # as shipped
     data = json.loads(installed.read_text(encoding="utf-8"))
     data["hooks"]["SessionEnd"] = [{"hooks": [{"type": "command", "command": fossil, "timeout": 30}]}]
     data["hooks"].setdefault("Notification", []).append(

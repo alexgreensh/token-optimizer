@@ -7,10 +7,11 @@ silently ran INSTALL. The core SessionEnd tracking hook thus had no working
 CLI removal.
 
 The fix adds real uninstall to ``setup_hook``: it removes ONLY Token
-Optimizer's own SessionEnd hook entries (commands containing ``measure.py``
-plus ``collect`` or ``session-end-flush``), leaving the user's other
-SessionEnd hooks and all other hook events intact. Mirrors the proven
-``setup-smart-compact --uninstall`` filter pattern. Supports ``--dry-run``.
+Optimizer's own SessionEnd hook entries (a ``measure.py collect`` or
+``session-end-flush`` command it can prove it wrote: a recorded or shipped
+entry, or the exact command setup_hook generated for an install's
+measure.py), leaving the user's other SessionEnd hooks, a user's own
+measure.py, and all other hook events intact. Supports ``--dry-run``.
 
 Run directly:  python3 tests/test_setup_hook_uninstall.py
 Exits non-zero on first failure.
@@ -26,6 +27,8 @@ sys.path.insert(0, str(SCRIPTS))
 
 import measure  # noqa: E402
 
+MP = str(measure.MEASURE_PY_PATH)  # an install's measure.py: what setup_hook writes
+
 
 def _to_hook(cmd: str) -> dict:
     return {"type": "command", "command": cmd, "async": True}
@@ -37,7 +40,7 @@ def test_remove_strips_only_to_session_end_hooks():
             "SessionEnd": [
                 {
                     "hooks": [
-                        _to_hook("python3 '/x/measure.py' collect --quiet && python3 '/x/measure.py' dashboard --quiet"),
+                        _to_hook(f"python3 '{MP}' collect --quiet && python3 '{MP}' dashboard --quiet"),
                         _to_hook("echo user-own-keep-me"),
                     ]
                 }
@@ -60,7 +63,7 @@ def test_remove_drops_empty_session_end_group_and_key():
     settings = {
         "hooks": {
             "SessionEnd": [
-                {"hooks": [_to_hook("python3 '/x/measure.py' collect --quiet")]},
+                {"hooks": [_to_hook(f"python3 '{MP}' collect --quiet")]},
             ],
             "Stop": [{"hooks": [_to_hook("echo keep-stop")]}],
         }
@@ -75,7 +78,7 @@ def test_remove_recognizes_session_end_flush_command():
     settings = {
         "hooks": {
             "SessionEnd": [
-                {"hooks": [_to_hook("python3 '/x/measure.py' session-end-flush --trigger stop --quiet")]}
+                {"hooks": [_to_hook(measure.HOOK_COMMAND)]}
             ]
         }
     }
@@ -116,7 +119,7 @@ def test_remove_handles_malformed_entries_safely():
         "hooks": {
             "SessionEnd": [
                 "not-a-dict",
-                {"hooks": [_to_hook("python3 '/x/measure.py' collect --quiet"), "raw-string-hook"]},
+                {"hooks": [_to_hook(f"python3 '{MP}' collect --quiet"), "raw-string-hook"]},
             ]
         }
     }

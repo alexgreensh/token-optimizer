@@ -15,6 +15,7 @@ import codex_compact_prompt
 import codex_install
 import codex_state
 import codex_statusline
+from hook_provenance import echo_command
 
 SUPPORTED_HOOK_EVENTS = {
     "PreToolUse",
@@ -291,14 +292,30 @@ def _status_line_check() -> dict[str, str]:
     return _check("WARN", "Codex CLI status line", "not configured; rerun codex-install with --enable-status-line")
 
 
-def _has_our_hooks(data: dict[str, Any]) -> bool:
+def _has_our_hooks(data: dict[str, Any], hooks_path=None) -> bool:
     """Same ownership test the installer uses. The consolidated runner hooks
     carry no "token-optimizer/scripts" text on POSIX installs, so a substring
     check called a working install "no Token Optimizer hooks"."""
-    for groups in data.get("hooks", {}).values():
-        if isinstance(groups, list) and any(codex_install._is_token_optimizer_group(g) for g in groups):
+    proof = codex_install._codex_proof(hooks_path)
+    for event, groups in data.get("hooks", {}).items():
+        if isinstance(groups, list) and any(codex_install._is_token_optimizer_group(event, g, proof)
+                                            for g in groups):
             return True
     return False
+
+
+def _unproven_hook_checks() -> list[dict[str, str]]:
+    """One line per hook that names our scripts but that Token Optimizer
+    cannot prove it wrote: installs and uninstalls leave it alone."""
+    hooks_path = codex_home() / "hooks.json"
+    data, error = _load_json(hooks_path)
+    if error or not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
+        return []
+    names = ("token-optimizer", "measure.py", "_runner.py", "run.py", "python-launcher.sh")
+    proof = codex_install._codex_proof(hooks_path)
+    return [_check("WARN", "Unrecognized hook", f"{echo_command(command, 120)} in {hooks_path}: not written by this "
+                   "Token Optimizer install, so it was left alone; delete it there if you do not want it")
+            for command in proof.unproven(data, names)]
 
 
 def _global_hook_check() -> dict[str, str]:
@@ -308,7 +325,7 @@ def _global_hook_check() -> dict[str, str]:
         return _check("FAIL", "Global hooks", f"{hooks_path} not found; run measure.py codex-install")
     if not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
         return _check("FAIL", "Global hooks", f"{hooks_path} has no hooks object")
-    if _has_our_hooks(data):
+    if _has_our_hooks(data, hooks_path):
         return _check("OK", "Global hooks", str(hooks_path))
     return _check("WARN", "Global hooks", f"no Token Optimizer hooks in {hooks_path}; run measure.py codex-install")
 
@@ -327,14 +344,15 @@ def _hook_shell_check() -> list[dict[str, str]]:
     ours = 0
     cmd_only = 0
     dev_only = 0
+    proof = codex_install._codex_proof(hooks_path)
     advices: list[str] = []
-    for groups in data["hooks"].values():
+    for event, groups in data["hooks"].items():
         if not isinstance(groups, list):
             continue
         for group in groups:
             if not isinstance(group, dict):
                 continue
-            group_ours = codex_install._is_token_optimizer_group(group)
+            group_ours = codex_install._is_token_optimizer_group(event, group, proof)
             for hook in group.get("hooks", []):
                 command = hook.get("command") if isinstance(hook, dict) else None
                 if not isinstance(command, str):
@@ -421,7 +439,7 @@ def _project_hook_check(project: Path) -> dict[str, str]:
         return _check("WARN", "Project hooks", f"{hooks_path} not found; per-project hooks are optional when global hooks are installed")
     if not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
         return _check("FAIL", "Project hooks", f"{hooks_path} has no hooks object")
-    if _has_our_hooks(data):
+    if _has_our_hooks(data, hooks_path):
         return _check("OK", "Project hooks", str(hooks_path))
     return _check("WARN", "Project hooks", f"no Token Optimizer hooks installed in {hooks_path}; manual refresh mode avoids visible Codex hook rows")
 
@@ -547,6 +565,7 @@ def run_checks(project: Path | None = None) -> list[dict[str, str]]:
     checks.append(_global_hook_check())
     checks.append(_stop_hook_activity_check())
     checks.extend(_hook_shell_check())
+    checks.extend(_unproven_hook_checks())
     checks.extend(_global_hook_config_checks())
     checks.append(_project_hook_check(project))
     checks.extend(_project_feature_checks(project))

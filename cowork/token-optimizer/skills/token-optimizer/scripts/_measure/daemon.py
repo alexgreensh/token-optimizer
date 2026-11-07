@@ -1734,18 +1734,13 @@ def session_health():
         print("\nSession health check is not supported on this platform.")
         return
 
-    installed_version = health["installed_version"]
-    running_sessions = health["running_sessions"]
-    automated = health["automated"]
-    recommendations = health["recommendations"]
+    installed_version, running_sessions, automated, recommendations = (
+        health[k] for k in ("installed_version", "running_sessions", "automated", "recommendations"))
 
     print("\nSESSION HEALTH CHECK")
     print("=" * 55)
 
-    if installed_version:
-        print(f"\n  Installed version: {installed_version}")
-    else:
-        print("\n  Installed version: unknown (could not run 'claude --version')")
+    print(f"\n  Installed version: {installed_version or 'unknown (could not run ' + repr('claude --version') + ')'}")
 
     if not running_sessions:
         print("\n  No running Claude Code CLI sessions found.")
@@ -1770,6 +1765,11 @@ def session_health():
         print("\nAUTOMATED PROCESSES")
         for proc in automated:
             print(f"  {proc}")
+    try:  # hooks the malformed-hook healer left alone (heal_report.py)
+        for _line in __import__("heal_report").health_lines(_measure_facade):
+            print(_line)
+    except Exception:
+        pass  # health must never fail on this optional section
 
     print()
 
@@ -5430,51 +5430,19 @@ def _backup_settings_file(dest_dir: Path) -> Path | None:
         return None
 
 
-def _is_our_hook_entry(entry) -> bool:
-    """True when a settings.json hook entry is one WE installed.
+def _is_our_hook_entry(entry, event="", group=None) -> bool:
+    """True when a settings.json hook entry is one Token Optimizer wrote (cleanup).
 
-    Ownership markers, all anchored on our own script names rather than a bare
-    "token-optimizer" substring (a user hook may legitimately mention us in a
-    path or a comment without being ours to delete):
-      * the command invokes one of our scripts (measure.py / read_cache.py /
-        statusline.js / archive_result.py / context_intel.py) AND references
-        token-optimizer, or
-      * it carries one of our distinctive subcommands (quality-cache,
-        compact-capture, compact-restore, ensure-health, clear-compacted,
-        session-end-flush, dynamic-compact-instructions).
-
-    Conservative by construction: unrecognized shapes are NOT ours, so a hook
-    we cannot positively identify is left in place. The cost of a false
-    negative is a dangling entry the user can delete; the cost of a false
-    positive is silently deleting their automation.
+    Proof only (owned_hooks.cleanup_owner): recorded in the provenance ledger,
+    a shipped hooks.json entry for an install root, or byte-identical to a
+    command setup_hook / setup_smart_compact / setup_quality_bar generated for
+    an install's measure.py. A command that merely names our subcommands or
+    scripts proves nothing and stays: a dangling entry the user can delete
+    beats silently deleting their automation.
     """
     _measure_facade = _compat.facade()
-    if not isinstance(entry, dict):
-        return False
-    cmd = entry.get("command")
-    if not isinstance(cmd, str) or not cmd:
-        return False
-    low = cmd.lower()
-    our_subcommands = (
-        "quality-cache", "compact-capture", "compact-restore", "ensure-health",
-        "clear-compacted", "session-end-flush", "dynamic-compact-instructions",
-    )
-    if any(sub in low for sub in our_subcommands):
-        return True
-    our_scripts = (
-        "measure.py", "read_cache.py", "statusline.js", "archive_result.py",
-        "context_intel.py", "activity_tracker.py",
-        # the UserPromptSubmit dispatcher. Without it a hook that
-        # runs userpromptsubmit_runner.py (+ token-optimizer) is not recognised
-        # as ours, so ownership-gated repair/reconciliation skips it. Whitelisting
-        # the script name here is inert until the dispatcher ships (it is not yet
-        # in this branch) and never matches a foreign hook (the token-optimizer
-        # substring is still required alongside it).
-        "userpromptsubmit_runner.py",
-    )
-    if "token-optimizer" in low and any(s in low for s in our_scripts):
-        return True
-    return False
+    import owned_hooks
+    return owned_hooks.cleanup_owner(_measure_facade)(event, {"hooks": [entry]} if group is None else group, entry)
 
 
 def _remove_our_settings_entries(settings: dict) -> list[str]:
@@ -5522,6 +5490,8 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
     # filtered with the same ownership predicate.
     hooks = settings.get("hooks")
     if isinstance(hooks, dict):
+        import owned_hooks
+        owns = owned_hooks.cleanup_owner(_measure_facade)  # proof only, as _is_our_hook_entry
         for event in list(hooks.keys()):
             groups = hooks.get(event)
             if not isinstance(groups, list):
@@ -5536,7 +5506,7 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
                 if not isinstance(entries, list):
                     new_groups.append(group)
                     continue
-                kept = [h for h in entries if not _measure_facade._is_our_hook_entry(h)]
+                kept = [h for h in entries if not owns(event, group, h)]
                 n_ours = len(entries) - len(kept)
                 if n_ours == 0:
                     # Nothing of ours here -- leave the group exactly as-is,

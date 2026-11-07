@@ -20,6 +20,8 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _codex_record import record_codex  # noqa: E402
 
 import codex_compact_prompt as ccp  # noqa: E402
 import codex_doctor  # noqa: E402
@@ -146,7 +148,7 @@ def test_posix_runner_hooks_are_replaced_not_duplicated(monkeypatch, root):
 
 def test_foreign_runner_named_hook_outside_our_folder_is_kept(monkeypatch):
     foreign = {"hooks": [{"type": "command", "command": "python3 /opt/tools/hooks/stop_runner.py"}]}
-    assert not codex_install._is_token_optimizer_group(foreign)
+    assert not codex_install._is_token_optimizer_group("Stop", foreign)
 
 
 # --- doctor -------------------------------------------------------------------
@@ -313,6 +315,8 @@ def test_status_without_a_toml_parser(monkeypatch):
     assert ccp.configured_prompt_state("[tui]\nx = 1\n\n" + block, WIN_PROMPT) == "misplaced"
 
 
+
+
 def test_heal_repairs_only_our_quoted_launcher_commands(tmp_path):
     marker = codex_install._LAUNCHER_MARKER
     # Heal refreshes the launcher the command names before rewriting it, so
@@ -329,9 +333,13 @@ def test_heal_repairs_only_our_quoted_launcher_commands(tmp_path):
     }}
     path = tmp_path / "hooks.json"
     path.write_text(json.dumps(hooks), encoding="utf-8")
+    # Unproven bytes are never rewritten, whatever they look like.
+    assert codex_install.heal_quoted_launcher_commands([path]) == 0
+    record_codex(codex_install, path, hooks, ours)
     assert codex_install.heal_quoted_launcher_commands([path]) == 1
     data = json.loads(path.read_text(encoding="utf-8"))
     fixed = data["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert codex_install._codex_proof(path).owns(("Stop", "", "command", fixed))  # the rewrite is recorded
     # Issue #278: the exact generated shape is rewritten to the shell-neutral
     # form (PowerShell and cmd.exe both run it), not the cmd-only set prefix.
     assert fixed == codex_install.neutralize_launcher_command(ours)
@@ -354,6 +362,7 @@ def test_heal_falls_back_to_unquoted_set_prefix_when_no_neutral_form(tmp_path, m
     path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": ours}]}]}}),
                     encoding="utf-8")
     assert codex_install.neutralize_launcher_command(ours) is None
+    record_codex(codex_install, path, None, ours)
     assert codex_install.heal_quoted_launcher_commands([path]) == 1
     fixed = json.loads(path.read_text(encoding="utf-8"))["hooks"]["Stop"][0]["hooks"][0]["command"]
     assert fixed == f"{codex_install._WIN_UNQUOTED_PREFIX} {ours}"

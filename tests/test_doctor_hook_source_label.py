@@ -57,7 +57,7 @@ def test_plugin_hooks_json_is_not_called_settings_json(tmp_path):
 def test_a_settings_json_hook_is_still_called_settings_json(tmp_path):
     home = _home(tmp_path)
     settings = {"hooks": {"SessionEnd": [{"hooks": [
-        {"type": "command", "command": f"python3 '{MEASURE}' session-end-flush --quiet"}]}]}}
+        {"type": "command", "command": f"python3 '{MEASURE}' session-end-flush --trigger end"}]}]}}
     (home / ".claude" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     line = _doctor_session_end_line(home, tmp_path)
     assert line.startswith("active (settings.json)"), line

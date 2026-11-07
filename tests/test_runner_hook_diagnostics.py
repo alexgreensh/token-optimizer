@@ -26,10 +26,12 @@ def test_shipped_marketplace_hooks_are_installed(isolated_hooks):
 
 
 def test_legacy_direct_commands_stay_installed(isolated_hooks):
+    # SessionEnd counts only our own hook: the direct command setup_hook wrote
+    # for this install's measure.py (a bare 'measure.py ...' could be anyone's).
     commands = {'PreCompact': 'measure.py compact-capture',
                 'SessionStart': 'measure.py compact-restore',
                 'Stop': 'measure.py compact-capture',
-                'SessionEnd': 'measure.py session-end-flush'}
+                'SessionEnd': "python3 '%s' session-end-flush --trigger end" % measure.MEASURE_PY_PATH}
     settings = {'hooks': {event: [{'hooks': [{'command': command}]}]
                           for event, command in commands.items()}}
     assert all(measure._is_smart_compact_installed(settings).values())
@@ -51,4 +53,6 @@ def test_runner_detection_is_event_and_filename_scoped(isolated_hooks, event, co
     settings = {'hooks': {event: [{'hooks': [{'command': command}]}]}}
     assert measure._is_smart_compact_installed(settings)[event] is expected
     if event == 'SessionEnd':
-        assert measure._is_hook_installed(settings) is expected
+        # The SessionEnd label counts only our own hook: a shipped hooks.json
+        # entry resolved for an install. None of these bare runner paths is.
+        assert measure._is_hook_installed(settings) is False

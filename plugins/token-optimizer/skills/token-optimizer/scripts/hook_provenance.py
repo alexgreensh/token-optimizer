@@ -402,11 +402,101 @@ def _update(path, mutate):
                     reset = True
                 except OSError:
                     return False, False
-            if not mutate(data) and not reset:
+            changed = mutate(data)
+            pending = _merge_pending(path, data)
+            if not (changed or reset or pending):
                 return True, False
-            return _write_atomic(path, data), reset
+            written = _write_atomic(path, data)
+            for item in pending if written else ():
+                try:
+                    os.unlink(str(item))
+                except OSError:
+                    pass
+            return written, reset
     except Exception:
         return False, False
+
+
+# --- pending records ------------------------------------------------------------
+# A record whose locked write fails (lock held past the timeout, no lock
+# support, unreadable ledger) is queued as one small file beside the ledger
+# and merged by the next locked write that lands: late, never lost. Same
+# directory and trust as the ledger. Only what a writer added is ever queued.
+
+def _pending_dir(path):
+    path = Path(path)
+    return path.with_name(path.name + ".pending")
+
+
+def has_pending(path):
+    try:
+        return bool(os.listdir(str(_pending_dir(path))))
+    except OSError:
+        return False
+
+
+def _queue(path, section, key, entries):
+    """Queue ``entries`` (digest -> meta) for ``section``/``key``. True when
+    the file landed. Named by its content, so a retry adds no second file;
+    written beside the ledger and renamed in, so the queue only ever holds
+    complete files."""
+    tmp = None
+    try:
+        name = hashlib.sha256(json.dumps([section, key, sorted(entries)]).encode("utf-8")).hexdigest()
+        qdir = _pending_dir(path)
+        qdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(qdir.parent), prefix=".hook_provenance-q-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"section": section, "key": key, "entries": entries}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, str(qdir / name))
+        tmp = None
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _merge_pending(path, data):
+    """Fold every well-formed queued record into ``data``; return their files."""
+    qdir, merged = _pending_dir(path), []
+    try:
+        names = sorted(os.listdir(str(qdir)))
+    except OSError:
+        return merged
+    for name in names:
+        try:
+            body = json.loads(_read_regular(qdir / name).decode("utf-8"))
+            section, key, entries = body["section"], body["key"], body["entries"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if section not in ("files", "contexts") or not isinstance(key, str) \
+                or not _records_ok({key: entries}):
+            continue
+        target = data[section].setdefault(key, {})
+        for digest, meta in entries.items():
+            target.setdefault(digest, meta)
+        merged.append(qdir / name)
+    return merged
+
+
+def _record_entries(ledger_path, section, key, entries):
+    """"ok" (in the ledger), "queued" (lands with the next write) or "failed"."""
+    def mutate(data):
+        target = data[section].setdefault(key, {})
+        new = {d: v for d, v in entries.items() if d not in target}
+        target.update(new)
+        return bool(new)
+
+    if _update(ledger_path, mutate)[0]:
+        return "ok"
+    return "queued" if _queue(ledger_path, section, key, entries) else "failed"
 
 
 def record(ledger_path, settings_path, commands, source):
@@ -416,20 +506,9 @@ def record(ledger_path, settings_path, commands, source):
         wanted = [c for c in commands if isinstance(c, str) and c]
         if not wanted:
             return True
-        key = settings_key(settings_path)
         now = int(time.time())
-
-        def mutate(data):
-            entries = data["files"].setdefault(key, {})
-            changed = False
-            for command in wanted:
-                digest = command_digest(command)
-                if digest not in entries:
-                    entries[digest] = {"source": str(source), "ts": now}
-                    changed = True
-            return changed
-
-        return _update(ledger_path, mutate)[0]
+        entries = {command_digest(c): {"source": str(source), "ts": now} for c in wanted}
+        return _record_entries(ledger_path, "files", settings_key(settings_path), entries) == "ok"
     except Exception:
         return False
 
@@ -466,27 +545,31 @@ def ledger_path_for(facade):
 def record_contexts(ledger_path, settings_path, contexts, source):
     """Record that Token Optimizer wrote these exact entries (full contexts)
     into ``settings_path``. Call after the settings write landed. Never raises."""
+    return _contexts_status(ledger_path, settings_path, contexts, source) == "ok"
+
+
+def _contexts_status(ledger_path, settings_path, contexts, source):
     try:
         wanted = [c for c in contexts if isinstance(c, tuple) and len(c) == 4]
         if not wanted:
-            return True
-        key = settings_key(settings_path)
+            return "ok"
         now = int(time.time())
-
-        def mutate(data):
-            entries = data["contexts"].setdefault(key, {})
-            changed = False
-            for context in wanted:
-                digest = context_digest(context)
-                if digest not in entries:
-                    entries[digest] = {"source": str(source), "ts": now,
-                                       "cmd": command_digest(context[3])}
-                    changed = True
-            return changed
-
-        return _update(ledger_path, mutate)[0]
+        entries = {context_digest(c): {"source": str(source), "ts": now, "cmd": command_digest(c[3])}
+                   for c in wanted}
+        return _record_entries(ledger_path, "contexts", settings_key(settings_path), entries)
     except Exception:
-        return False
+        return "failed"
+
+
+def _record_failed(log, source, count, status, settings):
+    """One heal-log line for a record that did not land in the ledger."""
+    try:
+        log("hook_provenance_record_failed", source=str(source), entries=count,
+            queued=status == "queued", settings=str(settings),
+            reason="queued beside the ledger; lands with the next ledger write" if status == "queued"
+            else "not recorded; a later malformed copy will be kept, never removed")
+    except Exception:
+        pass
 
 
 def added_contexts(before, after, commands):
@@ -515,10 +598,15 @@ def record_written(facade, before, after, commands, source):
     try:
         contexts = added_contexts(before, after, commands)
         if not contexts:
+            if has_pending(ledger_path_for(facade)):  # an earlier run's queued record lands now
+                _update(ledger_path_for(facade), lambda data: False)
             return True
-        if facade._settings_heal_ensure_dir() is None:
-            return False
-        return record_contexts(ledger_path_for(facade), facade.SETTINGS_PATH, contexts, source)
+        status = "failed"
+        if facade._settings_heal_ensure_dir() is not None:
+            status = _contexts_status(ledger_path_for(facade), facade.SETTINGS_PATH, contexts, source)
+        if status != "ok":
+            _record_failed(facade._settings_heal_log, source, len(contexts), status, facade.SETTINGS_PATH)
+        return status == "ok"
     except Exception:
         return False
 
@@ -539,9 +627,12 @@ def record_rewrites(facade, before, after, source):
                 contexts.append(new[1])
         if not contexts:
             return True
-        if facade._settings_heal_ensure_dir() is None:
-            return False
-        return record_contexts(prov.ledger_path, prov.settings_path, contexts, source)
+        status = "failed"
+        if facade._settings_heal_ensure_dir() is not None:
+            status = _contexts_status(prov.ledger_path, prov.settings_path, contexts, source)
+        if status != "ok":
+            _record_failed(facade._settings_heal_log, source, len(contexts), status, prov.settings_path)
+        return status == "ok"
     except Exception:
         return False
 
@@ -569,9 +660,21 @@ def record_cloud_write(settings_path, before, after, hook_map):
         heal_dir.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
             os.chmod(str(heal_dir), 0o700)
-        return record_contexts(heal_dir / LEDGER_NAME, settings_path, contexts, "cloud_kit")
+        status = _contexts_status(heal_dir / LEDGER_NAME, settings_path, contexts, "cloud_kit")
+        if status != "ok":
+            _record_failed(lambda action, **fields: _append_log(heal_dir, action, fields),
+                           "cloud_kit", len(contexts), status, settings_path)
+        return status == "ok"
     except Exception:
         return False
+
+
+def _append_log(heal_dir, action, fields):
+    """measure.py's heal_log.jsonl line format, for callers without a facade."""
+    entry = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"), "action": action}
+    entry.update(fields)
+    with open(str(Path(heal_dir) / "heal_log.jsonl"), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 class Provenance:
@@ -700,7 +803,8 @@ class Provenance:
                     continue
                 seen.add(digest)
                 reports.append((event, command, digest))
-            if self._seeded and not reports and self.status == "ok":
+            if self._seeded and not reports and self.status == "ok" \
+                    and not has_pending(self.ledger_path):
                 return
             key, now, logged = self.key, int(time.time()), []
 

@@ -101,3 +101,101 @@ def test_body_exception_propagates_and_releases_when_lock_taken(hp, tmp_path):
             raise OSError("boom")
     with hp._exclusive(lock, timeout=0.05) as ok:
         assert ok is True
+
+
+# --- a record that cannot land is logged and queued, never silently lost ----------
+
+def _heal_actions(m, action):
+    path = m._settings_heal_dir() / "heal_log.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    return [e for e in map(json.loads, filter(None, lines)) if e.get("action") == action]
+
+
+def _settings_contexts(hp, settings):
+    return set(hp.iter_contexts(json.loads(Path(settings).read_text(encoding="utf-8"))))
+
+
+def _missing_smart_compact_events(m, settings):
+    status = m._is_smart_compact_installed(json.loads(Path(settings).read_text(encoding="utf-8")))
+    return [event for event, present in status.items() if not present]
+
+
+def test_smart_compact_record_lost_to_a_held_lock_lands_on_the_next_heal_pass(m, hp, installed, monkeypatch):
+    installed.write_text(json.dumps({"_test_marker": True}))  # a script install, no hooks yet
+    assert _missing_smart_compact_events(m, installed)
+    before = _settings_contexts(hp, installed)
+    real_acquire = hp._acquire
+    monkeypatch.setattr(hp, "_acquire", lambda *a, **k: None)  # lock never available
+    m.setup_smart_compact()
+    added = _settings_contexts(hp, installed) - before
+    assert added
+    failed = _heal_actions(m, "hook_provenance_record_failed")
+    assert [(e["source"], e["entries"], e["queued"]) for e in failed] == [
+        ("setup_smart_compact", len(added), True)]
+    prov = hp.Provenance.from_facade(m)
+    assert not [c for c in added if prov.proof(c[3], c[:3])]
+    monkeypatch.setattr(hp, "_acquire", real_acquire)
+    m._fix_malformed_hook_commands()  # any later run: the heal pass merges the queue
+    prov = hp.Provenance.from_facade(m)
+    assert all(prov.proof(c[3], c[:3]) == "ledger" for c in added)
+    assert not hp.has_pending(hp.ledger_path_for(m))
+
+
+def test_queued_record_never_claims_a_preserved_identical_foreign_entry(m, hp, installed, monkeypatch):
+    installed.write_text(json.dumps({"_test_marker": True, "hooks": {}}))
+    missing = _missing_smart_compact_events(m, installed)
+    assert len(missing) >= 2, missing
+    event = missing[0]
+    user_cmd = m._smart_compact_hook_commands()[event]
+    data = json.loads(installed.read_text())
+    data["hooks"].setdefault(event, []).append({"hooks": [{"type": "command", "command": user_cmd}]})
+    installed.write_text(json.dumps(data))  # the user's own copy, there first
+    before = _settings_contexts(hp, installed)
+    real_acquire = hp._acquire
+    monkeypatch.setattr(hp, "_acquire", lambda *a, **k: None)
+    m.setup_smart_compact()  # adds the others, keeps the user's copy
+    added = _settings_contexts(hp, installed) - before
+    assert {c[0] for c in added} == set(missing[1:])
+    failed = _heal_actions(m, "hook_provenance_record_failed")
+    assert [(e["source"], e["entries"]) for e in failed] == [("setup_smart_compact", len(added))]
+    monkeypatch.setattr(hp, "_acquire", real_acquire)
+    assert hp.record_written(m, {}, {}, [], "noop")  # a later writer run flushes the queue
+    assert not hp.has_pending(hp.ledger_path_for(m))
+    prov = hp.Provenance.from_facade(m)
+    assert all(prov.proof(c[3], c[:3]) == "ledger" for c in added)
+    assert prov.proof(user_cmd, (event, "", "command")) is None
+
+
+def test_record_that_cannot_even_queue_is_logged_as_lost(m, hp, installed, monkeypatch):
+    ledger = hp.ledger_path_for(m)
+    ledger.with_name(ledger.name + ".pending").write_text("not a directory")
+    monkeypatch.setattr(hp, "_acquire", lambda *a, **k: None)
+    m.setup_smart_compact()
+    failed = _heal_actions(m, "hook_provenance_record_failed")
+    assert [(e["source"], e["queued"]) for e in failed] == [("setup_smart_compact", False)]
+    assert "never removed" in failed[0]["reason"]
+
+
+def test_unreadable_ledger_queues_and_lands_once_readable(hp, tmp_path):
+    ledger = tmp_path / "hook_provenance.json"
+    ledger.write_text(json.dumps({"version": 2}))  # another version: unreadable, kept
+    context = ("Stop", "", "command", "x")
+    assert hp.record_contexts(ledger, "s.json", [context], "t") is False
+    assert hp.record_contexts(ledger, "s.json", [context], "t") is False
+    assert len(list(hp._pending_dir(ledger).iterdir())) == 1  # a retry adds no second file
+    ledger.unlink()
+    assert hp.record(ledger, "s.json", ["other"], "t")
+    data, status = hp.load_ledger(ledger)
+    assert status == "ok" and hp.context_digest(context) in data["contexts"][hp.settings_key("s.json")]
+    assert not hp.has_pending(ledger)
+
+
+def test_cloud_record_failure_is_logged_in_the_profile_heal_log(hp, tmp_path, monkeypatch):
+    settings = tmp_path / "settings.json"
+    after = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "cloud-cmd"}]}]}}
+    monkeypatch.setattr(hp, "_acquire", lambda *a, **k: None)
+    assert hp.record_cloud_write(settings, {}, after, after["hooks"]) is False
+    log = tmp_path / "token-optimizer" / "settings_heal" / "heal_log.jsonl"
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [(e["action"], e["source"], e["queued"]) for e in entries] == [
+        ("hook_provenance_record_failed", "cloud_kit", True)]

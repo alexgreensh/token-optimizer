@@ -73,7 +73,8 @@ def _path_parts(path):
 
 def _install_roots(facade):
     """Fixed roots R whose R/skills/token-optimizer/scripts/measure.py is ours."""
-    roots = [Path(facade.CLAUDE_DIR)]  # script install: ~/.claude/skills/token-optimizer
+    roots = [Path(facade.CLAUDE_DIR),  # script install, skill link: ~/.claude/skills/token-optimizer
+             Path(facade.CLAUDE_DIR) / "token-optimizer"]  # install.sh's clone that link points into
     for get in (lambda: Path(facade.MEASURE_PY_PATH).parents[3],
                 lambda: Path(facade.__file__).resolve().parents[3],
                 lambda: Path(facade._find_plugin_hooks_json()).parent.parent):
@@ -86,7 +87,7 @@ def _install_roots(facade):
 
 def is_install_script(facade, path):
     """True when ``path`` is a Token Optimizer install's measure.py: this copy,
-    the script install, the plugin root hooks.json names, any plugin-cache
+    the script install (skill link or its clone), the plugin root hooks.json names, any plugin-cache
     version (one since removed included), or the placeholder spelling."""
     if path == _PLACEHOLDER_SCRIPT:
         return True

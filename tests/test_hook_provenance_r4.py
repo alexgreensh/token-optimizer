@@ -445,3 +445,23 @@ def test_cleanup_keeps_a_users_own_measure_py_and_removes_ours(m, installed):
     m._remove_our_settings_entries(settings)
     assert settings["hooks"] == {"SessionEnd": [{"hooks": [_hook(c) for c in users]}],
                                  "Stop": [{"hooks": [_hook(stop)]}]}
+
+
+# --- a script install's clone is an install, whichever copy runs -------------------
+
+def _clone_measure_py(m):
+    return str(m.CLAUDE_DIR / "token-optimizer" / "skills" / "token-optimizer" / "scripts" / "measure.py")
+
+
+def test_clone_fossil_is_rewritten_when_another_copy_runs(m, installed):
+    assert str(m.MEASURE_PY_PATH) != _clone_measure_py(m)  # this checkout runs, not the clone
+    changed, result, after = _reconcile(m, {"SessionEnd": [{"hooks": [_hook(_our_fossil(m, _clone_measure_py(m)))]}]})
+    assert changed and result["rewritten"] == 1
+    assert after["SessionEnd"][0]["hooks"][0]["command"] == m.HOOK_COMMAND
+
+
+def test_clone_hook_is_removed_by_setup_hook_uninstall_from_another_copy(m, installed):
+    clone_hook = "python3 '%s' session-end-flush --trigger end" % _clone_measure_py(m)
+    settings = {"hooks": {"SessionEnd": [{"hooks": [_hook(clone_hook), _hook(FOREIGN)]}]}}
+    assert m._remove_token_optimizer_session_end_hooks(settings) == 1
+    assert settings["hooks"]["SessionEnd"] == [{"hooks": [_hook(FOREIGN)]}]

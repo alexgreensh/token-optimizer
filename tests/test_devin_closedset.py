@@ -883,9 +883,9 @@ def test_v13_plain_startup_os_shadow_characterizes_unsupported_path(tmp_path,mon
     poison=tmp_path/'poison';poison.mkdir();marker=tmp_path/'os-executed'
     (poison/'os.py').write_text('open('+repr(str(marker))+',"w").write("executed")\nraise RuntimeError("os startup shadow")\n')
     run=subprocess.run([sys.executable,str(d.state.data_dir()/'plugin'/entry),'--help'],env=dict(os.environ,PYTHONPATH=str(poison)),capture_output=True,timeout=20)
-    # CPython 3.10 loads os during site startup before any script can re-exec.
-    # Newer frozen-os builds differ; neither behavior makes plain use supported.
-    if sys.version_info[:2]==(3,10):
+    # CPython 3.9 and 3.10 load os from sys.path during site startup, before any
+    # script can re-exec. 3.11+ freezes os; neither behavior makes plain use supported.
+    if sys.version_info[:2]<(3,11):
         assert marker.exists() and run.returncode!=0
         assert b'Failed to import the site module' in run.stderr
     else:

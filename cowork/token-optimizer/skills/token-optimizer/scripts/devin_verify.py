@@ -65,3 +65,19 @@ def verify_install():
     state.private_path(state.data_dir()/'consent.json')
     if not state.consent_ok():raise OSError('missing local data consent')
     return True
+
+
+def payload_key_shapes(plugin, names, skill_md):
+    """Recorded-key sets for every payload shape an install record may carry.
+
+    Returns ``(expected, shapes)``: the current payload's path set plus the
+    sorted key lists of the current, pre-Tomli, previous and legacy shapes.
+    Earlier releases shipped fewer payload files: 5.13.43 had no hook module,
+    releases before it also lacked the two plugin-env modules, and every
+    existing record predates the _tomli.py payload module shipped now.
+    """
+    expected={str(plugin/name) for name in names}|{str(skill_md)}
+    tomli=str(plugin/'_tomli.py')
+    previous=expected-{str(plugin/'devin_hooks.py'),tomli}
+    legacy=previous-{str(plugin/name) for name in ('plugin_env.py','refetch_fingerprint.py')}
+    return expected,tuple(sorted(keys) for keys in (expected,expected-{tomli},previous,legacy))

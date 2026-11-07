@@ -335,37 +335,46 @@ def _exclusive(lock_path, timeout=2.0):
     however long it stalls, and is released the moment it exits or dies. No
     lease to expire, so no second owner while the first is still writing.
     A lock file that is not a regular file (FIFO, device) is never waited on.
+    Exactly one yield on every path, so an exception from the body always
+    propagates as itself.
     """
-    fd = None
+    fd = _acquire(lock_path, timeout)
+    if fd is None:
+        yield False
+        return
     try:
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
-        try:
-            if os.path.lexists(str(lock_path)) and not stat.S_ISREG(os.stat(str(lock_path)).st_mode):
-                yield False
-                return
-            fd = os.open(str(lock_path), flags, 0o600)
-            if not stat.S_ISREG(os.fstat(fd).st_mode) or (fcntl is None and msvcrt is None):
-                yield False
-                return
-        except OSError:
-            yield False
-            return
+        yield True
+    finally:
+        _unlock(fd)
+        os.close(fd)
+
+
+def _acquire(lock_path, timeout):
+    """A descriptor holding the lock on ``lock_path``, or None."""
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        if os.path.lexists(str(lock_path)) and not stat.S_ISREG(os.stat(str(lock_path)).st_mode):
+            return None
+        fd = os.open(str(lock_path), flags, 0o600)
+    except OSError:
+        return None
+    try:
+        usable = stat.S_ISREG(os.fstat(fd).st_mode) and (fcntl is not None or msvcrt is not None)
         deadline = time.monotonic() + timeout
-        while True:
+        while usable:
             got = _try_lock(fd)
             if got:
-                break
+                return fd
             if got is None or time.monotonic() >= deadline:
-                yield False
-                return
+                break
             time.sleep(0.01)
-        try:
-            yield True
-        finally:
-            _unlock(fd)
-    finally:
-        if fd is not None:
-            os.close(fd)
+    except OSError:
+        pass
+    except BaseException:
+        os.close(fd)
+        raise
+    os.close(fd)
+    return None
 
 
 def _update(path, mutate):

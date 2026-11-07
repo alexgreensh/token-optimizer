@@ -187,12 +187,13 @@ def test_codex_install_records_its_managed_commands(hp, tmp_path):
     ]}}
     written = []
     import codex_hook_provenance as chp
-    proof = chp.CodexProof(path, tmp_path / "token-optimizer" / "5.13.67", current_commands=["ours --stop"])
+    ours = ("Stop", "", "command", "ours --stop")
+    proof = chp.CodexProof(path, tmp_path / "token-optimizer" / "5.13.67", current_contexts=[ours])
     hp.write_codex_hooks(path, data, proof, lambda p, d: written.append((p, d)))
     assert written == [(path, data)]
-    ledger, status = hp.load_ledger(path.parent / hp.CODEX_LEDGER_NAME)
+    ledger, status = hp.load_ledger(proof.ledger_path)
     assert status == "ok"
-    assert set(ledger["files"][hp.settings_key(path)]) == {hp.command_digest("ours --stop")}
+    assert set(ledger["contexts"][hp.settings_key(path)]) == {hp.context_digest(ours)}
 
 
 # --- migration seeding and report-once (invariants 3, 4) ---------------------

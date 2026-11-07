@@ -842,9 +842,9 @@ class Provenance:
 
 def write_codex_hooks(path, data, proof, writer, extra=(), source="codex_install"):
     """Codex installer: write hooks.json via ``writer`` (raises on failure, as
-    before), then record in the ledger beside it every command ``proof``
-    (codex_hook_provenance.CodexProof) owns plus ``extra``, the commands this
-    run just generated or rewrote."""
+    before), then record in the ledger beside it every entry ``proof``
+    (codex_hook_provenance.CodexProof) owns plus ``extra``, the entries
+    (contexts) this run just rewrote."""
     writer(path, data)
     try:
         proof.record_present(data, extra, source)

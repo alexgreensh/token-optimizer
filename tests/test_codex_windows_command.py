@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _codex_record import record_codex  # noqa: E402
 import codex_install as ci
 
 
@@ -46,7 +48,7 @@ def test_marketplace_command_runs_with_stdin_and_environment(tmp_path, monkeypat
     argument = 'space & pipe| percent% bang! caret^'
     env_value = 'space & pipe| bang! caret^'
     command = ci._hook_command('hooks/test.py', argument, extra_env={'TO_TEST': env_value})
-    assert ci._is_token_optimizer_group({'command': command})
+    assert ci._LAUNCHER_MARKER in command  # its shape; ownership is exact entries (codex_hook_provenance)
     if upgrade:
         (root / 'hooks/run.py').unlink()
         (root / 'hooks').rmdir()
@@ -65,12 +67,6 @@ def test_marketplace_command_runs_with_stdin_and_environment(tmp_path, monkeypat
     assert data['stdin'] == '{"test": true}'
 
 
-def _record_codex(hooks_path, *commands):
-    """Stand in for the install that wrote these commands: record them in the
-    provenance ledger beside hooks.json (installs from this release on do)."""
-    import hook_provenance
-    assert hook_provenance.record(Path(hooks_path).parent / hook_provenance.CODEX_LEDGER_NAME,
-                                  hooks_path, list(commands), "test")
 
 
 def test_legacy_windows_groups_are_replaced(monkeypatch, tmp_path):
@@ -84,7 +80,7 @@ def test_legacy_windows_groups_are_replaced(monkeypatch, tmp_path):
     monkeypatch.setattr(ci, '_managed_hooks', lambda **kwargs: {'Stop': [{'hooks': [{'command': 'fixed'}]}]})
     unproven = ci._codex_proof(tmp_path / 'hooks.json')
     assert ci._merge_hooks({'hooks': {'SessionStart': [old, own]}}, proof=unproven)['hooks']['SessionStart'] == [old, own]
-    _record_codex(tmp_path / 'hooks.json', old['hooks'][0]['command'])
+    record_codex(ci, tmp_path / 'hooks.json', {'hooks': {'SessionStart': [old, own]}}, old['hooks'][0]['command'])
     proof = ci._codex_proof(tmp_path / 'hooks.json')
     merged = ci._merge_hooks({'hooks': {'SessionStart': [old, own]}}, proof=proof)
     assert merged['hooks']['SessionStart'] == [own]

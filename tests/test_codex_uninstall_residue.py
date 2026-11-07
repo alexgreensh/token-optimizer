@@ -183,12 +183,6 @@ def test_statusline_uninstall_idempotent():
         _restore_codex_home(saved)
 
 
-def _record_codex(hooks_path, *commands):
-    """Stand in for the install that wrote these commands: record them in the
-    provenance ledger beside hooks.json (installs from this release on do)."""
-    import hook_provenance
-    assert hook_provenance.record(Path(hooks_path).parent / hook_provenance.CODEX_LEDGER_NAME,
-                                  hooks_path, list(commands), "test")
 
 
 def test_codex_install_uninstall_invokes_both_residue_cleanups():

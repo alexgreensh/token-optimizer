@@ -2,16 +2,21 @@
 
 Same rule as the Claude healer (hook_provenance.py): codex_install may replace
 or remove a hook in ~/.codex/hooks.json (or a project .codex/hooks.json) only
-when that hook's exact command is
+when that hook's whole entry, ``(event, matcher, hook type, command)``, is
 
 * recorded in the ledger beside that hooks.json (every Codex write records
-  what it wrote, and every Codex run records the provable commands it finds,
-  so a later interpreter upgrade cannot orphan them), or
-* the current generator's output for this install, or
-* byte-identical to a command some shipped codex_install.py generated
+  the entries it wrote, and every Codex run records the provable entries it
+  finds, so a later interpreter upgrade cannot orphan them), or
+* an entry the current generator writes for this install, or
+* byte-identical to an entry some shipped codex_install.py generated
   (shipped_codex_hook_templates.json, harvested from git history with
-  placeholder paths), instantiated with this machine's real install root, its
-  parent, the running interpreter and each shipped version number.
+  placeholder paths), its command instantiated with this machine's real
+  install root, its parent, the running interpreter and each shipped version
+  number.
+
+Our command copied into another event or under another matcher is a
+different entry and is not ours. Command-only records from before entries
+were recorded prove nothing (the fail-safe choice).
 
 No text markers, regexes, separator rewriting or signature normalization
 decide ownership. A shipped version number appearing in a command only picks
@@ -51,26 +56,49 @@ def _is_semver(name):
 
 def hook_commands(group):
     """The command strings a hooks.json group carries (any shape)."""
+    return [hook.get("command") for hook in _handlers(group)]
+
+
+def _handlers(group):
+    """The dicts in a group that carry a command: its hooks, or the group
+    itself in the older one-command-per-group shape."""
     if not isinstance(group, dict):
         return []
     hooks = group.get("hooks")
     if isinstance(hooks, list):
-        return [h.get("command") for h in hooks if isinstance(h, dict)]
-    return [group.get("command")] if "command" in group else []
+        return [h for h in hooks if isinstance(h, dict)]
+    return [group] if "command" in group else []
+
+
+def entry_context(event, group, handler):
+    """``(event, matcher, type, command)`` of one handler, or None when it has
+    none a generator could have written. An absent matcher is ""."""
+    if not isinstance(event, str) or not isinstance(group, dict) or not isinstance(handler, dict):
+        return None
+    matcher, hook_type, command = group.get("matcher", ""), handler.get("type"), handler.get("command")
+    if not isinstance(matcher, str) or not isinstance(command, str) or not command:
+        return None
+    if hook_type is not None and not isinstance(hook_type, str):
+        return None
+    return (event, matcher, hook_type, command)
+
+
+def contexts_in(event, group):
+    return [entry_context(event, group, handler) for handler in _handlers(group)]
 
 
 class CodexProof:
-    def __init__(self, hooks_path, root, current_commands=(), windows=None, executable=None):
+    def __init__(self, hooks_path, root, current_contexts=(), windows=None, executable=None):
         self.windows = (sys.platform == "win32") if windows is None else bool(windows)
         self.executable = sys.executable if executable is None else str(executable)
-        self.current = frozenset(c for c in current_commands if isinstance(c, str))
+        self.current = frozenset(c for c in current_contexts if isinstance(c, tuple) and len(c) == 4)
         self.hooks_path = Path(hooks_path) if hooks_path else None
         self.ledger_path = (self.hooks_path.parent / hp.CODEX_LEDGER_NAME) if self.hooks_path else None
         self.recorded = frozenset()
         if self.ledger_path is not None:
             ledger, status = hp.load_ledger(self.ledger_path)
             if status == "ok":
-                self.recorded = frozenset(ledger["files"].get(hp.settings_key(self.hooks_path), {}))
+                self.recorded = frozenset(ledger["contexts"].get(hp.settings_key(self.hooks_path), {}))
         self.root = root
         self.root_str = str(root) if root is not None else ""
         name = getattr(root, "name", "")
@@ -99,35 +127,38 @@ class CodexProof:
         subs.append((ph["python"], self.executable))
         out = set()
         for template in templates:
-            inst = template
+            if not (isinstance(template, list) and len(template) == 4):
+                continue  # a command-only template proves nothing
+            inst = template[3]
             for placeholder, real in subs:
                 inst = inst.replace(placeholder, real)
             if _MARK not in inst:
-                out.add(inst)
+                out.add((template[0], template[1], template[2], inst))
         self._cache[version] = frozenset(out)
         return self._cache[version]
 
-    def owns(self, command):
-        if not isinstance(command, str) or not command or self.root is None:
+    def owns(self, context):
+        """True when this exact entry ``(event, matcher, type, command)`` is ours."""
+        if not (isinstance(context, tuple) and len(context) == 4) or self.root is None:
             return False
-        if command in self.current or hp.command_digest(command) in self.recorded:
+        if context in self.current or hp.context_digest(context) in self.recorded:
             return True
         if not self.semver:
-            return command in self._instances(None)
-        return any(command in self._instances(v) for v in self.versions if v in command)
+            return context in self._instances(None)
+        return any(context in self._instances(v) for v in self.versions if v in context[3])
 
-    def group_is_ours(self, group):
-        commands = hook_commands(group)
-        return bool(commands) and all(self.owns(c) for c in commands)
+    def group_is_ours(self, event, group):
+        contexts = contexts_in(event, group)
+        return bool(contexts) and all(self.owns(c) for c in contexts)
 
-    def strip(self, group):
-        """``group`` without our hooks; None when nothing of it is left."""
+    def strip(self, event, group):
+        """``group`` under ``event`` without our hooks; None when nothing of it is left."""
         if not isinstance(group, dict):
             return group
         hooks = group.get("hooks")
         if not isinstance(hooks, list):
-            return None if self.group_is_ours(group) else group
-        kept = [h for h in hooks if not (isinstance(h, dict) and self.owns(h.get("command")))]
+            return None if self.group_is_ours(event, group) else group
+        kept = [h for h in hooks if not self.owns(entry_context(event, group, h))]
         if len(kept) == len(hooks):
             return group
         if not kept:
@@ -140,44 +171,53 @@ class CodexProof:
         """Commands present that mention one of ``names`` but are not proven.
         Diagnostics only (doctor); never used to decide a removal."""
         found = []
-        for groups in (data.get("hooks") or {}).values() if isinstance(data, dict) else ():
-            for group in groups if isinstance(groups, list) else ():
-                for command in hook_commands(group):
-                    if isinstance(command, str) and not self.owns(command) \
-                            and any(n in command for n in names):
-                        found.append(command)
+        for event, group in _all_groups(data):
+            for handler in _handlers(group):
+                command = handler.get("command")
+                if isinstance(command, str) and not self.owns(entry_context(event, group, handler)) \
+                        and any(n in command for n in names):
+                    found.append(command)
         return found
 
     def record_present(self, data, extra=(), source="codex_seen"):
-        """Record every proven command in ``data`` (plus ``extra``, commands
-        this run just wrote). Idempotent; writes only when something is new."""
+        """Record every proven entry in ``data`` plus ``extra``, the entries
+        (contexts) this run just wrote. Idempotent; writes only when new."""
         if self.ledger_path is None:
             return False
-        commands = [c for g in _all_groups(data) for c in hook_commands(g) if self.owns(c)]
-        commands.extend(c for c in extra if isinstance(c, str))
-        return hp.record(self.ledger_path, self.hooks_path, commands, source)
+        contexts = [c for event, g in _all_groups(data) for c in contexts_in(event, g) if self.owns(c)]
+        contexts.extend(c for c in extra if isinstance(c, tuple) and len(c) == 4)
+        return hp.record_contexts(self.ledger_path, self.hooks_path, contexts, source)
 
 
 def _all_groups(data):
     hooks = data.get("hooks") if isinstance(data, dict) else None
-    for groups in hooks.values() if isinstance(hooks, dict) else ():
+    for event, groups in hooks.items() if isinstance(hooks, dict) else ():
         for group in groups if isinstance(groups, list) else ():
-            yield group
+            yield event, group
 
 
-def for_codex(hooks_path, root, current_commands):
-    return CodexProof(hooks_path, root, current_commands)
+def for_codex(hooks_path, root, current_contexts):
+    return CodexProof(hooks_path, root, current_contexts)
 
 
-def current_commands(managed_hooks):
-    """Every command the current generator writes, all optional hooks on."""
+def _managed(managed_hooks):
     import inspect
     kw = {}
     try:
         for name, param in inspect.signature(managed_hooks).parameters.items():
             if param.kind == param.KEYWORD_ONLY:
                 kw[name] = True
-        data = managed_hooks(**kw)
+        return managed_hooks(**kw) or {}
     except Exception:
-        return []
-    return [c for groups in (data or {}).values() for g in groups for c in hook_commands(g)]
+        return {}
+
+
+def current_contexts(managed_hooks):
+    """Every entry the current generator writes, all optional hooks on."""
+    return [c for event, groups in _managed(managed_hooks).items() for g in groups
+            for c in contexts_in(event, g) if c is not None]
+
+
+def current_commands(managed_hooks):
+    """Every command the current generator writes, all optional hooks on."""
+    return [c[3] for c in current_contexts(managed_hooks)]

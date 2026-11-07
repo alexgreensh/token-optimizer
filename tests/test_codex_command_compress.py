@@ -13,6 +13,8 @@ import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _codex_record import record_codex  # noqa: E402
 import codex_command_compress as compression
 import codex_install as installer
 import plugin_env
@@ -279,12 +281,6 @@ def test_launcher_signature_rejects_tampered_commands(tmp_path):
     assert installer._launcher_signature('echo hi') == 'echo hi'
 
 
-def _record_codex(hooks_path, *commands):
-    """Stand in for the install that wrote these commands: record them in the
-    provenance ledger beside hooks.json (installs from this release on do)."""
-    import hook_provenance
-    assert hook_provenance.record(Path(hooks_path).parent / hook_provenance.CODEX_LEDGER_NAME,
-                                  hooks_path, list(commands), "test")
 
 
 def test_install_preserves_equivalent_version_resolver_but_not_changed_logic(monkeypatch, tmp_path):
@@ -292,7 +288,7 @@ def test_install_preserves_equivalent_version_resolver_but_not_changed_logic(mon
     monkeypatch.setattr(installer, '_repo_root', lambda: tmp_path / '5.13.8')
     old = installer._managed_hooks(enable_prompt_hooks=True)
     hooks_path = tmp_path / 'hooks.json'
-    _record_codex(hooks_path, *[h['command'] for gs in old.values() for g in gs for h in g['hooks']])
+    record_codex(installer, hooks_path, {'hooks': old}, *[h['command'] for gs in old.values() for g in gs for h in g['hooks']])
     monkeypatch.setattr(installer, '_repo_root', lambda: tmp_path / '5.13.11')
     proof = installer._codex_proof(hooks_path)
     merged = installer._merge_hooks({'hooks': old}, enable_prompt_hooks=True, proof=proof)['hooks']

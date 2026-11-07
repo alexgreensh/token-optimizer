@@ -304,3 +304,66 @@ def test_smart_compact_uninstall_removes_ours_and_keeps_the_users(m, installed, 
     left = [h["command"] for groups in after.values() for g in groups for h in g["hooks"]]
     assert left == users
     assert "%d hook(s) removed" % ours in capsys.readouterr().out
+
+
+# --- Codex: our command is ours only in the entry we wrote it to -----------------
+
+from test_codex_hook_provenance import ci, chp, home, semver_root  # noqa: E402,F401
+
+
+def _codex_write(home, hooks):
+    path = home / "hooks.json"
+    path.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+    return path
+
+
+def test_codex_uninstall_keeps_our_command_copied_into_another_event(home, semver_root):
+    managed = ci._managed_hooks()
+    ours = managed["Stop"][0]["hooks"][0]["command"]
+    users = {"matcher": "UserMatcher", "hooks": [{"type": "command", "command": ours}]}
+    path = _codex_write(home, {"Stop": managed["Stop"], "Notification": [users]})
+    proof = ci._codex_proof(path)
+    assert proof.group_is_ours("Stop", managed["Stop"][0])
+    assert not proof.group_is_ours("Notification", users)
+    ci.uninstall(Path("."), is_global=True)
+    assert json.loads(path.read_text(encoding="utf-8"))["hooks"] == {"Notification": [users]}
+
+
+def test_codex_our_command_under_another_matcher_is_not_ours(home, semver_root):
+    group = json.loads(json.dumps(ci._managed_hooks()["Stop"][0]))
+    group["matcher"] = "mine"
+    path = _codex_write(home, {"Stop": [group]})
+    ci.install(Path("."), is_global=True, skip_compact_prompt=True)
+    stops = json.loads(path.read_text(encoding="utf-8"))["hooks"]["Stop"]
+    assert group in stops and len(stops) == 2  # the user's copy stays; ours is added
+
+
+def test_codex_command_only_record_proves_nothing(home, semver_root, hp):
+    """A ledger written before entries were recorded must not widen deletion."""
+    copied = ci._managed_hooks()["Stop"][0]["hooks"][0]["command"]
+    legacy = "python3 /legacy/token-optimizer/hooks/run.py hooks/stop_runner.py"
+    path = _codex_write(home, {"Notification": [{"hooks": [{"type": "command", "command": c}]}
+                                                for c in (copied, legacy)]})
+    ledger = ci._codex_proof(path).ledger_path
+    assert hp.record(ledger, path, [copied, legacy], "older-install")  # the "files" section
+    proof = ci._codex_proof(path)
+    assert not proof.owns(("Notification", "", "command", copied))
+    assert not proof.owns(("Notification", "", "command", legacy))
+    ci.uninstall(Path("."), is_global=True)
+    assert len(json.loads(path.read_text(encoding="utf-8"))["hooks"]["Notification"]) == 2
+
+
+def test_codex_install_records_entries_not_bare_commands(home, semver_root, hp):
+    ci.install(Path("."), is_global=True, skip_compact_prompt=True)
+    path = home / "hooks.json"
+    ledger, status = hp.load_ledger(ci._codex_proof(path).ledger_path)
+    assert status == "ok" and not ledger["files"]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    present = {c for event, gs in data["hooks"].items() for g in gs for c in chp.contexts_in(event, g)}
+    assert set(ledger["contexts"][hp.settings_key(path)]) == {hp.context_digest(c) for c in present}
+
+
+def test_shipped_codex_templates_carry_their_entry(hp):
+    data = chp.shipped()
+    for key, templates in data["templates"].items():
+        assert templates and all(isinstance(t, list) and len(t) == 4 for t in templates), key

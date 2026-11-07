@@ -296,8 +296,9 @@ def _has_our_hooks(data: dict[str, Any], hooks_path=None) -> bool:
     carry no "token-optimizer/scripts" text on POSIX installs, so a substring
     check called a working install "no Token Optimizer hooks"."""
     proof = codex_install._codex_proof(hooks_path)
-    for groups in data.get("hooks", {}).values():
-        if isinstance(groups, list) and any(codex_install._is_token_optimizer_group(g, proof) for g in groups):
+    for event, groups in data.get("hooks", {}).items():
+        if isinstance(groups, list) and any(codex_install._is_token_optimizer_group(event, g, proof)
+                                            for g in groups):
             return True
     return False
 
@@ -344,13 +345,13 @@ def _hook_shell_check() -> list[dict[str, str]]:
     dev_only = 0
     proof = codex_install._codex_proof(hooks_path)
     advices: list[str] = []
-    for groups in data["hooks"].values():
+    for event, groups in data["hooks"].items():
         if not isinstance(groups, list):
             continue
         for group in groups:
             if not isinstance(group, dict):
                 continue
-            group_ours = codex_install._is_token_optimizer_group(group, proof)
+            group_ours = codex_install._is_token_optimizer_group(event, group, proof)
             for hook in group.get("hooks", []):
                 command = hook.get("command") if isinstance(hook, dict) else None
                 if not isinstance(command, str):

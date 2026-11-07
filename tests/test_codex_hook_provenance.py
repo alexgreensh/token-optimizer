@@ -1,7 +1,8 @@
 """Codex hooks: install/reinstall/uninstall/heal touch a hook only when its
-exact command is provably Token Optimizer's (ledger beside hooks.json, the
-current generator's output, or a shipped generator's output instantiated for
-this install). Foreign hooks survive, even ones that mention our script names.
+exact entry (event, matcher, type, command) is provably Token Optimizer's
+(the provenance ledger, the current generator's output, or a shipped
+generator's output instantiated for this install). Foreign hooks survive,
+even ones that mention our script names or copy our command elsewhere.
 
 Run: python3 -m pytest tests/test_codex_hook_provenance.py -v
 """
@@ -76,17 +77,17 @@ def test_shipped_templates_reproduce_the_generator_exactly(monkeypatch, tmp_path
     the frozen templates alone, with no ledger and no current-output shortcut."""
     root = tmp_path / parent / "token-optimizer" / (version or "devroot")
     monkeypatch.setattr(ci, "_repo_root", lambda: root)
-    commands = chp.current_commands(ci._managed_hooks)
-    assert commands
-    proof = chp.CodexProof(None, root, current_commands=())
-    assert [c for c in commands if not proof.owns(c)] == []
+    contexts = chp.current_contexts(ci._managed_hooks)
+    assert contexts
+    proof = chp.CodexProof(None, root, current_contexts=())
+    assert [c for c in contexts if not proof.owns(c)] == []
 
 
 def test_near_misses_of_our_commands_are_not_ours(semver_root):
     proof = ci._codex_proof()
-    assert all(proof.owns(c) for c in chp.current_commands(ci._managed_hooks))
+    assert all(proof.owns(c) for c in chp.current_contexts(ci._managed_hooks))
     for command in _foreign(semver_root):
-        assert not proof.owns(command), command
+        assert not proof.owns(("Stop", "", "command", command)), command
 
 
 def test_no_text_heuristics_in_codex_ownership():
@@ -130,10 +131,12 @@ def test_mixed_group_loses_only_our_hook(home, semver_root):
 def test_install_records_what_it_writes(home, semver_root):
     _install(enable_prompt_hooks=True)
     path = home / "hooks.json"
-    ledger, status = hp.load_ledger(home / hp.CODEX_LEDGER_NAME)
+    ledger, status = hp.load_ledger(ci._codex_proof(path).ledger_path)
     assert status == "ok"
-    recorded = set(ledger["files"][hp.settings_key(path)])
-    assert {hp.command_digest(c) for c in _commands(path)} == recorded
+    recorded = set(ledger["contexts"][hp.settings_key(path)])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    present = {c for event, gs in data["hooks"].items() for g in gs for c in chp.contexts_in(event, g)}
+    assert {hp.context_digest(c) for c in present} == recorded
 
 
 def test_upgrade_without_ledger_replaces_last_version_by_template(home, monkeypatch, tmp_path):
@@ -154,14 +157,15 @@ def test_upgrade_without_ledger_replaces_last_version_by_template(home, monkeypa
 
 @pytest.mark.parametrize("garbage", [b"{oops", b"[]", b'{"version": 1, "files": {"k": 3}}'])
 def test_corrupt_codex_ledger_falls_back_to_templates_only(home, semver_root, garbage):
-    recorded_only = "python3 /legacy/token-optimizer/hooks/run.py hooks/stop_runner.py"
+    recorded_only = ("Stop", "", "command", "python3 /legacy/token-optimizer/hooks/run.py hooks/stop_runner.py")
     path = home / "hooks.json"
-    assert hp.record(home / hp.CODEX_LEDGER_NAME, path, [recorded_only], "test")
+    ledger = ci._codex_proof(path).ledger_path
+    assert hp.record_contexts(ledger, path, [recorded_only], "test")
     assert ci._codex_proof(path).owns(recorded_only)
-    (home / hp.CODEX_LEDGER_NAME).write_bytes(garbage)
+    ledger.write_bytes(garbage)
     proof = ci._codex_proof(path)
     assert not proof.owns(recorded_only)
-    assert all(proof.owns(c) for c in chp.current_commands(ci._managed_hooks))
+    assert all(proof.owns(c) for c in chp.current_contexts(ci._managed_hooks))
 
 
 def test_planted_marker_rule_would_delete_foreign_hooks(home, semver_root, monkeypatch):
@@ -174,7 +178,7 @@ def test_planted_marker_rule_would_delete_foreign_hooks(home, semver_root, monke
     ci.uninstall(Path("."), is_global=True)
     assert sorted(_commands(path)) == sorted(foreign)
     markers = ("token-optimizer/scripts", "_runner.py", "TOKEN_OPTIMIZER_RUNTIME", "token-optimizer\\")
-    monkeypatch.setattr(chp.CodexProof, "owns", lambda self, c: isinstance(c, str) and any(m in c for m in markers))
+    monkeypatch.setattr(chp.CodexProof, "owns", lambda self, c: c is not None and any(m in c[3] for m in markers))
     path.write_text(body, encoding="utf-8")
     ci.uninstall(Path("."), is_global=True)
     assert len(_commands(path)) < len(foreign)

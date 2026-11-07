@@ -541,14 +541,15 @@ def test_codex_launcher_repair_never_rewrites_or_records_a_foreign_handler(hp, t
         "Stop": [{"hooks": [{"type": "command", "command": ours}]}],
         "SessionStart": [{"hooks": [{"type": "command", "command": ours2},
                                     {"type": "command", "command": foreign}]}]}}))
-    led = path.parent / hp.CODEX_LEDGER_NAME
-    assert hp.record(led, path, [ours, ours2], "codex_install")
+    led = codex_install._codex_proof(path).ledger_path
+    assert hp.record_contexts(led, path, [("Stop", "", "command", ours),
+                                          ("SessionStart", "", "command", ours2)], "codex_install")
     assert codex_install.heal_quoted_launcher_commands(paths=[path]) == 1
     after = json.loads(path.read_text())
     fixed = after["hooks"]["Stop"][0]["hooks"][0]["command"]
     assert fixed == codex_install._WIN_UNQUOTED_PREFIX + " " + ours
     assert [h["command"] for h in after["hooks"]["SessionStart"][0]["hooks"]] == [ours2, foreign]
-    recorded = set(hp.load_ledger(led)[0]["files"][hp.settings_key(path)])
-    assert hp.command_digest(fixed) in recorded
-    assert hp.command_digest(foreign) not in recorded
-    assert hp.command_digest(codex_install._WIN_UNQUOTED_PREFIX + " " + foreign) not in recorded
+    recorded = set(hp.load_ledger(led)[0]["contexts"][hp.settings_key(path)])
+    assert hp.context_digest(("Stop", "", "command", fixed)) in recorded
+    for command in (foreign, codex_install._WIN_UNQUOTED_PREFIX + " " + foreign):
+        assert hp.context_digest(("SessionStart", "", "command", command)) not in recorded

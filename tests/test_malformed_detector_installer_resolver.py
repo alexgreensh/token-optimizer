@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -175,13 +176,17 @@ RESOLVER = _hooks_json_resolver()
 
 
 def test_template_constant_matches_hooks_json(m):
-    """The exemption template must stay byte-identical to what the installer
-    writes; if hooks.json changes shape, this test forces a conscious
-    re-decision instead of silent drift."""
-    assert m._lc._TO_VERSION_RESOLVER == RESOLVER, (
-        "hooks.json resolver shape differs from the exempted template: "
-        f"{RESOLVER!r} vs {m._lc._TO_VERSION_RESOLVER!r}"
-    )
+    """The exempted resolver template must stay byte-identical to what the
+    installer writes; if hooks.json changes shape, this test forces a
+    conscious re-decision instead of silent drift. Asserted behaviourally:
+    an own-install hook carrying the hooks.json resolver verbatim must NOT
+    be flagged - if the exempted template drifted, its leftover ``$(``
+    would flag the command."""
+    resolver = _hooks_json_resolver()
+    cmd = (f'D="${{CLAUDE_PLUGIN_ROOT}}"; [ -r "$D/hooks/python-launcher.sh" ] || {resolver}; '
+           f'D="${{D%/}}"; exec "$b" "$D/hooks/python-launcher.sh" '
+           f'"$D/hooks/run.py" {REPO}/skills/token-optimizer/scripts/read_cache.py --quiet')
+    assert m._is_malformed_to_hook(cmd) is False
 
 
 # Adversarial evasion shapes: each LOOKS resolver-flavored but deviates from
@@ -306,16 +311,17 @@ def test_healer_preserves_marker_shaped_foreign_hook(m, installed):
 
 
 def test_root_prefix_collision_against_proven_root_survives(m, monkeypatch, tmp_path):
-    """A sibling dir sharing a string prefix with a PROVEN root
-    (plugin-evil vs plugin) is not under that root and must survive.
-    tmp_path-based: resolving a real repo-adjacent path trips the suite's
-    real-home guard on CI, where the repo lives under the runner home."""
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path / "plugin"))
+    """A sibling dir sharing a string prefix with a PROVEN root is not under
+    that root and must survive. tmp_path-based: resolving a real
+    repo-adjacent path trips the suite's real-home guard on CI, where the
+    repo lives under the runner home. The proven root here is the running
+    install root (REPO); $CLAUDE_PLUGIN_ROOT set to it changes nothing."""
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO))
     evil = tmp_path / "plugin-evil"
     cmd = f"python3 $(which python3) {evil}/skills/token-optimizer/scripts/measure.py --quiet"
     assert m._is_malformed_to_hook(cmd) is False
     # positive control: the proven root itself is flagged
-    own = f"python3 $(which python3) {tmp_path}/plugin/skills/token-optimizer/scripts/measure.py --quiet"
+    own = f"python3 $(which python3) {REPO}/skills/token-optimizer/scripts/measure.py --quiet"
     assert m._is_malformed_to_hook(own) is True
 
 
@@ -328,28 +334,116 @@ def test_owned_paths_under_each_root_are_proven(m, installed, monkeypatch):
     shape = "python3 $(which python3) {root}/skills/token-optimizer/scripts/read_cache.py --quiet"
     assert m._is_malformed_to_hook(shape.format(root=REPO)) is True
     assert m._is_malformed_to_hook(shape.format(root=installed.parent)) is False
+    # $CLAUDE_PLUGIN_ROOT only counts when it resolves to the running
+    # install; a foreign env root proves nothing.
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/srv/plugin-root")
-    assert m._is_malformed_to_hook(shape.format(root="/srv/plugin-root")) is True
+    assert m._is_malformed_to_hook(shape.format(root="/srv/plugin-root")) is False
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO))
+    assert m._is_malformed_to_hook(shape.format(root=str(REPO))) is True
 
 
 def test_owned_cache_via_real_plugin_root(m, installed, monkeypatch, tmp_path):
-    """A plugin-cache path IS provable when the resolved plugin-root env (or
-    the running install root) IS that cache version dir - both the expanded
-    absolute spelling and the literal ${CLAUDE_PLUGIN_ROOT} form. A
-    same-named plugin from another marketplace with an identical layout is
-    foreign and survives (judge residual class)."""
+    """A plugin-cache path is provable only when the running install IS that
+    cache version dir - i.e. the healer's own __file__ lives under it, which
+    makes the install root and the resolved $CLAUDE_PLUGIN_ROOT agree. A
+    same-named plugin from another marketplace, a stale version, or a
+    foreign env root is not provably ours and survives."""
     own_cache = tmp_path / "plugins" / "cache" / "mkt" / "token-optimizer" / "5.13.66"
+    # Env root that is NOT this running install proves nothing.
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(own_cache))
     shape = "python3 $(id) {root}/skills/token-optimizer/scripts/measure.py ensure-health"
-    assert m._is_malformed_to_hook(shape.format(root=own_cache)) is True
+    assert m._is_malformed_to_hook(shape.format(root=own_cache)) is False
     literal = ("python3 $(id) ${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/"
                "scripts/measure.py ensure-health")
-    assert m._is_malformed_to_hook(literal) is True
+    assert m._is_malformed_to_hook(literal) is False
     foreign_same_name = m.CLAUDE_DIR / "plugins" / "cache" / "evil-mkt" / "token-optimizer" / "9.9.9"
     assert m._is_malformed_to_hook(shape.format(root=foreign_same_name)) is False
     # Even the same marketplace dir, a different plugin slot is foreign.
     other_slot = m.CLAUDE_DIR / "plugins" / "cache" / "mkt" / "token-optimizer" / "9.9.9"
     assert m._is_malformed_to_hook(shape.format(root=other_slot)) is False
+
+
+def test_quoted_own_script_path_is_preserved(m):
+    """Quoted own spellings are not proven by the coarse basename gate, so
+    they are preserved rather than repaired (fail-safe)."""
+    own = f'{REPO}/skills/token-optimizer/scripts/measure.py'
+    assert m._is_malformed_to_hook(f'python3 "{own}" $(id)') is False
+    assert m._is_malformed_to_hook(f"python3 '{own}' `id`") is False
+
+
+def test_backslash_own_script_path_is_preserved(m):
+    """Backslash-separated own spellings are likewise unproven and preserved;
+    foreign backslash spellings stay preserved too."""
+    own = f'{REPO}/skills/token-optimizer/scripts/measure.py'
+    bs = own.replace('/', '\\')
+    assert m._is_malformed_to_hook(f'python3 {bs} $(id)') is False
+    foreign_bs = '/opt/vendor/measure.py'.replace('/', '\\')
+    assert m._is_malformed_to_hook(f'python3 {foreign_bs} $(id)') is False
+
+
+def test_foreign_plugin_root_env_never_proves_ownership(m, monkeypatch, tmp_path):
+    """$CLAUDE_PLUGIN_ROOT is environment input, not proof: pointing it at a
+    foreign same-named plugin (another marketplace's cache entry) must not
+    make that plugin's hooks ours."""
+    foreign = tmp_path / "plugins" / "cache" / "evil-mkt" / "token-optimizer" / "9.9.9"
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(foreign))
+    cmd = f"python3 $(id) {foreign}/skills/token-optimizer/scripts/measure.py ensure-health"
+    assert m._is_malformed_to_hook(cmd) is False
+    literal = ("python3 $(id) ${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/"
+               "scripts/measure.py ensure-health")
+    assert m._is_malformed_to_hook(literal) is False
+
+
+def test_sol_v8_foreign_spellings_are_preserved(m, installed, tmp_path):
+    """Sol's six foreign executions must survive: spellings that only mention
+    our path (quoted, partially quoted, literal apostrophe/backslash, or as a
+    driver argument) are not ownership proof, and the healer removes none."""
+    own = f'{REPO}/skills/token-optimizer/scripts/measure.py'
+    prefix = str(tmp_path / 'vendor ')
+    case = tmp_path / 'foreign-execution'
+
+    def _write(argument):
+        path = Path(argument)
+        if not path.is_absolute():
+            path = case / path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('print("FOREIGN_HOOK_EXECUTED")\n', encoding='utf-8')
+
+    commands = {}
+
+    def _add(name, argument, spelling):
+        _write(argument)
+        commands[name] = 'python3 ' + spelling + ' $(printf harmless)'
+
+    _add('foreign-double-quoted-space', prefix + own, '"' + prefix + own + '"')
+    _add('foreign-single-quoted-space', prefix + own, "'" + prefix + own + "'")
+    _add('foreign-partial-quoted-space', prefix + own, '"' + prefix + '"' + own)
+    _add('foreign-literal-apostrophe', "'" + own, '"' + "'" + own + '"')
+    _add('foreign-literal-backslash-name', own.replace('/', '\\'),
+         shlex.quote(own.replace('/', '\\')))
+    driver = case / 'foreign_driver_do_not_remove.py'
+    driver.parent.mkdir(parents=True, exist_ok=True)
+    driver.write_text('print("FOREIGN_HOOK_EXECUTED")\n', encoding='utf-8')
+    commands['foreign-executable-own-path-only-in-argument'] = (
+        'python3 ' + str(driver) + ' --source "' + own + '" $(printf harmless)')
+
+    for name, cmd in commands.items():
+        assert m._is_malformed_to_hook(cmd) is False, name
+
+    data = {
+        'permissions': {'deny': ['Bash(rm:*)']},
+        'env': {'USER_DATA': 'keep'},
+        'hooks': {'SessionStart': [{'matcher': 'startup', 'hooks': [
+            {'type': 'command', 'command': cmd, 'timeout': 17}
+            for cmd in commands.values()
+        ]}]},
+    }
+    installed.write_text(json.dumps(data), encoding='utf-8')
+    assert m._fix_malformed_hook_commands() == 0
+    after = json.loads(installed.read_text())
+    assert after['permissions'] == data['permissions']
+    assert after['env'] == data['env']
+    assert sorted(_all_commands(installed)) == sorted(commands.values())
 
 
 def test_subshell_glued_path_is_unprovable_and_preserved(m):

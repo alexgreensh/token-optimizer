@@ -3585,13 +3585,6 @@ def _fix_malformed_hook_commands():
     return removed
 
 
-# The exact version-resolver assignment every installer-written hook command
-# carries (hooks/hooks.json, bash-loop wrapper). Treated as plumbing by both
-# _hook_command_identity and _is_malformed_to_hook; the regression test
-# asserts it matches the resolver substring in every hooks.json entry.
-_TO_VERSION_RESOLVER = 'D="$(ls -d "${D%[/\\\\]*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"'
-
-
 def _is_malformed_to_hook(cmd):
     """Check if a hook command is a malformed token-optimizer entry.
 
@@ -3628,6 +3621,12 @@ def _is_malformed_to_hook(cmd):
     os_mod = _measure_facade.os
     Path_mod = _measure_facade.Path
     names = _measure_facade._TO_SCRIPT_NAMES
+    # The exact version-resolver assignment every installer-written hook
+    # command carries (hooks/hooks.json, bash-loop wrapper). Kept as a
+    # function local: the split-module policy forbids module-level state in
+    # providers. The regression test asserts behaviour (an installer-shaped
+    # command is not flagged) so hooks.json drift fails loudly.
+    _TO_VERSION_RESOLVER = 'D="$(ls -d "${D%[/\\\\]*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"'
     has_to_script = any(
         re_mod.search(r'(?:^|[/\s])' + re_mod.escape(name) + r'(?:$|[\s])', cmd)
         for name in names
@@ -3653,18 +3652,27 @@ def _is_malformed_to_hook(cmd):
         return os_mod.path.normcase(str(path)).replace("\\", "/").rstrip("/")
 
     def _owned_roots():
-        roots = []
+        install_root = None
         try:
             # The facade lives at <root>/skills/token-optimizer/scripts/
             # measure.py, so parents[3] is the install root the installer
             # writes into hook commands.
-            roots.append(Path_mod(_measure_facade.__file__).resolve().parents[3])
+            install_root = Path_mod(_measure_facade.__file__).resolve().parents[3]
         except Exception:
             pass
+        roots = [] if install_root is None else [install_root]
         try:
+            # $CLAUDE_PLUGIN_ROOT is environment input, not proof: it counts
+            # as an owned root only when it resolves to THIS running
+            # install (the same root derived from __file__ above, which for
+            # a plugin-cache install IS the current cache version dir). A
+            # foreign or stale env root - another marketplace's same-named
+            # plugin, an old checkout - must never make its hooks ours.
             plugin_root = os_mod.environ.get("CLAUDE_PLUGIN_ROOT")
-            if plugin_root:
-                roots.append(Path_mod(plugin_root).expanduser().resolve())
+            if plugin_root and install_root is not None:
+                resolved = Path_mod(plugin_root).expanduser().resolve()
+                if _canon(resolved) == _canon(install_root):
+                    roots.append(resolved)
         except Exception:
             pass
         return [_canon(r) for r in roots]
@@ -3710,9 +3718,15 @@ def _is_malformed_to_hook(cmd):
             for m in re_mod.finditer(r'(?:^|[;\s])D="([^"]+)"', probe)
         ]
 
+        try:
+            import shlex
+            tokens = shlex.split(probe, posix=True)
+        except Exception:
+            tokens = [t.strip('"').strip("'").rstrip(";").replace("\\", "/")
+                      for t in probe.split()]
         anchors = []
-        for tok in probe.split():
-            tok = tok.strip('"').strip("'").rstrip(";").replace("\\", "/")
+        for tok in tokens:
+            tok = tok.rstrip(";")
             for name in names:
                 if tok == name or tok.endswith("/" + name):
                     anchors.append(tok)

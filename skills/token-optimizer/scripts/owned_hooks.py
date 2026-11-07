@@ -308,6 +308,17 @@ def remove_session_end(facade, settings):
         facade._is_token_optimizer_session_end_hook(hook) and owns("SessionEnd", group, hook)))
 
 
+def session_end_view(facade, settings):
+    """``settings`` reduced to our own SessionEnd hooks, for setup_hook's
+    installed / up-to-date check: a user's own measure.py session-end-flush
+    must never read as ours and make setup_hook skip installing it."""
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    groups = hooks.get("SessionEnd") if isinstance(hooks, dict) else None
+    owns = owner(facade, SESSION_END_SHAPES)
+    mine = [hook for group, hook in _entries(groups) if owns("SessionEnd", group, hook)]
+    return {"hooks": {"SessionEnd": [{"hooks": mine}]}}
+
+
 def replace_session_end_fossil(facade, hooks, new_hook):
     """setup_hook's upgrade: in each SessionEnd group, our first fossil
     becomes ``new_hook``. True when one was replaced; with none of ours,

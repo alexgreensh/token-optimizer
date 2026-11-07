@@ -1595,21 +1595,11 @@ def _remove_token_optimizer_session_end_hooks(settings: dict) -> int:
 
 
 def _sessionend_has_current_flush(settings: dict) -> bool:
-    """True when settings.json already has a session-end-flush SessionEnd hook."""
+    """True when settings.json already has our own session-end-flush SessionEnd hook."""
     _measure_facade = _compat.facade()
-    hooks = settings.get("hooks") if isinstance(settings, dict) else None
-    if not isinstance(hooks, dict):
-        return False
-    session_end = hooks.get("SessionEnd")
-    if not isinstance(session_end, list):
-        return False
-    for group in session_end:
-        if not isinstance(group, dict):
-            continue
-        for hook in group.get("hooks", []) or []:
-            if isinstance(hook, dict) and _measure_facade._sessionend_cmd_is_flush(hook.get("command", "")):
-                return True
-    return False
+    import owned_hooks
+    ours = owned_hooks.session_end_view(_measure_facade, settings)["hooks"]["SessionEnd"][0]["hooks"]
+    return any(_measure_facade._sessionend_cmd_is_flush(hook.get("command", "")) for hook in ours)
 
 
 def _rewrite_collect_fossil_hook(hook: dict) -> dict:
@@ -1880,9 +1870,12 @@ def setup_hook(dry_run=None, uninstall=None, user_initiated=None):
             _measure_facade.sys.exit(1)
         return
 
-    # Check if hook is installed and whether it needs upgrading
-    installed = _measure_facade._is_hook_installed(settings)
-    current = _measure_facade._is_hook_current(settings)
+    # Installed / up to date counts only our own SessionEnd hook, never a
+    # user's own measure.py session-end-flush.
+    import owned_hooks
+    ours = owned_hooks.session_end_view(_measure_facade, settings)
+    installed = _measure_facade._is_hook_installed(ours)
+    current = _measure_facade._is_hook_current(ours)
 
     # Plugin users get this hook from hooks.json — skip writing to settings.json
     is_plugin = _measure_facade._is_running_from_plugin_cache() or _measure_facade._is_plugin_installed()
@@ -1910,7 +1903,6 @@ def setup_hook(dry_run=None, uninstall=None, user_initiated=None):
 
     # Replace our own collect/dashboard fossil with session-end-flush; with
     # none of ours there (a user's own measure.py), install alongside it.
-    import owned_hooks
     upgrading = upgrading and owned_hooks.replace_session_end_fossil(_measure_facade, hooks, new_hook)
     if not upgrading and "SessionEnd" not in hooks:
         hooks["SessionEnd"] = [{"hooks": [new_hook]}]

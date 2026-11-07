@@ -291,6 +291,28 @@ def test_setup_hook_upgrade_never_replaces_the_users_hook(m, installed):
     assert commands == [FOREIGN, m.HOOK_COMMAND]
 
 
+@pytest.mark.parametrize("users", [
+    "python3 /home/me/mytool/measure.py session-end-flush --trigger end",
+    "python3 '/home/me/mytool/measure.py' session-end-flush --trigger end",
+])
+def test_setup_hook_installs_ours_beside_the_users_own_flush(m, installed, capsys, users):
+    installed.write_text(json.dumps({"hooks": {"SessionEnd": [{"hooks": [_hook(users)]}]}}))
+    m.setup_hook(dry_run=False)
+    assert "Nothing to do" not in capsys.readouterr().out
+    commands = [h["command"] for g in json.loads(installed.read_text())["hooks"]["SessionEnd"] for h in g["hooks"]]
+    assert commands == [users, m.HOOK_COMMAND]
+    assert m._sessionend_has_current_flush({"hooks": {"SessionEnd": [{"hooks": [_hook(users)]}]}}) is False
+
+
+def test_setup_hook_still_skips_when_ours_is_current(m, installed, capsys):
+    installed.write_text(json.dumps({"hooks": {"SessionEnd": [{"hooks": [_hook(m.HOOK_COMMAND)]}]}}))
+    m.setup_hook(dry_run=False)
+    assert "Nothing to do" in capsys.readouterr().out
+    commands = [h["command"] for g in json.loads(installed.read_text())["hooks"]["SessionEnd"] for h in g["hooks"]]
+    assert commands == [m.HOOK_COMMAND]
+    assert m._sessionend_has_current_flush(json.loads(installed.read_text())) is True
+
+
 def test_smart_compact_uninstall_removes_ours_and_keeps_the_users(m, installed, capsys):
     users = ["python3 /home/me/mytool/measure.py compact-capture --trigger stop", "echo compact-restore notes"]
     installed.write_text(json.dumps({"_test_marker": True}))

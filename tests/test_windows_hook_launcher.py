@@ -745,7 +745,10 @@ def test_windows_legacy_nul_sessionend_hook_reads_as_not_current(monkeypatch):
     # The collect/dashboard shape is never current, even with bash-safe redirect.
     assert measure._is_hook_current(_session_end(good_fossil)) is False
     assert measure._is_hook_current(_session_end(flush)) is True
-    assert measure._is_hook_current(_session_end(flush.replace(mp, "C:/p/measure.py"))) is False
+    # The generated command spells measure.py with forward slashes.
+    foreign = flush.replace(mp.replace("\\", "/"), "C:/p/measure.py")
+    assert foreign != flush
+    assert measure._is_hook_current(_session_end(foreign)) is False
 
 
 def test_posix_nul_sessionend_hook_is_win32_gated(monkeypatch):

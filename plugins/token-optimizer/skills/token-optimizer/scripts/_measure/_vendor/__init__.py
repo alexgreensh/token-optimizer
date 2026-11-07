@@ -1,34 +1,50 @@
 """Private, license-preserving runtime dependencies; no runtime installation."""
-import importlib.util as _util
+import importlib.util
+import os as _os
 import sys as _sys
-import threading as _threading
 
 
 def _lazy(name):
     """Return module ``name`` deferred to first attribute access.
 
     The module object is registered in sys.modules immediately, but its code
-    runs only on the first attribute miss, serialized by a lock. importlib's
-    LazyLoader is lock-free on Python 3.9/3.10, where a second thread could
-    observe the module mid-exec and raise AttributeError.
+    runs only on the first attribute miss. No lock is held across that exec:
+    the shim's own __getattr__ keeps resolving parser attributes lazily, and
+    a fork child detects the inherited in-flight exec by pid and binds the
+    parser module directly instead of re-entering dead import state.
     """
     module = _sys.modules.get(name)
     if module is not None:
         return module
-    spec = _util.find_spec(name)
-    loader = spec.loader
-    module = _util.module_from_spec(spec)
-    lock = _threading.Lock()
-    loaded = False
+    spec = importlib.util.find_spec(name)
+    module = importlib.util.module_from_spec(spec)
+    pid = _os.getpid()
 
     def _getattr(attr):
-        nonlocal loaded
-        if not loaded:
-            with lock:
-                if not loaded:
-                    loader.exec_module(module)
-                    loaded = True
-                    module.__dict__.pop('__getattr__', None)
+        if _os.getpid() == pid:
+            spec.loader.exec_module(module)
+            try:
+                return module.__dict__[attr]
+            except KeyError:
+                pass
+            # The shim installed its own lazy __getattr__ during exec; it
+            # resolves parser attributes on demand. Anything else missing is
+            # a genuine AttributeError from that resolver.
+            module_getattr = module.__dict__.get('__getattr__')
+            if module_getattr is not None and module_getattr is not _getattr:
+                return module_getattr(attr)
+        else:
+            # Fork child: the parent's first exec of ``name`` was in flight,
+            # so its import lock is inherited held by a thread that does not
+            # exist here and exec_module could never finish. Bind the parser
+            # module's public names directly; _tomli's own lock is free.
+            impl = importlib.import_module('_tomli')
+            for key in ('TOMLDecodeError', '__version__', 'load', 'loads', '__all__'):
+                try:
+                    module.__dict__[key] = getattr(impl, key)
+                except AttributeError:
+                    pass
+        module.__dict__.pop('__getattr__', None)
         try:
             return module.__dict__[attr]
         except KeyError:

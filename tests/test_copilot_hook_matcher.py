@@ -122,3 +122,41 @@ def test_doctor_passes_valid_string_matchers(mods, matcher):
     data["hooks"]["preToolUse"][0]["matcher"] = matcher
     path.write_text(json.dumps(data))
     assert _doctor_hook_check(doc)["status"] == "ok"
+
+
+_FILTERS_PAYLOAD_PROBE = r'''
+import os, sys, importlib.abc
+class _NoStdlibToml(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name == "tomllib":
+            raise ImportError("simulated Python 3.9/3.10")
+sys.meta_path.insert(0, _NoStdlibToml())
+sys.path.insert(0, sys.argv[1])
+os.environ["TOKEN_OPTIMIZER_COMMAND_FILTERS"] = sys.argv[2]
+import command_filters
+print(command_filters.load_filters().excludes)
+'''
+
+
+def test_payload_parses_command_filters_without_stdlib_tomllib(mods, tmp_path):
+    """command_filters + _tomli must ship in the payload: on Python 3.9/3.10
+    there is no tomllib, so the vendored _tomli module is its only TOML parser.
+    Without them the lazy import fails and user filters silently never apply;
+    a malformed filters file must still fail open with an empty config."""
+    import os
+    import subprocess
+    inst, _doc, home = mods
+    inst.install(home=home)
+    pdir = inst._plugin_dir(home)
+    good = tmp_path / "command-filters.toml"
+    good.write_text('[filters.exclude]\ncommands = ["git log"]\n')
+    bad = tmp_path / "bad-filters.toml"
+    bad.write_text("[[broken\n")
+    py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
+    for path, want in ((good, "('git log',)"), (bad, "()")):
+        out = subprocess.run(
+            [py, "-c", _FILTERS_PAYLOAD_PROBE, str(pdir), str(path)],
+            capture_output=True, text=True, cwd=str(tmp_path), timeout=60,
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip() == want, out.stdout + out.stderr

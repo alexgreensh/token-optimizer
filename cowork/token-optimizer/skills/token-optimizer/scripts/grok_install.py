@@ -61,6 +61,11 @@ _PAYLOAD_MODULES = (
     # sets _bash_hook = None, and the entire PreToolUse bash compression
     # feature silently no-ops.
     "bash_whitelist.py",
+    # command_filters + _tomli: user [filters.*] TOML config consulted by
+    # bash_compress/bash_whitelist; _tomli is the 3.9/3.10 parser it
+    # lazy-imports when tomllib is absent.
+    "command_filters.py",
+    "_tomli.py",
     "hook_io.py",
     "plugin_env.py",
     "runtime_env.py",

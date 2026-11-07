@@ -357,7 +357,11 @@ class Provenance:
             if setup_root is not None and _same_path(setup_root, install_root):
                 roots.append(str(setup_root))
         resolve = facade._resolve_hook_command
-        proven = instantiate(SHIPPED_HOOK_TEMPLATES | live, sorted(set(roots)), resolve)
+        # Only the frozen shipped set proves a template. The live hooks.json
+        # is mutable (and may belong to another install): it can only keep
+        # the command setup_all_hooks writes now from churning, never add
+        # deletion authority. A newly installed command is proven by the ledger.
+        proven = instantiate(SHIPPED_HOOK_TEMPLATES, sorted(set(roots)), resolve)
         current = set()
         if setup_root is not None:
             for template in live:

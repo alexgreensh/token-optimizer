@@ -3517,12 +3517,12 @@ def _fix_malformed_hook_commands():
     Proof is the provenance ledger or a byte-identical shipped template; the
     pass reads, proves and writes ONE resolved settings file under the
     settings lock. Script installs are re-provisioned after a removal. Returns
-    the number removed. See hook_provenance.heal_settings.
+    the number removed. See hook_heal.heal_settings.
     """
     _measure_facade = _compat.facade()
-    import hook_provenance
+    import hook_heal
     try:
-        return hook_provenance.heal_settings(_measure_facade)
+        return hook_heal.heal_settings(_measure_facade)
     except Exception:
         return 0
 

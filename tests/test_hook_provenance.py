@@ -143,10 +143,11 @@ def test_every_installer_written_malformed_hook_is_still_healed(m, hp):
                 assert not m._is_malformed_to_hook(m._resolve_hook_command(hook["command"], REPO))
 
 
-def test_removal_path_has_no_text_heuristics(hp):
-    """Guard against regrowth: the provenance module must not tokenize,
-    pattern-match or normalize commands."""
-    tree = ast.parse(Path(hp.__file__).read_text(encoding="utf-8"))
+@pytest.mark.parametrize("module", ["hook_provenance.py", "hook_heal.py"])
+def test_removal_path_has_no_text_heuristics(hp, module):
+    """Guard against regrowth: the provenance module and the heal transaction
+    must not tokenize, pattern-match or normalize commands."""
+    tree = ast.parse((Path(hp.__file__).parent / module).read_text(encoding="utf-8"))
     imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     imported |= {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert not imported & {"re", "shlex", "fnmatch", "glob"}

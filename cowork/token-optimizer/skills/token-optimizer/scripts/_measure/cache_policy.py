@@ -614,7 +614,60 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
             "state": "armed",
         }
         line = _measure_facade.json.dumps(record) + "\n"
-        if not _measure_facade._keepwarm_append_line(_measure_facade._keepwarm_sidecar_path(), line):
+        # Idempotency (state-machine invariant: ONE active arm per
+        # session+transcript-snapshot). A double-registered Stop hook (the
+        # settings-fossil case) or two Stop events with no transcript growth
+        # between them would otherwise append a second record with an identical
+        # (session_id, transcript_mtime, byte_size) snapshot, and the tick then
+        # fires one probe ping PER RECORD for the same paused session -- the
+        # per-pause probe cap is tracked per record, and the ping's
+        # --no-session-persistence never bumps the mtime the classifier watches
+        # (regression: tests/test_keepwarm_arm_dedup.py). The check and the
+        # append must share ONE lock hold, or a concurrent arm/compaction can
+        # slip between them; the lease is not reentrant, so the append body is
+        # inlined here instead of calling _keepwarm_append_line (which takes
+        # the same lock itself).
+        try:
+            with _measure_facade._keepwarm_lock() as acquired:
+                if not acquired:
+                    return None
+                for existing in _measure_facade.load_keepwarm_records():
+                    if existing.get("session_id") != record["session_id"]:
+                        continue
+                    try:
+                        same_snapshot = (
+                            abs(float(existing.get("transcript_mtime", 0) or 0)
+                                - record["transcript_mtime"]) < 0.001
+                            and existing.get("byte_size") is not None
+                            and int(existing.get("byte_size")) == record["byte_size"])
+                    except (TypeError, ValueError):
+                        same_snapshot = False
+                    if same_snapshot:
+                        # Already armed for this exact pause state; keep the
+                        # original record (and its pings_fired history).
+                        return existing
+                # The append body of _keepwarm_append_line, inlined so it runs
+                # inside this lock hold (same O_NOFOLLOW / 0600 semantics).
+                try:
+                    _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    return None
+                try:
+                    flags = _measure_facade.os.O_APPEND | _measure_facade.os.O_CREAT | _measure_facade.os.O_WRONLY
+                    if hasattr(_measure_facade.os, "O_NOFOLLOW"):
+                        flags |= _measure_facade.os.O_NOFOLLOW
+                    try:
+                        fd = _measure_facade.os.open(str(_measure_facade._keepwarm_sidecar_path()), flags, 0o600)
+                    except OSError:
+                        return None
+                    try:
+                        with _measure_facade.os.fdopen(fd, "a", encoding="utf-8") as fh:
+                            fh.write(line)
+                    except OSError:
+                        return None
+                except OSError:
+                    return None
+        except Exception:
             return None
         return record
     except Exception:

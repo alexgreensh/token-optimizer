@@ -373,13 +373,18 @@ def test_quoted_own_script_path_is_preserved(m):
 
 
 def test_backslash_own_script_path_is_preserved(m):
-    """Backslash-separated own spellings are likewise unproven and preserved;
-    foreign backslash spellings stay preserved too."""
+    """On POSIX a backslash is a literal filename character, so a backslash
+    spelling of our path names a different file: unproven and preserved. On
+    Windows it IS our measure.py, so the malformed $(id) shape is ours and is
+    healed (matching test_windows_backslash_hooks_keep_ownership_proof).
+    Foreign backslash spellings stay preserved on every platform."""
     own = f'{REPO}/skills/token-optimizer/scripts/measure.py'
     bs = own.replace('/', '\\')
-    assert m._is_malformed_to_hook(f'python3 {bs} $(id)') is False
+    assert m._is_malformed_to_hook(f'python3 {bs} $(id)') is (os.name == "nt")
     foreign_bs = '/opt/vendor/measure.py'.replace('/', '\\')
     assert m._is_malformed_to_hook(f'python3 {foreign_bs} $(id)') is False
+    foreign_drive = 'D:\\opt\\vendor\\skills\\token-optimizer\\scripts\\measure.py'
+    assert m._is_malformed_to_hook(f'python3 {foreign_drive} $(id)') is False
 
 
 def test_foreign_plugin_root_env_never_proves_ownership(m, monkeypatch, tmp_path):

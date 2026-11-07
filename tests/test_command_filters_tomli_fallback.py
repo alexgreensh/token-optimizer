@@ -71,7 +71,7 @@ def test_loader_reads_readme_example(tmp_path, monkeypatch, stdlib, capsys):
 @pytest.mark.parametrize("stdlib", [True, False])
 def test_full_toml_outside_old_subset_loads_without_warning(
         tmp_path, monkeypatch, stdlib, capsys):
-    """The F3 fix: syntax the subset reader rejected now parses cleanly."""
+    """Syntax the retired subset reader rejected now parses cleanly."""
     if stdlib and tomllib is None:
         pytest.skip("no tomllib on this interpreter")
     if not stdlib:

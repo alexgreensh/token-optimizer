@@ -214,6 +214,39 @@ def test_main_install_and_uninstall_return_zero(ai, tmp_path, capsys):
     assert rc == 0
 
 
+_TOMLI_PAYLOAD_PROBE = r'''
+import os, sys, importlib.abc
+class _NoStdlibToml(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name == "tomllib":
+            raise ImportError("simulated Python 3.9/3.10")
+sys.meta_path.insert(0, _NoStdlibToml())
+sys.path.insert(0, sys.argv[1])
+os.environ["TOKEN_OPTIMIZER_COMMAND_FILTERS"] = sys.argv[2]
+import command_filters
+print(command_filters.load_filters().excludes)
+'''
+
+
+def test_payload_parses_command_filters_without_stdlib_tomllib(ai, tmp_path):
+    """The copied payload must carry _tomli.py: on Python 3.9/3.10 there is no
+    tomllib, so the vendored _tomli module is command_filters' only TOML parser.
+    Without it load_filters() warns once and returns an empty config, silently
+    dropping the user's filters."""
+    import subprocess
+    ai.install(home=tmp_path)
+    pdir = ai.plugin_dir(tmp_path)
+    filters = tmp_path / "command-filters.toml"
+    filters.write_text('[filters.exclude]\ncommands = ["git log"]\n')
+    py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
+    out = subprocess.run(
+        [py, "-c", _TOMLI_PAYLOAD_PROBE, str(pdir), str(filters)],
+        capture_output=True, text=True, cwd=str(tmp_path), timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "('git log',)", out.stdout + out.stderr
+
+
 @pytest.fixture(autouse=True)
 def _pin_trusted_python(trusted_python):
     """Pin a gate-trusted interpreter for every install in this file (the

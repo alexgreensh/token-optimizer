@@ -1,10 +1,11 @@
-"""Hook provenance, round 4: the ledger, its lock, recording failures, the
-fossil and smart-compact paths, Codex context ownership and diagnostics
-echoes. Each test asserts the safe outcome and failed before its fix.
+"""Hook ownership: the ledger, its lock, recording failures, the fossil,
+setup_hook, smart-compact and cleanup paths, hook labels, interpreters,
+pasted starter entries, Codex context ownership and diagnostics echoes.
+Each test asserts the safe outcome.
 
 Fixtures come from tests/test_hook_provenance.py.
 
-Run: python3 -m pytest tests/test_hook_provenance_r4.py -v
+Run: python3 -m pytest tests/test_hook_ownership.py -v
 """
 from __future__ import annotations
 

@@ -18,9 +18,9 @@ Their in-context cases are exactly the shipped-template cases, which still
 prove by template. Codex hooks.json keeps command-keyed records ("files").
 
 There is deliberately no regex, shlex, quote stripping, separator rewriting,
-case folding or prefix test anywhere on the removal path. PR #323 rounds
-v6-v8c showed every text heuristic either deletes a foreign hook or misses
-ours; an unproven entry is left alone and reported once instead.
+case folding or prefix test anywhere on the removal path: every text
+heuristic tried (PR #323) either deleted a foreign hook or missed ours; an
+unproven entry is left alone and reported once instead.
 
 Ledger: ``<CONFIG_DIR>/settings_heal/hook_provenance.json``. Writes take an
 OS file lock (``flock`` / ``msvcrt.locking``) that the kernel holds exactly as

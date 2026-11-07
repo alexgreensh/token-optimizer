@@ -1,11 +1,12 @@
-"""Hook provenance, round 3: regressions for the two adversarial reviews of
-post/healer-provenance (Devin and Sol, on 91e49b49). Each test is the
-reviewer's repro turned around: it asserts the safe outcome, so it failed
-before the matching fix landed.
+"""Hook provenance guarantees: a blocking special file at the ledger path,
+live hooks.json never adding deletion authority, one settings file bound
+from read to write, per-entry proof, the ledger lock under a stalled writer,
+and every hook-writing path recording exactly what it writes. Each test
+asserts the safe outcome.
 
 Fixtures come from tests/test_hook_provenance.py.
 
-Run: python3 -m pytest tests/test_hook_provenance_r3.py -v
+Run: python3 -m pytest tests/test_hook_provenance_guarantees.py -v
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ def _run(code, *args, timeout=20, env=None):
         pytest.fail("blocked for %ss: %s" % (timeout, exc))
 
 
-# --- 1. Devin F1: a FIFO (or any blocking special file) at the ledger path ---
+# --- a FIFO (or any blocking special file) at the ledger path ---------------
 
 @_POSIX_ONLY
 def test_fifo_ledger_load_is_unreadable_not_a_hang(tmp_path):
@@ -80,7 +81,7 @@ def test_character_device_ledger_is_unreadable(tmp_path):
     assert out.stdout.strip() == "unreadable", out.stderr
 
 
-# --- 2. Sol P1-1: a live/runtime hooks.json never adds deletion authority ----
+# --- a live/runtime hooks.json never adds deletion authority ----------------
 
 _REAL_LOOKUP = '''import json, sys
 from pathlib import Path
@@ -109,7 +110,7 @@ for event, matcher in (('PermissionRequest', 'FOREIGN_ONLY'), ('Stop', None)):
 
 
 def test_unshipped_live_hooks_json_command_is_never_removed(tmp_path):
-    """Sol's real-lookup repro, no finder patch: a command that is only in the
+    """Real lookup, no finder patch: a command that is only in the
     profile's runtime hooks.json (never shipped, never recorded) used to be
     proven and deleted. Only the frozen set and the ledger prove ownership;
     the live file may only keep the current command from churning."""
@@ -136,7 +137,7 @@ def test_live_hooks_json_only_feeds_keep_current(m, hp, monkeypatch, tmp_path):
     assert m._resolve_hook_command(template, live.parent.parent) in prov.current_commands
 
 
-# --- 3. Sol P1-2: read, proof key and write bound to one settings file -------
+# --- read, proof key and write bound to one settings file -------------------
 
 _RACE_CMD = "echo $(printf CONTEXT_BOUND_COMMAND)"
 _B_ONLY = "echo DO_NOT_LOSE_PROFILE_B_HOOK"
@@ -176,8 +177,8 @@ def _assert_untouched(a, b, a_before, b_before):
 
 
 def test_retarget_before_proof_lookup_cannot_borrow_other_files_proof(m, hp, monkeypatch, tmp_path):
-    """Sol's repro: A's unrecorded hook judged with B's ledger key, and the
-    A-derived payload written into B (B's unrelated hook lost)."""
+    """A's unrecorded hook is never judged with B's ledger key, and no
+    A-derived payload is written into B (B's unrelated hook stays)."""
     a, b, link, retarget = _race_profiles(m, hp, monkeypatch, tmp_path, prove_in=("b",))
     a_before, b_before = a.read_bytes(), b.read_bytes()
     real = hp.Provenance.from_facade.__func__
@@ -236,7 +237,7 @@ def test_stable_symlink_still_heals_its_target(m, hp, monkeypatch, tmp_path):
     assert b.read_bytes() == b_before
 
 
-# --- 4. Devin F2 / Sol P2-3: proof is per entry (event, matcher, type, command)
+# --- proof is per entry (event, matcher, type, command) ----------------------
 
 def _foreign_group(settings, command, event="PermissionRequest", matcher="FOREIGN_ONLY",
                    extra=()):
@@ -248,7 +249,7 @@ def _foreign_group(settings, command, event="PermissionRequest", matcher="FOREIG
 
 
 def test_shipped_template_in_foreign_event_and_matcher_is_kept(m, hp, installed):
-    """Sol: a user-created copy of an old template under a context we never
+    """A user-created copy of an old template under a context we never
     shipped it in, no ledger at all. It used to be removed."""
     command = _malformed_shipped(m, hp)[0]
     hp.ledger_path_for(m).unlink()
@@ -258,7 +259,7 @@ def test_shipped_template_in_foreign_event_and_matcher_is_kept(m, hp, installed)
 
 
 def test_ledger_record_from_one_context_does_not_prove_another(m, hp, installed):
-    """Sol: a command genuinely written under Stop, then reused by the user
+    """A command genuinely written under Stop, then reused by the user
     under PermissionRequest[FOREIGN_ONLY]. Only the Stop entry is ours."""
     command = "echo $(printf user-owned)"
     before = hp.contexts_of(json.loads(installed.read_text(encoding="utf-8")))
@@ -271,7 +272,7 @@ def test_ledger_record_from_one_context_does_not_prove_another(m, hp, installed)
 
 
 def test_devin_foreign_context_copy_kept_shipped_copy_removed(m, hp, installed):
-    """Devin's end-to-end probe: the same old template bytes in their shipped
+    """End to end: the same old template bytes in their shipped
     context and in a foreign Notification[*] group with a foreign sibling.
     Only the shipped-context copy goes."""
     command = _malformed_shipped(m, hp)[0]
@@ -355,7 +356,7 @@ def test_every_shipped_malformed_entry_still_healed_in_its_context(m, hp, instal
     assert m._fix_malformed_hook_commands() == len(malformed)
 
 
-# --- 5. Sol P2-4: a stalled live writer keeps the ledger lock ----------------
+# --- a stalled live writer keeps the ledger lock ----------------------------
 
 _STALLED_WRITER = '''import sys, time
 from pathlib import Path
@@ -373,7 +374,7 @@ print(hp.record(sys.argv[2], 'settings.json', ['writer-A'], 'A'))
 
 
 def test_stalled_live_writer_never_lets_a_second_success_be_lost(hp, tmp_path):
-    """Sol's repro: A holds the lock, then stalls past the old 10s lease
+    """A holds the lock, then stalls past the old 10s lease
     (sleeping laptop, debugger, slow disk) while still alive. B must not be
     told it succeeded and then lose its record to A's older snapshot: B
     either fails honestly (lock still held) or both records survive."""
@@ -432,7 +433,7 @@ def test_fifo_at_lock_path_never_blocks(hp, tmp_path):
     assert out.stdout.strip() == "False", out.stderr
 
 
-# --- 6. Sol P2-5: every hook-writing path records exactly what it writes -----
+# --- every hook-writing path records exactly what it writes -----------------
 
 _CLOUD_RUN = "/cache/token-optimizer-cloud/token-optimizer-cloud-run.sh hooks/run.py"
 _CLOUD_WRITE = '''import importlib.util, json, sys
@@ -452,7 +453,7 @@ def _clean_env(**extra):
 
 
 def test_cloud_settings_write_records_only_what_it_adds(hp, tmp_path):
-    """Sol's repro inverted: cloud_kit.write_settings_hooks wrote hooks and no
+    """cloud_kit.write_settings_hooks records the hooks it writes in the
     ledger. It runs under python -I with no sibling imports on sys.path, so
     this loads it by path exactly that way."""
     claude = tmp_path / "cloud-profile"

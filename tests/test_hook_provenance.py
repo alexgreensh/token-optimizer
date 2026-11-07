@@ -5,8 +5,8 @@ alone and reported once.
 
 Companion to tests/test_malformed_detector_installer_resolver.py, which keeps
 the historical foreign-preserve corpus. This file covers the ledger itself,
-installer recording, migration seeding, report-once logging, Sol's foreign
-executions end to end, a planted fuzzy matcher the corpus must catch, Windows
+installer recording, migration seeding, report-once logging, foreign
+executions that only mention our path end to end, a planted fuzzy matcher the corpus must catch, Windows
 spellings, concurrency and Python 3.9 syntax.
 
 Run: python3 -m pytest tests/test_hook_provenance.py -v
@@ -304,39 +304,39 @@ def test_concurrent_writers_lose_nothing(hp, tmp_path):
     assert not list(ledger.parent.glob(".hook_provenance-*"))  # no temp leftovers
 
 
-# --- Sol's foreign executions, end to end (invariant 3) ----------------------
+# --- foreign executions that only mention our path, end to end (invariant 3) --
 
-def _sol_foreign_commands(tmp_path):
+def _foreign_execution_commands(tmp_path):
     prefix = str(tmp_path / "vendor ")
     driver = tmp_path / "foreign_driver_do_not_remove.py"
     cmds = [
-        # v8/v8b: spellings that only mention our path
+        # spellings that only mention our path
         'python3 "' + prefix + OWN + '" $(printf harmless)',
         "python3 '" + prefix + OWN + "' $(printf harmless)",
         'python3 "' + prefix + '"' + OWN + ' $(printf harmless)',
         'python3 "\'' + OWN + '" $(printf harmless)',
         "python3 " + shlex.quote(OWN.replace("/", "\\")) + " $(printf harmless)",
         "python3 " + str(driver) + ' --source "' + OWN + '" $(printf harmless)',
-        # v8c P1: quoted literals the shell never expands
+        # quoted literals the shell never expands
         "python3 '$HOME/../../skills/token-optimizer/scripts/measure.py' measure.py $(printf harmless)",
         "python3 '~/skills/token-optimizer/scripts/measure.py' measure.py $(printf harmless)",
         "python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' measure.py $(printf h)",
         "'~/.claude/token-optimizer/skills/token-optimizer/scripts/measure.py' $(printf harmless)",
-        # v8c P1: option values are not the executed script
+        # option values are not the executed script
         "python3 -X " + OWN + " /opt/vendor/foreign.py $(printf harmless)",
         "python3 -W " + OWN + " /opt/vendor/foreign.py $(printf harmless)",
         "python3 -X " + OWN + " -c \"print('FOREIGN_HOOK_EXECUTED')\" $(printf harmless)",
         "python3 -X " + OWN + " -m foreign_module $(printf harmless)",
         "python3 -c " + OWN + " $(printf harmless)",
         "python3 -m " + OWN + " $(printf harmless)",
-        # v8c P1: an executable merely named python3
+        # an executable merely named python3
         str(tmp_path / "foreign-bin" / "python3") + " " + OWN + " $(printf harmless)",
     ]
     return cmds
 
 
-def test_sol_foreign_executions_survive_the_real_healer(m, hp, installed, tmp_path):
-    foreign = _sol_foreign_commands(tmp_path)
+def test_foreign_executions_survive_the_real_healer(m, hp, installed, tmp_path):
+    foreign = _foreign_execution_commands(tmp_path)
     ours = _malformed_shipped(m, hp)[0]
     data = json.loads(installed.read_text(encoding="utf-8"))
     data.update({"permissions": {"deny": ["Bash(rm:*)"]}, "env": {"KEEP": "1"}})

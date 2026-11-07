@@ -25,13 +25,13 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import io
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = "skills/token-optimizer/scripts"
 OUT = REPO / SCRIPTS / "shipped_codex_hook_templates.json"
-WORK = REPO / ".scratch-review" / "codex-harvest"
 
 # Placeholders. Variant "plain" uses only characters shlex.quote and
 # list2cmdline leave bare, like a real path without spaces. The "S" variants put
@@ -84,25 +84,28 @@ def harvest(ref: str):
     found = {(plat, v): set() for plat in ("posix", "windows") for v in VARIANTS}
     failures = []
     shas = _git("log", "--format=%H", ref, "--", f"{SCRIPTS}/codex_install.py").split()
-    for sha in shas:
-        dest = WORK / sha[:12]
-        if dest.exists():
-            shutil.rmtree(dest)
-        dest.mkdir(parents=True)
-        blob = _git("archive", "--format=tar", sha, SCRIPTS, text=False)
-        with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
-            tar.extractall(dest)
-        scripts = dest / SCRIPTS
-        for plat, key, table in (("linux", "posix", POSIX), ("win32", "windows", WINDOWS)):
-            for variant, sent in table.items():
-                r = subprocess.run([sys.executable, "-I", "-c", HARVEST, str(scripts), plat, json.dumps(sent)],
-                                   capture_output=True, text=True, cwd=str(dest))
-                if r.returncode:
-                    failures.append((sha[:8], plat, variant, r.stderr.strip().splitlines()[-1:] or ["?"]))
-                    continue
-                found[(key, variant)].update(map(tuple, json.loads(r.stdout.strip().splitlines()[-1])))
-        shutil.rmtree(dest)
+    with tempfile.TemporaryDirectory(prefix="to-codex-harvest-") as work:
+        for sha in shas:
+            _harvest_one(sha, Path(work) / sha[:12], found, failures)
     return found, failures, len(shas)
+
+
+def _harvest_one(sha, dest, found, failures):
+    """Run one committed codex_install.py with every placeholder table."""
+    dest.mkdir(parents=True)
+    blob = _git("archive", "--format=tar", sha, SCRIPTS, text=False)
+    with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+        tar.extractall(dest)
+    scripts = dest / SCRIPTS
+    for plat, key, table in (("linux", "posix", POSIX), ("win32", "windows", WINDOWS)):
+        for variant, sent in table.items():
+            r = subprocess.run([sys.executable, "-I", "-c", HARVEST, str(scripts), plat, json.dumps(sent)],
+                               capture_output=True, text=True, cwd=str(dest))
+            if r.returncode:
+                failures.append((sha[:8], plat, variant, r.stderr.strip().splitlines()[-1:] or ["?"]))
+                continue
+            found[(key, variant)].update(map(tuple, json.loads(r.stdout.strip().splitlines()[-1])))
+    shutil.rmtree(dest)
 
 
 def versions() -> set:

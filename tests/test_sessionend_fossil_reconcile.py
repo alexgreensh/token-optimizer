@@ -22,7 +22,7 @@ if str(SCRIPTS) not in sys.path:
 # The fossil reconcile touches only Token Optimizer's own entries, so these
 # carry a real install path (this checkout's measure.py), exactly as
 # setup_hook wrote them. A user's own measure.py elsewhere is left alone
-# (tests/test_hook_provenance_r4.py).
+# (tests/test_hook_ownership.py).
 MP = str((SCRIPTS / "measure.py").resolve())
 FOSSIL = (
     f"python3 '{MP}' collect --quiet && "

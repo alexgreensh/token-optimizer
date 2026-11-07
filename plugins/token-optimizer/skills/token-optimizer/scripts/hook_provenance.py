@@ -54,7 +54,16 @@ try:
 except ImportError:  # POSIX
     msvcrt = None
 
-from shipped_hook_templates import SHIPPED_HOOK_CONTEXTS, SHIPPED_HOOK_TEMPLATES
+try:
+    from shipped_hook_templates import SHIPPED_HOOK_CONTEXTS, SHIPPED_HOOK_TEMPLATES
+except ImportError:  # loaded by path under python -I (cloud_kit): the sibling, by path too
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location(
+        "shipped_hook_templates", str(Path(__file__).with_name("shipped_hook_templates.py")))
+    _shipped = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_shipped)
+    SHIPPED_HOOK_CONTEXTS, SHIPPED_HOOK_TEMPLATES = (_shipped.SHIPPED_HOOK_CONTEXTS,
+                                                    _shipped.SHIPPED_HOOK_TEMPLATES)
 
 LEDGER_NAME = "hook_provenance.json"
 LEDGER_VERSION = 1
@@ -487,6 +496,57 @@ def record_written(facade, before, after, commands, source):
         if facade._settings_heal_ensure_dir() is None:
             return False
         return record_contexts(ledger_path_for(facade), facade.SETTINGS_PATH, contexts, source)
+    except Exception:
+        return False
+
+
+def record_rewrites(facade, before, after, source):
+    """For writers that substitute text INSIDE existing commands
+    (_fix_stale_settings_paths): such output can be part foreign, so a
+    rewritten entry is recorded only when the entry it replaced was already
+    proven ours, in its context, under the same settings file. ``before`` and
+    ``after`` must have the same shape (only command strings changed)."""
+    try:
+        prov = Provenance.from_facade(facade)
+        contexts = []
+        for old, new in zip(_hook_slots(before), _hook_slots(after)):
+            if old[0] != new[0] or old[1] == new[1] or None in (old[1], new[1]):
+                continue
+            if new[1][:3] == old[1][:3] and prov.proof(old[1][3], old[1][:3]):
+                contexts.append(new[1])
+        if not contexts:
+            return True
+        if facade._settings_heal_ensure_dir() is None:
+            return False
+        return record_contexts(prov.ledger_path, prov.settings_path, contexts, source)
+    except Exception:
+        return False
+
+
+def _hook_slots(settings):
+    """``((event, group index, hook index), context or None)`` per hook slot."""
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    for event, groups in hooks.items() if isinstance(hooks, dict) else ():
+        for gi, group in enumerate(groups if isinstance(groups, list) else ()):
+            entries = group.get("hooks") if isinstance(group, dict) else None
+            for hi, hook in enumerate(entries if isinstance(entries, list) else ()):
+                yield (event, gi, hi), entry_context(event, group, hook)
+
+
+def record_cloud_write(settings_path, before, after, hook_map):
+    """cloud_kit (python -I, no facade): record the entries its settings
+    write added, in the ledger measure.py's healer reads for that profile:
+    ``<claude dir>/token-optimizer/settings_heal``."""
+    try:
+        commands = [context[3] for context in iter_contexts({"hooks": hook_map})]
+        contexts = added_contexts(contexts_of(before), after, commands)
+        if not contexts:
+            return True
+        heal_dir = Path(settings_path).parent / "token-optimizer" / "settings_heal"
+        heal_dir.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            os.chmod(str(heal_dir), 0o700)
+        return record_contexts(heal_dir / LEDGER_NAME, settings_path, contexts, "cloud_kit")
     except Exception:
         return False
 

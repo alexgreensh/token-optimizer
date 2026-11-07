@@ -162,6 +162,7 @@ class Bench:
         self.proj = tmp_path / "proj"
         self.proj.mkdir()
         self.log = tmp_path / "procs.jsonl"
+        self._spawn_count = 0
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("CLAUDE", "CODEX", "TOKEN_OPTIMIZER", "TO_COLD_"))
                     and k not in ("PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE")}
@@ -211,18 +212,84 @@ class Bench:
                 "stop_hook_active": False, "permission_mode": "default"}
 
     def start(self, runner="hooks/userpromptsubmit_runner.py", event="UserPromptSubmit", args=(), **env):
-        proc = subprocess.Popen([sys.executable, str(HOOKS / "run.py"), runner, *args],
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, cwd=str(self.proj),
-                                env={**self.env, **env})
-        return proc, json.dumps(self.payload(event)), time.monotonic()
+        self._spawn_count += 1
+        out_path = self.root / f"hook-{self._spawn_count}.out"
+        err_path = self.root / f"hook-{self._spawn_count}.err"
+        out_f = out_path.open("wb")
+        err_f = err_path.open("wb")
+        try:
+            proc = subprocess.Popen([sys.executable, str(HOOKS / "run.py"), runner, *args],
+                                    stdin=subprocess.PIPE, stdout=out_f, stderr=err_f,
+                                    cwd=str(self.proj), env={**self.env, **env})
+        finally:
+            out_f.close()
+            err_f.close()
+        return proc, json.dumps(self.payload(event)), time.monotonic(), (out_path, err_path)
 
     @staticmethod
-    def finish(started, timeout=120):
-        proc, payload, t0 = started
-        out, err = proc.communicate(payload.encode("utf-8"), timeout=timeout)
-        return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace"), \
-            time.monotonic() - t0
+    def _feed(proc, payload):
+        try:
+            proc.stdin.write(payload.encode("utf-8"))
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    @staticmethod
+    def _wait(proc, timeout):
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise
+
+    @staticmethod
+    def _read_streams(paths):
+        out_path, err_path = paths
+        out = out_path.read_bytes().decode("utf-8", "replace") if out_path.exists() else ""
+        err = err_path.read_bytes().decode("utf-8", "replace") if err_path.exists() else ""
+        return out, err
+
+    @classmethod
+    def finish(cls, started, timeout=120):
+        proc, payload, t0, paths = started
+        cls._feed(proc, payload)
+        cls._wait(proc, timeout)
+        exit_at = time.monotonic()
+        out, err = cls._read_streams(paths)
+        return proc.returncode, out, err, exit_at - t0
+
+    @classmethod
+    def finish_all(cls, started, timeout=120):
+        """Feed every hook before waiting so they overlap, then time each child
+        from its own start.
+
+        Calling communicate() on each hook in turn serialised the waits, so one
+        hook's elapsed time also counted the hooks finished before it.
+        """
+        for proc, payload, _started_at, _paths in started:
+            cls._feed(proc, payload)
+        pending = {proc: paths for proc, _payload, _started_at, paths in started}
+        exits = {}
+        deadline = time.monotonic() + timeout
+        while pending and time.monotonic() < deadline:
+            for proc in list(pending):
+                if proc.poll() is not None:
+                    exits[proc] = time.monotonic()
+                    del pending[proc]
+            if pending:
+                time.sleep(0.01)
+        if pending:
+            for proc in pending:
+                proc.kill()
+            for proc in pending:
+                proc.wait()
+            raise subprocess.TimeoutExpired("cold-compile hooks", timeout)
+        results = []
+        for proc, _payload, started_at, paths in started:
+            out, err = cls._read_streams(paths)
+            results.append((proc.returncode, out, err, exits[proc] - started_at))
+        return results
 
     def fire(self, **kw):
         return self.finish(self.start(**kw))
@@ -295,7 +362,7 @@ def test_slow_cold_compile_runs_once_in_the_background_and_hooks_fail_open(bench
     slow = {"TO_COLD_SLOW_S": str(SLOW_S), "TO_COLD_BOOT_DELAY_S": boot_delay,
             "TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S": str(WAIT_S)}
     started = [bench.start(**slow) for _ in range(4)]
-    results = [bench.finish(s) for s in started]
+    results = bench.finish_all(started)
     for rc, out, err, elapsed in results:
         assert rc == 0, err[-2000:]
         assert elapsed < FAST_EXIT_S, (

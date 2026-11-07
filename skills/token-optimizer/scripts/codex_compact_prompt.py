@@ -102,11 +102,11 @@ _TABLE_HEADER_RE = re.compile(r"(?m)^[ \t]*\[\[?[^\[\]\n]+\]\]?[ \t]*(?:#.*)?$")
 
 def _toml_root_value(config_text: str):
     """Return (state, root value of the setting). state is "ok", "invalid"
-    (the text does not parse) or "unavailable" (no TOML parser, Python < 3.11)."""
+    (the text does not parse). Both readers support TOML 1.0."""
     try:
         import tomllib  # Python 3.11+
     except ImportError:
-        return "unavailable", None
+        from _measure._vendor import tomli as tomllib
     try:
         data = tomllib.loads(config_text)
     except Exception:

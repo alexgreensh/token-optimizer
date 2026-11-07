@@ -9,13 +9,13 @@ OpenClaw runs Token Optimizer as a TypeScript plugin with the deepest waste-anal
 
 ## Supported surfaces
 
-OpenClaw has one surface, the plugin. Install it from GitHub, ClawHub, or source. See the [OpenClaw install page](/install/openclaw/). The cross-platform grid is at [/reference/capability-matrix/](/reference/capability-matrix/).
+OpenClaw has one surface, the plugin. Install it from GitHub, ClawHub, or source. See the [OpenClaw install page](/install/openclaw/). The in-session continuity hints, cold-resume and nudges ride OpenClaw's `agent_turn_prepare` hook, which a non-bundled plugin may use only with the `allowConversationAccess` grant shown on the install page; without it those in-session contributions stay silent while the CLI, detectors and dashboard keep working. The cross-platform grid is at [/reference/capability-matrix/](/reference/capability-matrix/).
 
 ## Native OpenClaw features
 
 OpenClaw implements these in its TypeScript engine. Several also exist as Python CLI/hook features on Claude Code and Codex; native dashboard support is not the same as exclusivity.
 
-- 16 waste detectors, against 11 on Claude Code and Codex
+- 16 waste detectors, against 12 on Claude Code and Codex
 - An 8-tab dashboard: Overview, Context, Quality, Waste, Agents, Sessions, Daily, Manage
 - Progressive checkpoints at fill bands 20/35/50/65/80 percent, quality drops at 80/70/50/40, and milestones
 - Read-cache with warn and block modes plus a `.contextignore` file

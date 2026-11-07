@@ -59,7 +59,9 @@ Run them with `TOKEN_OPTIMIZER_RUNTIME=cursor` set (the installer and hooks set 
 
 ## Honest beta limits
 
-Cursor exposes no billing figure to a companion, so per-session cost is a genuine red cell rather than an approximation: `cursor_no_cost_data` is surfaced, never a fake dollar number. Native-Windows hooks are refused (the persisted `command` is POSIX-shell quoted; `cmd.exe` would not parse it) and stay deferred until a Windows quoting path is verified. Compaction is observational — `preCompact` records Cursor's real context numbers, it cannot steer them. The full feature-by-feature status lives in [`docs/cursor.md`](../docs/cursor.md) and the [capability matrix](https://alexgreensh.github.io/token-optimizer/reference/capability-matrix/).
+The adapter covers the Cursor IDE and the local agent CLI only. Cursor cloud agents and self-hosted background workers load project-level `.cursor/hooks.json` and Enterprise team or managed hooks, never the user-level `~/.cursor/hooks.json` this installer writes, so Token Optimizer does not observe those runs.
+
+Cursor exposes no billing figure to a companion, so per-session cost is a genuine red cell rather than an approximation: `cursor_no_cost_data` is surfaced, never a fake dollar number. On native Windows the installer writes hook commands for PowerShell and cmd.exe (a bare interpreter path and double-quoted arguments, the same form the Codex hooks use); Windows execution has not been validated on a live host. Compaction is observational — `preCompact` records Cursor's real context numbers, it cannot steer them. The full feature-by-feature status lives in [`docs/cursor.md`](../docs/cursor.md) and the [capability matrix](https://alexgreensh.github.io/token-optimizer/reference/capability-matrix/).
 
 ## License
 

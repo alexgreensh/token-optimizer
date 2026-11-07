@@ -6,7 +6,7 @@ description: "Cursor: per-session token accounting, Bash-output compression, and
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Beta">
-The Cursor adapter is in beta. Hooks are observed at runtime rather than version-gated, and the doctor proves which events fire on your build. Native-Windows hooks and per-session cost are red cells.
+The Cursor adapter is in beta. Hooks are observed at runtime rather than version-gated, and the doctor proves which events fire on your build. Per-session cost is a red cell. The installer writes native-Windows hook commands for PowerShell and cmd.exe; Windows execution has not been validated on a live host.
 </Aside>
 
 Token Optimizer supports Cursor through an adapter that reads Cursor's own stored token fields, scores session quality, restores per-workspace continuity, and compresses Bash output. It is honest about what Cursor does not hand a companion, such as a billing figure.
@@ -14,6 +14,8 @@ Token Optimizer supports Cursor through an adapter that reads Cursor's own store
 ## Supported surfaces
 
 Cursor IDE (Composer) and Cursor CLI (`agent`) share one adapter. They are one session population keyed by `conversation_id`.
+
+Cursor cloud agents and self-hosted background workers are not covered: they load only project-level `.cursor/hooks.json` and Enterprise team or managed hooks, never the user-level `~/.cursor/hooks.json` this adapter installs into (see [Cursor's hook docs](https://cursor.com/docs/hooks)). Token Optimizer does not observe those runs.
 
 Install from the [Cursor](/install/cursor/) page. The cross-platform grid is at [/reference/capability-matrix/](/reference/capability-matrix/).
 

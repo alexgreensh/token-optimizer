@@ -143,6 +143,7 @@ Do not apply Python defaults to the TypeScript extensions merely because an envi
 | OpenClaw `TOKEN_OPTIMIZER_CHECKPOINT_COOLDOWN_MS` | 90000 ms | Checkpoint policy cooldown |
 | OpenClaw `TOKEN_OPTIMIZER_RUNTIME_EVALUATION_COOLDOWN_MS` | 30000 ms | Runtime checkpoint-policy evaluation cooldown |
 | OpenClaw `TOKEN_OPTIMIZER_CONTINUITY_MAX_AGE_DAYS` | 7 days | Prior-session age bound |
+| OpenClaw `TOKEN_OPTIMIZER_CHECKPOINT_ROOT` | `~/.openclaw/token-optimizer/checkpoints` | Checkpoint storage location override |
 | Pi `TOKEN_OPTIMIZER_PI_HOME` | `~/.pi/agent/token-optimizer` | Complete data directory, not a parent home |
 
 OpenCode plugin options can set feature gates and numeric defaults; environment reads then apply as defined by the adapter. An explicit `dataDir` option wins over its environment value. Pi persists `enabled`, `retainDays` (1-365, default 7), `archiveToolOutput`, and `continuity` in its own `settings.json`; the three boolean gates default off. OpenClaw keeps its own host/plugin config, not Python `config.json`.
@@ -235,7 +236,7 @@ The pricing tier drives every cost and savings calculation. Set it with `measure
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TOKEN_OPTIMIZER_RUNTIME` | claude | Select the platform adapter: `claude`, `codex`, `opencode`, `copilot`, `hermes`, `cursor`, `antigravity`, or `grok`. Pi is a separate extension, not a Python runtime value |
+| `TOKEN_OPTIMIZER_RUNTIME` | claude | Select the platform adapter: `claude`, `codex`, `opencode`, `copilot`, `hermes`, `cursor`, `antigravity`, `grok`, or `devin`. Pi is a separate extension, not a Python runtime value |
 | `TOKEN_OPTIMIZER_SKIP_VERIFY` | off | Set to `1` to skip checksum verification during script install (not recommended) |
 | `TOKEN_OPTIMIZER_DEBUG` | off | Emit runtime-detection and refetch-guard diagnostics to stderr |
 | `TOKEN_OPTIMIZER_NO_PROC_SCAN` | off | Skip best-effort process-tree scans used as runtime-detection fallbacks |

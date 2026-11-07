@@ -3,7 +3,7 @@ title: CLI reference
 description: "Complete reference for every Token Optimizer command verb, grouped by function: setup, dashboard, compaction, compression, coaching, fleet, memory, keep-warm, cache, diagnostics, and platform adapters."
 ---
 
-This page lists every command the Token Optimizer engine dispatches. The engine is a single Python script, `measure.py`, that ships inside the skill. All commands run through it.
+This page lists every command the Token Optimizer engine dispatches. The engine ships inside the skill as the `measure.py` entry point backed by a `_measure/` package of focused modules (audit, CLI dispatch, dashboard, daemon, savings, sessions, and more). The split is internal: every command still runs through `measure.py`, exactly as before.
 
 ## How to run a command
 
@@ -21,7 +21,7 @@ Commands run for a non-default platform need the runtime prefix:
 TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py report
 ```
 
-`TOKEN_OPTIMIZER_RUNTIME` selects which platform adapter the engine targets (`claude`, `codex`, `opencode`, `copilot`, `hermes`, `cursor`, `antigravity`, `grok`). When unset, the engine defaults to Claude Code. `doctor` delegates to `codex-doctor` on Codex. On other non-Claude runtimes, Claude-targeting commands such as `report`, `quick`, and `doctor` can return a safe platform notice instead of performing the Claude audit. Use the explicit adapter doctor/summary verbs below; a runtime prefix does not make every command native.
+`TOKEN_OPTIMIZER_RUNTIME` selects which platform adapter the engine targets (`claude`, `codex`, `opencode`, `copilot`, `hermes`, `cursor`, `antigravity`, `grok`, `devin`). When unset, the engine defaults to Claude Code. `doctor` delegates to `codex-doctor` on Codex. On other non-Claude runtimes, Claude-targeting commands such as `report`, `quick`, and `doctor` can return a safe platform notice instead of performing the Claude audit. Use the explicit adapter doctor/summary verbs below; a runtime prefix does not make every command native.
 
 Most read commands accept `--json` for machine-readable output. The flag is noted per command where the source confirms it.
 
@@ -51,6 +51,8 @@ Commands that wire Token Optimizer into a platform. Plugin and marketplace insta
 | `setup-vscode-extension` | Manage the VS Code status-bar extension auto-install. The default reports the opt-out, the detected editor and the install state; `--install` clears the opt-out and installs now; `--uninstall` sets a sticky opt-out and removes the extension | `--status`, `--install`, `--enable`, `--uninstall` |
 | `setup-quality-bar` | Install the status-line quality bar and the quality-cache hook | `--dry-run`, `--status`, `--uninstall` |
 | `setup-daemon` | Install the persistent dashboard server (macOS launchd, Linux systemd, Windows Task Scheduler) | `--dry-run`, `--uninstall` |
+| `cloud-setup-script` | Print the paste-ready setup script for Claude Code cloud environments; pins the current version and its sha512 by default. See [Claude Code cloud](/install/claude-code-cloud/) | `--latest`, `--managed-fallback`, `--version V` |
+| `cloud-doctor` | Check the cloud-kit install from inside a cloud VM (or any machine) | `--json` |
 | `setup-coach-injection` | Write the COACH managed block once; does not install a recurring loop | `--uninstall` |
 | `codex-install` | Install the Codex adapter hooks and compact prompt guidance | `--project DIR`, `--profile aggressive\|balanced\|quiet\|telemetry`, `--enable-bash-compression`, `--enable-status-line`, `--uninstall`, `--dry-run` |
 | `copilot-install` | Install the GitHub Copilot adapter into `~/.copilot/hooks/` | n/a |
@@ -72,6 +74,7 @@ The core read commands. Run `report` (or no command) for the full picture.
 | `trends` | Per-session usage trends from history (quality, cache hit rate, cost per session) | `--days N`, `--json` |
 | `savings` | Measured token and dollar savings from active compression, split into realized, estimated, and opportunity tiers | `--days N`, `--json` |
 | `conversation` | Per-API-call breakdown for a session (input, output, cache read/write, cost, model, tools) | `[SESSION_ID]`, `--json` |
+| `session-cost` | What a session cost, looked up in your own words, by id, or by date; read-only | `[WORDS...]`, `--id UUID`, `--date DATE`, `--days N`, `--limit N`, `--json` |
 | `compression-stats` | Per-feature compression event counts, tokens saved, average ratio, quality-preserved percentage | `--days N`, `--json` |
 | `validate-impact` | Statistical before/after validation of session efficiency | `--strategy auto\|halves`, `--days N`, `--json` |
 | `pricing-tier` | Show or set the API pricing tier used for all cost math. No argument shows current. | `[TIER_NAME]` |
@@ -189,6 +192,7 @@ The interactive `/token-coach` skill reads `coach --json` to drive a coaching co
 | `kill-stale` | Kill terminal sessions older than a threshold (default 12h). Orphans (terminal gone, macOS/Linux) are only ended with `--include-orphans` | `--hours N`, `--dry-run`, `--include-orphans` |
 | `plugin-cleanup` | Remove stale or orphaned plugin cache entries | `--dry-run` |
 | `counted-backfill` | Rebuild the full counted-cumulative ledger without per-pass caps; writes local history | `--quiet` |
+| `upgrade-drain` | Drain a re-scoring backlog left by an upgrade. Started detached once per version when needed; safe to run by hand | `--quiet` |
 | `collect` | Parse session JSONL files and ingest them into the history database | `--days N`, `--quiet`, `--rebuild` |
 | `session-end-flush` | SessionEnd entry point: collect, regenerate dashboard, and capture checkpoint in one process | `--defer` |
 
@@ -279,6 +283,8 @@ Adapter commands target a specific platform. All require the matching `TOKEN_OPT
 | `hermes-doctor` | Check Hermes plugin readiness | `--json` |
 | `hermes-rollup` | Ingest recent Hermes sessions into the history database. Runs automatically via Hermes hook. | `--quiet`, `--session ID`, `--days N` |
 | `hermes-summary` | Brief usage summary for recent Hermes sessions | `--quiet`, `--days N` |
+| `hermes-checkpoint` | Save a Hermes session checkpoint built read-only from Hermes's state.db. Spawned detached by the Hermes plugin at fill bands, before compaction, and at turn/session end | `--session ID`, `--trigger T`, `--fill-pct N`, `--cwd DIR`, `--quiet` |
+| `hermes-turn-context` | Per-turn continuity and lean-output helper; spawned by the Hermes plugin once per turn, reads a JSON payload on stdin and prints one JSON object | n/a |
 
 ### Google Antigravity
 

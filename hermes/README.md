@@ -152,7 +152,7 @@ Model-agnostic: Hermes routes to Nous Portal, OpenRouter, Anthropic, OpenAI, Gem
 - A working Hermes install
 - The Token Optimizer repo cloned locally (the plugin runs its engines from there)
 
-**Beta status:** fully tested against Hermes's documented hook contract (upstream commit `7ee6d99c`), not yet validated against a live Hermes install. File issues on the [Token Optimizer repo](https://github.com/alexgreensh/token-optimizer).
+**Beta status:** fully tested against Hermes's documented hook contract (upstream commit `7ee6d99c`); fixes reported from live installs shipped in Token Optimizer 5.13.60 and 5.13.63. File issues on the [Token Optimizer repo](https://github.com/alexgreensh/token-optimizer).
 
 ## How It Works
 

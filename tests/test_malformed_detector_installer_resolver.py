@@ -1,6 +1,14 @@
 """Installer/healer self-conflict: the malformed-hook detector must not
 remove hooks that the installer itself wrote.
 
+PROVENANCE RULE (supersedes the text-ownership proofs below it in history):
+a hook is removable only when its exact command bytes are recorded in the
+hook provenance ledger for this settings file, or are byte-identical to a
+shipped hooks.json template instantiated for this install, AND it is
+malformed. Every foreign/unprovable case here must stay preserved; the
+positive controls are proven entries (an older shipped template, or a ledger
+record), not Claude-written look-alikes, which are now preserved and logged.
+
 ROOT CAUSE: setup_all_hooks writes hook commands whose bash wrapper carries
 the version-resolver subshell (D="$(ls -d ... | sort -V | tail -n1)").
 _is_malformed_to_hook flagged ANY command that names a TO script and
@@ -34,8 +42,8 @@ SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 
 
 @pytest.fixture()
-def m(monkeypatch):
-    """Load measure.py fresh with a tmp snapshot dir."""
+def m(monkeypatch, tmp_path):
+    """Load measure.py fresh with a tmp snapshot dir and a private ledger dir."""
     monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", tempfile.mkdtemp(prefix="to-md-"))
     sys.path.insert(0, str(SCRIPTS))
     if "measure" in sys.modules:
@@ -43,7 +51,32 @@ def m(monkeypatch):
     import measure
     import _measure.lifecycle as _lc
     measure._lc = _lc
+    monkeypatch.setattr(measure, "CONFIG_DIR", tmp_path / "to-config")
+    monkeypatch.setattr(measure, "_find_plugin_hooks_json", lambda: REPO / "hooks" / "hooks.json")
     return measure
+
+
+def _hp():
+    sys.path.insert(0, str(SCRIPTS))
+    import hook_provenance
+    return hook_provenance
+
+
+def _old_template(m, needle="read_cache.py --quiet", root=REPO):
+    """A command an OLDER setup_all_hooks wrote for this install that main's
+    detector heals: a shipped template, resolved for `root`, that is malformed
+    under the current resolver (the pre-backslash `${D%/*}` resolver)."""
+    hp = _hp()
+    for template in sorted(hp.SHIPPED_HOOK_TEMPLATES):
+        cmd = m._resolve_hook_command(template, root)
+        if needle in template and "${D%/*}" in template and hp.looks_malformed(cmd, False):
+            return cmd
+    raise AssertionError("no historical malformed template for " + needle)
+
+
+def _ledger(m, *commands):
+    """Record commands as Token Optimizer-written for the current settings."""
+    assert _hp().record_from_facade(m, list(commands), "test")
 
 
 @pytest.fixture()
@@ -105,13 +138,21 @@ def test_heal_cycle_is_stable_after_install(m, installed):
     assert installed.read_bytes() == before
 
 
-@pytest.mark.parametrize("evil", [
-    # Claude-written interactive subshell shapes (the detector's documented target).
+CLAUDE_WRITTEN = [
+    # Claude-written interactive subshell shapes (the old detector's target).
     f"python3 $(which python3) {REPO}/skills/token-optimizer/scripts/read_cache.py --quiet",
     f"python3 `which python3` {REPO}/skills/token-optimizer/scripts/measure.py ensure-health",
     f"python3 {REPO}/skills/token-optimizer/scripts/bash_hook.py $(echo --quiet)",
-])
-def test_claude_written_subshell_shapes_still_flagged(m, evil):
+]
+
+
+@pytest.mark.parametrize("evil", CLAUDE_WRITTEN)
+def test_claude_written_subshell_shapes_are_unproven_and_preserved(m, evil):
+    """Malformed, but nothing proves Token Optimizer wrote them: preserved.
+    The same bytes become removable once the ledger records them."""
+    assert _hp().looks_malformed(evil, False) is True
+    assert m._is_malformed_to_hook(evil) is False
+    _ledger(m, evil)
     assert m._is_malformed_to_hook(evil) is True
 
 
@@ -122,31 +163,41 @@ def test_resolver_with_injected_second_subshell_still_flagged(m, installed):
     base = next(c for c in _all_commands(installed) if 'D="$(ls -d ' in c)
     poisoned = base.replace("; done; exit 0", "; done; $(touch /tmp/pwn); exit 0")
     assert poisoned != base
+    assert _hp().looks_malformed(poisoned, False) is True
+    # One byte off the recorded installer command is no longer ours.
+    assert m._is_malformed_to_hook(poisoned) is False
+    _ledger(m, poisoned)
     assert m._is_malformed_to_hook(poisoned) is True
 
 
-def test_healer_removes_only_claude_written_entries(m, installed):
-    """End to end: a settings file with installer hooks plus one
-    Claude-written subshell hook heals to exactly the installer set."""
+def test_healer_removes_only_proven_entries(m, installed):
+    """End to end: installer hooks + one older installer-written malformed
+    hook + one Claude-written subshell hook. Only the proven one goes."""
+    old = _old_template(m)
+    claude = CLAUDE_WRITTEN[0]
     data = json.loads(installed.read_text())
-    data["hooks"].setdefault("PreToolUse", []).append({
-        "matcher": "Read",
-        "hooks": [{"type": "command",
-                   "command": f"python3 $(which python3) {REPO}/skills/token-optimizer/scripts/read_cache.py --quiet"}],
-    })
+    data["hooks"].setdefault("PreToolUse", []).extend([
+        {"matcher": "Read", "hooks": [{"type": "command", "command": old}]},
+        {"matcher": "Read", "hooks": [{"type": "command", "command": claude}]},
+    ])
     installed.write_text(json.dumps(data), encoding="utf-8")
     removed = m._fix_malformed_hook_commands()
     assert removed == 1
     remaining = list(_all_commands(installed))
-    assert not any("$(which python3)" in c for c in remaining)
+    assert old not in remaining
+    assert claude in remaining
     assert not any(m._is_malformed_to_hook(c) for c in remaining)
 
 
-def test_double_home_still_flagged_on_darwin(m, monkeypatch, tmp_path):
+def test_double_home_unproven_preserved_proven_removed_on_darwin(m, monkeypatch, tmp_path):
     monkeypatch.setattr(m.platform, "system", lambda: "Darwin")
     monkeypatch.setenv("HOME", str(tmp_path))
     evil = f"python3 $HOME/Users/u{REPO}/skills/token-optimizer/scripts/measure.py ensure-health"
+    assert m._is_malformed_to_hook(evil) is False
+    _ledger(m, evil)
     assert m._is_malformed_to_hook(evil) is True
+    monkeypatch.setattr(m.platform, "system", lambda: "Linux")
+    assert m._is_malformed_to_hook(evil) is False  # doubled $HOME is a macOS shape
 
 
 def test_unrelated_hooks_never_touched(m, installed):
@@ -184,9 +235,12 @@ def test_template_constant_matches_hooks_json(m):
     be flagged - if the exempted template drifted, its leftover ``$(``
     would flag the command."""
     resolver = _hooks_json_resolver()
+    assert _hp().CURRENT_RESOLVER == resolver
     cmd = (f'D="${{CLAUDE_PLUGIN_ROOT}}"; [ -r "$D/hooks/python-launcher.sh" ] || {resolver}; '
            f'D="${{D%/}}"; exec "$b" "$D/hooks/python-launcher.sh" '
            f'"$D/hooks/run.py" {REPO}/skills/token-optimizer/scripts/read_cache.py --quiet')
+    # Even recorded as ours, the resolver alone is plumbing, not malformation.
+    _ledger(m, cmd)
     assert m._is_malformed_to_hook(cmd) is False
 
 
@@ -211,12 +265,18 @@ _READ_CMD_TAIL = f'D="{REPO}"; [ -r "$D/hooks/python-launcher.sh" ] || '
     _READ_CMD_TAIL + RESOLVER + '; X=$(id); exec "$b" "$D/hooks/run.py" skills/token-optimizer/scripts/read_cache.py --quiet',
 ])
 def test_evasion_shapes_still_flagged(m, evil):
+    """The malformation gate stays exact: each shape is malformed, so it is
+    removed when (and only when) it is proven ours."""
+    assert _hp().looks_malformed(evil, False) is True
+    assert m._is_malformed_to_hook(evil) is False
+    _ledger(m, evil)
     assert m._is_malformed_to_hook(evil) is True
 
 
 def test_exact_template_single_occurrence_passes(m):
     """The true resolver on its own, exactly as installed, stays clean."""
     cmd = ('for b in bash; do ' + _READ_CMD_TAIL + RESOLVER + '; D="${D%/}"; exec "$b" "$D/hooks/run.py" skills/token-optimizer/scripts/read_cache.py --quiet; done; exit 0')
+    _ledger(m, cmd)
     assert m._is_malformed_to_hook(cmd) is False
 
 
@@ -259,10 +319,11 @@ def test_healer_preserves_foreign_measure_hook(m, installed):
     hooks plus the user's own hook running vendor/measure.py with a
     subshell. The heal pass must remove ours and leave the foreign one
     untouched."""
+    ours = CLAUDE_WRITTEN[0]
+    _ledger(m, ours)
     data = json.loads(installed.read_text())
     data["hooks"].setdefault("PreToolUse", []).extend([
-        {"matcher": "Read", "hooks": [{"type": "command",
-            "command": f"python3 $(which python3) {REPO}/skills/token-optimizer/scripts/read_cache.py --quiet"}]},
+        {"matcher": "Read", "hooks": [{"type": "command", "command": ours}]},
         {"matcher": "Bash", "hooks": [{"type": "command",
             "command": "python3 $(which python3) /home/u/vendor/measure.py --quiet"}]},
     ])
@@ -271,7 +332,7 @@ def test_healer_preserves_foreign_measure_hook(m, installed):
     assert removed == 1, "only the provably-ours malformed hook may be removed"
     remaining = [c for c in _all_commands(installed)]
     assert any("vendor/measure.py" in c for c in remaining), "foreign hook deleted"
-    assert not any("$(which python3)" in c and "token-optimizer" in c for c in remaining)
+    assert ours not in remaining
 
 
 # --- Ownership evasions: marker-shaped foreign commands must survive ------
@@ -299,8 +360,7 @@ def test_healer_preserves_marker_shaped_foreign_hook(m, installed):
     the heal pass while our malformed hook is removed."""
     data = json.loads(installed.read_text())
     data["hooks"].setdefault("PreToolUse", []).extend([
-        {"matcher": "Read", "hooks": [{"type": "command",
-            "command": f"python3 $(which python3) {REPO}/skills/token-optimizer/scripts/read_cache.py --quiet"}]},
+        {"matcher": "Read", "hooks": [{"type": "command", "command": _old_template(m)}]},
         {"matcher": "Bash", "hooks": [{"type": "command",
             "command": "python3 $(which python3) /home/u/vendor/token-optimizer/scripts/measure.py --quiet"}]},
     ])
@@ -321,9 +381,10 @@ def test_root_prefix_collision_against_proven_root_survives(m, monkeypatch, tmp_
     evil = tmp_path / "plugin-evil"
     cmd = f"python3 $(which python3) {evil}/skills/token-optimizer/scripts/measure.py --quiet"
     assert m._is_malformed_to_hook(cmd) is False
-    # positive control: the proven root itself is flagged
-    own = f"python3 $(which python3) {REPO}/skills/token-optimizer/scripts/measure.py --quiet"
-    assert m._is_malformed_to_hook(own) is True
+    # The same shipped template at the sibling root is not ours; at the
+    # running install root it is (positive control).
+    assert m._is_malformed_to_hook(_old_template(m, root=evil)) is False
+    assert m._is_malformed_to_hook(_old_template(m)) is True
 
 
 def test_owned_paths_under_each_root_are_proven(m, installed, monkeypatch):
@@ -333,14 +394,17 @@ def test_owned_paths_under_each_root_are_proven(m, installed, monkeypatch):
     root: our own skill location under it is unprovable (and preserved)
     when the healer is not running from that install."""
     shape = "python3 $(which python3) {root}/skills/token-optimizer/scripts/read_cache.py --quiet"
-    assert m._is_malformed_to_hook(shape.format(root=REPO)) is True
+    # Claude-written shapes are unproven at every root.
+    assert m._is_malformed_to_hook(shape.format(root=REPO)) is False
     assert m._is_malformed_to_hook(shape.format(root=installed.parent)) is False
-    # $CLAUDE_PLUGIN_ROOT only counts when it resolves to the running
-    # install; a foreign env root proves nothing.
+    # Shipped templates prove only at the running install root.
+    assert m._is_malformed_to_hook(_old_template(m)) is True
+    assert m._is_malformed_to_hook(_old_template(m, root=installed.parent)) is False
+    # $CLAUDE_PLUGIN_ROOT never adds a root: a foreign env root proves nothing.
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/srv/plugin-root")
-    assert m._is_malformed_to_hook(shape.format(root="/srv/plugin-root")) is False
+    assert m._is_malformed_to_hook(_old_template(m, root="/srv/plugin-root")) is False
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO))
-    assert m._is_malformed_to_hook(shape.format(root=str(REPO))) is True
+    assert m._is_malformed_to_hook(_old_template(m)) is True
 
 
 def test_owned_cache_via_real_plugin_root(m, installed, monkeypatch, tmp_path):
@@ -362,6 +426,8 @@ def test_owned_cache_via_real_plugin_root(m, installed, monkeypatch, tmp_path):
     # Even the same marketplace dir, a different plugin slot is foreign.
     other_slot = m.CLAUDE_DIR / "plugins" / "cache" / "mkt" / "token-optimizer" / "9.9.9"
     assert m._is_malformed_to_hook(shape.format(root=other_slot)) is False
+    for root in (own_cache, foreign_same_name, other_slot):
+        assert m._is_malformed_to_hook(_old_template(m, root=root)) is False
 
 
 def test_quoted_own_script_path_is_preserved(m):
@@ -373,14 +439,12 @@ def test_quoted_own_script_path_is_preserved(m):
 
 
 def test_backslash_own_script_path_is_preserved(m):
-    """On POSIX a backslash is a literal filename character, so a backslash
-    spelling of our path names a different file: unproven and preserved. On
-    Windows it IS our measure.py, so the malformed $(id) shape is ours and is
-    healed (matching test_windows_backslash_hooks_keep_ownership_proof).
-    Foreign backslash spellings stay preserved on every platform."""
+    """A backslash spelling of our path is not bytes Token Optimizer wrote:
+    preserved on every platform (no separator rewriting on the removal path).
+    Foreign backslash spellings stay preserved too."""
     own = f'{REPO}/skills/token-optimizer/scripts/measure.py'
     bs = own.replace('/', '\\')
-    assert m._is_malformed_to_hook(f'python3 {bs} $(id)') is (os.name == "nt")
+    assert m._is_malformed_to_hook(f'python3 {bs} $(id)') is False
     foreign_bs = '/opt/vendor/measure.py'.replace('/', '\\')
     assert m._is_malformed_to_hook(f'python3 {foreign_bs} $(id)') is False
     foreign_drive = 'D:\\opt\\vendor\\skills\\token-optimizer\\scripts\\measure.py'
@@ -500,9 +564,16 @@ def test_literal_plugin_root_env_resolution(m, monkeypatch):
     shape = ("python3 $(which python3) "
              "${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py ensure-health")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO))
-    assert m._is_malformed_to_hook(shape) is True
+    assert m._is_malformed_to_hook(shape) is False
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT")
     assert m._is_malformed_to_hook(shape) is False
+    # Raw (unresolved) shipped templates are never proof: main never removes
+    # them, and settings.json hooks get no plugin-root expansion.
+    hp = _hp()
+    raw = next(t for t in sorted(hp.SHIPPED_HOOK_TEMPLATES)
+               if "${D%/*}" in t and hp.looks_malformed(t, False))
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO))
+    assert m._is_malformed_to_hook(raw) is False
 
 
 def test_double_home_foreign_still_preserved_on_darwin(m, monkeypatch, tmp_path):
@@ -519,8 +590,7 @@ def test_healer_preserves_other_tools_sharing_claude_dir(m, installed):
     claude = installed.parent
     data = json.loads(installed.read_text())
     data["hooks"].setdefault("PreToolUse", []).extend([
-        {"matcher": "Read", "hooks": [{"type": "command",
-            "command": f"python3 $(which python3) {REPO}/skills/token-optimizer/scripts/read_cache.py --quiet"}]},
+        {"matcher": "Read", "hooks": [{"type": "command", "command": _old_template(m)}]},
         {"matcher": "Bash", "hooks": [{"type": "command",
             "command": f"python3 $(which python3) {claude}/skills/othertool/measure.py --quiet"}]},
         {"matcher": "Bash", "hooks": [{"type": "command",
@@ -616,19 +686,20 @@ class _NtOs:
 
 
 def test_windows_backslash_hooks_keep_ownership_proof(m, installed, monkeypatch):
-    """On Windows a backslash is a path separator, not a shell escape. POSIX
-    shlex turned D:\\a\\root into D:aroot, so our own malformed hooks
-    stopped being proven there (the #330 Windows failures). The quote rules
-    stay POSIX, so a foreign quoted spelling is still one foreign word."""
-    # Only the predicate's own os binding reports Windows: patching os.name
-    # process-wide would make pathlib build unusable WindowsPath objects here.
+    """Windows spellings prove nothing by shape. Claude-written mixed or
+    backslashed spellings of our path are unproven and preserved; the same
+    bytes recorded by an installer are removable. (Byte-exact Windows
+    template instances: tests/test_hook_provenance.py.)"""
     monkeypatch.setattr(m, "os", _NtOs(m.os))
     root = _windows_spelling(REPO)
     script = "skills/token-optimizer/scripts/read_cache.py"
     mixed = f"python3 $(which python3) {root}/{script} --quiet"
     backslashed = f"python3 $(which python3) {root}\\{script.replace('/', chr(92))} --quiet"
-    assert m._is_malformed_to_hook(mixed) is True
+    assert m._is_malformed_to_hook(mixed) is False
+    assert m._is_malformed_to_hook(backslashed) is False
+    _ledger(m, backslashed)
     assert m._is_malformed_to_hook(backslashed) is True
+    assert m._is_malformed_to_hook(mixed) is False
     # Partially quoted foreign path: bash reads ONE word ending in our path.
     # posix=False tokenizing would expose our path as its own token.
     foreign = f'python3 "C:\\vendor "{root}\\{script.replace("/", chr(92))} $(printf x)'

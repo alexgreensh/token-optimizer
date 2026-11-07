@@ -149,7 +149,10 @@ def test_install_records_what_it_writes(home, semver_root):
 
 def test_upgrade_without_ledger_replaces_last_version_by_template(home, monkeypatch, tmp_path):
     """A pre-ledger install of a shipped version under the same parent is
-    proven by template, so upgrading replaces it instead of duplicating."""
+    proven by template, so upgrading replaces it instead of duplicating.
+    On Windows an old launcher command equal to the fresh one modulo the
+    --baked-root version leaf is kept in place (no trust review); compare by
+    launcher signature, which is the command itself on POSIX."""
     parent = tmp_path / "market" / "token-optimizer"
     monkeypatch.setattr(ci, "_repo_root", lambda: parent / "5.13.40")
     old = ci._managed_hooks()
@@ -160,7 +163,9 @@ def test_upgrade_without_ledger_replaces_last_version_by_template(home, monkeypa
     expected = [c for gs in ci._managed_hooks().values() for g in gs for c in chp.hook_commands(g)]
     old_commands = [c for gs in old.values() for g in gs for c in chp.hook_commands(g)]
     assert set(old_commands).isdisjoint(expected)
-    assert sorted(_commands(path)) == sorted(expected)
+    written = _commands(path)
+    assert len(written) == len(expected) and len(set(written)) == len(written)
+    assert sorted(map(ci._launcher_signature, written)) == sorted(map(ci._launcher_signature, expected))
 
 
 @pytest.mark.parametrize("garbage", [b"{oops", b"[]", b'{"version": 1, "files": {"k": 3}}'])

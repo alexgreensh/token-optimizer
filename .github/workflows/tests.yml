@@ -65,7 +65,7 @@ jobs:
         run: ${{ matrix.os == 'ubuntu-latest' && '/usr/bin/python3' || 'python' }} scripts/measure_split_ci.py --work .scratch-u0/ci --shard ${{ matrix.shard }}/4
 
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     # A hung test must fail the job, not hold a runner for the 6 hour default.
     timeout-minutes: 30
     strategy:
@@ -78,6 +78,12 @@ jobs:
         # The suite runs in 4 slices on 4 machines (tests/conftest.py splits it
         # by measured file times in tests/shard_weights.json): ~20 min -> ~5.
         shard: [1, 2, 3, 4]
+        # setup-python has no 3.9 build for the ubuntu-latest image (26.04);
+        # 24.04 still lists 3.9 x64. This include adds `runner` to every
+        # existing 3.9 cell (all 4 shards) without adding new cells.
+        include:
+          - python-version: "3.9"
+            runner: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v7

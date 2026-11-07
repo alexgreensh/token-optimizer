@@ -27,7 +27,7 @@ def read_global(module, name):
     try:
         return builtins[name]
     except KeyError:
-        raise NameError(f"name '{name}' is not defined", name=name) from None
+        raise NameError(f"name '{name}' is not defined", **({'name': name} if sys.version_info >= (3, 10) else {})) from None
 
 
 def prepare(module):

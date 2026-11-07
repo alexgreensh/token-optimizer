@@ -57,6 +57,23 @@ def _git_status(nfiles, branch="main"):
 def test_first_run_is_not_deduped(hook):
     assert hook._crossturn_dedup("git status", _git_status(12)) is None
 
+def test_first_run_returns_caller_compressed_preview_when_asked(hook):
+    # Baseline-building call with a caller whose single-pass compression helped:
+    # `output` is already the compressed preview, so hand it back rather than
+    # dropping it and emitting raw.
+    preview = _git_status(12)[:400]
+    assert hook._crossturn_dedup(
+        "git status", preview, prefer_compressed_on_first_run=True) == preview
+
+def test_first_run_fallback_keeps_the_recorded_baseline_raw(hook):
+    # The fallback must not change what later turns diff against: the store
+    # keeps the raw (redacted) output as the baseline.
+    raw = _git_status(12)
+    preview = raw[:400]
+    hook._crossturn_dedup("git status", preview, prefer_compressed_on_first_run=True)
+    ref = hook._crossturn_dedup("git status", raw)
+    assert ref is not None and "same as your previous" in ref.lower()
+
 def test_identical_rerun_is_collapsed(hook):
     out = _git_status(12)
     assert hook._crossturn_dedup("git status", out) is None       # records

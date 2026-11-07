@@ -337,7 +337,10 @@ def _run(payload: dict) -> None:
         # run, emit a compact delta reference instead. Catches repeats even when
         # single-output compression did not help (a small repeated `git status`),
         # which per-command tools cannot do -- they have no session memory.
-        deduped = _crossturn_dedup(command, best, str(payload.get("tool_use_id", "") or ""))
+        deduped = _crossturn_dedup(
+            command, best, str(payload.get("tool_use_id", "") or ""),
+            prefer_compressed_on_first_run=comp_helped,
+        )
         _log_feature = "bash_compress_pipeline"
         if deduped is not None:
             best, comp_helped = deduped, True
@@ -505,9 +508,18 @@ def _dedup_store_id(session_id: str, agent_id: str) -> str:
     return f"{session_id}-agent-{agent_digest}"
 
 
-def _crossturn_dedup(command: str, output: str, tool_use_id: str = ""):
+def _crossturn_dedup(command: str, output: str, tool_use_id: str = "",
+                     prefer_compressed_on_first_run: bool = False):
     """Return a compact delta-reference when this command's output repeats a
     recent same-session run, else None.
+
+    ``prefer_compressed_on_first_run`` covers the baseline-building call: the
+    first time a session sees a command there is no prior row to diff against,
+    so this function has nothing to collapse. When the caller's own single-pass
+    compression already shrank this output, hand that back instead of returning
+    None and letting the caller emit the raw text unshrunk. ``output`` is the
+    caller's already-chosen ``best`` (compressed when it helped), so returning
+    it is exactly the preview the caller would otherwise have dropped.
 
     Per-command wrappers (e.g. Boost) compress each invocation in isolation and
     so re-pay for every re-run of `git status`, `ls`, a test suite, etc. Token
@@ -557,6 +569,11 @@ def _crossturn_dedup(command: str, output: str, tool_use_id: str = ""):
                 tool_use_id=tool_use_id,
             )
             if not prior or not prior.get("compressed_output"):
+                # Baseline-building call: nothing to diff against. If this
+                # run's own compression already helped, hand it back rather
+                # than making the caller emit the raw output unshrunk.
+                if prefer_compressed_on_first_run:
+                    return output
                 return None
             # Same tool_use_id = the SAME command seen by a second Token Optimizer
             # install (e.g. a synced Cowork copy that predates the stand-down fix),

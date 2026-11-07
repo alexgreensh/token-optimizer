@@ -109,7 +109,7 @@ def _setup_env(tmp_path, monkeypatch):
                 {"hooks": [{"type": "command", "command": "echo foreign-hook"}]},
             ],
             "SessionEnd": [
-                {"hooks": [{"type": "command", "command": f"python3 '{SCRIPTS / 'measure.py'}' collect"}]},
+                {"hooks": [{"type": "command", "command": f"python3 {SCRIPTS / 'measure.py'} collect --quiet"}]},
             ],
         },
         "theme": "dark",

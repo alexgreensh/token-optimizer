@@ -13,6 +13,8 @@ import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _codex_record import record_codex  # noqa: E402
 import codex_command_compress as compression
 import codex_install as installer
 import plugin_env
@@ -279,16 +281,24 @@ def test_launcher_signature_rejects_tampered_commands(tmp_path):
     assert installer._launcher_signature('echo hi') == 'echo hi'
 
 
+
+
 def test_install_preserves_equivalent_version_resolver_but_not_changed_logic(monkeypatch, tmp_path):
     monkeypatch.setattr(installer.sys, 'platform', 'win32')
     monkeypatch.setattr(installer, '_repo_root', lambda: tmp_path / '5.13.8')
     old = installer._managed_hooks(enable_prompt_hooks=True)
+    hooks_path = tmp_path / 'hooks.json'
+    record_codex(installer, hooks_path, {'hooks': old}, *[h['command'] for gs in old.values() for g in gs for h in g['hooks']])
     monkeypatch.setattr(installer, '_repo_root', lambda: tmp_path / '5.13.11')
-    merged = installer._merge_hooks({'hooks': old}, enable_prompt_hooks=True)['hooks']
+    proof = installer._codex_proof(hooks_path)
+    merged = installer._merge_hooks({'hooks': old}, enable_prompt_hooks=True, proof=proof)['hooks']
     assert merged == old
     old['Stop'][0]['hooks'][0]['command'] += ' changed'
-    merged = installer._merge_hooks({'hooks': old}, enable_prompt_hooks=True)['hooks']
-    assert not merged['Stop'][0]['hooks'][0]['command'].endswith(' changed')
+    merged = installer._merge_hooks({'hooks': old}, enable_prompt_hooks=True, proof=proof)['hooks']
+    # Changed bytes are no longer what we wrote: never adopted as ours (kept as
+    # the user's, untouched) and the real command is installed beside it.
+    stops = [g['hooks'][0]['command'] for g in merged['Stop']]
+    assert len(stops) == 2 and stops[0].endswith(' changed') and not stops[1].endswith(' changed')
 
 
 def test_decode_launcher_cli(tmp_path):

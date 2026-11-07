@@ -518,17 +518,17 @@ def test_cell_dry_runs_do_not_touch_config():
 
 
 def test_cell_upgrade_from_5_13_43_layout():
-    """The previous release had no hook module; a refresh must accept it."""
+    """The previous release had no hook module or flat Tomli parser; a refresh must accept it."""
     import devin_install as d
     _write_config({'permissions': {'allow': ['Exec(git)']}})
     _quiet(d.install)
     manifest = json.loads(d.manifest_path().read_text())
-    module = d.state.data_dir() / 'plugin/devin_hooks.py'
-    module.unlink()
-    del manifest['files'][str(module)]
+    for leaf in ('plugin/devin_hooks.py', 'plugin/_tomli.py'):
+        (d.state.data_dir() / leaf).unlink()
+        del manifest['files'][str(d.state.data_dir() / leaf)]
     d.manifest_path().write_text(json.dumps(manifest))
     _quiet(d.install, mode='auto')
-    assert module.is_file()
+    assert all((d.state.data_dir() / leaf).is_file() for leaf in ('plugin/devin_hooks.py', 'plugin/_tomli.py'))
     from devin_verify import verify_install
     assert verify_install()
 

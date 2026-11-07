@@ -22,6 +22,8 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 LAUNCHER_SOURCE = REPO / "hooks" / "windows-launcher.py"
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _codex_record import record_codex  # noqa: E402
 
 
 def _load(monkeypatch, platform="win32"):
@@ -200,6 +202,8 @@ def test_neutralize_refuses_spaced_interpreter_and_foreign(monkeypatch):
     assert ci.neutralize_launcher_command("") is None
 
 
+
+
 def test_heal_converts_ours_and_leaves_foreign_alone(monkeypatch, tmp_path):
     ci = _load(monkeypatch)
     m = ci._LAUNCHER_MARKER
@@ -210,6 +214,7 @@ def test_heal_converts_ours_and_leaves_foreign_alone(monkeypatch, tmp_path):
     foreign = r'"C:\tools\python.exe" "C:\tools\my_hook.py"'
     path = tmp_path / "hooks.json"
     _write_hooks(path, [ours, foreign])
+    record_codex(ci, path, None, ours)
     assert ci.heal_quoted_launcher_commands([path]) == 1
     data = json.loads(path.read_text(encoding="utf-8"))["hooks"]
     fixed = data["E0"][0]["hooks"][0]["command"]
@@ -245,6 +250,7 @@ def test_heal_refreshes_a_stale_launcher_so_quiet_hooks_stay_quiet(monkeypatch, 
              rf'-- "hooks/run.py" "{m}" >NUL 2>&1')
     path = tmp_path / "hooks.json"
     _write_hooks(path, [quiet])
+    record_codex(ci, path, None, quiet)
     assert ci.heal_quoted_launcher_commands([path]) == 1
     assert launcher.read_bytes() == LAUNCHER_SOURCE.read_bytes()
     healed = json.loads(path.read_text(encoding="utf-8"))["hooks"]["E0"][0]["hooks"][0]["command"]
@@ -389,6 +395,8 @@ def test_doctor_flags_cmd_only_commands(monkeypatch, tmp_path):
     old = (r'set "TOKEN_OPTIMIZER_RUNTIME=codex" && "C:\P\python.exe" "C:\u\w.py" '
            rf'--baked-root "C:\u\5.1.1" -- "hooks/stop_runner.py" "{m}"')
     new = (rf'C:\P\python.exe "C:\u\w.py" --baked-root "C:\u\5.1.1" -- "hooks/stop_runner.py" "{m}"')
+    record_codex(ci, tmp_path / "hooks.json", {"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": old}, {"type": "command", "command": new}]}]}}, old, new)
     (tmp_path / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [
         {"hooks": [{"type": "command", "command": old}]}]}}), encoding="utf-8")
     checks = codex_doctor._hook_shell_check()
@@ -414,6 +422,9 @@ def test_doctor_flags_generated_dev_checkout_command(monkeypatch, tmp_path):
     command = ci._hook_command("stop_runner.py")
     assert ci.is_shell_neutral_command(command), command
     assert "windows-launcher.py" in command and "&&" not in command
+    old = r'set "TOKEN_OPTIMIZER_RUNTIME=codex" && C:\Python315\python.exe C:\dev\token-optimizer\hooks\run.py stop_runner.py'
+    record_codex(ci, tmp_path / "hooks.json", {"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": command}, {"type": "command", "command": old}]}]}}, command, old)
     (tmp_path / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [
         {"hooks": [{"type": "command", "command": command}]}]}}), encoding="utf-8")
     assert [c["status"] for c in codex_doctor._hook_shell_check()] == ["OK"]
@@ -536,9 +547,12 @@ def test_reinstall_replaces_the_old_command_without_duplicating(monkeypatch, tmp
     monkeypatch.setattr(ci, "_repo_root", lambda: root)
     old = ci._cmd_only_launcher_command(root, "hooks/stop_runner.py", [], {}, silent=True)
     existing = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": old, "timeout": 15}]}]}}
-    merged = ci._merge_hooks(existing)
+    record_codex(ci, tmp_path / "hooks.json", existing, old)
+    proof = ci._codex_proof(tmp_path / "hooks.json")
+    merged = ci._merge_hooks(existing, proof=proof)
     stops = merged["hooks"]["Stop"]
-    ours = [g for g in stops if ci._is_token_optimizer_group(g)]
+    assert len(stops) == 1  # replaced, not duplicated
+    ours = [g for g in stops if ci._is_token_optimizer_group("Stop", g, proof)]
     assert len(ours) == 1
     cmd = ours[0]["hooks"][0]["command"]
     assert ci.is_shell_neutral_command(cmd) and "&&" not in cmd

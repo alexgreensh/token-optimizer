@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [5.13.68] - 2026-11-07
+
+- Your own hooks are safe: repair, cleanup and uninstall only touch hooks Token Optimizer can prove it wrote, even when yours share our script names.
+- Custom command filters now work on Copilot, Cursor and Grok, and keep working on Antigravity and Devin with Python 3.9 and 3.10.
+- Codex hooks are tracked per entry and upgrade cleanly on Windows, and their tracking file lives in Codex's own folder, not your repo.
+- Doctor hides likely secrets in hook commands and only flags hooks that really look like ours.
+- The desktop band can show times in 12 or 24 hour format.
+
 ## [5.13.67] - 2026-11-07
 
 - Python 3.9 and 3.10 are fully supported again: custom command filters and Codex config load there, and CI now tests both.

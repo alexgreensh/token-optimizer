@@ -393,6 +393,37 @@ def test_slow_cold_compile_runs_once_in_the_background_and_hooks_fail_open(bench
     assert warm["measure_loaded"] and not warm["compiled_measure"], warm
 
 
+def test_cold_hook_pipes_reach_eof_while_the_background_compile_runs(bench):
+    """The Claude Code host reads a hook's stdout and stderr as PIPES and waits
+    for EOF, not just for the process to exit. If the detached compiler
+    inherited either handle, EOF would arrive only when the slow compile ends
+    (SLOW_S), past the fail-open budget. The other tests redirect hooks to
+    files to time each child; this one keeps the host's real pipe contract."""
+    slow = {"TO_COLD_SLOW_S": str(SLOW_S), "TO_COLD_BOOT_DELAY_S": "0",
+            "TOKEN_OPTIMIZER_COLD_COMPILE_WAIT_S": str(WAIT_S)}
+    t0 = time.monotonic()
+    proc = subprocess.Popen([sys.executable, str(HOOKS / "run.py"), "hooks/userpromptsubmit_runner.py"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            cwd=str(bench.proj), env={**bench.env, **slow})
+    try:
+        # communicate() returns only at EOF on BOTH pipes and process exit.
+        out, err = proc.communicate(json.dumps(bench.payload()).encode("utf-8"), timeout=HANG_S)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    elapsed = time.monotonic() - t0
+    assert proc.returncode == 0, err[-2000:]
+    assert elapsed < FAST_EXIT_S, (
+        f"hook pipes reached EOF after {elapsed:.1f}s: the background compiler "
+        f"holds the hook's stdout/stderr; stderr={err[-1500:]!r}")
+    assert _valid_envelope(out.decode("utf-8", "replace")), out[:500]
+    # Let the detached compiler finish before tmp_path is removed.
+    assert bench.wait_for_pyc(), f"no fresh measure .pyc under the prefix: {bench.measure_pyc()}"
+    assert bench.wait_for_lock_release(), "the compile lock was never released"
+    assert len(bench.compiler_boots()) == 1, bench.rows()
+
+
 def test_fast_cold_compile_inside_the_wait_runs_the_hook_as_before(bench):
     """A machine that compiles within the wait (any Mac or Linux box) sees the
     old behaviour: the hook waits for the one background compile, then loads

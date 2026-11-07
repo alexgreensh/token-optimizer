@@ -13,6 +13,8 @@ Shape: (name, [test node ids], file_relpath, [(old, new), ...]).
 GATE = "tests/test_cold_compile_gate.py"
 SLOW = GATE + "::test_slow_cold_compile_runs_once_in_the_background_and_hooks_fail_open"
 FAILED = GATE + "::test_failed_background_compile_falls_back_to_the_inline_compile"
+# Spawns the hook with stdout/stderr as pipes, as the Claude Code host does.
+PIPES = GATE + "::test_cold_hook_pipes_reach_eof_while_the_background_compile_runs"
 LOCKS = GATE + "::test_live_lock_defers_to_the_running_compile_and_stale_lock_is_taken_over"
 WAITS = GATE + "::test_every_gated_wait_leaves_room_under_the_host_timeout"
 
@@ -39,7 +41,7 @@ MUTATIONS = [
        "                        os.path.basename(importlib.util.cache_from_source(source)))\n")]),
 
     ("#264 background compiler inherits the hook's stdout (host waits for its EOF)",
-     [SLOW],
+     [SLOW, PIPES],
      RUNNER,
      [("stdin=subprocess.DEVNULL,\n"
        "                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",

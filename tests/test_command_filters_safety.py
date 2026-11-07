@@ -560,3 +560,39 @@ def test_add_entries_keep_destructive_verdict(monkeypatch, command, expected):
                   cf.CommandFilterConfig(adds=(entry,)).find_add(command)):
         assert (found.name if found else None) == expected, command
     assert calls == [command, command]
+
+
+# ---------------------------------------------------------------------------
+# Interpreter spellings with patch versions, ABI suffixes (t = free-threaded,
+# m = pymalloc) and PyPy release tags; their -config helpers and py* tools
+# that are not interpreters stay allowed.
+# ---------------------------------------------------------------------------
+
+_INTERPRETER_SPELLINGS = [
+    "python3.12.1", "python3.13t", "python3.12m", "python3.14td", "pypy3.10-v7.3",
+    "pypy3.10-v7.3.17", "pypy3.10", "PYTHON3.13T.EXE",
+]
+_NOT_INTERPRETERS = ["python3-config", "python3.12-config", "pyright", "pytest", "pyenv"]
+
+
+@pytest.mark.parametrize("name", _INTERPRETER_SPELLINGS)
+def test_interpreter_spellings_are_destructive(name):
+    assert cf.is_destructive_command(f"{name} -c 1") is True, name
+
+
+@pytest.mark.parametrize("name", _INTERPRETER_SPELLINGS)
+def test_interpreter_spellings_rejected_as_add(name):
+    assert cf._is_safe_add(f"{name} *", "disk_stats") is False, name
+
+
+@pytest.mark.parametrize("command", [
+    "python3.13? *", "python3.12? x", "pypy3.1? *", "pypy3.1* *", "python3.1?? *",
+])
+def test_interpreter_globs_with_suffixes_rejected(command):
+    assert cf._is_safe_add(command, "disk_stats") is False, command
+
+
+@pytest.mark.parametrize("name", _NOT_INTERPRETERS)
+def test_non_interpreter_py_tools_still_allowed(name):
+    assert cf.is_destructive_command(f"{name} --version") is False, name
+    assert cf._is_safe_add(f"{name} *", "disk_stats") is True, name

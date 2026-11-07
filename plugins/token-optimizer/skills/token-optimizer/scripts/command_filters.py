@@ -37,6 +37,7 @@ Rules:
 from __future__ import annotations
 
 import fnmatch
+import functools
 import os
 import re
 import sys
@@ -436,17 +437,24 @@ _NEVER_COMPRESS_CMD0 = (
     _UNSAFE_INTERPRETERS | _UNSAFE_PREFIXES | _UNSAFE_WRITE_SUBCMDS
     | _LAUNCHERS | _KNOWN_WRITERS
 )
-# Interpreters named by version (python3.12, pypy3) and the Windows ``py``
-# launcher; matched with fullmatch on the normalized command word.
-_VERSIONED_INTERPRETER_RE = re.compile(r"python\d+(?:\.\d+)?|pypy\d*(?:\.\d+)?|py")
+# Interpreters named by version (python3.12.1, python3.13t, python3.12m,
+# pypy3.10-v7.3) and the Windows ``py`` launcher; fullmatch on the normalized
+# word, so python3-config, pyright, pytest and pyenv do not match.
+_VERSIONED_INTERPRETER_RE = re.compile(
+    r"python\d+(?:\.\d+)*[a-z]*|pypy\d*(?:\.\d+)*(?:[-.][a-z0-9.]+)?|py")
 _EXE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
 # fnmatch candidates: bare names plus their Windows executable spellings, so
-# ``rm.*`` / ``r*.exe`` are caught as well as ``r*``.
-_GLOB_NAMES = frozenset(
-    n + ext for n in _NEVER_COMPRESS_CMD0 | {"py", "pypy", "pypy2", "pypy3"}
-    | {f"python{m}.{n}" for m in (2, 3) for n in range(20)}
-    for ext in ("",) + _EXE_SUFFIXES
-)
+# ``rm.*`` / ``r*.exe`` are caught as well as ``r*``. Versioned interpreter
+# spellings carry ABI suffixes (t, m, d) so ``python3.13?`` is caught too.
+# Built on first use: only the add-entry gate needs it, not per-command matching.
+@functools.lru_cache(maxsize=1)
+def _glob_names() -> frozenset:
+    return frozenset(
+        n + ext for n in _NEVER_COMPRESS_CMD0 | {"py", "pypy", "pypy2", "pypy3"}
+        | {f"{p}{m}.{n}{abi}" for p in ("python", "pypy") for m in (2, 3)
+           for n in range(20) for abi in ("", "t", "m", "d", "td")}
+        for ext in ("",) + _EXE_SUFFIXES
+    )
 
 _warned_paths: set = set()
 
@@ -799,7 +807,7 @@ def _is_safe_add(command: str, handler: str) -> bool:
     # _raw_cmd_word already lower-cases and takes the basename of any
     # backslash path, so one glob check against the dangerous names suffices.
     raw0 = _raw_cmd_word(tokens)
-    if raw0 and _glob_can_match_unsafe(raw0, _GLOB_NAMES):
+    if raw0 and _glob_can_match_unsafe(raw0, _glob_names()):
         return False
     if cmd0 in _SHELL_STRUCT_TOKENS or _glob_can_match_unsafe(cmd0, _SHELL_STRUCT_TOKENS):
         return False
@@ -814,7 +822,7 @@ def _is_safe_add(command: str, handler: str) -> bool:
     # Globs: the command string is later matched with fnmatch, so ``r*`` also
     # matches ``rm -rf target``. Reject a glob command word that could match
     # any destructive / interpreter / privilege command name.
-    if cmd0 in _NEVER_COMPRESS_CMD0 or _glob_can_match_unsafe(cmd0, _GLOB_NAMES):
+    if cmd0 in _NEVER_COMPRESS_CMD0 or _glob_can_match_unsafe(cmd0, _glob_names()):
         return False
     # ``git <glob>``: the subcommand word must not be able to match a write.
     if cmd0 == "git":

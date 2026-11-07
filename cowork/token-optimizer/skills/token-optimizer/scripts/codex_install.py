@@ -18,6 +18,7 @@ from typing import Any
 import codex_compact_prompt
 import codex_io
 import codex_statusline
+import hook_provenance
 from runtime_env import codex_home
 
 TOKEN_OPTIMIZER_MARKER = "token-optimizer/scripts"
@@ -96,7 +97,6 @@ def _short_path(path: str) -> str | None:
         return None
     try:
         import ctypes
-
         buf = ctypes.create_unicode_buffer(32768)
         n = ctypes.windll.kernel32.GetShortPathNameW(path, buf, len(buf))
         if 0 < n < len(buf) and os.path.exists(buf.value):
@@ -896,7 +896,7 @@ def install(
             details["compact_prompt"] = codex_compact_prompt.install(force=force_compact_prompt)
         if enable_status_line:
             details["status_line"] = codex_statusline.install(force=force_status_line)
-        codex_io.atomic_write_json(path, updated)
+        hook_provenance.write_codex_hooks(path, updated, _is_token_optimizer_group, codex_io.atomic_write_json)
     return path, "installed", details
 
 

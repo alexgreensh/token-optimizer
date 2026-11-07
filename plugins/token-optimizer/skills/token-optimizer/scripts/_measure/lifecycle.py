@@ -2104,6 +2104,8 @@ def setup_hook(dry_run=None, uninstall=None, user_initiated=None):
         if not _measure_facade._write_settings_atomic(settings, user_initiated=user_initiated):
             print("[Error] settings.json write was refused; SessionEnd hook was not installed.", file=_measure_facade.sys.stderr)
             return
+        import hook_provenance
+        hook_provenance.record_from_facade(_measure_facade, [_measure_facade.HOOK_COMMAND], "setup_hook")
         action = "upgraded" if upgrading else "installed"
         print(f"[Token Optimizer] SessionEnd hook {action}.")
         print(f"  Backup: {backup_path}")
@@ -2544,6 +2546,7 @@ def setup_all_hooks(dry_run=None, verbose=None):
 
     added = 0
     skipped = 0
+    written = []  # exact commands this call puts into settings.json
 
     for event, handler_groups in desired.items():
         if event not in current_hooks:
@@ -2608,6 +2611,7 @@ def setup_all_hooks(dry_run=None, verbose=None):
                         continue
                     # Stale path -- replace in place
                     existing_hook["command"] = resolved_cmd
+                    written.append(resolved_cmd)
                     # Preserve all fields from new hook (async, timeout, etc.)
                     for k, v in h.items():
                         if k != "command":
@@ -2632,6 +2636,7 @@ def setup_all_hooks(dry_run=None, verbose=None):
                 # Preserve all fields from source hook (async, timeout, type, etc.)
                 new_hook = dict(h)
                 new_hook["command"] = resolved_cmd
+                written.append(resolved_cmd)
                 target_group.setdefault("hooks", []).append(new_hook)
                 existing_ids.setdefault(matcher, set()).add(ident)
                 existing_entries.setdefault(matcher, {})[ident] = (target_group, new_hook)
@@ -2660,6 +2665,10 @@ def setup_all_hooks(dry_run=None, verbose=None):
         if verbose:
             print(f"  [setup-all-hooks] could not write settings.json: {e}")
         return {"added": 0, "skipped": skipped, "plugin_root": plugin_root_str, "error": str(e)}
+
+    # Provenance: the healer may later remove only entries it can prove it wrote.
+    import hook_provenance
+    hook_provenance.record_from_facade(_measure_facade, written, "setup_all_hooks")
 
     # Record the heal timestamp so ensure-health's 24h throttle
     # suppresses the redundant run after install.sh.
@@ -2994,6 +3003,7 @@ def setup_smart_compact(dry_run=None, uninstall=None, status_only=None,
     hooks = settings.setdefault("hooks", {})
     installed = []
     skipped = []
+    written = []
 
     for event, command in commands.items():
         if event == "SessionStart":
@@ -3018,9 +3028,11 @@ def setup_smart_compact(dry_run=None, uninstall=None, status_only=None,
             added = False
             if not has_compact_matcher:
                 event_hooks.append({"matcher": "compact", "hooks": [{"type": "command", "command": command}]})
+                written.append(command)
                 added = True
             if not has_new_session:
                 event_hooks.append({"hooks": [{"type": "command", "command": new_session_cmd}]})
+                written.append(new_session_cmd)
                 added = True
 
             if added:
@@ -3036,6 +3048,7 @@ def setup_smart_compact(dry_run=None, uninstall=None, status_only=None,
         # Append to existing hook groups for this event
         hook_entry = {"type": "command", "command": command}
         hook_group = {"hooks": [hook_entry]}
+        written.append(command)
 
         if event not in hooks:
             hooks[event] = []
@@ -3064,6 +3077,8 @@ def setup_smart_compact(dry_run=None, uninstall=None, status_only=None,
     if not _measure_facade._write_settings_atomic(settings, user_initiated=user_initiated):
         print("[Error] settings.json write was refused; smart compact hooks were not installed.", file=_measure_facade.sys.stderr)
         return
+    import hook_provenance
+    hook_provenance.record_from_facade(_measure_facade, written, "setup_smart_compact")
 
     print("[Token Optimizer] Smart Compaction installed.")
     print(f"  Hooks added: {', '.join(installed)}")
@@ -3492,21 +3507,21 @@ def _heal_keepwarm_plist_path():
 
 
 def _fix_malformed_hook_commands():
-    """Detect and remove malformed hook commands from settings.json.
+    """Remove malformed hook entries Token Optimizer can prove it wrote.
 
-    Targets two patterns that break hooks silently:
-    1. Subshell commands ($(...) or backticks) referencing TO scripts —
-       written by Claude during interactive sessions, not by our installers.
-    2. Double-$HOME paths ($HOME/Users/X/... or ${HOME}/Users/X/...) —
-       expand to /Users/X/Users/X/... which doesn't exist.
+    An entry goes only when its exact command bytes are recorded in the hook
+    provenance ledger for this settings file, or are byte-identical to a
+    shipped hooks.json template instantiated for this install, AND it is
+    malformed (a subshell/backtick beyond the exact installer resolver, or a
+    doubled $HOME on macOS). Everything else is left alone; unproven
+    malformed-looking entries naming our scripts are logged once to the heal
+    log. See hook_provenance.py for the rule and the ledger.
 
-    Only removes hooks that reference known TO script names, so other
-    plugins' hooks are never touched. After removal, calls setup_all_hooks
-    for script-install users (plugin users get hooks from hooks.json
-    automatically). Resets last_hook_heal_check so the next session's
-    24h gate runs the full heal cycle.
+    After a removal, script installs are re-provisioned via setup_all_hooks
+    (plugin users get hooks from hooks.json) and last_hook_heal_check is reset
+    so the next session runs the full heal cycle.
 
-    Returns the number of removed hook entries.
+    Returns the number of removed (proven) hook entries.
     """
     _measure_facade = _compat.facade()
     try:
@@ -3521,8 +3536,11 @@ def _fix_malformed_hook_commands():
     if not current_hooks or not isinstance(current_hooks, dict):
         return 0
 
+    import hook_provenance
+    prov = hook_provenance.Provenance.from_facade(_measure_facade)
     removed = 0
     new_hooks = {}
+    kept_commands, unproven = [], []
 
     for event, handler_groups in current_hooks.items():
         if not isinstance(handler_groups, list):
@@ -3543,9 +3561,13 @@ def _fix_malformed_hook_commands():
                     kept_hooks.append(h)
                     continue
                 cmd = h.get("command", "")
-                if _measure_facade._is_malformed_to_hook(cmd):
+                verdict = prov.verdict(cmd)
+                if verdict == "remove":
                     removed += 1
                     continue
+                if verdict == "unproven":
+                    unproven.append((event, cmd))
+                kept_commands.append(cmd)
                 kept_hooks.append(h)
             if kept_hooks:
                 new_group = dict(group)
@@ -3554,16 +3576,18 @@ def _fix_malformed_hook_commands():
         if new_groups:
             new_hooks[event] = new_groups
 
-    if removed == 0:
-        return 0
-
-    new_settings = dict(current)
-    new_settings["hooks"] = new_hooks
-
-    try:
-        if not _measure_facade._write_settings_atomic(new_settings):
+    if removed:
+        new_settings = dict(current)
+        new_settings["hooks"] = new_hooks
+        try:
+            if not _measure_facade._write_settings_atomic(new_settings):
+                return 0
+        except (PermissionError, OSError):
             return 0
-    except (PermissionError, OSError):
+    # First pass seeds the ledger from exact template matches; unproven
+    # entries are reported once. Silent, and never counted as removals.
+    prov.finish(kept_commands, unproven, log=_measure_facade._settings_heal_log)
+    if not removed:
         return 0
 
     # Reset 24h throttle so next session re-runs the full hook heal cycle.
@@ -3586,221 +3610,20 @@ def _fix_malformed_hook_commands():
 
 
 def _is_malformed_to_hook(cmd):
-    """Check if a hook command is a malformed token-optimizer entry.
+    """True when the malformed-hook healer would remove this command.
 
-    Returns True only when the command's executed script is provably THIS
-    install's payload AND the command carries a subshell pattern or a
-    double-$HOME expansion.
-
-    Ownership proof anchors on the actual path token carrying a known TO
-    script basename (the script the hook will run) and requires it to
-    resolve to skills/token-optimizer/scripts/<name> under one of exactly
-    two runtime-proven roots: the running install root (this module's own
-    __file__; for a plugin-cache install that IS the current cache version
-    directory) or the resolved $CLAUDE_PLUGIN_ROOT environment value. The
-    Claude config dir is never a root by itself: another skill, another
-    plugin's cache entry, a same-named plugin from a different marketplace,
-    or a stale version of this plugin under it is not provably ours and is
-    preserved. A root string in an argument, comment, env assignment, or
-    redirect proves nothing (comments are stripped before tokenizing).
-    Home-relative spellings (~, $HOME, ${HOME}) expand against the real
-    home; a literal $CLAUDE_PLUGIN_ROOT resolves through the environment
-    when set and is unprovable (preserved) when unset. The macOS
-    doubled-$HOME corruption is corrected by stripping the known doubled
-    prefix, then the same full proof applies. A relative script argument
-    resolves only against a literal D="<root>" assignment in the same
-    command (the installer's written form). Every basename-carrying token
-    must resolve to our payload: a command mixing our script with a foreign
-    one is ambiguous and preserved. Deleting the user's own hook is
-    irreversible, so unknown ownership means leave it alone.
+    Provenance, not parsing: the exact command bytes must be recorded in the
+    hook provenance ledger for the current settings file or be a shipped
+    hooks.json template instantiated for this install, and the command must be
+    malformed. A command Token Optimizer cannot prove it wrote is never ours,
+    whatever path or basename it mentions. See hook_provenance.py.
     """
     _measure_facade = _compat.facade()
     if not cmd:
         return False
-    re_mod = _measure_facade.re
-    os_mod = _measure_facade.os
-    Path_mod = _measure_facade.Path
-    names = _measure_facade._TO_SCRIPT_NAMES
-    # The exact version-resolver assignment every installer-written hook
-    # command carries (hooks/hooks.json, bash-loop wrapper). Kept as a
-    # function local: the split-module policy forbids module-level state in
-    # providers. The regression test asserts behaviour (an installer-shaped
-    # command is not flagged) so hooks.json drift fails loudly.
-    _TO_VERSION_RESOLVER = 'D="$(ls -d "${D%[/\\\\]*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"'
-    # Cheap pre-filter only; ownership is proven below. Backslash counts as a
-    # separator so a Windows path reaches the proof at all.
-    has_to_script = any(
-        re_mod.search(r'(?:^|[/\\\s])' + re_mod.escape(name) + r'(?:$|[\s])', cmd)
-        for name in names
-    )
-    if not has_to_script:
-        return False
-
-    # POSIX, drive-letter (C:/ or C:\) and UNC absolutes; hook commands on
-    # Windows installs carry Windows paths.
-    abs_re = re_mod.compile(r'^(?:/|[A-Za-z]:[\\/]|\\\\)')
-    # Doubled-home prefixes written by Claude on macOS when it expands $HOME
-    # and prepends it again: raw ($HOME/Users/<u>/<abs>) and already-expanded
-    # (/Users/<u>/Users/<u>/...). Stripping yields the intended absolute
-    # path, which still has to pass the full ownership proof.
-    doubled_re = re_mod.compile(
-        r'^(?:\$HOME|\$\{HOME\}|~)/(?:Users|home)/[^/]+?(?=/|[A-Za-z]:[\\/])'
-        r'|^/(?:Users|home)/[^/]+(?=/(?:Users|home)/)'
-    )
-
-    def _canon(path):
-        # normcase: case-insensitive + separator-normalized on Windows,
-        # identity on POSIX.
-        return os_mod.path.normcase(str(path)).replace("\\", "/").rstrip("/")
-
-    def _owned_roots():
-        install_root = None
-        try:
-            # The facade lives at <root>/skills/token-optimizer/scripts/
-            # measure.py, so parents[3] is the install root the installer
-            # writes into hook commands.
-            install_root = Path_mod(_measure_facade.__file__).resolve().parents[3]
-        except Exception:
-            pass
-        roots = [] if install_root is None else [install_root]
-        try:
-            # $CLAUDE_PLUGIN_ROOT is environment input, not proof: it counts
-            # as an owned root only when it resolves to THIS running
-            # install (the same root derived from __file__ above, which for
-            # a plugin-cache install IS the current cache version dir). A
-            # foreign or stale env root - another marketplace's same-named
-            # plugin, an old checkout - must never make its hooks ours.
-            plugin_root = os_mod.environ.get("CLAUDE_PLUGIN_ROOT")
-            if plugin_root and install_root is not None:
-                resolved = Path_mod(plugin_root).expanduser().resolve()
-                if _canon(resolved) == _canon(install_root):
-                    roots.append(resolved)
-        except Exception:
-            pass
-        return [_canon(r) for r in roots]
-
-    def _owned_script_path(candidate):
-        canon = _canon(candidate)
-        name = canon.rsplit("/", 1)[-1]
-        if name not in names:
-            return False
-        suffix = "skills/token-optimizer/scripts/" + name
-        return any(len(root) >= 4 and canon == root + "/" + suffix
-                   for root in _owned_roots())
-
-    def _proves_ownership():
-        try:
-            home = str(Path_mod.home())
-        except Exception:
-            home = ""
-        try:
-            plugin_root = os_mod.environ.get("CLAUDE_PLUGIN_ROOT") or ""
-        except Exception:
-            plugin_root = ""
-
-        # Shell comments never execute: a root or script path mentioned only
-        # in a comment cannot prove (or veto) ownership.
-        probe = re_mod.sub(r'(?m)(^|[\s;|&])#.*$', r'\1', cmd)
-
-        def _expand(path):
-            if home and home != "~":
-                for prefix in ("${HOME}/", "$HOME/", "~/"):
-                    if path.startswith(prefix):
-                        return home.rstrip("/") + "/" + path[len(prefix):]
-            if plugin_root:
-                for prefix in ("${CLAUDE_PLUGIN_ROOT}/", "$CLAUDE_PLUGIN_ROOT/"):
-                    if path.startswith(prefix):
-                        return plugin_root.rstrip("/") + "/" + path[len(prefix):]
-            return path
-
-        # Literal D="<root>" assignments the installer prefixes hook commands
-        # with; the base for the relative script argument that follows them.
-        d_roots = [
-            _expand(m.group(1)).rstrip("/")
-            for m in re_mod.finditer(r'(?:^|[;\s])D="([^"]+)"', probe)
-        ]
-
-        try:
-            import shlex
-            # shlex.split(posix=True) with one change on Windows: backslash is
-            # a path separator there, not an escape, so D:\a\x stays D:\a\x.
-            # Quote handling stays POSIX (posix=False would split
-            # "C:\vendor "D:\root\...\measure.py into two words and expose
-            # our path as its own token: false ownership proof).
-            lexer = shlex.shlex(probe, posix=True)
-            lexer.whitespace_split = True
-            lexer.commenters = ""
-            if os_mod.name == "nt":
-                lexer.escape = ""
-            tokens = list(lexer)
-        except Exception:
-            tokens = [t.strip('"').strip("'").rstrip(";").replace("\\", "/")
-                      for t in probe.split()]
-        anchors = []
-        for tok in tokens:
-            tok = tok.rstrip(";")
-            # Windows paths may use backslashes throughout; POSIX keeps a
-            # backslash as a literal filename character.
-            seps = tok.replace("\\", "/") if os_mod.name == "nt" else tok
-            for name in names:
-                if tok == name or seps.endswith("/" + name):
-                    anchors.append(tok)
-                    break
-        if not anchors:
-            return False
-
-        def _resolve_candidates(tok):
-            if tok.startswith("$D/"):
-                tok = tok[len("$D/"):]
-            candidates = []
-            expanded = _expand(tok)
-            if abs_re.match(expanded):
-                candidates.append(expanded)
-            for variant in (tok, expanded):
-                stripped = doubled_re.sub("", variant)
-                if stripped != variant:
-                    stripped = _expand(stripped)
-                    if abs_re.match(stripped):
-                        candidates.append(stripped)
-            if not candidates and d_roots:
-                candidates.append(d_roots[0] + "/" + expanded)
-            return candidates
-
-        for tok in anchors:
-            owned = False
-            for candidate in _resolve_candidates(tok):
-                try:
-                    candidate = str(Path_mod(candidate).resolve())
-                except Exception:
-                    candidate = os_mod.path.normpath(candidate)
-                if _owned_script_path(candidate):
-                    owned = True
-                    break
-            if not owned:
-                return False
-        return True
-
-    if not _proves_ownership():
-        return False
-    # The installer's version resolver is recognized plumbing, not
-    # malformation. Recognize the EXACT template hooks/hooks.json writes
-    # (_TO_VERSION_RESOLVER, kept in sync with hooks.json by
-    # tests/test_malformed_detector_installer_resolver.py) and remove ONE
-    # occurrence before the subshell check. A character-class regex is not
-    # acceptable here: this predicate is a rejection gate, and a loose match
-    # would let crafted content hide a real subshell inside a resolver-shaped
-    # string. Any deviation from the template, any second resolver-shaped
-    # subshell, and any other subshell or backtick (Claude-written shapes)
-    # leaves "$(" or "`" in the probe and is still rejected.
-    probe = cmd.replace(_TO_VERSION_RESOLVER, 'D=""', 1)
-    has_subshell = "$(" in probe or "`" in probe
-    has_double_home = False
-    if _measure_facade.platform.system() == "Darwin":
-        has_double_home = (
-            "$HOME/Users/" in cmd or "$HOME/home/" in cmd
-            or "${HOME}/Users/" in cmd or "${HOME}/home/" in cmd
-        )
-    return has_subshell or has_double_home
+    import hook_provenance
+    prov = hook_provenance.Provenance.from_facade(_measure_facade)
+    return prov.verdict(cmd) == "remove"
 
 
 def _command_drives_quality_cache(command):
@@ -4685,6 +4508,9 @@ def setup_quality_bar(dry_run=None, uninstall=None, status_only=None, force=None
             if not quiet:
                 print("[Error] settings.json write was refused; Quality Bar was not installed.", file=_measure_facade.sys.stderr)
             return
+        if "cache hook" in installed:
+            import hook_provenance
+            hook_provenance.record_from_facade(_measure_facade, [hook_cmd], "setup_quality_bar")
         # Explicit install is an explicit opt-in — clear any prior opt-out.
         _measure_facade._set_quality_bar_disabled(False)
 

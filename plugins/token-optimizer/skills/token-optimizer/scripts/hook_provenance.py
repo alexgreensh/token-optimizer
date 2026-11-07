@@ -203,7 +203,10 @@ def _update(path, mutate):
     lock = path.with_name(path.name + ".lock")
     for _attempt in range(3):
         try:
-            with lease_lock(lock, acquire_timeout=2.0) as acquired:
+            # Each writer persists a DISTINCT mutation: opt out of the herd
+            # throttle so a waiting writer takes a released lease at once.
+            with lease_lock(lock, acquire_timeout=2.0, cohort_throttle=False,
+                            reclaim_released=True) as acquired:
                 if not acquired:
                     continue
                 data, status = load_ledger(path)

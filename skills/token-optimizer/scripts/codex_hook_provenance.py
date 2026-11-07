@@ -11,8 +11,10 @@ when that hook's whole entry, ``(event, matcher, hook type, command)``, is
 * byte-identical to an entry some shipped codex_install.py generated
   (shipped_codex_hook_templates.json, harvested from git history with
   placeholder paths), its command instantiated with this machine's real
-  install root, its parent, the running interpreter and each shipped version
-  number.
+  install root, its parent, the running interpreter (on Windows also the
+  interpreter the command itself starts with, when it is one our generator
+  wrote, so an install from before a Python change is still found) and each
+  shipped version number.
 
 Our command copied into another event or under another matcher is a
 different entry and is not ours.
@@ -111,18 +113,37 @@ class CodexProof:
         self.semver = root is not None and _is_semver(name)
         self.parent_str = str(root.parent) if self.semver else ""
         self.versions = frozenset(shipped()["versions"]) | ({name} if self.semver else frozenset())
-        # Placeholder variant: spaced placeholders only where the real path has
-        # a space, so the generator's quoting matches byte for byte.
-        plat = "windows" if self.windows else "posix"
-        variant = ("S" if " " in self.root_str else "P") + ("S" if " " in self.executable else "P")
-        self._placeholders = shipped()["placeholders"].get(plat, {}).get(variant, {})
-        self._templates = shipped()["templates"].get(plat + "/" + variant, ())
         self._cache = {}
 
-    def _instances(self, version):
-        if version in self._cache:
-            return self._cache[version]
-        ph, templates = self._placeholders, self._templates
+    def _shipped_for(self, executable):
+        """Placeholders and templates for this root and interpreter: spaced
+        placeholders only where the real path has a space, so the
+        generator's quoting matches byte for byte."""
+        plat = "windows" if self.windows else "posix"
+        variant = ("S" if " " in self.root_str else "P") + ("S" if " " in executable else "P")
+        return (shipped()["placeholders"].get(plat, {}).get(variant, {}),
+                shipped()["templates"].get(plat + "/" + variant, ()))
+
+    def _interpreters(self, command):
+        """The running interpreter, plus on Windows each interpreter the
+        command itself names (a quoted segment or a bare word) that is one our
+        generator wrote: an install from before a Python change must still be
+        found to be replaced. These only pick which candidates to build;
+        equality of the whole entry decides."""
+        found = [self.executable]
+        if self.windows and command:
+            import owned_hooks
+            for piece in command.split('"') + command.replace('"', " ").split():
+                if piece not in found and owned_hooks._our_interpreter(piece):
+                    found.append(piece)
+        return found
+
+    def _instances(self, version, executable=None):
+        executable = self.executable if executable is None else executable
+        key = (version, executable)
+        if key in self._cache:
+            return self._cache[key]
+        ph, templates = self._shipped_for(executable)
         if not ph:
             return frozenset()
         if version is None:
@@ -130,7 +151,7 @@ class CodexProof:
         else:
             # The generator joined with the install's own path class.
             subs = [(ph["root"], str(self.root.parent / version)), (ph["parent"], self.parent_str)]
-        subs.append((ph["python"], self.executable))
+        subs.append((ph["python"], executable))
         out = set()
         for template in templates:
             if not (isinstance(template, list) and len(template) == 4):
@@ -140,8 +161,8 @@ class CodexProof:
                 inst = inst.replace(placeholder, real)
             if _MARK not in inst:
                 out.add((template[0], template[1], template[2], inst))
-        self._cache[version] = frozenset(out)
-        return self._cache[version]
+        self._cache[key] = frozenset(out)
+        return self._cache[key]
 
     def owns(self, context):
         """True when this exact entry ``(event, matcher, type, command)`` is ours."""
@@ -149,9 +170,13 @@ class CodexProof:
             return False
         if context in self.current or hp.context_digest(context) in self.recorded:
             return True
-        if not self.semver:
-            return context in self._instances(None)
-        return any(context in self._instances(v) for v in self.versions if v in context[3])
+        for executable in self._interpreters(context[3]):
+            if not self.semver:
+                if context in self._instances(None, executable):
+                    return True
+            elif any(context in self._instances(v, executable) for v in self.versions if v in context[3]):
+                return True
+        return False
 
     def group_is_ours(self, event, group):
         contexts = contexts_in(event, group)

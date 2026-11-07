@@ -220,3 +220,43 @@ def test_doctor_lists_each_unproven_hook_once_in_plain_words(home, semver_root):
 def test_new_codex_modules_parse_as_python_39(path):
     ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 9))
     assert len(path.read_text(encoding="utf-8").splitlines()) < 1000
+
+
+# --- Windows: an install from before a Python change is still ours ----------------
+
+from pathlib import PureWindowsPath  # noqa: E402
+
+WIN_ROOT = PureWindowsPath(r"C:\Users\me\.codex\plugins\cache\mkt\token-optimizer\5.13.67")
+OLD_PY, NEW_PY = r"C:\Python312\python.exe", r"C:\Python313\python.exe"
+
+
+def _win_proof(executable, root=WIN_ROOT):
+    return chp.CodexProof(None, root, windows=True, executable=executable)
+
+
+def _old_interpreter_entries(old_py=OLD_PY):
+    """Entries the generator wrote for 5.13.40 under the old interpreter,
+    each one that interpreter's own proof calls ours."""
+    old = _win_proof(old_py)
+    entries = [c for c in old._instances("5.13.40") if old_py in c[3] and old.owns(c)]
+    assert entries, "no shipped Windows template embeds the interpreter"
+    return entries
+
+
+@pytest.mark.parametrize("old_py", [OLD_PY, r"C:\Program Files\Python312\python.exe"])
+def test_windows_install_from_before_a_python_change_is_ours(old_py):
+    new = _win_proof(NEW_PY)
+    for context in _old_interpreter_entries(old_py):
+        assert new.owns(context), context
+
+
+@pytest.mark.parametrize("wrapper", [r"C:\tools\sudo.exe", r"C:\Windows\py.exe", "python.exe", r"C:\me\python-wrapper.exe"])
+def test_windows_command_led_by_a_wrapper_is_not_ours(wrapper):
+    new = _win_proof(NEW_PY)
+    for context in _old_interpreter_entries():
+        assert not new.owns(context[:3] + (context[3].replace(OLD_PY, wrapper),)), (wrapper, context)
+
+
+def test_posix_proof_never_reads_the_interpreter_from_the_command():
+    posix = chp.CodexProof(None, WIN_ROOT, windows=False, executable=NEW_PY)
+    assert posix._interpreters('"%s" x' % OLD_PY) == [NEW_PY]

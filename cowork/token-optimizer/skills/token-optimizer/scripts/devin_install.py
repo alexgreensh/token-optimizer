@@ -134,14 +134,18 @@ def _ownership(*, allow_missing=False) -> dict | None:
         raise OSError('invalid ownership record; run uninstall --purge (which also removes stored captures) to discard adapter state')
     expected = {str(state.data_dir() / 'plugin' / name) for name in PAYLOAD} | {str(skill_dir() / 'SKILL.md')}
     # Earlier releases shipped fewer payload files: 5.13.43 had no hook module,
-    # and releases before it also lacked the two plugin-env modules.
-    previous = expected - {str(state.data_dir() / 'plugin' / 'devin_hooks.py')}
-    legacy = previous - {str(state.data_dir() / 'plugin' / name) for name in ('plugin_env.py', 'refetch_fingerprint.py')}
+    # releases before it also lacked the two plugin-env modules, and every
+    # existing record predates the _tomli.py payload module shipped now.
+    plugin = state.data_dir() / 'plugin'
+    tomli = str(plugin / '_tomli.py')
+    previous = expected - {str(plugin / 'devin_hooks.py'), tomli}
+    legacy = previous - {str(plugin / name) for name in ('plugin_env.py', 'refetch_fingerprint.py')}
+    pre_tomli = expected - {tomli}
     try:
         record_keys = _resolved_keys(record['files'])
     except (OSError, ValueError, TypeError, RuntimeError):
         raise OSError('recorded paths cannot be resolved; run uninstall --purge (which also removes stored captures) to discard adapter state')
-    if record_keys not in (sorted(expected), sorted(previous), sorted(legacy)):
+    if record_keys not in (sorted(expected), sorted(pre_tomli), sorted(previous), sorted(legacy)):
         # A recorded path routed through a symlink resolves elsewhere; name the
         # real cause before falling through to the version/spelling advice.
         for name in record['files']:
@@ -534,15 +538,18 @@ def _recover_pending() -> None:
     except (ValueError,RecursionError):
         value=None
     expected={str(state.data_dir()/'plugin'/name) for name in PAYLOAD}|{str(skill_dir()/'SKILL.md')}
-    previous=expected - {str(state.data_dir()/'plugin'/'devin_hooks.py')}
-    legacy=previous - {str(state.data_dir()/'plugin'/name) for name in ('plugin_env.py','refetch_fingerprint.py')}
+    plugin=state.data_dir()/'plugin'
+    tomli=str(plugin/'_tomli.py')
+    previous=expected - {str(plugin/'devin_hooks.py'), tomli}
+    legacy=previous - {str(plugin/name) for name in ('plugin_env.py','refetch_fingerprint.py')}
+    pre_tomli=expected - {tomli}
     files=value.get('files') if isinstance(value,dict) else None
     try:
         keys=_resolved_keys(files) if isinstance(files,dict) else None
     except (OSError,ValueError,TypeError,RuntimeError):
         keys=None
     if (not isinstance(value,dict) or value.get('owner')!=MARKER
-            or keys not in (sorted(expected),sorted(previous),sorted(legacy))):
+            or keys not in (sorted(expected),sorted(pre_tomli),sorted(previous),sorted(legacy))):
         raise OSError('invalid pending install record: ' + str(pending) + '; preserved; run uninstall --purge (which also removes stored captures) to discard adapter state')
     # Reconcile published new bytes first: stale pending must not undo a completed update.
     if manifest_path().exists():
@@ -563,7 +570,7 @@ def _recover_pending() -> None:
         raise OSError('pending version/content ambiguous: ' + str(pending) + '; preserved; run uninstall --purge (which also removes stored captures) to discard adapter state, or follow the documented manual repair')
     old=value.get('previous')
     if old is not None:
-        if not isinstance(old,dict) or _resolved_keys(old) not in (sorted(expected),sorted(legacy)):raise OSError('invalid refresh recovery record')
+        if not isinstance(old,dict) or _resolved_keys(old) not in (sorted(expected),sorted(pre_tomli),sorted(previous),sorted(legacy)):raise OSError('invalid refresh recovery record')
         if any(not isinstance(content,str) for content in old.values()) or not isinstance(value.get('previous_manifest'),str):
             raise OSError('invalid refresh recovery encoding')
         previous={name:base64.b64decode(content,validate=True) for name,content in old.items()}

@@ -104,6 +104,14 @@ def _install_test_launcher(base: Path) -> Path:
     return target
 
 
+def _record_codex(hooks_path, *commands):
+    """Stand in for the install that wrote these commands: record them in the
+    provenance ledger beside hooks.json (installs from this release on do)."""
+    import hook_provenance
+    assert hook_provenance.record(Path(hooks_path).parent / hook_provenance.CODEX_LEDGER_NAME,
+                                  hooks_path, list(commands), "test")
+
+
 def test_windows_hook_command_invokes_stable_plain_launcher(monkeypatch, tmp_path):
     module = _load_codex_install(monkeypatch, "win32")
     root = tmp_path / "market" / "token-optimizer" / "5.13.14"
@@ -120,7 +128,9 @@ def test_windows_hook_command_invokes_stable_plain_launcher(monkeypatch, tmp_pat
     assert "b64decode" not in command
     assert "base64" not in command
     assert module._LAUNCHER_MARKER in command
-    assert module._is_token_optimizer_group({"hooks": [{"command": command}]})
+    # Ownership is exact bytes this install writes (a managed hook), not shape.
+    assert module._is_token_optimizer_group(module._managed_hooks()["Stop"][0])
+    assert not module._is_token_optimizer_group({"hooks": [{"command": command + " "}]})
 
 
 def test_installer_generator_source_cannot_regress_to_encoded_exec(monkeypatch, tmp_path):
@@ -192,7 +202,10 @@ def test_legacy_base64_launcher_is_recognized_decodable_and_replaced(monkeypatch
     current = module._windows_launcher_command(
         tmp_path / "token-optimizer" / "5.13.14", "hooks/stop_runner.py", [], {})
     assert module.decode_launcher_command(legacy) == code
-    assert module._is_token_optimizer_group({"hooks": [{"command": legacy}]})
+    assert not module._is_token_optimizer_group({"hooks": [{"command": legacy}]})  # unproven: kept
+    _record_codex(tmp_path / "hooks.json", legacy)
+    assert module._is_token_optimizer_group({"hooks": [{"command": legacy}]},
+                                            module._codex_proof(tmp_path / "hooks.json"))
     assert module._launcher_signature(legacy) == legacy
     assert module._launcher_signature(legacy) != module._launcher_signature(current)
     assert module.decode_launcher_command(current) is None
@@ -425,17 +438,20 @@ def test_windows_version_resolver_falls_back_and_logs_only_under_debug(monkeypat
     assert str(base / "5.11.75") in log.read_text()
 
 
-def test_legacy_markerless_windows_groups_are_replaced_on_reinstall(monkeypatch):
+def test_legacy_markerless_windows_groups_are_replaced_on_reinstall(monkeypatch, tmp_path):
     module = _load_codex_install(monkeypatch, "win32")
     legacy = {"hooks": [{"command":
         'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\old\\token-optimizer\\5.13.2" && '
         'python "C:\\old\\token-optimizer\\%R\\hooks\\run.py" hooks/stop_runner.py'}]}
     foreign = {"hooks": [{"command": "echo not ours"}]}
-    assert module._is_token_optimizer_group(legacy)
-    assert not module._is_token_optimizer_group(foreign)
+    assert not module._is_token_optimizer_group(legacy)  # shape alone proves nothing
+    _record_codex(tmp_path / "hooks.json", legacy["hooks"][0]["command"])
+    proof = module._codex_proof(tmp_path / "hooks.json")
+    assert module._is_token_optimizer_group(legacy, proof)
+    assert not module._is_token_optimizer_group(foreign, proof)
     fixed = {"hooks": [{"command": "fixed"}]}
     monkeypatch.setattr(module, "_managed_hooks", lambda **kw: {"Stop": [fixed]})
-    merged = module._merge_hooks({"hooks": {"Stop": [legacy, foreign]}})
+    merged = module._merge_hooks({"hooks": {"Stop": [legacy, foreign]}}, proof=proof)
     assert merged["hooks"]["Stop"] == [foreign, fixed]
 
 

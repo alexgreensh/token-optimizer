@@ -79,6 +79,33 @@ def _add(settings, *commands, event="PreToolUse"):
     settings.write_text(json.dumps(data), encoding="utf-8")
 
 
+def _record(m, hp, *commands, event="PreToolUse", matcher="Bash"):
+    """Record commands as Token Optimizer-written in the context ``_add`` uses."""
+    contexts = [(event, matcher, "command", c) for c in commands]
+    m._settings_heal_ensure_dir()
+    return hp.record_contexts(hp.ledger_path_for(m), m.SETTINGS_PATH, contexts, "test")
+
+
+def _shipped_context(m, hp, command):
+    """The first shipped (event, matcher, type) this exact command proves in."""
+    return sorted(c[:3] for c in hp.Provenance.from_facade(m).proven_contexts if c[3] == command)[0]
+
+
+def _add_shipped(settings, m, hp, command):
+    """Place a shipped command where hooks.json shipped it."""
+    event, matcher, hook_type = _shipped_context(m, hp, command)
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    group = {"hooks": [{"type": hook_type, "command": command}]}
+    if matcher:
+        group["matcher"] = matcher
+    data.setdefault("hooks", {}).setdefault(event, []).append(group)
+    settings.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _contexts(hp, settings):
+    return set(hp.iter_contexts(json.loads(Path(settings).read_text(encoding="utf-8"))))
+
+
 def _heal_log(m):
     path = m._settings_heal_dir() / "heal_log.jsonl"
     if not path.is_file():
@@ -133,9 +160,9 @@ def test_removal_path_has_no_text_heuristics(hp):
 def test_setup_all_hooks_records_every_command_it_writes(m, hp, installed):
     ledger, status = hp.load_ledger(hp.ledger_path_for(m))
     assert status == "ok"
-    recorded = set(ledger["files"][hp.settings_key(installed)])
-    assert {hp.command_digest(c) for c in _commands(installed)} <= recorded
-    assert {v["source"] for v in ledger["files"][hp.settings_key(installed)].values()} == {"setup_all_hooks"}
+    entries = ledger["contexts"][hp.settings_key(installed)]
+    assert {hp.context_digest(c) for c in _contexts(hp, installed)} == set(entries)
+    assert {v["source"] for v in entries.values()} == {"setup_all_hooks"}
 
 
 def test_other_installers_record_their_commands(m, hp, installed):
@@ -143,11 +170,11 @@ def test_other_installers_record_their_commands(m, hp, installed):
     m.setup_hook(dry_run=False)
     m.setup_smart_compact(dry_run=False)
     ledger, _ = hp.load_ledger(hp.ledger_path_for(m))
-    entries = ledger["files"][hp.settings_key(installed)]
+    entries = ledger["contexts"][hp.settings_key(installed)]
     sources = {v["source"] for v in entries.values()}
     assert {"setup_hook", "setup_smart_compact"} <= sources
-    for command in _commands(installed):
-        assert hp.command_digest(command) in entries, command[:80]
+    for context in _contexts(hp, installed):
+        assert hp.context_digest(context) in entries, context
 
 
 def test_codex_install_records_its_managed_commands(hp, tmp_path):
@@ -180,17 +207,18 @@ def test_first_run_seeds_only_exact_template_matches(m, hp, installed):
     assert installed.read_bytes() == before
     ledger, _ = hp.load_ledger(ledger_path)
     key = hp.settings_key(installed)
-    seeded = set(ledger["files"][key])
-    expected = {hp.command_digest(c) for c in _commands(installed)
-                if c in hp.Provenance.from_facade(m).proven_templates}
+    seeded = set(ledger["contexts"][key])
+    expected = {hp.context_digest(c) for c in _contexts(hp, installed)
+                if c in hp.Provenance.from_facade(m).proven_contexts}
     assert seeded == expected and expected
-    assert hp.command_digest(foreign) not in seeded and hp.command_digest(claude) not in seeded
-    assert {v["source"] for v in ledger["files"][key].values()} == {"migration-seed"}
-    assert key in ledger["seeded"]
+    assert {v["cmd"] for v in ledger["contexts"][key].values()}.isdisjoint(
+        {hp.command_digest(foreign), hp.command_digest(claude)})
+    assert {v["source"] for v in ledger["contexts"][key].values()} == {"migration-seed"}
+    assert key in ledger["contexts_seeded"]
     stamp = ledger_path.read_bytes()
     assert m._fix_malformed_hook_commands() == 0
     ledger2, _ = hp.load_ledger(ledger_path)
-    assert ledger2["files"] == ledger["files"]
+    assert ledger2["contexts"] == ledger["contexts"]
     assert ledger_path.read_bytes() == stamp  # nothing new to seed or report
 
 
@@ -213,7 +241,7 @@ def test_unproven_entries_logged_once_and_never_counted(m, hp, installed, capsys
 
 def _ours_and_template(m, hp, installed):
     ledger_only = f"python3 $(which python3) {OWN} ensure-health"
-    assert hp.record_from_facade(m, [ledger_only], "test")
+    assert _record(m, hp, ledger_only)
     template = _malformed_shipped(m, hp)[0]
     return ledger_only, template
 
@@ -235,7 +263,8 @@ def test_corrupt_ledger_template_only_then_reset_once(m, hp, installed, garbage)
     assert hp.load_ledger(path)[1] == "corrupt"
     assert m._is_malformed_to_hook(ledger_only) is False
     assert m._is_malformed_to_hook(template) is True
-    _add(installed, ledger_only, template)
+    _add(installed, ledger_only)
+    _add_shipped(installed, m, hp, template)
     assert m._fix_malformed_hook_commands() == 1  # the template only
     assert ledger_only in _commands(installed) and template not in _commands(installed)
     assert len(list(path.parent.glob(path.name + ".corrupt-*"))) == 1
@@ -251,7 +280,7 @@ def test_unreadable_ledger_is_never_overwritten(m, hp, installed):
     assert hp.load_ledger(path)[1] == "unreadable"
     assert m._is_malformed_to_hook(ledger_only) is False
     assert m._is_malformed_to_hook(template) is True
-    assert hp.record_from_facade(m, ["x"], "test") is False
+    assert _record(m, hp, "x") is False
     assert path.is_dir()
 
 
@@ -309,8 +338,9 @@ def test_sol_foreign_executions_survive_the_real_healer(m, hp, installed, tmp_pa
     data = json.loads(installed.read_text(encoding="utf-8"))
     data.update({"permissions": {"deny": ["Bash(rm:*)"]}, "env": {"KEEP": "1"}})
     data["hooks"]["SessionStart"].append({"matcher": "startup", "hooks": [
-        {"type": "command", "command": c, "timeout": 17} for c in foreign + [ours]]})
+        {"type": "command", "command": c, "timeout": 17} for c in foreign]})
     installed.write_text(json.dumps(data), encoding="utf-8")
+    _add_shipped(installed, m, hp, ours)
     assert m._fix_malformed_hook_commands() == 1
     after = json.loads(installed.read_text(encoding="utf-8"))
     assert after["permissions"] == data["permissions"] and after["env"] == data["env"]
@@ -335,7 +365,12 @@ def test_planted_fuzzy_matcher_is_caught(m, hp, installed, monkeypatch):
         ours + " ",
     ]
     assert len(set(variants)) == len(variants) and ours not in variants
-    _add(installed, *variants)
+    for variant in variants:  # same event/matcher/type as ours: only the bytes differ
+        _add_shipped(installed, m, hp, ours)
+        data = json.loads(installed.read_text(encoding="utf-8"))
+        event = _shipped_context(m, hp, ours)[0]
+        data["hooks"][event][-1]["hooks"][0]["command"] = variant
+        installed.write_text(json.dumps(data), encoding="utf-8")
     before = installed.read_bytes()
     assert m._fix_malformed_hook_commands() == 0
     assert installed.read_bytes() == before
@@ -345,11 +380,12 @@ def test_planted_fuzzy_matcher_is_caught(m, hp, installed, monkeypatch):
     def norm(c):
         return c.replace("'", '"').replace("\\", "/").lower().replace("-evil", "").strip()
 
-    def fuzzy(self, command):
-        if real_proof(self, command):
+    def fuzzy(self, command, context=None):
+        if real_proof(self, command, context):
             return "template"
         wanted = norm(command)
-        return "template" if any(norm(p) == wanted for p in self.proven_templates) else None
+        return "template" if any(norm(p[3]) == wanted and (context is None or p[:3] == tuple(context))
+                                 for p in self.proven_contexts) else None
 
     monkeypatch.setattr(hp.Provenance, "proof", fuzzy)
     assert m._fix_malformed_hook_commands() == len(variants)
@@ -371,18 +407,22 @@ def test_windows_backslash_own_hook_proven_by_exact_bytes(m, hp, monkeypatch, tm
     assert "\\" in native and "C:/Users/Dana Q/" in forward
     settings = "C:\\Users\\Dana Q\\.claude\\settings.json"
     ledger = tmp_path / hp.LEDGER_NAME
-    proven = hp.instantiate(hp.SHIPPED_HOOK_TEMPLATES, [root], m._resolve_hook_command)
+    proven = hp.instantiate_contexts(hp.SHIPPED_HOOK_CONTEXTS, [root], m._resolve_hook_command)
     prov = hp.Provenance(ledger, settings, proven, set(), darwin=False)
-    assert prov.verdict(native) == "remove" and prov.verdict(forward) == "remove"
+    ctx = sorted(c[:3] for c in proven if c[3] == native)[0]
+    assert ctx == sorted(c[:3] for c in proven if c[3] == forward)[0]
+    assert prov.verdict(native, ctx) == "remove" and prov.verdict(forward, ctx) == "remove"
     for other in (native.replace("C:\\", "c:\\"), native.replace("\\.claude", "/.claude"),
                   forward.replace("C:/", "C:\\"), native.replace("Dana Q", "Dana  Q")):
-        assert prov.verdict(other) == "unproven", other
+        assert prov.verdict(other, ctx) == "unproven", other
     claude = "python3 $(which python3) " + root + "\\skills\\token-optimizer\\scripts\\measure.py"
-    assert prov.verdict(claude) == "unproven"
-    assert hp.record(ledger, settings, [claude], "setup_all_hooks")
+    here = ("PreToolUse", "Bash", "command")
+    assert prov.verdict(claude, here) == "unproven"
+    assert hp.record_contexts(ledger, settings, [here + (claude,)], "setup_all_hooks")
     prov = hp.Provenance(ledger, settings, proven, set(), darwin=False)
-    assert prov.verdict(claude) == "remove"
-    assert prov.verdict(claude.replace("\\", "/")) == "unproven"
+    assert prov.verdict(claude, here) == "remove"
+    assert prov.verdict(claude, ("Stop", "", "command")) == "unproven"
+    assert prov.verdict(claude.replace("\\", "/"), here) == "unproven"
 
 
 def test_current_installer_commands_never_removed_even_if_resolver_drifts(m, hp, installed, monkeypatch):

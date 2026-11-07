@@ -21,7 +21,8 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 sys.path.insert(0, str(REPO / "tests"))
 
-from test_hook_provenance import _commands, _malformed_shipped, hp, installed, m  # noqa: E402,F401
+from test_hook_provenance import (_add_shipped, _commands, _malformed_shipped,  # noqa: E402,F401
+                                  _shipped_context, hp, installed, m)
 
 _POSIX_ONLY = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
 
@@ -142,7 +143,8 @@ _B_ONLY = "echo DO_NOT_LOSE_PROFILE_B_HOOK"
 
 def _prove(hp, m, settings, command, event="Stop", matcher=""):
     """Record ``command`` as written by Token Optimizer into ``settings``."""
-    assert hp.record(hp.ledger_path_for(m), settings, [command], "setup_all_hooks")
+    assert hp.record_contexts(hp.ledger_path_for(m), settings,
+                              [(event, matcher, "command", command)], "setup_all_hooks")
 
 
 def _race_profiles(m, hp, monkeypatch, tmp_path, prove_in):
@@ -231,3 +233,122 @@ def test_stable_symlink_still_heals_its_target(m, hp, monkeypatch, tmp_path):
     assert link.is_symlink() and link.resolve() == a.resolve()
     assert _commands(a) == [] and json.loads(a.read_text())["sentinel"] is True
     assert b.read_bytes() == b_before
+
+
+# --- 4. Devin F2 / Sol P2-3: proof is per entry (event, matcher, type, command)
+
+def _foreign_group(settings, command, event="PermissionRequest", matcher="FOREIGN_ONLY",
+                   extra=()):
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    data.setdefault("permissions", {"deny": ["Bash(rm:*)"]})
+    data.setdefault("hooks", {}).setdefault(event, []).append({"matcher": matcher, "hooks": [
+        {"type": "command", "command": c, "timeout": 37} for c in (command,) + tuple(extra)]})
+    settings.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_shipped_template_in_foreign_event_and_matcher_is_kept(m, hp, installed):
+    """Sol: a user-created copy of an old template under a context we never
+    shipped it in, no ledger at all. It used to be removed."""
+    command = _malformed_shipped(m, hp)[0]
+    hp.ledger_path_for(m).unlink()
+    _foreign_group(installed, command)
+    assert m._fix_malformed_hook_commands() == 0
+    assert command in _commands(installed)
+
+
+def test_ledger_record_from_one_context_does_not_prove_another(m, hp, installed):
+    """Sol: a command genuinely written under Stop, then reused by the user
+    under PermissionRequest[FOREIGN_ONLY]. Only the Stop entry is ours."""
+    command = "echo $(printf user-owned)"
+    before = hp.contexts_of(json.loads(installed.read_text(encoding="utf-8")))
+    data = json.loads(installed.read_text(encoding="utf-8"))
+    data["hooks"].setdefault("Stop", []).append({"hooks": [{"type": "command", "command": command}]})
+    assert hp.record_written(m, before, data, [command], "setup_all_hooks")
+    _foreign_group(installed, command)
+    assert m._fix_malformed_hook_commands() == 0
+    assert command in _commands(installed)
+
+
+def test_devin_foreign_context_copy_kept_shipped_copy_removed(m, hp, installed):
+    """Devin's end-to-end probe: the same old template bytes in their shipped
+    context and in a foreign Notification[*] group with a foreign sibling.
+    Only the shipped-context copy goes."""
+    command = _malformed_shipped(m, hp)[0]
+    _add_shipped(installed, m, hp, command)
+    _foreign_group(installed, command, event="Notification", matcher="*",
+                   extra=("echo foreign-sibling",))
+    assert m._fix_malformed_hook_commands() == 1
+    after = json.loads(installed.read_text(encoding="utf-8"))
+    note = after["hooks"]["Notification"][0]
+    assert [h["command"] for h in note["hooks"]] == [command, "echo foreign-sibling"]
+    assert after["permissions"] == {"deny": ["Bash(rm:*)"]}
+    event = _shipped_context(m, hp, command)[0]
+    assert command not in [h.get("command") for g in after["hooks"].get(event, []) for h in g["hooks"]]
+
+
+def test_hook_type_is_part_of_the_entry(m, hp, installed):
+    command = _malformed_shipped(m, hp)[0]
+    event, matcher, _type = _shipped_context(m, hp, command)
+    data = json.loads(installed.read_text(encoding="utf-8"))
+    group = {"hooks": [{"type": "prompt", "command": command}]}
+    if matcher:
+        group["matcher"] = matcher
+    data["hooks"].setdefault(event, []).append(group)
+    installed.write_text(json.dumps(data), encoding="utf-8")
+    assert m._fix_malformed_hook_commands() == 0
+
+
+def test_old_command_only_ledger_records_prove_nothing(m, hp, installed):
+    """Migration, fail-safe: a pre-context record ("files", command digest
+    only) cannot say which entry it was for, so it proves no settings.json
+    entry. Its in-context cases are shipped templates, which still prove."""
+    command = "echo $(printf recorded-before-contexts)"
+    assert hp.record(hp.ledger_path_for(m), installed, [command], "setup_all_hooks")
+    data = json.loads(installed.read_text(encoding="utf-8"))
+    data["hooks"].setdefault("Stop", []).append({"hooks": [{"type": "command", "command": command}]})
+    installed.write_text(json.dumps(data), encoding="utf-8")
+    assert m._fix_malformed_hook_commands() == 0
+    assert command in _commands(installed)
+    template = _malformed_shipped(m, hp)[0]
+    _add_shipped(installed, m, hp, template)
+    assert m._fix_malformed_hook_commands() == 1
+
+
+def test_record_written_never_claims_a_preserved_identical_entry(m, hp, installed):
+    """A writer that adds one copy next to an identical pre-existing entry
+    records one context; the pre-existing copy is never what it claims, and
+    a command it did not generate is never recorded."""
+    command = "echo $(printf twin)"
+    entry = {"type": "command", "command": command}
+    base = {"hooks": {"Stop": [{"hooks": [dict(entry)]}]}}
+    before = hp.contexts_of(base)
+    after = {"hooks": {"Stop": [{"hooks": [dict(entry), dict(entry)]}],
+                       "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "theirs $(x)"}]}]}}
+    assert hp.added_contexts(before, after, [command, "unrelated"]) == [("Stop", "", "command", command)]
+    assert hp.added_contexts(before, base, [command]) == []
+
+
+def test_current_hooks_json_contexts_are_in_frozen_set(hp):
+    """hooks.json changed without regenerating: run
+    scripts/gen_shipped_hook_templates.py and commit the result."""
+    live = set(hp.iter_contexts(json.loads((REPO / "hooks" / "hooks.json").read_text(encoding="utf-8"))))
+    assert live and live <= hp.SHIPPED_HOOK_CONTEXTS, sorted(live - hp.SHIPPED_HOOK_CONTEXTS)[:3]
+
+
+def test_every_shipped_malformed_entry_still_healed_in_its_context(m, hp, installed):
+    """Parity with main, per entry: every installer-written malformed command
+    (29 on main) is removed in each context it shipped in, end to end."""
+    prov = hp.Provenance.from_facade(m)
+    malformed = sorted(c for c in prov.proven_contexts
+                       if hp.looks_malformed(c[3], False) and c[3] not in prov.current_commands)
+    assert len({c[3] for c in malformed}) >= 29
+    for event, matcher, hook_type, command in malformed:
+        assert prov.verdict(command, (event, matcher, hook_type)) == "remove"
+    data = json.loads(installed.read_text(encoding="utf-8"))
+    for event, matcher, hook_type, command in malformed:
+        group = {"hooks": [{"type": hook_type, "command": command}]}
+        if matcher:
+            group["matcher"] = matcher
+        data["hooks"].setdefault(event, []).append(group)
+    installed.write_text(json.dumps(data), encoding="utf-8")
+    assert m._fix_malformed_hook_commands() == len(malformed)

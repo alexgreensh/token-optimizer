@@ -39,7 +39,7 @@ def unproven_hooks(facade):
                     command = hook.get("command") if isinstance(hook, dict) else None
                     if not isinstance(command, str) or command in seen:
                         continue
-                    if prov.verdict(command) == hp.UNPROVEN and prov.reportable(command):
+                    if prov.verdict_entry(event, group, hook) == hp.UNPROVEN and prov.reportable(command):
                         seen.add(command)
                         found.append((str(event), command, str(path)))
         return found

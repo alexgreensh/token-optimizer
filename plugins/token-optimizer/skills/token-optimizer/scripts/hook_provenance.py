@@ -1,14 +1,21 @@
 """Provenance for Token Optimizer's own Claude Code hook entries.
 
 The malformed-hook healer may delete a settings.json hook only when it can
-prove Token Optimizer wrote that exact entry. Proof is byte identity, nothing
-looser:
+prove Token Optimizer wrote that exact entry. An entry is its full context,
+``(event, matcher, hook type, command)``; proof is byte identity of that whole
+tuple, nothing looser:
 
-* the command's sha256 is in the provenance ledger under this settings file
-  (every installer path records what it writes, see ``record``), or
-* the command is byte-identical to a shipped hooks.json template
-  (``shipped_hook_templates``) instantiated for the running install root, in
-  one of the exact spellings setup_all_hooks writes.
+* the context is in the provenance ledger under this settings file (every
+  writer records the entries it adds, see ``record_written``), or
+* it is byte-identical to a shipped hooks.json entry
+  (``shipped_hook_templates``) with the command instantiated for the running
+  install root, in one of the exact spellings setup_all_hooks writes.
+
+The same command under another event or matcher is a different entry and is
+not proven by either. Ledger records from before contexts existed (command
+digests under "files") prove nothing for settings.json: the fail-safe choice.
+Their in-context cases are exactly the shipped-template cases, which still
+prove by template. Codex hooks.json keeps command-keyed records ("files").
 
 There is deliberately no regex, shlex, quote stripping, separator rewriting,
 case folding or prefix test anywhere on the removal path. PR #323 rounds
@@ -35,7 +42,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from shipped_hook_templates import SHIPPED_HOOK_TEMPLATES
+from shipped_hook_templates import SHIPPED_HOOK_CONTEXTS, SHIPPED_HOOK_TEMPLATES
 
 try:
     from hook_runtime import lease_lock
@@ -68,6 +75,46 @@ def command_digest(command):
     return hashlib.sha256(command.encode("utf-8", "surrogatepass")).hexdigest()
 
 
+def context_digest(context):
+    """sha256 of one entry's full context ``(event, matcher, type, command)``."""
+    return hashlib.sha256(json.dumps(list(context)).encode("ascii")).hexdigest()
+
+
+def entry_context(event, group, hook):
+    """The exact context of one settings.json hook entry, or None when it has
+    none we could ever have written (non-string matcher, type or command).
+    An absent matcher is "": setup_all_hooks' own group-selection rule."""
+    if not isinstance(group, dict) or not isinstance(hook, dict) or not isinstance(event, str):
+        return None
+    matcher, hook_type, command = group.get("matcher", ""), hook.get("type"), hook.get("command")
+    if not isinstance(matcher, str) or not isinstance(command, str) or not command:
+        return None
+    if hook_type is not None and not isinstance(hook_type, str):
+        return None
+    return (event, matcher, hook_type, command)
+
+
+def iter_contexts(settings):
+    """Every entry context in a settings object (its "hooks" map)."""
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    for event, groups in hooks.items() if isinstance(hooks, dict) else ():
+        for group in groups if isinstance(groups, list) else ():
+            entries = group.get("hooks") if isinstance(group, dict) else None
+            for hook in entries if isinstance(entries, list) else ():
+                context = entry_context(event, group, hook)
+                if context is not None:
+                    yield context
+
+
+def contexts_of(settings):
+    """Multiset of entry contexts: take it from the read a writer derives its
+    payload from, and hand it to ``record_written`` after the write."""
+    counts = {}
+    for context in iter_contexts(settings):
+        counts[context] = counts.get(context, 0) + 1
+    return counts
+
+
 def settings_key(settings_path):
     """Stable per-file ledger key: absolute, symlink-resolved, OS-normcased.
 
@@ -88,6 +135,16 @@ def looks_malformed(command, darwin):
     if "$(" in probe or "`" in probe:
         return True
     return bool(darwin) and any(marker in command for marker in _DOUBLE_HOME)
+
+
+def instantiate_contexts(contexts, roots, resolve=None):
+    """``instantiate`` for shipped contexts: same event, matcher and type,
+    command instantiated for each root spelling."""
+    out = set()
+    for event, matcher, hook_type, template in contexts:
+        for command in instantiate((template,), roots, resolve):
+            out.add((event, matcher, hook_type, command))
+    return frozenset(out)
 
 
 def instantiate(templates, roots, resolve=None):
@@ -116,20 +173,28 @@ def instantiate(templates, roots, resolve=None):
 # --- ledger -------------------------------------------------------------------
 
 def _empty():
-    return {"version": LEDGER_VERSION, "files": {}, "seeded": {}, "reported": {}}
+    return {"version": LEDGER_VERSION, "files": {}, "seeded": {}, "reported": {},
+            "contexts": {}, "contexts_seeded": {}}
+
+
+def _records_ok(section):
+    if not isinstance(section, dict):
+        return False
+    for key, entries in section.items():
+        if not isinstance(key, str) or not isinstance(entries, dict):
+            return False
+        if not all(isinstance(d, str) and isinstance(v, dict) for d, v in entries.items()):
+            return False
+    return True
 
 
 def _valid(data):
     if not isinstance(data, dict) or data.get("version") != LEDGER_VERSION:
         return False
-    files = data.get("files")
-    if not isinstance(files, dict):
+    if not _records_ok(data.get("files")) or not _records_ok(data.get("contexts", {})):
         return False
-    for key, entries in files.items():
-        if not isinstance(key, str) or not isinstance(entries, dict):
-            return False
-        if not all(isinstance(d, str) and isinstance(v, dict) for d, v in entries.items()):
-            return False
+    if not isinstance(data.get("contexts_seeded", {}), dict):
+        return False
     seeded = data.get("seeded", {})
     reported = data.get("reported", {})
     if not isinstance(seeded, dict) or not isinstance(reported, dict):
@@ -178,8 +243,8 @@ def load_ledger(path):
         return _empty(), "corrupt"
     if not _valid(data):
         return _empty(), "corrupt"
-    data.setdefault("seeded", {})
-    data.setdefault("reported", {})
+    for section in ("seeded", "reported", "contexts", "contexts_seeded"):
+        data.setdefault(section, {})
     return data, "ok"
 
 
@@ -305,12 +370,62 @@ def ledger_path_for(facade):
     return Path(facade._settings_heal_dir()) / LEDGER_NAME
 
 
-def record_from_facade(facade, commands, source):
-    """Installer-side hook: record commands just written to SETTINGS_PATH."""
+def record_contexts(ledger_path, settings_path, contexts, source):
+    """Record that Token Optimizer wrote these exact entries (full contexts)
+    into ``settings_path``. Call after the settings write landed. Never raises."""
     try:
+        wanted = [c for c in contexts if isinstance(c, tuple) and len(c) == 4]
+        if not wanted:
+            return True
+        key = settings_key(settings_path)
+        now = int(time.time())
+
+        def mutate(data):
+            entries = data["contexts"].setdefault(key, {})
+            changed = False
+            for context in wanted:
+                digest = context_digest(context)
+                if digest not in entries:
+                    entries[digest] = {"source": str(source), "ts": now,
+                                       "cmd": command_digest(context[3])}
+                    changed = True
+            return changed
+
+        return _update(ledger_path, mutate)[0]
+    except Exception:
+        return False
+
+
+def added_contexts(before, after, commands):
+    """Entries in ``after`` (a settings object) that are not in ``before``
+    (``contexts_of`` the read it was derived from), counted as a multiset and
+    limited to ``commands``, the exact strings this writer generated. So a
+    preserved entry, foreign or ours, is never claimed: only what this write
+    added."""
+    wanted = set(c for c in commands if isinstance(c, str))
+    remaining = dict(before or {})
+    added = []
+    for context in iter_contexts(after):
+        if context[3] not in wanted:
+            continue
+        if remaining.get(context, 0) > 0:
+            remaining[context] -= 1
+            continue
+        added.append(context)
+    return added
+
+
+def record_written(facade, before, after, commands, source):
+    """Installer-side hook: record the entries a successful SETTINGS_PATH
+    write added. ``before`` is ``contexts_of`` the read the payload came from,
+    ``after`` the payload written."""
+    try:
+        contexts = added_contexts(before, after, commands)
+        if not contexts:
+            return True
         if facade._settings_heal_ensure_dir() is None:
             return False
-        return record(ledger_path_for(facade), facade.SETTINGS_PATH, commands, source)
+        return record_contexts(ledger_path_for(facade), facade.SETTINGS_PATH, contexts, source)
     except Exception:
         return False
 
@@ -318,19 +433,22 @@ def record_from_facade(facade, commands, source):
 class Provenance:
     """One heal pass's view: proven sets, ledger snapshot, verdicts."""
 
-    def __init__(self, ledger_path, settings_path, proven_templates, current_commands,
+    def __init__(self, ledger_path, settings_path, proven_contexts, current_commands,
                  darwin, script_names=()):
         self.ledger_path = Path(ledger_path)
         self.settings_path = str(settings_path)
         self.key = settings_key(settings_path)
-        self.proven_templates = frozenset(proven_templates)
+        self.proven_contexts = frozenset(proven_contexts)
+        self.proven_templates = frozenset(c[3] for c in self.proven_contexts)
         self.current_commands = frozenset(current_commands)
         self.darwin = bool(darwin)
         self.script_names = tuple(script_names)
         ledger, self.status = load_ledger(self.ledger_path)
         ok = self.status == "ok"
-        self._recorded = frozenset(ledger["files"].get(self.key, {})) if ok else frozenset()
-        self._seeded = ok and self.key in ledger["seeded"]
+        records = ledger["contexts"].get(self.key, {}) if ok else {}
+        self._recorded = frozenset(records)
+        self._recorded_commands = frozenset(v.get("cmd") for v in records.values())
+        self._seeded = ok and self.key in ledger["contexts_seeded"]
         self._reported = frozenset(ledger["reported"].get(self.key, [])) if ok else frozenset()
 
     @classmethod
@@ -363,7 +481,7 @@ class Provenance:
         # is mutable (and may belong to another install): it can only keep
         # the command setup_all_hooks writes now from churning, never add
         # deletion authority. A newly installed command is proven by the ledger.
-        proven = instantiate(SHIPPED_HOOK_TEMPLATES, sorted(set(roots)), resolve)
+        proven = instantiate_contexts(SHIPPED_HOOK_CONTEXTS, sorted(set(roots)), resolve)
         current = set()
         if setup_root is not None:
             for template in live:
@@ -375,24 +493,44 @@ class Provenance:
                    facade.SETTINGS_PATH if settings_path is None else settings_path,
                    proven, current, system == "Darwin", getattr(facade, "_TO_SCRIPT_NAMES", ()))
 
-    def proof(self, command):
-        """"template", "ledger" or None. Exact bytes only."""
-        if command in self.proven_templates:
+    def proof(self, command, context=None):
+        """"template", "ledger" or None for ``command`` in ``context``
+        (``(event, matcher, type)``). Exact bytes of the whole tuple only.
+        Without a context: proven in SOME context (diagnostics and
+        ``_is_malformed_to_hook``; the healer always passes the context)."""
+        if context is None:
+            if command in self.proven_templates:
+                return "template"
+            return "ledger" if command_digest(command) in self._recorded_commands else None
+        full = tuple(context) + (command,)
+        if full in self.proven_contexts:
             return "template"
-        if command_digest(command) in self._recorded:
+        if context_digest(full) in self._recorded:
             return "ledger"
         return None
 
-    def verdict(self, command):
+    def verdict(self, command, context=None):
         if not isinstance(command, str) or not command:
             return KEEP
         if not looks_malformed(command, self.darwin):
             return KEEP
         if command in self.current_commands:
             return KEEP  # what setup_all_hooks writes now: never churn it
-        if self.proof(command):
+        if self.proof(command, context):
             return REMOVE
         return UNPROVEN
+
+    def verdict_entry(self, event, group, hook):
+        """The healer's verdict for one settings.json entry, in its context.
+        An entry with no writable context is never proven."""
+        command = hook.get("command", "") if isinstance(hook, dict) else ""
+        context = entry_context(event, group, hook)
+        if context is None:
+            if not isinstance(command, str) or not command or command in self.current_commands \
+                    or not looks_malformed(command, self.darwin):
+                return KEEP
+            return UNPROVEN
+        return self.verdict(command, context[:3])
 
     def reportable(self, command):
         # Diagnostics only: the entries the old heuristic would have weighed.
@@ -403,14 +541,14 @@ class Provenance:
         """After a heal pass: seed the ledger on first run (exact template
         matches only) and report each unproven entry once.
 
-        ``present`` is every command left in settings; ``unproven`` is a list
-        of ``(event, command)``. ``log(action, **fields)`` is the heal log.
+        ``present`` is every entry context left in settings; ``unproven`` is a
+        list of ``(event, command)``. ``log(action, **fields)`` is the heal log.
         """
         try:
             if self.status == "unreadable":
                 return
             seeds = [] if self._seeded else sorted(
-                {c for c in present if isinstance(c, str) and c in self.proven_templates})
+                {c for c in present if c in self.proven_contexts}, key=repr)
             reports, seen = [], set()
             for event, command in unproven:
                 digest = command_digest(command)
@@ -424,12 +562,13 @@ class Provenance:
 
             def mutate(data):
                 changed = False
-                if key not in data["seeded"]:
-                    entries = data["files"].setdefault(key, {})
-                    for command in seeds:
-                        entries.setdefault(command_digest(command),
-                                           {"source": "migration-seed", "ts": now})
-                    data["seeded"][key] = now
+                if key not in data["contexts_seeded"]:
+                    entries = data["contexts"].setdefault(key, {})
+                    for context in seeds:
+                        entries.setdefault(context_digest(context),
+                                           {"source": "migration-seed", "ts": now,
+                                            "cmd": command_digest(context[3])})
+                    data["contexts_seeded"][key] = now
                     changed = True
                 done = data["reported"].setdefault(key, [])
                 for event, command, digest in reports:
@@ -473,12 +612,12 @@ def _read_settings_at(dest):
 
 
 def plan_removals(settings, prov):
-    """``(new_hooks, removed, kept_commands, unproven)`` for one settings
-    object. Pure: decides per hook entry, mutates nothing."""
+    """``(new_hooks, removed, kept_contexts, unproven)`` for one settings
+    object. Pure: decides per hook entry, in its context; mutates nothing."""
     hooks = settings.get("hooks") if isinstance(settings, dict) else None
     if not isinstance(hooks, dict) or not hooks:
         return None, 0, [], []
-    removed, new_hooks, kept_commands, unproven = 0, {}, [], []
+    removed, new_hooks, kept_contexts, unproven = 0, {}, [], []
     for event, groups in hooks.items():
         if not isinstance(groups, list):
             new_hooks[event] = groups
@@ -495,13 +634,15 @@ def plan_removals(settings, prov):
                     kept.append(hook)
                     continue
                 command = hook.get("command", "")
-                verdict = prov.verdict(command)
+                verdict = prov.verdict_entry(event, group, hook)
                 if verdict == REMOVE:
                     removed += 1
                     continue
                 if verdict == UNPROVEN:
                     unproven.append((event, command))
-                kept_commands.append(command)
+                context = entry_context(event, group, hook)
+                if context is not None:
+                    kept_contexts.append(context)
                 kept.append(hook)
             if kept:
                 new_group = dict(group)
@@ -509,7 +650,7 @@ def plan_removals(settings, prov):
                 new_groups.append(new_group)
         if new_groups:
             new_hooks[event] = new_groups
-    return new_hooks, removed, kept_commands, unproven
+    return new_hooks, removed, kept_contexts, unproven
 
 
 def _write_bound(facade, dest, prov):

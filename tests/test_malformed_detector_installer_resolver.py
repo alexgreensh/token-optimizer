@@ -74,9 +74,13 @@ def _old_template(m, needle="read_cache.py --quiet", root=REPO):
     raise AssertionError("no historical malformed template for " + needle)
 
 
-def _ledger(m, *commands):
-    """Record commands as Token Optimizer-written for the current settings."""
-    assert _hp().record_from_facade(m, list(commands), "test")
+def _ledger(m, *commands, event="PreToolUse", matcher="Read"):
+    """Record commands as Token Optimizer-written for the current settings, in
+    the (event, matcher) the end-to-end tests below place them in."""
+    hp = _hp()
+    m._settings_heal_ensure_dir()
+    assert hp.record_contexts(hp.ledger_path_for(m), m.SETTINGS_PATH,
+                              [(event, matcher, "command", c) for c in commands], "test")
 
 
 @pytest.fixture()

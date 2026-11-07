@@ -2039,7 +2039,8 @@ def setup_hook(dry_run=None, uninstall=None, user_initiated=None):
 
     upgrading = installed and not current
 
-    # Build the hook entry
+    import hook_provenance
+    _before = hook_provenance.contexts_of(settings)  # provenance claims only what this write adds
     new_hook = {"type": "command", "command": _measure_facade.HOOK_COMMAND, "async": True}
 
     if "hooks" not in settings:
@@ -2104,8 +2105,7 @@ def setup_hook(dry_run=None, uninstall=None, user_initiated=None):
         if not _measure_facade._write_settings_atomic(settings, user_initiated=user_initiated):
             print("[Error] settings.json write was refused; SessionEnd hook was not installed.", file=_measure_facade.sys.stderr)
             return
-        import hook_provenance
-        hook_provenance.record_from_facade(_measure_facade, [_measure_facade.HOOK_COMMAND], "setup_hook")
+        hook_provenance.record_written(_measure_facade, _before, settings, [_measure_facade.HOOK_COMMAND], "setup_hook")
         action = "upgraded" if upgrading else "installed"
         print(f"[Token Optimizer] SessionEnd hook {action}.")
         print(f"  Backup: {backup_path}")
@@ -2542,6 +2542,8 @@ def setup_all_hooks(dry_run=None, verbose=None):
         except OSError:
             pass
 
+    import hook_provenance
+    _before = hook_provenance.contexts_of(current)  # provenance claims only what this write adds
     current_hooks = dict(current.get("hooks", {}))
 
     added = 0
@@ -2667,8 +2669,7 @@ def setup_all_hooks(dry_run=None, verbose=None):
         return {"added": 0, "skipped": skipped, "plugin_root": plugin_root_str, "error": str(e)}
 
     # Provenance: the healer may later remove only entries it can prove it wrote.
-    import hook_provenance
-    hook_provenance.record_from_facade(_measure_facade, written, "setup_all_hooks")
+    hook_provenance.record_written(_measure_facade, _before, new_settings, written, "setup_all_hooks")
 
     # Record the heal timestamp so ensure-health's 24h throttle
     # suppresses the redundant run after install.sh.
@@ -3000,10 +3001,10 @@ def setup_smart_compact(dry_run=None, uninstall=None, status_only=None,
             print("[Token Optimizer] Smart Compaction managed by plugin hooks.json.")
         return
 
+    import hook_provenance
+    _before = hook_provenance.contexts_of(settings)  # provenance claims only what this write adds
     hooks = settings.setdefault("hooks", {})
-    installed = []
-    skipped = []
-    written = []
+    installed, skipped, written = [], [], []
 
     for event, command in commands.items():
         if event == "SessionStart":
@@ -3077,8 +3078,7 @@ def setup_smart_compact(dry_run=None, uninstall=None, status_only=None,
     if not _measure_facade._write_settings_atomic(settings, user_initiated=user_initiated):
         print("[Error] settings.json write was refused; smart compact hooks were not installed.", file=_measure_facade.sys.stderr)
         return
-    import hook_provenance
-    hook_provenance.record_from_facade(_measure_facade, written, "setup_smart_compact")
+    hook_provenance.record_written(_measure_facade, _before, settings, written, "setup_smart_compact")
 
     print("[Token Optimizer] Smart Compaction installed.")
     print(f"  Hooks added: {', '.join(installed)}")
@@ -4340,6 +4340,8 @@ def setup_quality_bar(dry_run=None, uninstall=None, status_only=None, force=None
     elif current["hook"]:
         skipped.append("cache hook")
     else:
+        import hook_provenance
+        _before = hook_provenance.contexts_of(settings)  # provenance claims only what this write adds
         hooks = settings.setdefault("hooks", {})
         _py, _mp = _measure_facade._settings_hook_python_and_script(mp)
         hook_cmd = f"{_py} {_mp} quality-cache --quiet"
@@ -4422,8 +4424,7 @@ def setup_quality_bar(dry_run=None, uninstall=None, status_only=None, force=None
                 print("[Error] settings.json write was refused; Quality Bar was not installed.", file=_measure_facade.sys.stderr)
             return
         if "cache hook" in installed:
-            import hook_provenance
-            hook_provenance.record_from_facade(_measure_facade, [hook_cmd], "setup_quality_bar")
+            hook_provenance.record_written(_measure_facade, _before, settings, [hook_cmd], "setup_quality_bar")
         # Explicit install is an explicit opt-in — clear any prior opt-out.
         _measure_facade._set_quality_bar_disabled(False)
 

@@ -22,10 +22,12 @@ case folding or prefix test anywhere on the removal path. PR #323 rounds
 v6-v8c showed every text heuristic either deletes a foreign hook or misses
 ours; an unproven entry is left alone and reported once instead.
 
-Ledger: ``<CONFIG_DIR>/settings_heal/hook_provenance.json``. Writes take
-``hook_runtime.lease_lock``, re-read under the lock, union-merge and land
-with tempfile + os.replace, so concurrent sessions never lose each other's
-records and a reader never sees a half-written file. Missing ledger: empty.
+Ledger: ``<CONFIG_DIR>/settings_heal/hook_provenance.json``. Writes take an
+OS file lock (``flock`` / ``msvcrt.locking``) that the kernel holds exactly as
+long as the owning process lives, re-read under it, union-merge and land with
+tempfile + os.replace. A stalled but live writer keeps the lock, so a second
+writer can never be told it succeeded and then lose its record to the first
+one's older snapshot; it fails instead. A dead writer's lock is gone at once. Missing ledger: empty.
 Unreadable: template-only and never overwritten. Corrupt: template-only, and
 the next write moves it aside and starts fresh.
 
@@ -34,6 +36,7 @@ stay importable on Python 3.9 with the standard library only.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -42,12 +45,16 @@ import tempfile
 import time
 from pathlib import Path
 
-from shipped_hook_templates import SHIPPED_HOOK_CONTEXTS, SHIPPED_HOOK_TEMPLATES
-
 try:
-    from hook_runtime import lease_lock
-except Exception:  # pragma: no cover - shipped together; without it, never write
-    lease_lock = None
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # POSIX
+    msvcrt = None
+
+from shipped_hook_templates import SHIPPED_HOOK_CONTEXTS, SHIPPED_HOOK_TEMPLATES
 
 LEDGER_NAME = "hook_provenance.json"
 LEDGER_VERSION = 1
@@ -277,43 +284,97 @@ def _write_atomic(path, data):
                 pass
 
 
+def _try_lock(fd):
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock(fd):
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        else:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def _exclusive(lock_path, timeout=2.0):
+    """Yield True while this process holds the OS lock on ``lock_path``.
+
+    The kernel owns it: it stays exclusive for as long as the holder lives,
+    however long it stalls, and is released the moment it exits or dies. No
+    lease to expire, so no second owner while the first is still writing.
+    A lock file that is not a regular file (FIFO, device) is never waited on.
+    """
+    fd = None
+    try:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+        try:
+            if os.path.lexists(str(lock_path)) and not stat.S_ISREG(os.stat(str(lock_path)).st_mode):
+                yield False
+                return
+            fd = os.open(str(lock_path), flags, 0o600)
+            if not stat.S_ISREG(os.fstat(fd).st_mode) or (fcntl is None and msvcrt is None):
+                yield False
+                return
+        except OSError:
+            yield False
+            return
+        deadline = time.monotonic() + timeout
+        while not _try_lock(fd):
+            if time.monotonic() >= deadline:
+                yield False
+                return
+            time.sleep(0.01)
+        try:
+            yield True
+        finally:
+            _unlock(fd)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _update(path, mutate):
     """Locked read-merge-write. ``mutate(data)`` returns True when it changed
     something. Returns ``(written, reset)``: reset is True when a corrupt
-    ledger was moved aside. Never raises; a lost lock writes nothing."""
-    if lease_lock is None:
-        return False, False
+    ledger was moved aside. Never raises; no lock, no write."""
     path = Path(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False, False
-    lock = path.with_name(path.name + ".lock")
-    for _attempt in range(3):
-        try:
-            # Each writer persists a DISTINCT mutation: opt out of the herd
-            # throttle so a waiting writer takes a released lease at once.
-            with lease_lock(lock, acquire_timeout=2.0, cohort_throttle=False,
-                            reclaim_released=True) as acquired:
-                if not acquired:
-                    continue
-                data, status = load_ledger(path)
-                if status == "unreadable":
+    lock = path.with_name(path.name + ".flock")
+    try:
+        with _exclusive(lock) as acquired:
+            if not acquired:
+                return False, False
+            data, status = load_ledger(path)
+            if status == "unreadable":
+                return False, False
+            reset = False
+            if status == "corrupt":
+                try:
+                    os.replace(str(path), str(path.with_name(
+                        "%s.corrupt-%d" % (path.name, int(time.time())))))
+                    reset = True
+                except OSError:
                     return False, False
-                reset = False
-                if status == "corrupt":
-                    try:
-                        os.replace(str(path), str(path.with_name(
-                            "%s.corrupt-%d" % (path.name, int(time.time())))))
-                        reset = True
-                    except OSError:
-                        return False, False
-                if not mutate(data) and not reset:
-                    return True, False
-                return _write_atomic(path, data), reset
-        except Exception:
-            return False, False
-    return False, False
+            if not mutate(data) and not reset:
+                return True, False
+            return _write_atomic(path, data), reset
+    except Exception:
+        return False, False
 
 
 def record(ledger_path, settings_path, commands, source):

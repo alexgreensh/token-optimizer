@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -352,3 +353,80 @@ def test_every_shipped_malformed_entry_still_healed_in_its_context(m, hp, instal
         data["hooks"].setdefault(event, []).append(group)
     installed.write_text(json.dumps(data), encoding="utf-8")
     assert m._fix_malformed_hook_commands() == len(malformed)
+
+
+# --- 5. Sol P2-4: a stalled live writer keeps the ledger lock ----------------
+
+_STALLED_WRITER = '''import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import hook_provenance as hp
+real = hp._write_atomic
+def paused(path, data):
+    Path(sys.argv[3]).touch()
+    while not Path(sys.argv[4]).exists():
+        time.sleep(.02)
+    return real(path, data)
+hp._write_atomic = paused
+print(hp.record(sys.argv[2], 'settings.json', ['writer-A'], 'A'))
+'''
+
+
+def test_stalled_live_writer_never_lets_a_second_success_be_lost(hp, tmp_path):
+    """Sol's repro: A holds the lock, then stalls past the old 10s lease
+    (sleeping laptop, debugger, slow disk) while still alive. B must not be
+    told it succeeded and then lose its record to A's older snapshot: B
+    either fails honestly (lock still held) or both records survive."""
+    ledger = tmp_path / hp.LEDGER_NAME
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    proc = subprocess.Popen([sys.executable, "-c", _STALLED_WRITER, str(SCRIPTS), str(ledger),
+                             str(ready), str(release)], stdout=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert ready.exists()
+        time.sleep(11)
+        b_ok = hp.record(ledger, "settings.json", ["writer-B"], "B")
+        release.touch()
+        out, _ = proc.communicate(timeout=30)
+        assert out.strip() == "True"
+        entries = hp.load_ledger(ledger)[0]["files"][hp.settings_key("settings.json")]
+        assert hp.command_digest("writer-A") in entries
+        if b_ok:
+            assert hp.command_digest("writer-B") in entries, "B reported success but its record was lost"
+        assert hp.record(ledger, "settings.json", ["writer-B"], "B")
+        entries = hp.load_ledger(ledger)[0]["files"][hp.settings_key("settings.json")]
+        assert {hp.command_digest("writer-A"), hp.command_digest("writer-B")} <= set(entries)
+    finally:
+        release.touch()
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_dead_writer_releases_the_lock(hp, tmp_path):
+    """The lock lives as long as its owner: a writer killed mid-write never
+    leaves the ledger locked."""
+    ledger = tmp_path / hp.LEDGER_NAME
+    ready = tmp_path / "ready"
+    proc = subprocess.Popen([sys.executable, "-c", _STALLED_WRITER, str(SCRIPTS), str(ledger),
+                             str(ready), str(tmp_path / "never")])
+    deadline = time.monotonic() + 15
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(.02)
+    assert ready.exists()
+    proc.kill()
+    proc.wait(timeout=10)
+    started = time.monotonic()
+    assert hp.record(ledger, "settings.json", ["after-kill"], "C")
+    assert time.monotonic() - started < 3
+
+
+@_POSIX_ONLY
+def test_fifo_at_lock_path_never_blocks(hp, tmp_path):
+    ledger = tmp_path / hp.LEDGER_NAME
+    for name in (hp.LEDGER_NAME + ".lock", hp.LEDGER_NAME + ".flock"):
+        os.mkfifo(str(tmp_path / name))
+    out = _run("import sys; sys.path.insert(0, sys.argv[1]); import hook_provenance as hp\n"
+               "print(hp.record(sys.argv[2], 'settings.json', ['x'], 't'))", ledger, timeout=15)
+    assert out.stdout.strip() == "False", out.stderr

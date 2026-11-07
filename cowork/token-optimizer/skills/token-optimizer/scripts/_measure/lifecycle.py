@@ -3627,8 +3627,10 @@ def _is_malformed_to_hook(cmd):
     # providers. The regression test asserts behaviour (an installer-shaped
     # command is not flagged) so hooks.json drift fails loudly.
     _TO_VERSION_RESOLVER = 'D="$(ls -d "${D%[/\\\\]*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"'
+    # Cheap pre-filter only; ownership is proven below. Backslash counts as a
+    # separator so a Windows path reaches the proof at all.
     has_to_script = any(
-        re_mod.search(r'(?:^|[/\s])' + re_mod.escape(name) + r'(?:$|[\s])', cmd)
+        re_mod.search(r'(?:^|[/\\\s])' + re_mod.escape(name) + r'(?:$|[\s])', cmd)
         for name in names
     )
     if not has_to_script:
@@ -3720,15 +3722,28 @@ def _is_malformed_to_hook(cmd):
 
         try:
             import shlex
-            tokens = shlex.split(probe, posix=True)
+            # shlex.split(posix=True) with one change on Windows: backslash is
+            # a path separator there, not an escape, so D:\a\x stays D:\a\x.
+            # Quote handling stays POSIX (posix=False would split
+            # "C:\vendor "D:\root\...\measure.py into two words and expose
+            # our path as its own token: false ownership proof).
+            lexer = shlex.shlex(probe, posix=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            if os_mod.name == "nt":
+                lexer.escape = ""
+            tokens = list(lexer)
         except Exception:
             tokens = [t.strip('"').strip("'").rstrip(";").replace("\\", "/")
                       for t in probe.split()]
         anchors = []
         for tok in tokens:
             tok = tok.rstrip(";")
+            # Windows paths may use backslashes throughout; POSIX keeps a
+            # backslash as a literal filename character.
+            seps = tok.replace("\\", "/") if os_mod.name == "nt" else tok
             for name in names:
-                if tok == name or tok.endswith("/" + name):
+                if tok == name or seps.endswith("/" + name):
                     anchors.append(tok)
                     break
         if not anchors:

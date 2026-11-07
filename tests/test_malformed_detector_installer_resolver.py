@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shlex
 import sys
 import tempfile
@@ -403,6 +404,12 @@ def test_sol_v8_foreign_spellings_are_preserved(m, installed, tmp_path):
     case = tmp_path / 'foreign-execution'
 
     def _write(argument):
+        # The predicate never reads these files; they only make the foreign
+        # execution real on POSIX. On Windows several names are illegal
+        # (WinError 123), and the backslash spelling IS our own measure.py,
+        # so writing it would overwrite the repo's real file.
+        if os.name == "nt":
+            return
         path = Path(argument)
         if not path.is_absolute():
             path = case / path
@@ -419,8 +426,11 @@ def test_sol_v8_foreign_spellings_are_preserved(m, installed, tmp_path):
     _add('foreign-single-quoted-space', prefix + own, "'" + prefix + own + "'")
     _add('foreign-partial-quoted-space', prefix + own, '"' + prefix + '"' + own)
     _add('foreign-literal-apostrophe', "'" + own, '"' + "'" + own + '"')
-    _add('foreign-literal-backslash-name', own.replace('/', '\\'),
-         shlex.quote(own.replace('/', '\\')))
+    if os.name != "nt":
+        # POSIX only: a backslash is a literal filename character there. On
+        # Windows this spelling is our own path and is rightly ours.
+        _add('foreign-literal-backslash-name', own.replace('/', '\\'),
+             shlex.quote(own.replace('/', '\\')))
     driver = case / 'foreign_driver_do_not_remove.py'
     driver.parent.mkdir(parents=True, exist_ok=True)
     driver.write_text('print("FOREIGN_HOOK_EXECUTED")\n', encoding='utf-8')
@@ -580,3 +590,52 @@ def test_backslash_foreign_posix_path_preserved(m):
         "python3 $(which python3) /home/u/.claude\\skills\\token-optimizer"
         "\\scripts\\measure.py --quiet"
     ) is False
+
+
+def _windows_spelling(path):
+    """POSIX stand-in for a Windows path: keeps the leading slash (so it is
+    absolute here) and spells every other separator as a backslash."""
+    text = str(path)
+    return text[:1] + text[1:].replace("/", "\\")
+
+
+class _NtOs:
+    """The real os module, reporting os.name == "nt"."""
+    name = "nt"
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, attr):
+        return getattr(self._real, attr)
+
+
+def test_windows_backslash_hooks_keep_ownership_proof(m, installed, monkeypatch):
+    """On Windows a backslash is a path separator, not a shell escape. POSIX
+    shlex turned D:\\a\\root into D:aroot, so our own malformed hooks
+    stopped being proven there (the #330 Windows failures). The quote rules
+    stay POSIX, so a foreign quoted spelling is still one foreign word."""
+    # Only the predicate's own os binding reports Windows: patching os.name
+    # process-wide would make pathlib build unusable WindowsPath objects here.
+    monkeypatch.setattr(m, "os", _NtOs(m.os))
+    root = _windows_spelling(REPO)
+    script = "skills/token-optimizer/scripts/read_cache.py"
+    mixed = f"python3 $(which python3) {root}/{script} --quiet"
+    backslashed = f"python3 $(which python3) {root}\\{script.replace('/', chr(92))} --quiet"
+    assert m._is_malformed_to_hook(mixed) is True
+    assert m._is_malformed_to_hook(backslashed) is True
+    # Partially quoted foreign path: bash reads ONE word ending in our path.
+    # posix=False tokenizing would expose our path as its own token.
+    foreign = f'python3 "C:\\vendor "{root}\\{script.replace("/", chr(92))} $(printf x)'
+    assert m._is_malformed_to_hook(foreign) is False
+    elsewhere = f"python3 $(which python3) D:\\elsewhere\\{script.replace('/', chr(92))} --quiet"
+    assert m._is_malformed_to_hook(elsewhere) is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash path IS ours on Windows")
+def test_posix_keeps_backslash_as_literal_filename_character(m, installed):
+    """Outside Windows nothing changes: a backslash-spelled path is a different
+    file (or an escape), never proof that the hook is ours."""
+    root = _windows_spelling(REPO)
+    script = "skills/token-optimizer/scripts/read_cache.py".replace("/", chr(92))
+    assert m._is_malformed_to_hook(f"python3 $(which python3) {root}\\{script} --quiet") is False

@@ -1234,11 +1234,12 @@ rollback_install_update() {
         attempted_head=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
         warn "Rolling back unverified update from ${attempted_head} to ${INSTALL_OLD_HEAD}"
         if git -C "$INSTALL_DIR" checkout --no-overwrite-ignore --detach "$INSTALL_OLD_HEAD" >/dev/null 2>&1; then
-            # Re-attach the starting branch (ref-only; moved back only if this update moved it) so SKIP_VERIFY can pull again.
-            local b="${INSTALL_OLD_BRANCH:-}" now tip
-            if [ -n "$b" ] && now=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) && tip=$(git -C "$INSTALL_DIR" rev-parse -q --verify "refs/heads/${b}^{commit}" 2>/dev/null) &&
-               { [ "$tip" = "$now" ] || { [ "$tip" = "$attempted_head" ] && git -C "$INSTALL_DIR" update-ref -m "token-optimizer rollback" "refs/heads/${b}" "$now" "$tip" 2>/dev/null; }; }; then
-                git -C "$INSTALL_DIR" symbolic-ref HEAD "refs/heads/${b}" 2>/dev/null || true
+            # Re-attach HEAD to the exact ref it started on so SKIP_VERIFY can pull again. Ref-only; only a
+            # refs/heads/ branch this update moved is moved back (compare-and-swap); other refs are never moved.
+            local r="${INSTALL_OLD_HEAD_REF:-}" now tip
+            if [ -n "$r" ] && now=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) && tip=$(git -C "$INSTALL_DIR" rev-parse -q --verify "${r}^{commit}" 2>/dev/null) &&
+               { [ "$tip" = "$now" ] || { case "$r" in refs/heads/*) [ "$tip" = "$attempted_head" ] && git -C "$INSTALL_DIR" update-ref -m "token-optimizer rollback" "$r" "$now" "$tip" 2>/dev/null;; *) false;; esac; }; }; then
+                git -C "$INSTALL_DIR" symbolic-ref HEAD "$r" 2>/dev/null || true
             fi
             info "Rollback succeeded"
         else
@@ -1481,7 +1482,7 @@ update_repo() {
 if [ -d "${INSTALL_DIR}/.git" ]; then
     info "Existing install found. Updating..."
     INSTALL_OLD_HEAD=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)
-    INSTALL_OLD_BRANCH=$(git -C "$INSTALL_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)
+    INSTALL_OLD_HEAD_REF=$(git -C "$INSTALL_DIR" symbolic-ref -q HEAD 2>/dev/null || true)  # full ref, e.g. refs/heads/main
 
     # Never narrow a live checkout: Git may delete ignored data in an extra
     # selected folder. Legacy non-cone patterns cannot be safely translated.

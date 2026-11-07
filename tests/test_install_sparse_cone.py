@@ -514,14 +514,27 @@ def test_preservation_fixtures_resist_inherited_crlf_and_legacy_encoding(remote,
             remote, tmp_path, scenario.removeprefix('recovery-'))
 
 
-def _run_rollback(dest, old_head, old_branch):
+def _capture_head(dest):
+    """HEAD's ref captured before an update, the way the installer does: the
+    full ref (current), plus the --short name the pre-F7-a installer used, so
+    the same test also runs against that version."""
+    full = subprocess.run(['git', 'symbolic-ref', '-q', 'HEAD'], cwd=dest,
+                          capture_output=True, text=True).stdout.strip()
+    short = subprocess.run(['git', 'symbolic-ref', '-q', '--short', 'HEAD'], cwd=dest,
+                           capture_output=True, text=True).stdout.strip()
+    return full, short
+
+
+def _run_rollback(dest, old_head, captured):
     from helpers.install_sparse import install_bash, shell_function
     import os
+    full, short = captured
     script = ('warn() { printf "%s\n" "$1"; }; info() { printf "%s\n" "$1"; }; '
               + shell_function(_src(), 'rollback_install_update') + '\nrollback_install_update')
     return subprocess.run([install_bash(), '-c', script], capture_output=True, text=True, encoding="utf-8",
                           env=dict(os.environ, INSTALL_DIR=str(dest), INSTALL_OLD_HEAD=old_head,
-                                   INSTALL_OLD_BRANCH=old_branch, INSTALL_UPDATED='1'))
+                                   INSTALL_OLD_HEAD_REF=full, INSTALL_OLD_BRANCH=short,
+                                   INSTALL_UPDATED='1'))
 
 
 def _commit_release(remote):
@@ -537,6 +550,7 @@ def test_skip_verify_rollback_restores_branch_so_next_pull_works(remote, tmp_pat
     dest = tmp_path / 'skip verify é install'
     _git('clone', remote.as_uri(), str(dest))
     old_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    captured = _capture_head(dest)
     (dest / '.git/info/exclude').write_text('local.db\n')
     (dest / 'local.db').write_bytes(b'private\x00db')
     (dest / 'notes.txt').write_bytes(b'untracked user note\n')
@@ -544,7 +558,7 @@ def test_skip_verify_rollback_restores_branch_so_next_pull_works(remote, tmp_pat
     _git('pull', '--ff-only', '-q', cwd=dest)
     assert _git('rev-parse', 'HEAD', cwd=dest).stdout.strip() == new_head
 
-    result = _run_rollback(dest, old_head, 'main')
+    result = _run_rollback(dest, old_head, captured)
     assert result.returncode == 0, result.stderr
     assert 'Rollback succeeded' in result.stdout
     assert _git('symbolic-ref', 'HEAD', cwd=dest).stdout.strip() == 'refs/heads/main'
@@ -565,11 +579,12 @@ def test_verified_rollback_reattaches_unmoved_branch(remote, tmp_path):
     dest = tmp_path / 'verified install'
     _git('clone', remote.as_uri(), str(dest))
     old_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    captured = _capture_head(dest)
     new_head = _commit_release(remote)
     _git('fetch', '-q', 'origin', cwd=dest)
     _git('checkout', '-q', '--detach', new_head, cwd=dest)
 
-    result = _run_rollback(dest, old_head, 'main')
+    result = _run_rollback(dest, old_head, captured)
     assert result.returncode == 0, result.stderr
     assert _git('symbolic-ref', 'HEAD', cwd=dest).stdout.strip() == 'refs/heads/main'
     assert _git('rev-parse', 'main', cwd=dest).stdout.strip() == old_head
@@ -581,6 +596,7 @@ def test_rollback_never_moves_a_branch_it_did_not_move(remote, tmp_path):
     dest = tmp_path / 'foreign branch'
     _git('clone', remote.as_uri(), str(dest))
     old_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    captured = _capture_head(dest)
     _git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty',
          '-m', 'user work on main', cwd=dest)
     user_tip = _git('rev-parse', 'main', cwd=dest).stdout.strip()
@@ -588,10 +604,58 @@ def test_rollback_never_moves_a_branch_it_did_not_move(remote, tmp_path):
     _git('fetch', '-q', 'origin', cwd=dest)
     _git('checkout', '-q', '--detach', new_head, cwd=dest)
 
-    result = _run_rollback(dest, old_head, 'main')
+    result = _run_rollback(dest, old_head, captured)
     assert result.returncode == 0, result.stderr
     assert 'Rollback succeeded' in result.stdout
     assert _git('rev-parse', 'main', cwd=dest).stdout.strip() == user_tip
     assert _git('rev-parse', 'HEAD', cwd=dest).stdout.strip() == old_head
     detached = subprocess.run(['git', 'symbolic-ref', '-q', 'HEAD'], cwd=dest, capture_output=True)
     assert detached.returncode != 0
+
+
+def test_rollback_never_moves_a_branch_named_like_a_non_branch_head_ref(remote, tmp_path):
+    """F7-a: HEAD symref'd to refs/tags/v9 while an unrelated branch v9 sits on
+    the release commit. --short gave "v9" and the old rollback rebuilt
+    refs/heads/v9, force-moving that branch and attaching HEAD to it. The full
+    ref is used verbatim now: the branch is untouched, HEAD returns to the tag."""
+    dest = tmp_path / 'tag head'
+    _git('clone', remote.as_uri(), str(dest))
+    old_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    _git('tag', 'v9', old_head, cwd=dest)
+    _git('symbolic-ref', 'HEAD', 'refs/tags/v9', cwd=dest)
+    captured = _capture_head(dest)
+    assert captured == ('refs/tags/v9', 'v9')
+    new_head = _commit_release(remote)
+    _git('fetch', '-q', 'origin', cwd=dest)
+    _git('update-ref', 'refs/heads/v9', new_head, cwd=dest)  # porcelain refuses with HEAD on a tag
+    _git('checkout', '-q', '--detach', new_head, cwd=dest)
+
+    result = _run_rollback(dest, old_head, captured)
+    assert result.returncode == 0, result.stderr
+    assert 'Rollback succeeded' in result.stdout
+    assert _git('rev-parse', 'refs/heads/v9', cwd=dest).stdout.strip() == new_head
+    assert _git('symbolic-ref', 'HEAD', cwd=dest).stdout.strip() == 'refs/tags/v9'
+    assert _git('rev-parse', 'HEAD', cwd=dest).stdout.strip() == old_head
+
+
+def test_rollback_reattaches_a_branch_that_shares_a_tag_name(remote, tmp_path):
+    """F7-b: on branch "release" with a tag also named "release", --short says
+    "heads/release", the old lookup of refs/heads/heads/release failed and HEAD
+    stayed detached, so the next SKIP_VERIFY pull still broke."""
+    dest = tmp_path / 'release branch'
+    _git('clone', remote.as_uri(), str(dest))
+    old_head = _git('rev-parse', 'HEAD', cwd=dest).stdout.strip()
+    _git('checkout', '-q', '-b', 'release', cwd=dest)
+    _git('tag', 'release', old_head, cwd=dest)
+    captured = _capture_head(dest)
+    assert captured == ('refs/heads/release', 'heads/release')
+    new_head = _commit_release(remote)
+    _git('fetch', '-q', 'origin', cwd=dest)
+    _git('merge', '-q', '--ff-only', 'origin/main', cwd=dest)  # what pull --ff-only does
+    assert _git('rev-parse', 'refs/heads/release', cwd=dest).stdout.strip() == new_head
+
+    result = _run_rollback(dest, old_head, captured)
+    assert result.returncode == 0, result.stderr
+    assert _git('symbolic-ref', 'HEAD', cwd=dest).stdout.strip() == 'refs/heads/release'
+    assert _git('rev-parse', 'refs/heads/release', cwd=dest).stdout.strip() == old_head
+    assert _git('rev-parse', 'refs/tags/release', cwd=dest).stdout.strip() == old_head

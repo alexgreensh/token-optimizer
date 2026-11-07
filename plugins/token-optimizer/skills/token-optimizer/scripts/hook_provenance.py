@@ -68,7 +68,7 @@ except ImportError:  # loaded by path under python -I (cloud_kit): the sibling, 
 
 LEDGER_NAME = "hook_provenance.json"
 LEDGER_VERSION = 1
-CODEX_LEDGER_NAME = ".token-optimizer-hook-provenance.json"
+CODEX_LEDGER_NAME = "hook_provenance.json"  # in <CODEX_HOME>/token-optimizer/
 
 # The exact version resolver every current installer-written command carries
 # (hooks/hooks.json). Removing ONE exact copy before the subshell test keeps
@@ -842,7 +842,7 @@ class Provenance:
 
 def write_codex_hooks(path, data, proof, writer, extra=(), source="codex_install"):
     """Codex installer: write hooks.json via ``writer`` (raises on failure, as
-    before), then record in the ledger beside it every entry ``proof``
+    before), then record in the Codex ledger every entry ``proof``
     (codex_hook_provenance.CodexProof) owns plus ``extra``, the entries
     (contexts) this run just rewrote."""
     writer(path, data)

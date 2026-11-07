@@ -367,3 +367,18 @@ def test_shipped_codex_templates_carry_their_entry(hp):
     data = chp.shipped()
     for key, templates in data["templates"].items():
         assert templates and all(isinstance(t, list) and len(t) == 4 for t in templates), key
+
+
+# --- Codex: the ledger, its lock and its queue never land in a user's repo --------
+
+def test_codex_project_install_and_heal_leave_only_hooks_json_in_the_repo(home, semver_root, tmp_path, hp):
+    project = tmp_path / "repo"
+    project.mkdir()
+    ci.install(project, skip_compact_prompt=True)
+    path = project / ".codex" / "hooks.json"
+    ci.heal_quoted_launcher_commands([path])  # seeds the ledger on every run
+    ci.uninstall(project)
+    assert sorted(p.name for p in path.parent.iterdir()) == ["hooks.json"]
+    ledger = ci._codex_proof(path).ledger_path
+    assert ledger.parent == home / "token-optimizer"
+    assert hp.settings_key(path) in hp.load_ledger(ledger)[0]["contexts"]

@@ -640,7 +640,8 @@ def _load_hooks(path: Path) -> dict[str, Any]:
 def _codex_proof(path=None):
     """Exact-bytes ownership for this hooks.json (codex_hook_provenance)."""
     return codex_hook_provenance.for_codex(
-        path, _repo_root(), codex_hook_provenance.current_contexts(_managed_hooks))
+        path, _repo_root(), codex_hook_provenance.current_contexts(_managed_hooks),
+        codex_home() / "token-optimizer")
 
 
 def _is_token_optimizer_group(event: str, group: Any, proof=None) -> bool:

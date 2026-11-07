@@ -4,7 +4,7 @@ Same rule as the Claude healer (hook_provenance.py): codex_install may replace
 or remove a hook in ~/.codex/hooks.json (or a project .codex/hooks.json) only
 when that hook's whole entry, ``(event, matcher, hook type, command)``, is
 
-* recorded in the ledger beside that hooks.json (every Codex write records
+* recorded in the ledger for that hooks.json (every Codex write records
   the entries it wrote, and every Codex run records the provable entries it
   finds, so a later interpreter upgrade cannot orphan them), or
 * an entry the current generator writes for this install, or
@@ -15,7 +15,11 @@ when that hook's whole entry, ``(event, matcher, hook type, command)``, is
   number.
 
 Our command copied into another event or under another matcher is a
-different entry and is not ours. Command-only records from before entries
+different entry and is not ours.
+
+The ledger, its lock and its queue live in Token Optimizer's own Codex state
+dir (``<CODEX_HOME>/token-optimizer/``), keyed by each hooks.json's resolved
+path, never beside a project's .codex/hooks.json in the user's repo. Command-only records from before entries
 were recorded prove nothing (the fail-safe choice).
 
 No text markers, regexes, separator rewriting or signature normalization
@@ -88,12 +92,14 @@ def contexts_in(event, group):
 
 
 class CodexProof:
-    def __init__(self, hooks_path, root, current_contexts=(), windows=None, executable=None):
+    def __init__(self, hooks_path, root, current_contexts=(), windows=None, executable=None,
+                 ledger_dir=None):
         self.windows = (sys.platform == "win32") if windows is None else bool(windows)
         self.executable = sys.executable if executable is None else str(executable)
         self.current = frozenset(c for c in current_contexts if isinstance(c, tuple) and len(c) == 4)
         self.hooks_path = Path(hooks_path) if hooks_path else None
-        self.ledger_path = (self.hooks_path.parent / hp.CODEX_LEDGER_NAME) if self.hooks_path else None
+        self.ledger_path = (Path(ledger_dir) / hp.CODEX_LEDGER_NAME
+                            if self.hooks_path and ledger_dir is not None else None)
         self.recorded = frozenset()
         if self.ledger_path is not None:
             ledger, status = hp.load_ledger(self.ledger_path)
@@ -196,8 +202,8 @@ def _all_groups(data):
             yield event, group
 
 
-def for_codex(hooks_path, root, current_contexts):
-    return CodexProof(hooks_path, root, current_contexts)
+def for_codex(hooks_path, root, current_contexts, ledger_dir):
+    return CodexProof(hooks_path, root, current_contexts, ledger_dir=ledger_dir)
 
 
 def _managed(managed_hooks):

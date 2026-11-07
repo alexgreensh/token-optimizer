@@ -359,10 +359,14 @@ def test_planted_fuzzy_matcher_is_caught(m, hp, installed, monkeypatch):
     a quote, separator, case or path prefix, so it is NOT ours. A matcher that
     normalizes any of those would delete them; the exact rule must not."""
     ours = _malformed_shipped(m, hp)[0]
-    root = str(REPO)
+    # The resolver writes the root with forward slashes on every platform.
+    # One swapped separator is no spelling we ever wrote (the all-native
+    # Windows spelling is: the legacy installers', so it is proven ours there).
+    root = str(REPO).replace("\\", "/")
+    assert root in ours
     variants = [
         ours.replace('"$b"', "'$b'"),
-        ours.replace(root, root.replace("/", "\\")),
+        ours.replace(root, root.replace("/", "\\", 1)),
         ours.replace(root, root.upper()),
         ours.replace(root, root + "-evil"),
         ours + " ",

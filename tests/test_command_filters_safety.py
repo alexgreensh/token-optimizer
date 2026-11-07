@@ -131,6 +131,10 @@ def test_loader_drops_unsafe_add_entry(tmp_path, monkeypatch):
     "git r*", "git *", "git c*", "git -C x p*",
     "RM -rf t", "rm.exe x", "R*.exe", "r*.EXE", "GIT R*", "Git PUSH",
     "git commit", "git push",
+    # Versioned interpreters, the Windows py launcher, and git --output.
+    "python3.12 x.py", "python3.1* *", "python3.*", "pypy3 x.py", "pypy*",
+    "py -3 x.py", "PY.EXE x", "python3.12.exe x",
+    "git diff --output=x", "git log --output x",
 ])
 def test_globs_that_can_match_destructive_commands_rejected(command):
     assert cf._is_safe_add(command, "disk_stats") is False, command
@@ -139,6 +143,7 @@ def test_globs_that_can_match_destructive_commands_rejected(command):
 @pytest.mark.parametrize("command", [
     "ls *.py", "cargo test*", "git status *", "git log --oneline *",
     "du -sh *", "ruff *", "pytest tests/*",
+    "pyright *", "pytest*", "git diff *", "git diff --stat",
 ])
 def test_harmless_globs_still_accepted(command):
     assert cf._is_safe_add(command, "disk_stats") is True, command
@@ -152,6 +157,10 @@ def test_harmless_globs_still_accepted(command):
     "sed -i s/a/b/ f", "xargs ls", "git branch -D x", "ls > out.txt",
     "RM -rf t", "rm.exe -rf t", "C:\\Windows\\rm.EXE x", "Git.exe push",
     "SUDO ls",
+    "python3.12 -c 1", "python3 -c 1", "pypy3 x.py", "pypy x.py", "py -3 x.py",
+    "PY.EXE x", "C:\\Python312\\python3.12.exe x", "env python3.13 x",
+    "git diff --output=/tmp/x", "git log --output /tmp/x",
+    "git -C repo show --output=f HEAD",
 ])
 def test_is_destructive_command_true(command):
     assert cf.is_destructive_command(command) is True, command
@@ -159,6 +168,8 @@ def test_is_destructive_command_true(command):
 
 @pytest.mark.parametrize("command", [
     "ls -la", "cargo test", "git status", "du -sh .", "find . -name x",
+    "pytest -q", "pyright src", "git diff --stat", "git log --oneline",
+    "git diff -- output.txt",
 ])
 def test_is_destructive_command_false(command):
     assert cf.is_destructive_command(command) is False, command

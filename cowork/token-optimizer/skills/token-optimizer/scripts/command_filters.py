@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -435,11 +436,16 @@ _NEVER_COMPRESS_CMD0 = (
     _UNSAFE_INTERPRETERS | _UNSAFE_PREFIXES | _UNSAFE_WRITE_SUBCMDS
     | _LAUNCHERS | _KNOWN_WRITERS
 )
+# Interpreters named by version (python3.12, pypy3) and the Windows ``py``
+# launcher; matched with fullmatch on the normalized command word.
+_VERSIONED_INTERPRETER_RE = re.compile(r"python\d+(?:\.\d+)?|pypy\d*(?:\.\d+)?|py")
 _EXE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
 # fnmatch candidates: bare names plus their Windows executable spellings, so
 # ``rm.*`` / ``r*.exe`` are caught as well as ``r*``.
 _GLOB_NAMES = frozenset(
-    n + ext for n in _NEVER_COMPRESS_CMD0 for ext in ("",) + _EXE_SUFFIXES
+    n + ext for n in _NEVER_COMPRESS_CMD0 | {"py", "pypy", "pypy2", "pypy3"}
+    | {f"python{m}.{n}" for m in (2, 3) for n in range(20)}
+    for ext in ("",) + _EXE_SUFFIXES
 )
 
 _warned_paths: set = set()
@@ -603,6 +609,11 @@ def _git_subcommand_tokens(tokens: List[str]) -> List[str]:
     return rest[j:]
 
 
+def _git_writes_output(sub: List[str]) -> bool:
+    """``git diff/log/show --output[=]FILE`` writes FILE: treat it as a write."""
+    return any(t == "--output" or t.startswith("--output=") for t in sub[1:])
+
+
 def _git_has_config_options(tokens: List[str]) -> bool:
     """True when git global options other than ``-C <dir>`` / ``--no-pager``
     / ``--no-optional-locks`` precede the subcommand. ``-c alias.x=!cmd``,
@@ -677,7 +688,8 @@ def _segment_destructive(tokens: List[str]) -> bool:
     if not tokens:
         return False
     cmd0 = _effective_cmd0(tokens)
-    if cmd0 is None or cmd0 in _NEVER_COMPRESS_CMD0:
+    if (cmd0 is None or cmd0 in _NEVER_COMPRESS_CMD0
+            or _VERSIONED_INTERPRETER_RE.fullmatch(cmd0)):
         return True
     if tokens and tokens[0] in _SHELL_STRUCT_TOKENS:
         return True
@@ -688,7 +700,7 @@ def _segment_destructive(tokens: List[str]) -> bool:
         if not sub:
             return True
         name = sub[0].lower()
-        if name in _GIT_WRITE_SUBCMDS:
+        if name in _GIT_WRITE_SUBCMDS or _git_writes_output(sub):
             return True
         if name not in _GIT_READONLY_SUBCMDS:
             # Unknown subcommand: could be an alias defined in repo config.
@@ -793,7 +805,7 @@ def _is_safe_add(command: str, handler: str) -> bool:
         return False
     if raw0 and _glob_can_match_unsafe(raw0, _SHELL_STRUCT_TOKENS):
         return False
-    if cmd0 in _UNSAFE_INTERPRETERS:
+    if cmd0 in _UNSAFE_INTERPRETERS or _VERSIONED_INTERPRETER_RE.fullmatch(cmd0):
         return False
     if cmd0 in _UNSAFE_PREFIXES:
         return False
@@ -809,7 +821,7 @@ def _is_safe_add(command: str, handler: str) -> bool:
         if _git_has_config_options(tokens):
             return False
         sub = _git_subcommand_tokens(tokens)
-        if sub and (sub[0].lower() in _GIT_WRITE_SUBCMDS
+        if sub and (sub[0].lower() in _GIT_WRITE_SUBCMDS or _git_writes_output(sub)
                     or _glob_can_match_unsafe(sub[0].lower(), _GIT_WRITE_SUBCMDS)):
             return False
     return True

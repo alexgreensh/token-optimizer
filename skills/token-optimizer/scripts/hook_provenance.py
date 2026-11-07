@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -137,6 +138,28 @@ def _valid(data):
                for v in reported.values())
 
 
+def _read_regular(path):
+    """Bytes of a regular file, without ever blocking. open() on a FIFO waits
+    for a writer forever and a device can read forever, so anything that is
+    not a regular file raises OSError (the caller's "unreadable"). The stat
+    covers platforms without O_NONBLOCK; the fstat closes the swap-after-stat
+    race on the descriptor actually read."""
+    if not stat.S_ISREG(os.stat(str(path)).st_mode):
+        raise OSError("ledger is not a regular file")
+    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("ledger is not a regular file")
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+
+
 def load_ledger(path):
     """Return ``(ledger, status)``; status is ok, missing, unreadable or corrupt.
 
@@ -144,7 +167,7 @@ def load_ledger(path):
     only (invariant: no ledger, no extra removals).
     """
     try:
-        raw = Path(path).read_bytes()
+        raw = _read_regular(path)
     except FileNotFoundError:
         return _empty(), "missing"
     except OSError:

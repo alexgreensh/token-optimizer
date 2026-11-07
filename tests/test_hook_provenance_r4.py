@@ -484,3 +484,21 @@ def test_generated_interpreters_still_match(m, installed, python):
     sh = owned_hooks._sh
     command = "%s %s session-end-flush --trigger end >/dev/null 2>&1" % (sh(python), sh(str(m.MEASURE_PY_PATH)))
     assert owned_hooks.matches_shape(m, command, owned_hooks.SESSION_END_SHAPES)
+
+
+# --- nothing that is not a queued record keeps the queue pending -------------------
+
+def test_stray_files_in_the_queue_never_keep_it_pending(hp, tmp_path):
+    ledger = tmp_path / "hook_provenance.json"
+    qdir = hp._pending_dir(ledger)
+    qdir.mkdir()
+    (qdir / ".DS_Store").write_bytes(b"\0")
+    (qdir / "notes.txt").write_text("mine")
+    (qdir / ("a" * 64)).mkdir()  # record-named, not a file
+    assert not hp.has_pending(ledger)
+    bad = qdir / ("b" * 64)
+    bad.write_text("{not json")
+    assert hp.has_pending(ledger)
+    assert hp.record(ledger, "s.json", ["x"], "t")
+    assert not hp.has_pending(ledger) and not bad.exists()
+    assert (qdir / ".DS_Store").exists() and (qdir / "notes.txt").exists()  # not ours: never deleted

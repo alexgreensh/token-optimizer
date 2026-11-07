@@ -428,11 +428,20 @@ def _pending_dir(path):
     return path.with_name(path.name + ".pending")
 
 
-def has_pending(path):
+def _queued(path):
+    """Names of the queue's record files: regular files named as _queue names
+    them (64 lowercase hex). Anything else there is not ours and is ignored."""
     try:
-        return bool(os.listdir(str(_pending_dir(path))))
+        with os.scandir(str(_pending_dir(path))) as entries:
+            return sorted(e.name for e in entries if len(e.name) == 64
+                          and all(c in "0123456789abcdef" for c in e.name)
+                          and e.is_file(follow_symlinks=False))
     except OSError:
-        return False
+        return []
+
+
+def has_pending(path):
+    return bool(_queued(path))
 
 
 def _queue(path, section, key, entries):
@@ -464,20 +473,22 @@ def _queue(path, section, key, entries):
 
 
 def _merge_pending(path, data):
-    """Fold every well-formed queued record into ``data``; return their files."""
+    """Fold every well-formed queued record into ``data``. Returns the record
+    files to delete once the ledger write lands: the merged ones, and any
+    that can never merge (unparseable), so neither stays pending forever."""
     qdir, merged = _pending_dir(path), []
-    try:
-        names = sorted(os.listdir(str(qdir)))
-    except OSError:
-        return merged
-    for name in names:
+    for name in _queued(path):
         try:
             body = json.loads(_read_regular(qdir / name).decode("utf-8"))
             section, key, entries = body["section"], body["key"], body["entries"]
-        except (OSError, ValueError, KeyError, TypeError):
+        except OSError:
+            continue  # unreadable now; retried on the next write
+        except (ValueError, KeyError, TypeError):
+            merged.append(qdir / name)
             continue
         if section not in ("files", "contexts") or not isinstance(key, str) \
                 or not _records_ok({key: entries}):
+            merged.append(qdir / name)
             continue
         target = data[section].setdefault(key, {})
         for digest, meta in entries.items():

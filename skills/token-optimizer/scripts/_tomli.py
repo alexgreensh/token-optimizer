@@ -1,8 +1,7 @@
 """Vendored Tomli 2.2.1 (MIT, Taneli Hukkinen) as a single flat module.
 
 Full TOML 1.0 parser used as the Python 3.9/3.10 fallback where stdlib
-tomllib is absent. Flattened from _measure/_vendor/tomli/{_types,_re,_parser}
-with relative imports inlined; identical behaviour to the packaged copy.
+tomllib is absent.
 """
 from __future__ import annotations
 

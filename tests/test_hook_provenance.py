@@ -158,8 +158,9 @@ def test_codex_install_records_its_managed_commands(hp, tmp_path):
         {"hooks": [{"type": "command", "command": "theirs --stop"}]},
     ]}}
     written = []
-    hp.write_codex_hooks(path, data, lambda g: "ours" in json.dumps(g),
-                         lambda p, d: written.append((p, d)))
+    import codex_hook_provenance as chp
+    proof = chp.CodexProof(path, tmp_path / "token-optimizer" / "5.13.67", current_commands=["ours --stop"])
+    hp.write_codex_hooks(path, data, proof, lambda p, d: written.append((p, d)))
     assert written == [(path, data)]
     ledger, status = hp.load_ledger(path.parent / hp.CODEX_LEDGER_NAME)
     assert status == "ok"

@@ -420,21 +420,13 @@ class Provenance:
             return
 
 
-def write_codex_hooks(path, data, is_ours, writer):
-    """Codex installer: write ~/.codex/hooks.json via ``writer`` (raises on
-    failure, as before), then record the Token Optimizer groups' commands in a
-    ledger beside it. After the installer's merge every group ``is_ours``
-    accepts is one it just generated, so this records only what it wrote."""
+def write_codex_hooks(path, data, proof, writer, extra=(), source="codex_install"):
+    """Codex installer: write hooks.json via ``writer`` (raises on failure, as
+    before), then record in the ledger beside it every command ``proof``
+    (codex_hook_provenance.CodexProof) owns plus ``extra``, the commands this
+    run just generated or rewrote."""
     writer(path, data)
-    commands = []
-    hooks = data.get("hooks") if isinstance(data, dict) else None
-    for groups in hooks.values() if isinstance(hooks, dict) else ():
-        for group in groups if isinstance(groups, list) else ():
-            try:
-                ours = is_ours(group)
-            except Exception:
-                ours = False
-            for hook in (group.get("hooks") or []) if ours and isinstance(group, dict) else ():
-                if isinstance(hook, dict) and isinstance(hook.get("command"), str):
-                    commands.append(hook["command"])
-    record(Path(path).parent / CODEX_LEDGER_NAME, path, commands, "codex_install")
+    try:
+        proof.record_present(data, extra, source)
+    except Exception:
+        pass

@@ -183,6 +183,14 @@ def test_statusline_uninstall_idempotent():
         _restore_codex_home(saved)
 
 
+def _record_codex(hooks_path, *commands):
+    """Stand in for the install that wrote these commands: record them in the
+    provenance ledger beside hooks.json (installs from this release on do)."""
+    import hook_provenance
+    assert hook_provenance.record(Path(hooks_path).parent / hook_provenance.CODEX_LEDGER_NAME,
+                                  hooks_path, list(commands), "test")
+
+
 def test_codex_install_uninstall_invokes_both_residue_cleanups():
     """codex_install.uninstall must call both compact_prompt and statusline uninstall."""
     tmp, saved = _setup_temp_codex_home()
@@ -192,10 +200,12 @@ def test_codex_install_uninstall_invokes_both_residue_cleanups():
         codex_compact_prompt.install()
         codex_statusline.install()
         hooks_path = tmp / "hooks.json"
-        hooks_path.write_text(
-            '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "token-optimizer/scripts/measure.py session-end-flush"}]}]}}',
-            encoding="utf-8",
-        )
+        # One hook this install generates (provably ours) and one foreign hook
+        # that merely names our scripts: uninstall removes only the first.
+        import json
+        ours = codex_install._managed_hooks()["Stop"][0]
+        foreign = {"hooks": [{"type": "command", "command": "token-optimizer/scripts/measure.py session-end-flush"}]}
+        hooks_path.write_text(json.dumps({"hooks": {"Stop": [ours, foreign]}}), encoding="utf-8")
         # Run uninstall via the public API (global, not dry-run).
         path, action, details = codex_install.uninstall(
             Path("."), is_global=True, dry_run=False
@@ -206,10 +216,9 @@ def test_codex_install_uninstall_invokes_both_residue_cleanups():
         text = config.read_text(encoding="utf-8")
         assert codex_compact_prompt.MANAGED_BEGIN not in text
         assert codex_statusline.MANAGED_BEGIN not in text
-        # hooks.json stripped of TO groups.
-        import json
+        # hooks.json stripped of our groups; the foreign one is untouched.
         hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
-        assert "Stop" not in hooks.get("hooks", {})
+        assert hooks["hooks"]["Stop"] == [foreign]
     finally:
         _restore_codex_home(saved)
 

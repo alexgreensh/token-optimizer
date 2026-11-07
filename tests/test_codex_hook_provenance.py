@@ -36,9 +36,17 @@ def home(monkeypatch):
     return tmp
 
 
+def _install_root(path):
+    """A marketplace version dir as shipped: on Windows, install copies its
+    hooks/windows-launcher.py next to the version dirs."""
+    (path / "hooks").mkdir(parents=True, exist_ok=True)
+    (path / "hooks" / "windows-launcher.py").write_bytes((REPO / "hooks" / "windows-launcher.py").read_bytes())
+    return path
+
+
 @pytest.fixture()
 def semver_root(monkeypatch, tmp_path):
-    root = tmp_path / "market" / "token-optimizer" / "5.13.67"
+    root = _install_root(tmp_path / "market" / "token-optimizer" / "5.13.67")
     monkeypatch.setattr(ci, "_repo_root", lambda: root)
     return root
 
@@ -147,7 +155,7 @@ def test_upgrade_without_ledger_replaces_last_version_by_template(home, monkeypa
     old = ci._managed_hooks()
     path = home / "hooks.json"
     path.write_text(json.dumps({"hooks": old}), encoding="utf-8")
-    monkeypatch.setattr(ci, "_repo_root", lambda: parent / "5.13.67")
+    monkeypatch.setattr(ci, "_repo_root", lambda: _install_root(parent / "5.13.67"))
     _install()
     expected = [c for gs in ci._managed_hooks().values() for g in gs for c in chp.hook_commands(g)]
     old_commands = [c for gs in old.values() for g in gs for c in chp.hook_commands(g)]

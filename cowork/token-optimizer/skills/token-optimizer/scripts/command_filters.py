@@ -71,6 +71,7 @@ _UNSAFE_INTERPRETERS = frozenset({
     "bash", "sh", "zsh", "dash", "ksh", "fish", "csh", "tcsh",
     "python", "python3", "python2", "ruby", "perl", "node", "deno", "bun",
     "lua", "tcl", "awk", "sed", "eval", "exec", "source", ".",
+    "osascript", "php", "gawk", "mawk", "nawk", "rscript",
 })
 _UNSAFE_PREFIXES = frozenset({"sudo", "su", "doas", "pkexec", "gksudo"})
 _UNSAFE_WRITE_SUBCMDS = frozenset({
@@ -222,14 +223,22 @@ def _effective_cmd_token(tokens: List[str]) -> Optional[str]:
     Normalizes away the path (so ``/bin/bash``, ``./python``, ``/usr/bin/sudo``
     are recognized as ``bash``/``python``/``sudo``) and resolves a leading
     ``env`` invocation by skipping ``VAR=val`` assignments and env's own options
-    (``-i``, and the operand-taking ``-u``/``-C``/``-S``) to reach the command
-    env would exec. Returns None when no command token remains.
+    (``-i``, and the operand-taking ``-u``/``-C``/``--chdir``) to reach the
+    command env would exec, looping through nested ``env``. ``-S`` /
+    ``--split-string`` and any unrecognized ``-`` option fail closed (None).
+    Returns None when no command token remains.
     """
     if not tokens:
         return None
     i = 0
-    if _norm_cmd(tokens[0]) == "env":
-        i = 1
+    # ``env`` may be nested (``env env rm x``) and may carry assignments and
+    # options before the real command, so unwrap repeatedly. Any option token
+    # this parser does not model exactly -- ``--opt=val``, joined
+    # ``-uVAL``/``-CVAL``/``-SVAL``, or ``-S``/``--split-string`` whose operand
+    # is itself a command string -- fails closed by returning None rather
+    # than guessing which later token is the command.
+    while i < len(tokens) and _norm_cmd(tokens[i]) == "env":
+        i += 1
         while i < len(tokens):
             tok = tokens[i]
             if "=" in tok and not tok.startswith("-"):
@@ -238,9 +247,15 @@ def _effective_cmd_token(tokens: List[str]) -> Optional[str]:
             if tok in ("-i", "--ignore-environment", "-", "-v", "--debug"):
                 i += 1
                 continue
-            if tok in ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"):
-                i += 2  # option consumes its operand
+            if tok in ("-u", "--unset", "-C", "--chdir"):
+                i += 2  # option consumes its operand (``--`` included: it is
+                # a legal operand, e.g. ``env -u -- rm`` unsets ``--``)
                 continue
+            if tok == "--":
+                i += 1
+                break  # env end-of-options: the next token is the command
+            if tok.startswith("-"):
+                return None
             break  # first non-option, non-assignment token = the command
     if i >= len(tokens):
         return None
@@ -347,8 +362,12 @@ def _segment_destructive(tokens: List[str]) -> bool:
     while start < len(tokens) and "=" in tokens[start] and not tokens[start].startswith("-"):
         start += 1
     tokens = tokens[start:]
-    # A bare ``--`` ends option parsing for wrapper commands (``env -- rm``).
-    tokens = [t for t in tokens if t != "--"]
+    # A bare ``--`` ends option parsing, but inside ``env`` it is also a
+    # legal option operand (``env -u -- rm`` unsets a var named ``--`` and
+    # runs ``rm``) or env's own end-of-options marker, so only non-env
+    # segments get the blanket strip; the env unwrapper models ``--``.
+    if not tokens or _norm_cmd(tokens[0]) != "env":
+        tokens = [t for t in tokens if t != "--"]
     if not tokens:
         return False
     cmd0 = _effective_cmd0(tokens)

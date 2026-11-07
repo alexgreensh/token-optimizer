@@ -442,3 +442,71 @@ def test_harmless_commands_stay_eligible(command):
 def test_windows_spellings_never_match_even_via_backslash_paths():
     for cmd in ["C:\\Windows\\rm.EXE x", "RM.EXE x", "Rm x", ".\\rm.exe x", "TIMEOUT.EXE 5 rm x"]:
         assert cf.is_destructive_command(cmd) is True, cmd
+
+
+# ---------------------------------------------------------------------------
+# Round: env unwrap fails closed (nested env, unrecognized option forms, -S)
+# ---------------------------------------------------------------------------
+
+_ENV_UNWRAP_BYPASSES = [
+    # Nested env: the unwrap must loop, not stop at the second `env`.
+    "env env rm -rf x", "env env env rm -rf x",
+    "env A=1 env rm x", "A=1 env env rm x",
+    # `--opt=val` and joined short-option forms the old unwrapper did not
+    # model: it broke at the option token and read IT as the command.
+    "env --unset=FOO rm -rf x", "env --chdir=/tmp rm -rf x",
+    "env -uFOO rm -rf x", "env -C/tmp rm -rf x", "env -Srm -rf x",
+    # `-S`/`--split-string`: the operand is itself a command string, so the
+    # real command hides inside what looks like an option argument.
+    "env -S rm -rf x", "env --split-string rm -rf x",
+    "env -S 'rm -rf x'", "env -i -S rm -rf x",
+    # `--` as an option operand: the blanket `--` strip used to delete it
+    # before the unwrapper ran, so `-u` swallowed the real command word.
+    # Real env consumes `--` literally as `-u`'s operand and runs `rm`.
+    "env -u -- rm x", "env --unset -- rm x", "env -i -u -- rm x",
+    "env env -u -- rm x", "env A=1 -u -- rm x",
+    "env -u -- mv a b", "env -u -- cp a b", "env -u -- chmod +x f",
+    "env -- rm x", "env -- env rm x", "env -u --",
+]
+
+
+@pytest.mark.parametrize("command", _ENV_UNWRAP_BYPASSES)
+def test_env_unwrap_bypasses_are_destructive(command):
+    assert cf.is_destructive_command(command) is True, command
+    entry = cf.AddEntry(name="x", command="env*", handler="ls")
+    assert cf.EffectiveFilters(user_adds=(entry,)).find_user_add(command) is None
+    assert cf.CommandFilterConfig(adds=(entry,)).find_add(command) is None
+
+
+@pytest.mark.parametrize("command", [
+    "env FOO=1 mytool --json", "env -i mytool", "env -u FOO mytool",
+    "env --unset FOO mytool", "env -C /tmp mytool", "env --chdir /tmp mytool",
+    "env MY_FLAG=1 ./tool --flag", "env env FOO=1 mytool",
+    # ``--`` as env's end-of-options marker resolves to the real command.
+    "env -- mytool", "env -u FOO -- mytool", "env FOO=1 -- mytool",
+])
+def test_env_unwrap_recognised_forms_still_resolve(command):
+    """Recognized env grammar still unwraps to the real (benign) command."""
+    assert cf.is_destructive_command(command) is False, command
+
+
+@pytest.mark.parametrize("command", [
+    "osascript -e 'do shell script \"rm x\"'",
+    "php -r 'system(\"rm x\")'", "gawk 'BEGIN{system(\"rm x\")}'",
+    "mawk 'BEGIN{system(\"rm x\")}'", "nawk 'BEGIN{system(\"rm x\")}'",
+    "Rscript -e 'system(\"rm x\")'",
+])
+def test_added_interpreters_are_destructive(command):
+    assert cf.is_destructive_command(command) is True, command
+
+
+def test_env_unwrap_end_to_end_not_whitelisted(tmp_path, monkeypatch):
+    """A TOML-loaded `env*` add must not make env-wrapped destructive
+    commands eligible: the wrapper's own whitelist re-check must refuse."""
+    import bash_whitelist
+    _glob_config(tmp_path, monkeypatch, "env*")
+    config = cf.load_filters()
+    assert len(config.adds) == 1, "the benign env* entry itself must load"
+    for cmd in _ENV_UNWRAP_BYPASSES:
+        assert bash_whitelist.is_whitelisted(cmd) is False, cmd
+    cf.reset_cache()

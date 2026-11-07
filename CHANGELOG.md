@@ -6,6 +6,7 @@
 - Remove the silent Bash PreToolUse hook registration so each Bash call no longer waits for a no-op Python process. Shared gates and post-command compression are unchanged.
 - Read full Codex TOML configuration and validate compact-prompt placement on Python 3.9 and 3.10 without installing an extra dependency. Python 3.11+ keeps its standard-library parser.
 - Preserve the native missing-global `NameError` contract on Python 3.9 instead of raising a constructor `TypeError`.
+- Fix the installer failing its own integrity check on older git. On git versions where `sparse-checkout set` does not default to cone mode (verified on git 2.34.1), the sparse checkout silently dropped root files including install.sh, so the release checksums did not match and every verified install aborted with "Your install may be compromised". Cone mode is now enabled explicitly for new clones, update candidates and existing non-cone installs.
 
 ## [5.13.66] - 2026-11-06
 

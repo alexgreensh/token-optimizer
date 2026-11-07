@@ -157,6 +157,8 @@ def test_bypass_negative_control_breaks_live_lookup(m, monkeypatch):
 
 def _moved_consumer(name, domain, tmp_path):
     """Exercise future lane consumers through ordinary provider loading."""
+    if sys.version_info < (3, 11):
+        pytest.skip('offline mover requires Python 3.11+')
     from helpers.measure_split import measure_source
     sys.path.insert(0, str(REPO / 'scripts'))
     import measure_split

@@ -57,6 +57,19 @@ test('renewal: an ISO reset renders as local time', () => {
   assert.equal(renewal('not a date', NOW, TZ), null)
 })
 
+test('renewal: hourCycle forces a 12- or 24-hour clock whatever the locale', () => {
+  const h23 = { ...TZ, hourCycle: 'h23' } as const
+  assert.equal(renewal('2026-10-03T19:20:00Z', NOW, h23), 'today at 15:20')
+  assert.equal(renewal('2026-10-08T13:00:00Z', NOW, h23), 'Thursday, Oct 8 at 09:00')
+  // Midnight is 00:xx, not 24:xx.
+  assert.equal(renewal('2026-10-04T04:05:00Z', NOW, h23), 'tomorrow at 00:05')
+  assert.equal(renewalPhrase('2026-10-03T19:20:00Z', NOW, h23), 'at 15:20')
+  // A locale that defaults to 24 hours can still ask for 12.
+  const de = { timeZone: 'America/New_York', locale: 'de-DE' }
+  assert.equal(renewal('2026-10-03T19:20:00Z', NOW, de), 'today at 15:20')
+  assert.equal(renewal('2026-10-03T19:20:00Z', NOW, { ...de, hourCycle: 'h12' }), 'today at 3:20 PM')
+})
+
 test('renewalPhrase drops "today" for the sentence', () => {
   assert.equal(renewalPhrase('2026-10-03T19:20:00Z', NOW, TZ), 'at 3:20 PM')
   assert.equal(renewalPhrase('2026-10-08T13:00:00Z', NOW, TZ), 'Thursday, Oct 8 at 9:00 AM')

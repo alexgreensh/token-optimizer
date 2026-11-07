@@ -173,3 +173,52 @@ def test_temp_ancestor_git_probe_is_stat_exempt_only_for_dot_git(monkeypatch):
     assert _home_guard._stat_exempt(os.path.join(real, ".git"))
     assert not _home_guard._stat_exempt(os.path.join(real, ".claude"))
     assert not _home_guard._stat_exempt(os.path.join(real, ".claude", ".git"))
+
+
+
+def test_account_home_identity_exception_is_metadata_only():
+    assert _home_guard._allowed("STAT", ".")
+    for kind in ("R", "W", "LIST", "SQLITE"):
+        assert not _home_guard._allowed(kind, "."), kind
+    for child in (".claude", ".claude/settings.json", "config.json", "private.txt"):
+        assert not _home_guard._allowed("STAT", child), child
+
+
+def test_exact_root_stat_rule_still_detects_decoy_content_access(tmp_path):
+    """Use a disposable account home, never actual user files, for negatives."""
+    import json
+    import subprocess
+    decoy = tmp_path / "decoy account"
+    decoy.mkdir()
+    (decoy / "private.json").write_text("fixture", encoding="utf-8")
+    code = '''import json, os, sqlite3, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import _home_guard as guard
+guard.install_sandbox(); guard.install_guard()
+root = Path(guard.REAL_HOME)
+root.stat(); root.lstat()
+assert guard.HITS == [], guard.HITS
+ghost = root / "missing-dir" / "config.json"
+for operation in (ghost.stat, ghost.lstat):
+    try:
+        operation()
+    except OSError:
+        pass
+    else:
+        raise AssertionError("missing decoy unexpectedly exists")
+assert any(hit[2] == "STAT" for hit in guard.HITS), guard.HITS
+guard.HITS.clear()
+ghost.exists()
+assert any(hit[2] == "STAT" for hit in guard.HITS), guard.HITS
+open(root / "private.json").close()
+open(root / "written.json", "w").close()
+os.listdir(root)
+connection = sqlite3.connect(root / "test.db"); connection.close()
+print(json.dumps(sorted({hit[2] for hit in guard.HITS})))
+'''
+    env = dict(os.environ, TOKEN_OPTIMIZER_TEST_REAL_HOME_OVERRIDE=str(decoy))
+    proc = subprocess.run([sys.executable, "-c", code, str(Path(__file__).parent)],
+                          env=env, capture_output=True, text=True, timeout=15)
+    assert proc.returncode == 0, proc.stderr
+    assert {"STAT", "R", "W", "LIST", "SQLITE"} <= set(json.loads(proc.stdout))

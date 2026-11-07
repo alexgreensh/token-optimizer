@@ -163,7 +163,7 @@ def _inspection_text(text):
                 continue
             restored = ast.ExceptHandler(type=handler.type, name=target.attr, body=guarded.body)
             rendered = ast.unparse(ast.fix_missing_locations(restored))
-            if any(isinstance(parent, ast.TryStar) and handler in parent.handlers for parent in ast.walk(tree)):
+            if any(isinstance(parent, getattr(ast, "TryStar", ())) and handler in parent.handlers for parent in ast.walk(tree)):
                 rendered = rendered.replace('except ', 'except* ', 1)
             rendered = rendered.replace('\n', '\n' + ' ' * handler.col_offset)
             _, _, position = positions(code)

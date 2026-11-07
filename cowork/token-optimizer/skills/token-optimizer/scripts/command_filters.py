@@ -39,6 +39,7 @@ from __future__ import annotations
 import fnmatch
 import functools
 import os
+import stat
 import re
 import sys
 from dataclasses import dataclass, field
@@ -607,7 +608,19 @@ def load_filters() -> CommandFilterConfig:
         if parser is None:
             _warn_once(path, "no TOML parser available; ignoring")
             return CommandFilterConfig()
-        with open(path, "rb") as handle:
+        # Open without blocking and require a regular file, so a FIFO or
+        # device at the filters path can never hang the hook.
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                os.close(fd)
+                _warn_once(path, "not a regular file; ignoring")
+                return CommandFilterConfig()
+            handle = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
             data = parser.load(handle)
     except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
         # tomllib.TOMLDecodeError and tomli.TOMLDecodeError are both ValueError;

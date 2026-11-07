@@ -99,6 +99,9 @@ def contexts_in(event, group):
     return [entry_context(event, group, handler) for handler in _handlers(group)]
 
 
+_MAX_NAMED_INTERPRETERS = 4
+
+
 class CodexProof:
     def __init__(self, hooks_path, root, current_contexts=(), windows=None, executable=None,
                  ledger_dir=None):
@@ -142,6 +145,11 @@ class CodexProof:
             for piece in command.split('"') + command.replace('"', " ").split():
                 if piece not in found and owned_hooks._our_interpreter(piece):
                     found.append(piece)
+                    # Our commands name one interpreter. A few covers every
+                    # real shape and keeps a crafted command from making the
+                    # check build template sets for hundreds of paths.
+                    if len(found) > _MAX_NAMED_INTERPRETERS:
+                        break
         return found
 
     def _instances(self, version, executable=None):

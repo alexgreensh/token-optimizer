@@ -273,3 +273,17 @@ def test_doctor_flags_only_hooks_naming_our_hook_scripts(home, semver_root, comm
     path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}),
                     encoding="utf-8")
     assert len(codex_doctor._unproven_hook_checks()) == int(flagged)
+
+
+def test_a_command_naming_many_interpreters_stays_cheap_to_check():
+    """A crafted command that names hundreds of interpreter paths must not make
+    the ownership check build a template set for each one."""
+    import time
+    proof = _win_proof(NEW_PY)
+    pythons = " ".join(rf"C:\Py{n}\python.exe" for n in range(400))
+    names = proof._interpreters(pythons)
+    assert names[0] == NEW_PY
+    assert len(names) <= chp._MAX_NAMED_INTERPRETERS + 1
+    started = time.monotonic()
+    assert not proof.owns(("Stop", "", "command", pythons))
+    assert time.monotonic() - started < 2.0

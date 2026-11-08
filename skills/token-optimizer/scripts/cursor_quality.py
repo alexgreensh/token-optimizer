@@ -77,8 +77,8 @@ _BASE_FAMILY_SCALE_WITH_EXTRAS = 0.6
 # If a future Cursor version persists a real source, the signal can activate.
 _NEVER_AVAILABLE = {
     "stale_reads": (
-        "no Cursor read ledger yet - read-cache interception (U2) has not "
-        "landed on this tree"
+        "read-cache events are not aggregated into this scorer, and current "
+        "persisted Cursor data carries no reread evidence to measure"
     ),
     "bloated_results": (
         "Cursor disk transcripts never persist tool outputs (bundle-proven "

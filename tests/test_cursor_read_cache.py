@@ -128,6 +128,32 @@ def test_soft_block_changed_file_denies_with_delta(env):
     assert decision["observed"]["decision"] == "deny_delta"
 
 
+def test_soft_block_degrades_to_warn_after_bounded_denies(env):
+    """G0: soft_block is not a trap - 3 real denials, then warn-and-allow."""
+    cur, _, target, _ = env
+    _arm(cur)
+    rc.evaluate(_fields(target))  # first read
+    for i in range(3):
+        d = rc.evaluate(_fields(target))
+        assert d["emit"]["permission"] == "deny", f"denial {i + 1} expected"
+    fourth = rc.evaluate(_fields(target))
+    assert fourth["emit"] is not None
+    assert "permission" not in fourth["emit"]  # allowed through
+    assert "user_message" in fourth["emit"]  # with a warn note
+    assert fourth["observed"]["decision"] == "warn_redundant"
+
+
+def test_block_mode_never_degrades(env):
+    """G0: the explicit block mode keeps denying - the escape hatch is a
+    soft_block property only."""
+    cur, _, target, _ = env
+    _arm(cur, "block")
+    rc.evaluate(_fields(target))
+    for _ in range(5):
+        d = rc.evaluate(_fields(target))
+        assert d["emit"]["permission"] == "deny"
+
+
 def test_first_read_and_partial_reads_never_denied(env):
     cur, _, target, _ = env
     _arm(cur, "block")  # even the harshest mode

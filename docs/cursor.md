@@ -55,7 +55,10 @@ Copilot's CLI ships weekly and its hook fields regress, so that adapter gates
 features on a per-version capability map. Cursor's hooks are structured
 differently: every handler appends one line to
 `~/.cursor/token-optimizer/observed-events.jsonl`, and each event records whether
-the Shell rewrite was `attempted`, `honoured`, or `ignored`. `cursor-doctor
+the Shell rewrite was `attempted`, `honoured`, or `ignored` — the latter two
+only when the executed command pairs byte-for-byte with the rewrite staged
+under the same `tool_use_id`; an unpaired execution records nothing rather
+than guessing. `cursor-doctor
 --probe` replays the documented payloads through the installed `command`, so on
 any given build you can prove exactly which of the eleven events fire — no version
 table to rot.

@@ -157,6 +157,46 @@ def test_session_end_marks_tally_final(cursor_dir, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# G0: hostile payload envelope + hot-path bounds
+# ---------------------------------------------------------------------------
+
+
+def test_deeply_nested_stdin_payload_still_exits_zero():
+    """G0 P1: '['*2000 raises RecursionError inside json.loads; the bridge
+    must treat it as undecodable and still exit 0 (always-exit-0 invariant)."""
+    import subprocess as sp
+
+    proc = sp.run(
+        [sys.executable, str(SCRIPTS / "cursor_hook_bridge.py"), "preToolUse"],
+        input="[" * 2000 + "]" * 2000,
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr[-300:]
+
+
+def test_nested_tool_input_string_never_raises(cursor_dir, monkeypatch):
+    payload = _shell_payload("git status")
+    payload["tool_input"] = "[" * 1500 + "]" * 1500
+    bridge.handle_pre_tool_use(payload)  # must not raise
+
+
+def test_oversized_command_skips_rewrite_fast(cursor_dir, monkeypatch, capsys):
+    """G0 P1: shlex is quadratic on hostile lengths; commands past the cap
+    pass through uncompressed without touching the whitelist/parser."""
+    calls = []
+    monkeypatch.setattr(bridge, "_bash_hook", SimpleNamespace(
+        _is_auto_approvable=lambda c: calls.append(c) or True,
+    ))
+    monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
+    monkeypatch.setattr(bridge, "_COMPRESS_PATH", SCRIPTS / "bash_compress.py")
+
+    bridge.handle_pre_tool_use(_shell_payload("git status #" + "x" * 9000))
+
+    assert capsys.readouterr().out.strip() == ""
+    assert calls == []  # whitelist never invoked on an oversized command
+
+
+# ---------------------------------------------------------------------------
 # preToolUse output contract + rewrite
 # ---------------------------------------------------------------------------
 
@@ -219,19 +259,46 @@ def test_pre_tool_use_dangerous_command_emits_nothing(cursor_dir, monkeypatch, c
 # ---------------------------------------------------------------------------
 
 
-def test_post_tool_use_records_rewrite_honoured(cursor_dir, monkeypatch):
+def _run_rewrite_pair(cursor_dir, monkeypatch, capsys, executed_command):
+    """Drive preToolUse (stages the rewrite), then postToolUse as Cursor
+    would: same tool_use_id, the command actually executed."""
     _fake_bash(monkeypatch, whitelisted=True)
     monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
-    cmd = "python3 /tmp/bash_compress.py git status"
-    bridge.handle_post_tool_use(_shell_payload(cmd))
+    monkeypatch.setattr(bridge, "_COMPRESS_PATH", SCRIPTS / "bash_compress.py")
+    pre = _shell_payload("git status")
+    pre["hook_event_name"] = "preToolUse"
+    pre["tool_use_id"] = "toolu-pair-1"
+    bridge.handle_pre_tool_use(pre)
+    emitted = json.loads(capsys.readouterr().out)
+    rewritten = emitted["updated_input"]["command"]
+    post = _shell_payload(rewritten if executed_command is None else executed_command)
+    post["tool_use_id"] = "toolu-pair-1"
+    bridge.handle_post_tool_use(post)
+    return rewritten
+
+
+def test_post_tool_use_records_rewrite_honoured(cursor_dir, monkeypatch, capsys):
+    rewritten = _run_rewrite_pair(cursor_dir, monkeypatch, capsys, None)
+    # honoured: the executed command is byte-identical to the staged rewrite.
+    assert "bash_compress.py" in rewritten
     assert _read_last_observed(cursor_dir)["rewrite"] == "honoured"
 
 
-def test_post_tool_use_records_rewrite_ignored(cursor_dir, monkeypatch):
+def test_post_tool_use_records_rewrite_ignored(cursor_dir, monkeypatch, capsys):
+    _run_rewrite_pair(cursor_dir, monkeypatch, capsys, "git status")
+    # ignored: a rewrite was staged but the bare command actually ran.
+    assert _read_last_observed(cursor_dir)["rewrite"] == "ignored"
+
+
+def test_post_tool_use_no_attempt_is_unknown_not_proof(cursor_dir, monkeypatch):
+    # G0: no staged rewrite for this tool_use_id -> NO classification; a bare
+    # whitelisted command or an 'ls bash_compress.py' proves nothing.
     _fake_bash(monkeypatch, whitelisted=True)
     monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
     bridge.handle_post_tool_use(_shell_payload("git status"))
-    assert _read_last_observed(cursor_dir)["rewrite"] == "ignored"
+    assert "rewrite" not in _read_last_observed(cursor_dir)
+    bridge.handle_post_tool_use(_shell_payload("ls bash_compress.py"))
+    assert "rewrite" not in _read_last_observed(cursor_dir)
 
 
 def test_post_tool_use_skips_non_whitelisted_rewrite_ledger(cursor_dir, monkeypatch):

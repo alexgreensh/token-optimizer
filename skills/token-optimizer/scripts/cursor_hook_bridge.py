@@ -139,7 +139,9 @@ def _read_stdin_payload():
         return None
     try:
         payload = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        # RecursionError: a deeply nested payload ('[' * 2000 ...) must never
+        # escape the fail-open envelope and break always-exit-0 (G0).
         return None
     if not isinstance(payload, dict):
         return None
@@ -155,7 +157,7 @@ def _parse_tool_input(raw):
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
                 return parsed
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             pass
     return {}
 
@@ -840,7 +842,11 @@ def handle_pre_tool_use(payload):
     rewrite = None
     if fields["tool_name"] == "Shell" and _compression_enabled():
         command = fields["tool_args"].get("command")
-        if isinstance(command, str) and command:
+        # G0: cap BEFORE the whitelist/shlex path - shlex.split is quadratic
+        # on hostile lengths (measured: 300KB=2s, 1MB=23.7s) and the stdin
+        # cap permits multi-MB commands. Oversized commands pass through
+        # uncompressed; compression is a savings feature, never a gate.
+        if isinstance(command, str) and 0 < len(command) <= _MAX_REWRITE_COMMAND_BYTES:
             # The rewrite is emitted with permission "allow", so it is limited
             # to commands that cannot write, delete or run other programs.
             if _bash_hook._is_auto_approvable(command):
@@ -860,6 +866,7 @@ def handle_pre_tool_use(payload):
                     updated = dict(fields["tool_args"])
                     updated["command"] = rewritten
                     _emit({"permission": "allow", "updated_input": updated})
+                    _stage_pending_rewrite(fields, rewritten)
                     rewrite = "attempted"
     _record_observed("preToolUse",
                      conversation_id=fields["conversation_id"] or None,
@@ -870,17 +877,17 @@ def handle_pre_tool_use(payload):
 def handle_post_tool_use(payload):
     """Update the tally and, for Shell, record whether the rewrite was honoured.
 
-    Cursor's postToolUse tool_input carries the command as actually executed:
-    ``command`` containing ``bash_compress.py`` proves the rewrite was honoured;
-    a whitelisted command that arrived bare proves it was ignored.
+    G0: honoured/ignored is PAIRED, never inferred from substrings. preToolUse
+    stages the exact rewritten command under this tool_use_id; postToolUse
+    compares the executed command against it byte-for-byte. No staged attempt
+    means unknown - neither honoured nor ignored is provable (a bare
+    whitelisted command or an executed 'ls bash_compress.py' both say
+    nothing), and the old substring heuristic lied in both directions.
     """
     fields = decode_payload(payload)
     rewrite = None
     if fields["tool_name"] == "Shell" and _compression_enabled():
-        command = fields["tool_args"].get("command")
-        if isinstance(command, str) and command:
-            if not _bash_hook._has_dangerous_chars(command) and _bash_hook._is_whitelisted(command):
-                rewrite = "honoured" if "bash_compress.py" in command else "ignored"
+        rewrite = _classify_rewrite(fields)
     read_path = None
     if fields["tool_name"] == "Read":
         rp = fields["tool_args"].get("file_path")
@@ -923,6 +930,77 @@ def handle_post_tool_use(payload):
 
 
 _COMPACT_RESTORE_MAX_BYTES = 8_000  # restore payload cap (bounded inject)
+_MAX_REWRITE_COMMAND_BYTES = 8_192  # shlex is quadratic past this (G0)
+_PENDING_REWRITE_MAX_AGE = 600  # seconds; staged rewrite evidence horizon
+
+
+def _pending_rewrite_path(tool_use_id):
+    safe = _SESSION_ID_RE.sub("", str(tool_use_id))[:64]
+    if len(safe) < 6:
+        return None
+    to_dir = _to_dir()
+    if to_dir is None:
+        return None
+    return to_dir / "pending-rewrites" / f"{safe}.json"
+
+
+def _stage_pending_rewrite(fields, rewritten):
+    """Stage THIS tool_use_id's rewritten command for postToolUse pairing.
+
+    Best-effort and bounded: the dir is pruned by age on each stage so a
+    crash between pre and post never leaks files. Never raises.
+    """
+    try:
+        if not fields.get("tool_use_id"):
+            return
+        path = _pending_rewrite_path(fields["tool_use_id"])
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        for old in path.parent.glob("*.json"):
+            try:
+                if now - old.stat().st_mtime > _PENDING_REWRITE_MAX_AGE:
+                    old.unlink()
+            except OSError:
+                pass
+        _atomic_write_json(path, {"command": rewritten, "ts": now})
+    except Exception:
+        pass
+
+
+def _classify_rewrite(fields):
+    """Pair the executed Shell command with this tool_use_id's staged rewrite.
+
+    honoured: executed command is byte-identical to what preToolUse emitted.
+    ignored: a rewrite was staged but a different command actually ran.
+    None: no staged attempt (unknown - never proof in either direction, G0).
+    """
+    try:
+        if not fields.get("tool_use_id"):
+            return None
+        path = _pending_rewrite_path(fields["tool_use_id"])
+        if path is None or not path.is_file() or path.is_symlink():
+            return None
+        try:
+            staged = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            staged = None
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        if not isinstance(staged, dict):
+            return None
+        expected = staged.get("command")
+        if not isinstance(expected, str):
+            return None
+        actual = fields["tool_args"].get("command")
+        if not isinstance(actual, str) or not actual:
+            return "ignored"  # an attempt was staged but nothing comparable ran
+        return "honoured" if actual == expected else "ignored"
+    except Exception:
+        return None
 
 
 def _capture_compact_checkpoint(fields):

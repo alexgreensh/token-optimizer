@@ -42,6 +42,7 @@ _MAX_STORE_ENTRIES = 200
 _MAX_STORE_BYTES = 512 * 1024
 _MAX_FILE_BYTES = 1024 * 1024  # never intercept reads of very large files
 _MODES = ("shadow", "soft_block", "warn", "block")
+_SOFT_BLOCK_MAX_DENIES = 3  # denials per session+file before degrading to warn
 _DEFAULT_MODE = "shadow"
 
 # Claude settings files scanned (read-only) for KTD9 coexistence, matching
@@ -329,10 +330,11 @@ def _evaluate(fields) -> dict | None:
         # Changed since the observed read: serve a delta when we hold the
         # base content and the file is delta-eligible, else treat as new.
         old_content = entry.get("content")
-        files[file_path] = {
+        new_entry = {
             "hash": digest, "size": size, "ts": time.time(),
             **({"content": current} if current is not None else {}),
         }
+        files[file_path] = new_entry
         _save_store(sid, store)
         if old_content and current:
             try:
@@ -347,15 +349,35 @@ def _evaluate(fields) -> dict | None:
                         delta_text = redact_credentials(delta_text) or delta_text
                         msg = (f"[Token Optimizer] {Path(file_path).name} changed since "
                                f"your last read this session. Delta:\n\n{delta_text}")
-                        return _decide(mode, msg, base, "delta")
+                        return _soft_block_decide(mode, msg, base, "delta",
+                                                  store, sid, file_path, new_entry)
             except Exception:
                 pass
         return {"emit": None, "observed": {**base, "decision": "changed_reread"}}
 
-    # Unchanged redundant read. No store write: the ts refresh would be a
-    # per-Read-hook disk write for pruning metadata only.
+    # Unchanged redundant read. Shadow/warn do no store write: the ts
+    # refresh would be a per-Read-hook disk write for pruning metadata only.
     msg = _structure_message(file_path) or _reason_message(file_path)
-    return _decide(mode, msg, base, "redundant")
+    return _soft_block_decide(mode, msg, base, "redundant", store, sid, file_path, entry)
+
+
+def _soft_block_decide(mode, msg, base, kind, store, sid, file_path, entry):
+    """_decide with a bounded soft_block: deny loops degrade to warn (G0).
+
+    The model gets _SOFT_BLOCK_MAX_DENIES real denials (each carrying the
+    injected map/delta), then soft_block degrades to warn so work can always
+    proceed. Explicit block mode never degrades. The counter costs one store
+    write per DENIED read only; other modes keep the write-free hot path.
+    """
+    if mode != "soft_block":
+        return _decide(mode, msg, base, kind)
+    denies = int(entry.get("denies", 0) or 0) + 1
+    entry["denies"] = denies
+    store.setdefault("files", {})[file_path] = entry
+    _save_store(sid, store)
+    if denies > _SOFT_BLOCK_MAX_DENIES:
+        return _decide("warn", msg, base, kind)
+    return _decide(mode, msg, base, kind)
 
 
 def _decide(mode: str, message: str, base: dict, kind: str) -> dict:

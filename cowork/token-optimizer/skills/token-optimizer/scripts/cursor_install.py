@@ -168,13 +168,21 @@ def _hook_entries(bridge_path: Path) -> dict:
 
     return {
         "sessionStart": [entry("sessionStart")],
-        # Only the Shell tool is rewritten; matcher keeps every other tool out
-        # of the bridge's hot path (Cursor matchers are JS regex over tool name).
-        "preToolUse": [entry("preToolUse", matcher="Shell")],
+        # Shell is rewritten; Read is intercepted by the U2 read cache
+        # (shadow by default, emitting nothing until explicitly armed).
+        # The matcher keeps every other tool out of the bridge's hot path
+        # (Cursor matchers are JS regex over tool name).
+        "preToolUse": [entry("preToolUse", matcher="Shell|Read")],
         "postToolUse": [entry("postToolUse")],
         "preCompact": [entry("preCompact")],
         "stop": [entry("stop")],
         "sessionEnd": [entry("sessionEnd")],
+        # U4 record-only events: accounting, failure/burn signals, corroboration.
+        "afterAgentResponse": [entry("afterAgentResponse")],
+        "postToolUseFailure": [entry("postToolUseFailure")],
+        "afterShellExecution": [entry("afterShellExecution")],
+        "subagentStart": [entry("subagentStart")],
+        "subagentStop": [entry("subagentStop")],
     }
 
 
@@ -242,7 +250,10 @@ def _hooks_lock(hooks_path: Path):
     # 120s lease: the critical section copies the payload and rewrites
     # hooks.json; a 30s lease could lapse mid-RMW on a slow disk and let a
     # concurrent installer reclaim it, reintroducing the clobber.
-    with lease_lock(lock_path, acquire_timeout=5.0, lease_seconds=120.0) as acquired:
+    # reclaim_released: a cleanly FINISHED install (release marker written)
+    # must not block a fast re-run (git pull + reinstall) for the rest of the
+    # lease window; a crashed install's tombstone still holds until expiry.
+    with lease_lock(lock_path, acquire_timeout=5.0, lease_seconds=120.0, reclaim_released=True) as acquired:
         if not acquired:
             raise RuntimeError(
                 "another Cursor install/uninstall is in progress "

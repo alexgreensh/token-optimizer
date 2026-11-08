@@ -7,9 +7,12 @@ only the Cursor-specific parts: payload shape (the bridge's decoded
 ``fields``), the per-session fingerprint store under the Cursor home, the
 mode gate, and the deny + ``user_message`` emit contract.
 
-Modes (mirror Claude): ``shadow`` (default: record what would be injected,
-emit nothing), ``soft_block`` (deny + injected map/delta), ``warn`` (allow
-+ note), ``block`` (deny, reason only). Arming is NEVER automatic:
+Modes (same names as Claude, one deliberate difference): ``shadow``
+(default: record what would be injected, emit nothing), ``soft_block``
+(deny + injected map/delta - BOUNDED here: after 3 denies for the same
+session+file it degrades to ``warn`` so work always proceeds; Claude's
+``soft_block`` denies without a bound), ``warn`` (allow + note), ``block``
+(deny, reason only - never degrades). Arming is NEVER automatic:
 ``soft_block``/``block`` take effect only when the install's
 ``<cursor_home>/token-optimizer/read-cache.json`` names the mode. The
 doctor reports the channel state (``unknown``/``shadow``/

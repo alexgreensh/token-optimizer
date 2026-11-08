@@ -87,6 +87,7 @@ closed** (emits nothing) on any uncertainty.
 | Per-session cost | Cursor exposes no billing figure to hooks or state files; there is no number to pass through, so cost-source is `cursor_no_cost_data` and no savings headline is shown rather than a wrong one | marked red in the capability matrix |
 | Compaction steering | Cursor compacts server-side/model-side; `preCompact` is observational (we record its numbers), not an injection point | — |
 | Database parity surfaces | Cursor moves token fields across `state.vscdb` releases; the reader maps the known shapes and falls back instead of guessing | read-only, never writes |
+| Native IDE Memories | Settings > Memories have no verified local file surface and the IDE state DB schema is unverified; `cursor-audit` performs no IDE DB reads and does not audit them. User Rules and Team Rules are also not file-backed and not audited | marked not-covered in audit output |
 
 Consequences and mitigations:
 
@@ -122,8 +123,13 @@ measure.py cursor-install     # read-merge hooks.json + copy the payload
 measure.py cursor-doctor      # readiness + hook-firing probe (--probe)
 measure.py cursor-summary     # token/quality session summary (reads tallies)
 measure.py cursor-rollup      # ingest sessions into trends.db (auto on stop/sessionEnd)
+measure.py cursor-audit       # rules + hooks setup audit (read-only, never fatal)
 measure.py cursor-uninstall   # remove only what we installed
 ```
+
+`.cursor/rules/*.mdc`, AGENTS.md and legacy `.cursorrules` get the same
+attention-curve audit CLAUDE.md gets, plus `~/.cursor/hooks.json` health
+(`cursor-audit`).
 
 Run them with `TOKEN_OPTIMIZER_RUNTIME=cursor` set (the installer and hooks set
 it for you). `cursor-rollup` and `cursor-summary` refuse with a hint unless the

@@ -13896,6 +13896,116 @@
       "signature": "def _verbosity_nudge_text(fill_pct, score, session_efficiency, cached):",
       "global_declarations": [],
       "sha256": "7324187a6ea9fc436d9646375b5685350df8b32692a245d0adfb8254c220c8ad"
+    },
+    {
+      "name": "_cursor_rule_targets",
+      "module": "audit",
+      "lane": 5,
+      "start": 6961,
+      "end": 7012,
+      "kind": "FunctionDef",
+      "signature": "def _cursor_rule_targets(project_dir):",
+      "global_declarations": [],
+      "sha256": "6709af3cde0f47b46c00fbf617d99c9c8a4922f54eee3a583169e8131714094e"
+    },
+    {
+      "name": "_cursor_parse_rule_frontmatter",
+      "module": "audit",
+      "lane": 5,
+      "start": 7015,
+      "end": 7036,
+      "kind": "FunctionDef",
+      "signature": "def _cursor_parse_rule_frontmatter(text):",
+      "global_declarations": [],
+      "sha256": "2bc48b065ac317d77b1763cf4c041a60ee0d81257fbba916484cce7a0ff339de"
+    },
+    {
+      "name": "_cursor_rule_activation",
+      "module": "audit",
+      "lane": 5,
+      "start": 7039,
+      "end": 7056,
+      "kind": "FunctionDef",
+      "signature": "def _cursor_rule_activation(meta):",
+      "global_declarations": [],
+      "sha256": "6d3dec275b4ae59f8c5bff55a0c2325e1f8430de139e52ca30ce2723e4f5918b"
+    },
+    {
+      "name": "_cursor_rule_lines_findings",
+      "module": "audit",
+      "lane": 5,
+      "start": 7059,
+      "end": 7087,
+      "kind": "FunctionDef",
+      "signature": "def _cursor_rule_lines_findings(file_rules):",
+      "global_declarations": [],
+      "sha256": "7a951b9f30b7a88ecff6cd58e035531ced0596cabbf496bfe5eec201465e1146"
+    },
+    {
+      "name": "_cursor_audit_rule_file",
+      "module": "audit",
+      "lane": 5,
+      "start": 7090,
+      "end": 7294,
+      "kind": "FunctionDef",
+      "signature": "def _cursor_audit_rule_file(path, kind, project_root):",
+      "global_declarations": [],
+      "sha256": "6814ed0d873c361c5efedfe3d56cb7958fcd07a929ef7e28e5eb32d9d77539f5"
+    },
+    {
+      "name": "_cursor_audit_rules",
+      "module": "audit",
+      "lane": 5,
+      "start": 7297,
+      "end": 7311,
+      "kind": "FunctionDef",
+      "signature": "def _cursor_audit_rules(project_dir):",
+      "global_declarations": [],
+      "sha256": "cf8477744c220fb5665ed29a908718fc0f8718a80cb1e0fafbc15896db7bbba6"
+    },
+    {
+      "name": "_cursor_hook_commands_from_settings",
+      "module": "audit",
+      "lane": 5,
+      "start": 7314,
+      "end": 7332,
+      "kind": "FunctionDef",
+      "signature": "def _cursor_hook_commands_from_settings(settings):",
+      "global_declarations": [],
+      "sha256": "3ffc4f52d1e214aa067ac304bc54dfb90a80e555fba13acf1743ca15694af12b"
+    },
+    {
+      "name": "_cursor_audit_hooks",
+      "module": "audit",
+      "lane": 5,
+      "start": 7335,
+      "end": 7502,
+      "kind": "FunctionDef",
+      "signature": "def _cursor_audit_hooks(cursor_home, project_dir=None):",
+      "global_declarations": [],
+      "sha256": "601fc22bab281a6b2f857a0a3af058454dea48723f42f14775a903de63a20318"
+    },
+    {
+      "name": "_cursor_not_covered",
+      "module": "audit",
+      "lane": 5,
+      "start": 7505,
+      "end": 7515,
+      "kind": "FunctionDef",
+      "signature": "def _cursor_not_covered():",
+      "global_declarations": [],
+      "sha256": "15be7f5d2b67400c5d63adc3fc20224ef9507922e887a8dd7af8195d2c0d0499"
+    },
+    {
+      "name": "cursor_audit",
+      "module": "audit",
+      "lane": 5,
+      "start": 7518,
+      "end": 7640,
+      "kind": "FunctionDef",
+      "signature": "def cursor_audit(project_dir=None, cursor_home=None, as_json=None):",
+      "global_declarations": [],
+      "sha256": "160773b5b14ed39ad402c931aa60793bafcbb22bb21b0ed247856874801bf994"
     }
   ],
   "dispatch": {

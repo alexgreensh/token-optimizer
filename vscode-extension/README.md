@@ -101,7 +101,9 @@ What Cursor data can and cannot show today:
 A separate, strictly opt-in Cursor CLI `statusLine` command
 (`skills/token-optimizer/scripts/cursor_statusline.py`) renders the same grade/fill in the
 Cursor CLI footer. It **replaces the native footer** (Cursor offers no append mode), so the
-installer wires it only on explicit request.
+installer does not wire it: enabling it is a manual, deliberate step. To opt in, add the
+`statusLine` command to your Cursor CLI config pointing at that script; remove the key to
+restore the native footer.
 
 The setting takes effect immediately without reloading VS Code.
 

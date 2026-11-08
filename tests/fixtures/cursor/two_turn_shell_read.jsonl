@@ -1,0 +1,8 @@
+{"type": "conversation_meta", "metadata": {"overview": "debug shell loop"}}
+{"role": "user", "message": {"content": [{"type": "text", "text": "why does the build keep failing? run the test again"}]}}
+{"role": "assistant", "message": {"content": [{"type": "text", "text": "I'll run the test suite."}, {"type": "tool_use", "name": "Shell", "input": {"command": "python3 -m pytest -q 2>&1 | tail -5"}}]}}
+{"role": "assistant", "message": {"content": [{"type": "text", "text": "Still failing. Let me read the config."}, {"type": "tool_use", "name": "Read", "input": {"file_path": "/repo/setup.cfg"}}]}}
+{"type": "turn_ended", "status": "success"}
+{"role": "user", "message": {"content": [{"type": "text", "text": "try with password=hunter2 in the env"}]}}
+{"role": "assistant", "message": {"content": [{"type": "text", "text": "Running with the provided credential."}, {"type": "tool_use", "name": "Shell", "input": {"command": "APP_PASSWORD=hunter2 python3 -m pytest -q"}}]}}
+{"type": "turn_ended", "status": "error", "error": "model stream aborted"}

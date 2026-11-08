@@ -2485,8 +2485,10 @@ def main():
             print(_measure_facade.json.dumps(_measure_facade.result, indent=2, default=str))
     elif _measure_facade.args[0] == "cursor-audit":
         # Read-only audit of Cursor rules + hooks; deliberately NOT gated on
-        # detect_runtime() == "cursor": it never reads ~/.claude, so a
-        # Claude-runtime user auditing their Cursor setup is legitimate.
+        # detect_runtime() == "cursor": beyond the Cursor runtime itself it
+        # reads only 4 Claude settings files for hook-import coexistence
+        # detection (never other ~/.claude state), so a Claude-runtime user
+        # auditing their Cursor setup is legitimate.
         _measure_facade.output_json = "--json" in _measure_facade.args
         _measure_facade.proj_dir = None
         for _measure_facade.i, _measure_facade.a in enumerate(_measure_facade.args):

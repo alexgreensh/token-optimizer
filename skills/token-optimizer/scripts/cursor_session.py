@@ -178,10 +178,14 @@ def resolve_token_source(bubble_tokens, transcript_tokens, hook_measured=None):
 
     Returns ``(input_tokens, output_tokens, token_source, estimated)``.
     Bubble tokens win only when at least one of input/output is non-zero;
-    then hook-measured per-response sums (``cursor_hook_measured``), where the
-    input side is cache-occupancy-inclusive (input + cache_read + cache_write,
-    all of which occupy the window); then the transcript estimate; otherwise a
-    zero-token tally-only row.
+    then the transcript estimate; otherwise a zero-token tally-only row.
+
+    ``hook_measured`` is accepted for signature stability but QUARANTINED:
+    afterAgentResponse usage numbers are stored in the tally's
+    ``hook_measured_tokens`` bucket for offline correlation only. Whether
+    they are per-response or cumulative is unproven, so they must never be
+    summed into resolved session tokens; claiming them as trusted fill
+    (``estimated = False``) would be a premature candidate claim.
     """
     if isinstance(bubble_tokens, dict) and (
         _safe_int(bubble_tokens.get("input_tokens")) > 0
@@ -191,18 +195,6 @@ def resolve_token_source(bubble_tokens, transcript_tokens, hook_measured=None):
             _safe_int(bubble_tokens.get("input_tokens")),
             _safe_int(bubble_tokens.get("output_tokens")),
             "cursor_state_vscdb",
-            False,
-        )
-    if isinstance(hook_measured, dict) and (
-        _safe_int(hook_measured.get("input")) > 0
-        or _safe_int(hook_measured.get("output")) > 0
-    ):
-        return (
-            _safe_int(hook_measured.get("input"))
-            + _safe_int(hook_measured.get("cache_read"))
-            + _safe_int(hook_measured.get("cache_write")),
-            _safe_int(hook_measured.get("output")),
-            "cursor_hook_measured",
             False,
         )
     if transcript_tokens is not None:

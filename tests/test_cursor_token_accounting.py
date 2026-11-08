@@ -100,7 +100,10 @@ def test_after_agent_response_rejects_implausible_values(cursor_dir, capsys):
     assert all(e.get("tokens") == "rejected" for e in events)
 
 
-def test_hook_measured_slots_between_vscdb_and_estimate():
+def test_hook_measured_quarantined_from_resolution():
+    """afterAgentResponse usage numbers are stored for offline correlation
+    only: per-response vs cumulative semantics are unproven, so resolution
+    must never consume them - even when they are the only positive source."""
     sys.path.insert(0, str(SCRIPTS))
     import cursor_session
 
@@ -109,12 +112,14 @@ def test_hook_measured_slots_between_vscdb_and_estimate():
     src = cursor_session.resolve_token_source(
         {"input_tokens": 10, "output_tokens": 5}, 99999, hook_measured=measured)
     assert src[2] == "cursor_state_vscdb"
-    # measured beats the transcript estimate; input includes cache occupancy
+    # hook-measured values do NOT beat the transcript estimate (quarantine)
     src = cursor_session.resolve_token_source(None, 99999, hook_measured=measured)
-    assert src[0] == 2700 + 5000 + 800  # input + cache_read + cache_write
-    assert src[1] == 400
-    assert src[2] == "cursor_hook_measured"
-    assert src[3] is False
+    assert src[2] == "cursor_transcript_estimate"
+    assert src[3] is True
+    # and with no transcript estimate they do not mint trusted tokens either
+    src = cursor_session.resolve_token_source(None, None, hook_measured=measured)
+    assert src[2] == "cursor_tally_only"
+    assert src[0] == 0 and src[1] == 0
     # absent measured falls through unchanged
     src = cursor_session.resolve_token_source(None, 99999, hook_measured=None)
     assert src[2] == "cursor_transcript_estimate"

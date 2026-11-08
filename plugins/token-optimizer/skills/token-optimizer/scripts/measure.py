@@ -5479,6 +5479,16 @@ attention_score = _measure_compat.bind(_measure_providers['audit'].attention_sco
 
 
 attention_optimize = _measure_compat.bind(_measure_providers['audit'].attention_optimize, __name__, defaults=(None, True, False,))
+_cursor_rule_targets = _measure_compat.bind(_measure_providers['audit']._cursor_rule_targets, __name__)
+_cursor_parse_rule_frontmatter = _measure_compat.bind(_measure_providers['audit']._cursor_parse_rule_frontmatter, __name__)
+_cursor_rule_activation = _measure_compat.bind(_measure_providers['audit']._cursor_rule_activation, __name__)
+_cursor_rule_lines_findings = _measure_compat.bind(_measure_providers['audit']._cursor_rule_lines_findings, __name__)
+_cursor_audit_rule_file = _measure_compat.bind(_measure_providers['audit']._cursor_audit_rule_file, __name__)
+_cursor_audit_rules = _measure_compat.bind(_measure_providers['audit']._cursor_audit_rules, __name__)
+_cursor_hook_commands_from_settings = _measure_compat.bind(_measure_providers['audit']._cursor_hook_commands_from_settings, __name__)
+_cursor_audit_hooks = _measure_compat.bind(_measure_providers['audit']._cursor_audit_hooks, __name__, defaults=(None,))
+_cursor_not_covered = _measure_compat.bind(_measure_providers['audit']._cursor_not_covered, __name__)
+cursor_audit = _measure_compat.bind(_measure_providers['audit'].cursor_audit, __name__, defaults=(None, None, False,))
 
 
 # ========== Tool Result Archive (v3.0) ==========

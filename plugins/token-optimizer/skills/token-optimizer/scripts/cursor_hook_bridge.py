@@ -185,6 +185,12 @@ def decode_payload(payload):
         "context_window_size": 0,
         "context_usage_percent": 0.0,
         "trigger": "",
+        # U4 correlation/output fields (CLI bundle 2026.11.05 evidence)
+        "generation_id": "",
+        "tool_use_id": "",
+        "parent_tool_call_id": "",
+        "tool_output": "",
+        "duration": 0.0,
     }
     if not isinstance(payload, dict):
         return out
@@ -221,6 +227,18 @@ def decode_payload(payload):
     tp = payload.get("transcript_path")
     if isinstance(tp, str):
         out["transcript_path"] = tp[:1024]
+
+    for key in ("generation_id", "tool_use_id", "parent_tool_call_id"):
+        v = payload.get(key)
+        if isinstance(v, str):
+            out[key] = v[:128]
+    to = payload.get("tool_output")
+    if isinstance(to, str):
+        out["tool_output"] = to[:262144]
+    try:
+        out["duration"] = float(payload.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        out["duration"] = 0.0
 
     model = payload.get("model")
     if isinstance(model, str):
@@ -363,7 +381,8 @@ def _session_lock(to_dir, sid):
 
 def _update_tally(fields, *, terminal=False, end_reason=None,
                   increment_turns=False, count_tool=False, compaction=None,
-                  bump_nudge=False):
+                  bump_nudge=False, hook_tokens=None, failure=False,
+                  subagent=False, compact_checkpoint=None, restore_pending=None):
     """Read-modify-write the session tally; returns ``(tally, nudge_emitted)``.
 
     Non-terminal activity reopens an idle/sessionEnd-finalised tally (final set
@@ -425,6 +444,29 @@ def _update_tally(fields, *, terminal=False, end_reason=None,
             comps = tally.setdefault("compactions", [])
             comps.append(compaction)
             tally["compactions"] = comps[-200:]
+
+        if compact_checkpoint is not None:
+            tally["compact_checkpoint"] = compact_checkpoint
+        if restore_pending is not None:
+            tally["restore_pending"] = bool(restore_pending)
+
+        if hook_tokens is not None:
+            hm = tally.setdefault("hook_measured_tokens", {
+                "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+                "responses": 0, "source": "cursor_hook_measured",
+            })
+            for k in ("input", "output", "cache_read", "cache_write"):
+                hm[k] = int(hm.get(k, 0) or 0) + int(hook_tokens.get(k) or 0)
+            hm["responses"] = int(hm.get("responses", 0) or 0) + 1
+            hm["source"] = "cursor_hook_measured"
+
+        if failure:
+            fails = tally.setdefault("failures", {})
+            fname = fields.get("tool_name") or "tool"
+            fails[fname] = int(fails.get(fname, 0) or 0) + 1
+
+        if subagent:
+            tally["subagents"] = int(tally.get("subagents", 0) or 0) + 1
 
         # Context-growth nudge (R10), folded into THIS locked RMW: computing it
         # in the caller needed a second lock (and a gap a concurrent stop/
@@ -708,8 +750,37 @@ def handle_session_start(payload):
 
 
 def handle_pre_tool_use(payload):
-    """Shell bash-compression via updated_input, gated and fail-closed."""
+    """Shell bash-compression via updated_input, gated and fail-closed.
+
+    Read interception (U2) runs through cursor_read_cache: shadow by
+    default, deny + user_message only under an explicit per-install mode,
+    fail-open on every uncertainty.
+    """
     fields = decode_payload(payload)
+    if fields["tool_name"] == "Read":
+        try:
+            import cursor_read_cache
+
+            decision = cursor_read_cache.evaluate(fields)
+        except Exception:
+            decision = None
+        if decision is not None:
+            emit = decision.get("emit")
+            if emit:
+                _emit(emit)
+            observed = decision.get("observed")
+            if isinstance(observed, dict):
+                _record_observed("readCache",
+                                 conversation_id=fields["conversation_id"] or None,
+                                 **observed)
+        else:
+            # Not an interceptable read (ineligible, first read elsewhere,
+            # fail-open): keep the plain observed record.
+            _record_observed("preToolUse",
+                             conversation_id=fields["conversation_id"] or None,
+                             tool_name=fields["tool_name"] or None,
+                             rewrite=None)
+        return
     rewrite = None
     if fields["tool_name"] == "Shell" and _compression_enabled():
         command = fields["tool_args"].get("command")
@@ -735,6 +806,7 @@ def handle_pre_tool_use(payload):
                     _emit({"permission": "allow", "updated_input": updated})
                     rewrite = "attempted"
     _record_observed("preToolUse",
+                     conversation_id=fields["conversation_id"] or None,
                      tool_name=fields["tool_name"] or None,
                      rewrite=rewrite)
 
@@ -753,19 +825,141 @@ def handle_post_tool_use(payload):
         if isinstance(command, str) and command:
             if not _bash_hook._has_dangerous_chars(command) and _bash_hook._is_whitelisted(command):
                 rewrite = "honoured" if "bash_compress.py" in command else "ignored"
+    read_path = None
+    if fields["tool_name"] == "Read":
+        rp = fields["tool_args"].get("file_path")
+        if isinstance(rp, str) and rp:
+            read_path = Path(rp).name
     _record_observed("postToolUse",
+                     conversation_id=fields["conversation_id"] or None,
                      tool_name=fields["tool_name"] or None,
+                     path=read_path,
                      rewrite=rewrite)
 
     tally, nudge_emitted = _update_tally(fields, count_tool=True, bump_nudge=True)
     if tally is None:
         return
-    if nudge_emitted:
-        _emit({"additional_context": _NUDGE_TEXT})
+    nudges = [_NUDGE_TEXT] if nudge_emitted else []
+    # U3: post-compaction restore - exactly one bounded inject, then clear.
+    # Consecutive compactions without a tool call coalesce to this one.
+    if tally.get("restore_pending"):
+        restore_text = None
+        cp = tally.get("compact_checkpoint")
+        if isinstance(cp, str) and cp:
+            restore_text = _read_checkpoint_bounded(cp)
+        _update_tally(fields, restore_pending=False)
+        if restore_text:
+            nudges.append(restore_text)
+            _record_observed("compactRestore",
+                             conversation_id=fields["conversation_id"] or None,
+                             emitted=True)
+    # U5 thrash guard: same streak/burn/inline-script logic as Claude,
+    # nudge-only, fail-open (cursor_thrash owns the env bridging).
+    if fields["tool_name"] == "Shell":
+        import cursor_thrash
+
+        thrash = cursor_thrash.shell_thrash_nudge(fields)
+        if thrash:
+            nudges.append(thrash)
+            _record_observed("thrashNudge", nudge="thrash")
+    if nudges:
+        _emit({"additional_context": "\n".join(nudges)})
+
+
+_COMPACT_RESTORE_MAX_BYTES = 8_000  # restore payload cap (bounded inject)
+
+
+def _capture_compact_checkpoint(fields):
+    """U3: translate the Cursor disk transcript and capture a checkpoint.
+
+    Returns the checkpoint path (str) or None. Uses the U1 adapter's
+    bundle-proven schema translation and compact_capture's trusted internal
+    path; the translated temp file is always removed. Imported ``measure``
+    resolves CHECKPOINT_DIR under the Cursor runtime home (CURSOR_VERSION is
+    exported to every Cursor hook process), so checkpoint state never lands
+    in Claude's ledger. Fail-open: any error returns None and preCompact
+    degrades to today's numbers-only recording.
+    """
+    transcript_path = fields.get("transcript_path")
+    sid = fields.get("conversation_id") or ""
+    if not transcript_path or not sid:
+        return None
+    translated = None
+    try:
+        import cursor_transcript
+        from cursor_thrash import _restore_env, _set_env
+
+        home = cursor_home() if cursor_home is not None else None
+        if home is None:
+            return None
+        translated = cursor_transcript.translate_transcript(
+            transcript_path, home, sid
+        )
+        if translated is None:
+            return None
+        old_snapshot = _set_env(
+            "TOKEN_OPTIMIZER_SNAPSHOT_DIR",
+            str(home / "token-optimizer" / "snapshot"),
+        )
+        try:
+            import measure
+
+            fill_pct = fields.get("context_usage_percent")
+            try:
+                fill_pct = float(fill_pct) if fill_pct is not None else None
+            except (TypeError, ValueError):
+                fill_pct = None
+            checkpoint = measure.compact_capture(
+                session_id=sid,
+                trigger=fields.get("trigger") or "precompact",
+                cwd=fields.get("cwd") or None,
+                fill_pct=fill_pct,
+                _trusted_transcript=translated,
+            )
+        finally:
+            _restore_env("TOKEN_OPTIMIZER_SNAPSHOT_DIR", old_snapshot)
+        return str(checkpoint) if checkpoint else None
+    except Exception:
+        return None
+    finally:
+        if translated is not None:
+            try:
+                translated.unlink()
+            except OSError:
+                pass
+
+
+def _read_checkpoint_bounded(path_str):
+    """Read a checkpoint for restore injection, byte-bounded. Never raises."""
+    try:
+        path = Path(path_str)
+        if not path.is_file() or path.is_symlink():
+            return None
+        if path.stat().st_size > _RESTORE_MAX_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+    if not text.strip():
+        return None
+    if len(text.encode("utf-8", "replace")) > _COMPACT_RESTORE_MAX_BYTES:
+        cut = text[:_COMPACT_RESTORE_MAX_BYTES]
+        text = cut + "\n\n[truncated: checkpoint exceeds restore budget]"
+    return (
+        "Token Optimizer checkpoint captured before compaction "
+        "(restore after context rebuild):\n\n" + text.strip()
+    )
 
 
 def handle_pre_compact(payload):
-    """Record Cursor's real context numbers and compaction trigger."""
+    """Record Cursor's real context numbers and compaction trigger.
+
+    U3: when the payload names a transcript, capture a redacted checkpoint
+    through the U1 adapter + compact_capture and mark restore-pending; the
+    next postToolUse emits exactly one bounded restore. The preCompact
+    ``user_message`` note is emitted and ledgered as ``emitted`` - delivery
+    into Cursor's UI is claimed only with positive native evidence.
+    """
     fields = decode_payload(payload)
     _record_observed("preCompact", conversation_id=fields["conversation_id"] or None)
     _update_tally(
@@ -778,6 +972,18 @@ def handle_pre_compact(payload):
             "ts": time.time(),
         },
     )
+    try:
+        checkpoint = _capture_compact_checkpoint(fields)
+    except Exception:
+        checkpoint = None  # fail-open: never raise into Cursor
+    if checkpoint:
+        _update_tally(fields, compact_checkpoint=checkpoint, restore_pending=True)
+        _record_observed("compactCapture",
+                         conversation_id=fields["conversation_id"] or None,
+                         checkpoint=os.path.basename(checkpoint))
+        _emit({"user_message":
+               "Token Optimizer: checkpoint captured before compaction; "
+               "it will be offered back after the context rebuild."})
 
 
 def handle_stop(payload):
@@ -801,6 +1007,103 @@ def handle_session_end(payload):
     _spawn_dashboard()
 
 
+_RESPONSE_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+
+
+def _opt_nonneg_int(value):
+    """Plausible token count or None: rejects bools, negatives, non-numerics."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ivalue if ivalue >= 0 else None
+
+
+def handle_after_agent_response(payload):
+    """Record the event; ingest real per-response tokens when plausible (KTD3).
+
+    The token fields are third-party-observed and undocumented by Cursor, so
+    they are a candidate source only: present + plausible values accumulate
+    into the tally flagged ``cursor_hook_measured``; anything else leaves the
+    existing source ordering untouched. Record-only: never emits.
+    """
+    fields = decode_payload(payload)
+    raw = payload if isinstance(payload, dict) else {}
+    present = [k for k in _RESPONSE_TOKEN_KEYS if k in raw]
+    state = "absent"
+    tokens = None
+    if present:
+        vals = {k: _opt_nonneg_int(raw.get(k)) for k in present}
+        if all(v is not None for v in vals.values()):
+            state = "measured"
+            tokens = {
+                "input": vals.get("input_tokens") or 0,
+                "output": vals.get("output_tokens") or 0,
+                "cache_read": vals.get("cache_read_tokens") or 0,
+                "cache_write": vals.get("cache_write_tokens") or 0,
+            }
+        else:
+            state = "rejected"
+    _record_observed("afterAgentResponse",
+                     conversation_id=fields["conversation_id"] or None,
+                     generation_id=fields["generation_id"] or None,
+                     tokens=state)
+    if tokens is not None:
+        _update_tally(fields, hook_tokens=tokens)
+
+
+def handle_post_tool_use_failure(payload):
+    """Count tool failures by tool name; feeds the R9 burn signal. Record-only."""
+    fields = decode_payload(payload)
+    error = payload.get("error") if isinstance(payload, dict) else None
+    _record_observed("postToolUseFailure",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_name=fields["tool_name"] or None,
+                     tool_use_id=fields["tool_use_id"] or None,
+                     error=str(error)[:256] if error is not None else None)
+    if fields["conversation_id"]:
+        _update_tally(fields, failure=True)
+
+
+def handle_after_shell_execution(payload):
+    """Corroborate rewrite-honoured evidence. NEVER counts a tool call: the
+    matching postToolUse already did (a Shell call fires both events)."""
+    fields = decode_payload(payload)
+    command = payload.get("command") if isinstance(payload, dict) else None
+    output = payload.get("output") if isinstance(payload, dict) else None
+    _record_observed("afterShellExecution",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_use_id=fields["tool_use_id"] or None,
+                     rewrite=("honoured" if isinstance(command, str)
+                              and "bash_compress.py" in command else None),
+                     output_len=len(output) if isinstance(output, str) else None)
+
+
+def handle_subagent_start(payload):
+    """Record subagent fan-out; counted once per start for fleet rows."""
+    fields = decode_payload(payload)
+    _record_observed("subagentStart",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_use_id=fields["tool_use_id"] or None)
+    if fields["conversation_id"]:
+        _update_tally(fields, subagent=True)
+
+
+def handle_subagent_stop(payload):
+    """Record subagent completion. Record-only; the start already counted."""
+    fields = decode_payload(payload)
+    _record_observed("subagentStop",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_use_id=fields["tool_use_id"] or None)
+
+
 _HANDLERS = {
     "sessionStart": handle_session_start,
     "preToolUse": handle_pre_tool_use,
@@ -808,6 +1111,11 @@ _HANDLERS = {
     "preCompact": handle_pre_compact,
     "stop": handle_stop,
     "sessionEnd": handle_session_end,
+    "afterAgentResponse": handle_after_agent_response,
+    "postToolUseFailure": handle_post_tool_use_failure,
+    "afterShellExecution": handle_after_shell_execution,
+    "subagentStart": handle_subagent_start,
+    "subagentStop": handle_subagent_stop,
 }
 
 

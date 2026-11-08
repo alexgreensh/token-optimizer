@@ -2483,6 +2483,20 @@ def main():
                                stale_days=_measure_facade.stale_d, project_dir=_measure_facade.proj_dir)
         if _measure_facade.output_json and _measure_facade.result:
             print(_measure_facade.json.dumps(_measure_facade.result, indent=2, default=str))
+    elif _measure_facade.args[0] == "cursor-audit":
+        # Read-only audit of Cursor rules + hooks; deliberately NOT gated on
+        # detect_runtime() == "cursor": beyond the Cursor runtime itself it
+        # reads only 4 Claude settings files for hook-import coexistence
+        # detection (never other ~/.claude state), so a Claude-runtime user
+        # auditing their Cursor setup is legitimate.
+        _measure_facade.output_json = "--json" in _measure_facade.args
+        _measure_facade.proj_dir = None
+        for _measure_facade.i, _measure_facade.a in enumerate(_measure_facade.args):
+            if _measure_facade.a == "--project-dir" and _measure_facade.i + 1 < len(_measure_facade.args):
+                _measure_facade.proj_dir = _measure_facade.args[_measure_facade.i + 1]
+        _measure_facade.result = _measure_facade.cursor_audit(project_dir=_measure_facade.proj_dir, as_json=_measure_facade.output_json)
+        if _measure_facade.output_json and _measure_facade.result:
+            print(_measure_facade.json.dumps(_measure_facade.result, indent=2, default=str))
     elif _measure_facade.args[0] == "archive-result":
         # PostToolUse hook handler: archive large tool results
         _measure_facade.quiet = "--quiet" in _measure_facade.args or "-q" in _measure_facade.args
@@ -2601,6 +2615,7 @@ def main():
         print("  python3 measure.py cursor-install        # Install Cursor hooks (merged into ~/.cursor/hooks.json)")
         print("  python3 measure.py cursor-summary        # Token/quality Cursor session summary")
         print("  python3 measure.py cursor-rollup         # Ingest Cursor sessions into trends DB")
+        print("  python3 measure.py cursor-audit          # Audit Cursor rules (.cursor/rules, AGENTS.md) + hooks.json health")
         print("  python3 measure.py antigravity-doctor    # Google Antigravity adapter readiness check")
         print("  python3 measure.py antigravity-install   # Install Antigravity hooks (consent-gated)")
         print("  python3 measure.py antigravity-uninstall # Remove Antigravity hooks + trend rows")

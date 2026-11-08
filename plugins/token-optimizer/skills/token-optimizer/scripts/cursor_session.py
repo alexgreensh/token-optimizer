@@ -173,12 +173,19 @@ def _base_canonical(slug: str, token_source: str) -> dict:
     }
 
 
-def resolve_token_source(bubble_tokens, transcript_tokens):
+def resolve_token_source(bubble_tokens, transcript_tokens, hook_measured=None):
     """R16 ordered token resolution.
 
     Returns ``(input_tokens, output_tokens, token_source, estimated)``.
     Bubble tokens win only when at least one of input/output is non-zero;
-    otherwise the transcript estimate; otherwise a zero-token tally-only row.
+    then the transcript estimate; otherwise a zero-token tally-only row.
+
+    ``hook_measured`` is accepted for signature stability but QUARANTINED:
+    afterAgentResponse usage numbers are stored in the tally's
+    ``hook_measured_tokens`` bucket for offline correlation only. Whether
+    they are per-response or cumulative is unproven, so they must never be
+    summed into resolved session tokens; claiming them as trusted fill
+    (``estimated = False``) would be a premature candidate claim.
     """
     if isinstance(bubble_tokens, dict) and (
         _safe_int(bubble_tokens.get("input_tokens")) > 0

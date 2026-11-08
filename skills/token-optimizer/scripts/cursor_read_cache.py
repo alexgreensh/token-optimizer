@@ -13,8 +13,10 @@ emit nothing), ``soft_block`` (deny + injected map/delta), ``warn`` (allow
 ``soft_block``/``block`` take effect only when the install's
 ``<cursor_home>/token-optimizer/read-cache.json`` names the mode. The
 doctor reports the channel state (``unknown``/``shadow``/
-``armed-unverified``/``armed-verified``) from the observed ledger;
-shadow-mode silence neither arms nor confirms anything.
+``armed-unverified``) from the observed ledger; shadow-mode silence
+neither arms nor confirms anything, and no ledger pattern verifies -
+``armed-verified`` needs positive controlled native evidence no current
+source provides.
 
 Delta bases come only from fingerprints observed in THIS session: the
 store is keyed by conversation id, so a file last read in another session

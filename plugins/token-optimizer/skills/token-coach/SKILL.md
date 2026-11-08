@@ -47,6 +47,12 @@ while IFS= read -r _cand; do
 done <<EOF
 $(find -L "$HOME/.claude/skills" "$HOME/.claude/plugins/cache" "$HOME/.claude/token-optimizer" "$HOME/.codex/skills" "$HOME/.codex/plugins/cache" "$HOME/.config/opencode/plugins/cache" "$HOME/.config/opencode/plugins" -type f -name measure.py -path '*token-optimizer*/scripts/measure.py' 2>/dev/null)
 EOF
+# Cursor-only installs keep nothing under ~/.claude: the Cursor installer writes
+# a locator naming the canonical measure.py (it is never copied into the plugin dir).
+if [ -z "$MEASURE_PY" ]; then
+  _cursor_loc="${TOKEN_OPTIMIZER_CURSOR_HOME:-$HOME/.cursor}/token-optimizer/plugin/measure-path"
+  [ -f "$_cursor_loc" ] && MEASURE_PY="$(head -n1 "$_cursor_loc" 2>/dev/null)"
+fi
 if [ -z "$MEASURE_PY" ] || [ ! -f "$MEASURE_PY" ]; then echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; fi
 
 # Resolve an interpreter that really runs Python. On native-Windows Git Bash
@@ -80,13 +86,22 @@ printf 'COACH_DIR=%q\n' "$COACH_DIR" >&2
 Then gather, skipping any command that fails (older installs lack some):
 
 ```bash
-"$PY" "$MEASURE_PY" coach --json                      # snapshot, patterns, history, questions
-"$PY" "$MEASURE_PY" quality current --json            # this session's quality score and issues
-"$PY" "$MEASURE_PY" subagent-cache status --json      # Claude Code: subagent cache lifetime and its payoff
-"$PY" "$MEASURE_PY" compact-advice --json             # Claude Code: would an earlier compact window pay off
-"$PY" "$MEASURE_PY" recommendations --json            # Claude Code: the daily usage-recommendations record
+# These scan the Claude Code / Codex setup; under any other runtime measure.py
+# prints a wrong-runtime notice instead of JSON, so they are gated.
+if [ "$RUNTIME" = "claude" ] || [ "$RUNTIME" = "codex" ]; then
+  "$PY" "$MEASURE_PY" coach --json                    # snapshot, patterns, history, questions
+  "$PY" "$MEASURE_PY" quality current --json          # this session's quality score and issues
+  "$PY" "$MEASURE_PY" subagent-cache status --json    # Claude Code: subagent cache lifetime and its payoff
+  "$PY" "$MEASURE_PY" compact-advice --json           # Claude Code: would an earlier compact window pay off
+  "$PY" "$MEASURE_PY" recommendations --json          # Claude Code: the daily usage-recommendations record
+fi
 [ "$RUNTIME" = "codex" ] && "$PY" "$MEASURE_PY" codex-doctor --project "$PWD" --json
+# Cursor: hook readiness/firing evidence, then the session token/quality summary.
+[ "$RUNTIME" = "cursor" ] && "$PY" "$MEASURE_PY" cursor-doctor --json
+[ "$RUNTIME" = "cursor" ] && "$PY" "$MEASURE_PY" cursor-summary
 ```
+
+Under Cursor, `coach --json` does not run (it scans the Claude Code setup); the Cursor commands above are the data source, together with what the user tells you.
 
 What the coach JSON holds: `snapshot` (current overhead), `patterns_good` and `patterns_bad` (named patterns with detail and fix), `history` (7-day against earlier: quality, session length, cache hit rate, grade spread, cost per session, short against long sessions, compression gap, share of sessions that switched model), `deterministic_candidates` when present (work the user repeats that a script could do), and `usage_recommendations` on Claude Code (the daily-measured record: one item each for the compact window and the subagent cache lifetime, plus `wins` once the user acted on an earlier recommendation and the numbers moved). Field-by-field meaning and the numbers to quote: [references/quick-reference.md](references/quick-reference.md).
 
@@ -128,6 +143,7 @@ This is a conversation. One or two findings, then a question; the user steers th
 - **Usage recommendations.** When `usage_recommendations` carries a `recommend` item, lead with it: it is today's measured answer, already gated on enough data. When `wins` is non-empty, name the measured change "since you changed it" and quote both numbers; never claim the change caused it.
 - **Goal e, or any time `deterministic_candidates` is non-empty:** walk the workflow step by step and sort each step into "inputs decide the output, so plain code" and "needs judgement, so a model", following the deterministic-stages reference.
 - **Codex users** hear Codex terms only: `AGENTS.md`, Codex memories, balanced Codex hooks, reasoning effort and the model picker, compact prompt guidance. Claude model names and `CLAUDE.md` mean nothing to them.
+- **Cursor users** hear Cursor terms only: `.cursor/rules` and `AGENTS.md` (there is no `CLAUDE.md`/`MEMORY.md` surface), and the hooks in `~/.cursor/hooks.json`. Cursor exposes no local billing data, so coach in tokens and never in dollars — a $0 is "no data", never "free". Quote token provenance with the number: rollup-resolved (`state.vscdb`, best-effort), transcript estimate, or tally-only unknown. Context-fill claims need a real occupancy snapshot (the numbers preCompact records); a lifetime token sum is never a fill. When `cursor-doctor` reports a channel `unknown` or `shadow`, say so — never imply a protection ran that has no delivery evidence on this install.
 
 Sound like a knowledgeable friend. Two to four exchanges is typical; follow the user's questions over any script.
 

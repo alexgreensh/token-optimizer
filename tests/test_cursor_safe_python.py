@@ -66,8 +66,10 @@ def test_hook_entries_cover_all_events(c, tmp_path):
         "afterAgentResponse", "postToolUseFailure", "afterShellExecution",
         "subagentStart", "subagentStop",
     }
-    # The Shell matcher keeps non-Shell tool calls out of the hot path.
-    assert entries["preToolUse"][0]["matcher"] == "Shell"
+    # Shell is rewritten; Read is intercepted by the U2 read cache
+    # (shadow default, emits nothing unarmed). Other tools stay out of the
+    # bridge's hot path.
+    assert entries["preToolUse"][0]["matcher"] == "Shell|Read"
     assert all(e["timeout"] == c.HOOK_TIMEOUT_SEC for es in entries.values() for e in es)
 
 

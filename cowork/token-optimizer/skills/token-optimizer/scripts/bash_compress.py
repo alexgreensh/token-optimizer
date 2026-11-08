@@ -1954,7 +1954,7 @@ def _compress_search_results(output):
             result.extend(file_lines)
         else:
             result.extend(file_lines[:_MAX_PER_FILE])
-            result.append(f"  ... {len(file_lines) - _MAX_PER_FILE} more matches in {fname} ...")
+            result.append(f"  ... {len(file_lines) - _MAX_PER_FILE} more matches in {fname} (content omitted) ...")
         file_count += 1
 
     # Keep EVERY matching filename (cheap) so "does file X match?" stays
@@ -1978,8 +1978,8 @@ def _compress_search_results(output):
 
     total_matches = sum(len(v) for v in files.values())
     result.insert(0, f"[Search results: {total_matches} matches across {len(files)} files. "
-                     f"ALL matching filenames listed; per-line content shown for the top "
-                     f"{_MAX_FILES}. A file not listed here has NO matches.]")
+                     f"ALL matching filenames listed; up to {_MAX_PER_FILE} matches per file "
+                     f"shown for the first {_MAX_FILES} files. Other match content omitted.]")
     return "\n".join(result)
 
 
@@ -2385,7 +2385,7 @@ def main():
 
         # Progressive disclosure: archive the raw original BEFORE compression
         # so the model can retrieve it via `expand <key>` if needed. Fail-open:
-        # if archiving fails, compression proceeds without the pointer.
+        # if archiving fails, serve the original instead of a lossy preview.
         _archive_key = None
         if compressed != raw_output and len(raw_output) > 500:
             try:
@@ -2413,6 +2413,11 @@ def main():
                     _archive_key = None
             except Exception:
                 _archive_key = None
+
+        # Search matches must remain recoverable even below the archive floor
+        # or when the archive write fails. Other handlers keep their contracts.
+        if _archive_key is None and _detect_pattern(command_str) == "search_results":
+            compressed = raw_output
 
         # Record savings to trends.db if compression was meaningful
         try:

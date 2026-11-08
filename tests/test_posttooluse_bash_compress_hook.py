@@ -714,3 +714,76 @@ class TestRegressionF6ArchiveFailureReturnsRaw:
             )
         finally:
             archive_result.archive_original = original
+
+
+class TestSearchRecovery334:
+    @pytest.fixture(autouse=True)
+    def script_imports(self, monkeypatch):
+        monkeypatch.syspath_prepend(str(BASH_COMPRESS_HOOK.parent))
+
+    def test_short_search_never_discards_matches_without_recovery(self):
+        raw = ''.join(f'./{f}:{i}:q\n' for f in ('a', 'b') for i in range(1, 21))
+        assert len(raw) < 500
+        proc = _run_hook('grep -rn q .', raw)
+        out = _get_updated_stdout(proc)
+        assert out is None or out == raw or ' expand ' in out
+
+    def test_search_banner_names_both_caps(self):
+        import bash_compress
+        raw = ''.join(f'a:{i}:needle hello\n' for i in range(1, 501))
+        out = bash_compress.compress('grep -rn needle .', raw)
+        assert 'up to 3 matches per file' in out
+        assert 'first 20 files' in out
+        assert '497 more matches' in out
+
+    @pytest.mark.parametrize('failure', ['none', 'raise', 'pruned'])
+    def test_search_archive_failure_keeps_original(self, monkeypatch, capsys, failure):
+        import archive_result
+        import bash_compress_hook as hook
+        raw = ''.join(f'a:{i}:needle hello\n' for i in range(1, 501))
+        def archive(*args, **kwargs):
+            if failure == 'raise':
+                raise OSError('archive unavailable')
+            return 'key' if failure == 'pruned' else None
+        monkeypatch.setattr(archive_result, 'archive_original', archive)
+        monkeypatch.setattr(archive_result, 'archive_entry_exists', lambda *a: False)
+        monkeypatch.setattr(hook, '_crossturn_dedup', lambda *a: None)
+        hook._run(json.loads(_payload('grep -rn needle .', raw)))
+        emitted = capsys.readouterr().out
+        out = json.loads(emitted)['hookSpecificOutput']['updatedToolOutput']['stdout'] if emitted else raw
+        assert out == raw
+
+    @pytest.mark.parametrize('failure', ['short', 'none', 'raise', 'pruned'])
+    def test_cli_search_without_archive_keeps_original(self, monkeypatch, capsys, failure):
+        import archive_result
+        import bash_compress as bc
+        raw = (''.join(f'./{f}:{i}:q\n' for f in ('a', 'b') for i in range(1, 21))
+               if failure == 'short' else ''.join(f'a:{i}:needle hello\n' for i in range(1, 501)))
+        def archive(*args, **kwargs):
+            if failure == 'raise':
+                raise OSError('archive unavailable')
+            return 'key' if failure == 'pruned' else None
+        monkeypatch.setattr(archive_result, 'archive_original', archive)
+        monkeypatch.setattr(archive_result, 'archive_entry_exists', lambda *a: False)
+        monkeypatch.setattr(bc.subprocess, 'run', lambda *a, **kw: subprocess.CompletedProcess([], 0, raw, ''))
+        monkeypatch.setattr(sys, 'argv', ['bash_compress.py', 'grep', '-rn', 'needle', '.'])
+        with pytest.raises(SystemExit) as exited:
+            bc.main()
+        assert exited.value.code == 0
+        assert capsys.readouterr().out == raw
+
+    def test_short_non_search_repeat_still_deduplicates(self, monkeypatch, capsys, tmp_path):
+        import bash_compress_hook as hook
+        monkeypatch.setenv('CLAUDE_SESSION_ID', 'repeat-small-status')
+        monkeypatch.setenv('TOKEN_OPTIMIZER_SNAPSHOT_DIR', str(tmp_path))
+        raw = '\n'.join(['On branch main', 'Your branch is up to date.', '',
+                         'Changes not staged for commit:'] +
+                        [f'\tmodified:   src/module_{i:02d}.py' for i in range(11)] +
+                        ['', 'no changes added, only modified files here']) + '\n'
+        assert 200 < len(raw) <= 500
+        hook._run(json.loads(_payload('git status', raw, tool_use_id='status-first')))
+        capsys.readouterr()
+        hook._run(json.loads(_payload('git status', raw, tool_use_id='status-second')))
+        out = json.loads(capsys.readouterr().out)['hookSpecificOutput']['updatedToolOutput']['stdout']
+        assert 'identical' in out.lower()
+        assert len(out) < len(raw)

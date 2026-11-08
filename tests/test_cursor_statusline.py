@@ -19,6 +19,7 @@ Run: python3 -m pytest tests/test_cursor_statusline.py -v
 import io
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -109,8 +110,8 @@ def test_forum_shaped_payload_renders_model_and_context(cursor_home, monkeypatch
 
 def test_payload_fill_gated_until_bundle_proven(cursor_home, monkeypatch):
     # Default state (gate OFF): the forum-observed payload context fields are
-    # NOT proven occupancy, so they must be ignored — fill comes from the last
-    # preCompact snapshot only.
+    # NOT proven occupancy, so they must be ignored — current fill is unknown,
+    # and the preCompact peak renders as labeled HISTORY, not current fill.
     assert cursor_statusline.PAYLOAD_FILL_PROVEN is False
     _write_tally(cursor_home, "conv-abc123", _tally())
     payload = {
@@ -121,8 +122,10 @@ def test_payload_fill_gated_until_bundle_proven(cursor_home, monkeypatch):
     out, code = _run_main(monkeypatch, json.dumps(payload).encode())
     assert code == 0
     lines = out.strip().split("\n")
-    assert "ctx 40% (80k/200k)" in lines[0]  # preCompact snapshot, not the payload
-    assert "fill preCompact" in lines[1]
+    assert "ctx ?" in lines[0]  # current occupancy honestly unknown
+    assert "ctx 40%" not in lines[0]  # the historical peak is not current fill
+    assert "last compact 40%" in lines[1]  # shown as history instead
+    assert "TO A" not in lines[1] and "TO B" not in lines[1]  # no stale grade
     assert "42%" not in out  # the unproven payload number never leaks
 
 
@@ -149,26 +152,49 @@ def test_fill_grade_matches_session_fallback_formula():
     assert cursor_statusline._fill_grade(1.0) == (50, "D")
 
 
-def test_tally_fill_accepts_percent_only_precompact_entry():
+def test_percent_only_precompact_entry_renders_as_history():
     # The bridge records context_usage_percent as its own field; an entry may
-    # carry a percent without token counts, and that is still a proven
-    # occupancy snapshot (extension cursorReader treats it the same way).
+    # carry a percent without token counts. Still historical, never current.
     tally = {"compactions": [{"context_tokens": 0, "context_window_size": 0,
                               "context_usage_percent": 40.0}]}
     lines = cursor_statusline.build_lines({}, tally)
-    assert any("ctx 40%" in line for line in lines)
-    assert any("TO B 80" in line for line in lines)  # score = 100 - 0.4*50
-    assert not any("ctx ?" in line for line in lines)
+    assert any("last compact 40%" in line for line in lines)
+    assert any("ctx ?" in line for line in lines)
+    assert not any("ctx 40%" in line for line in lines)
 
 
-def test_precompact_fill_used_when_payload_has_no_context(cursor_home, monkeypatch):
-    _write_tally(cursor_home, "conv-abc123", _tally())
+def test_precompact_peak_is_history_not_current_fill(cursor_home, monkeypatch):
+    # Judge-flagged regression: a 95% preCompact reading is the peak that
+    # TRIGGERED the compaction. A newer hook event (updated_at bumped, no new
+    # compaction) must NOT refresh it into a current fill or a current grade.
+    _write_tally(cursor_home, "conv-abc123", _tally(
+        updated_at=1700000900.0,  # later hook event, no occupancy measurement
+        compactions=[{"context_tokens": 190000, "context_window_size": 200000,
+                      "context_usage_percent": 95, "ts": 1700000500.0}],
+    ))
     payload = {"model": "claude-sonnet-4.5", "conversation_id": "conv-abc123"}
     out, code = _run_main(monkeypatch, json.dumps(payload).encode())
     assert code == 0
     lines = out.strip().split("\n")
-    assert "ctx 40% (80k/200k)" in lines[0]  # from the tally's last preCompact
-    assert "fill preCompact" in lines[1]
+    assert "ctx ?" in lines[0]  # current occupancy still unknown
+    assert "ctx 95%" not in out
+    assert "last compact 95%" in lines[1]  # historical, labeled
+    assert "TO A" not in out and "TO B" not in out and "TO C" not in out  # no grade
+    # Age comes from the entry's own ts (far past -> no fresh-looking age),
+    # never from the bumped updated_at.
+    assert "just now" not in out
+
+
+def test_last_compaction_age_uses_measurement_ts(cursor_home, monkeypatch):
+    now = time.time()
+    _write_tally(cursor_home, "conv-abc123", _tally(
+        updated_at=now,  # fresh tally activity...
+        compactions=[{"context_tokens": 190000, "context_window_size": 200000,
+                      "context_usage_percent": 95, "ts": now - 200}],
+    ))
+    payload = {"model": "m", "conversation_id": "conv-abc123"}
+    out, _ = _run_main(monkeypatch, json.dumps(payload).encode())
+    assert "last compact 95% 3m ago" in out  # aged from the entry ts
 
 
 def test_tally_fallback_to_most_recent_when_id_absent(cursor_home, monkeypatch):
@@ -205,7 +231,7 @@ def test_missing_context_fields_render_question_mark(cursor_home, monkeypatch):
     assert code == 0
     lines = out.strip().split("\n")
     assert "ctx ?" in lines[0]
-    assert "fill ?" in lines[1]
+    assert "ctx unknown" in lines[1]
     assert "%" not in lines[0].split("ctx ?")[0]  # no fabricated percentage
 
 
@@ -331,7 +357,7 @@ def test_multi_model_tally_shows_no_model(cursor_home, monkeypatch):
     out, _ = _run_main(monkeypatch, json.dumps(payload).encode())
     assert "claude-sonnet" not in out
     assert "gpt-5" not in out
-    assert "ctx 40%" in out  # the rest of the footer still renders
+    assert "last compact 40%" in out  # the rest of the footer still renders
 
 
 def test_non_positive_context_values_treated_absent(cursor_home, monkeypatch):

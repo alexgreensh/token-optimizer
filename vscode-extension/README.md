@@ -90,20 +90,22 @@ The extension reads the per-conversation hook tallies from
 
 What Cursor data can and cannot show today:
 
-- **Context fill** comes from the last `preCompact` occupancy snapshot the hooks recorded
-  (labeled _preCompact_ in the tooltip and panel) — never from a lifetime token sum.
-- **ContextQ** on Cursor is derived from that fill alone; the full multi-signal quality
-  score is Claude-only for now. The tooltip says so.
+- **Current context fill is unknown.** The only occupancy the hooks can record is the
+  `preCompact` snapshot: how full the context was just *before* a compaction ran. That is
+  history (context usage drops right after), so it is shown as a labeled
+  _Last compaction_ row with its own measurement time — never as the current Context bar.
+- **ContextQ and efficiency are absent on Cursor**: no current-fill source exists to score
+  from, and the full multi-signal quality score is Claude-only for now. The tooltip says so.
 - **Compactions, session duration, and tool-call pressure** come from the tally.
-- **Usage limits, efficiency, and cost are absent on Cursor**: Cursor exposes no
+- **Usage limits and cost are absent on Cursor**: Cursor exposes no
   per-session limit or billing data, and Token Optimizer does not invent either.
 
 A separate, strictly opt-in Cursor CLI `statusLine` command
-(`skills/token-optimizer/scripts/cursor_statusline.py`) renders the same grade/fill in the
+(`skills/token-optimizer/scripts/cursor_statusline.py`) renders the same honest view in the
 Cursor CLI footer. It **replaces the native footer** (Cursor offers no append mode), so the
 installer does not wire it: enabling it is a manual, deliberate step. To opt in, add the
 `statusLine` command to your Cursor CLI config pointing at that script; remove the key to
-restore the native footer.
+restore the native footer. Do this only if you accept losing the native footer.
 
 The setting takes effect immediately without reloading VS Code.
 

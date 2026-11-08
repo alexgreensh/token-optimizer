@@ -1,6 +1,7 @@
 // Unit tests for the Cursor tally reader (U8, R12).
-// Pins the honesty contract: fill only from preCompact occupancy snapshots,
-// grade derived from fill alone, no rate limits, no fabricated fields.
+// Pins the honesty contract: the preCompact peak is labeled HISTORY with its
+// own measurement time, current fill and ContextQ stay null, no rate limits,
+// no fabricated fields.
 import { describe, it, expect } from 'vitest';
 import { buildCursorSnapshot, CURSOR_SOURCE_LABEL } from '../src/cursorReader';
 
@@ -25,16 +26,18 @@ function tally(overrides: any = {}): any {
 }
 
 describe('buildCursorSnapshot', () => {
-  it('maps a healthy tally: model, fill, grade, compactions, duration', () => {
+  it('maps a healthy tally: model, last-compaction history, counts, duration', () => {
     const snap = buildCursorSnapshot(tally(), { nowMs: NOW, scoped: true });
     expect(snap.hasData).toBe(true);
     expect(snap.runtimeName).toBe('cursor');
     expect(snap.sourceLabel).toBe(CURSOR_SOURCE_LABEL);
     expect(snap.model).toBe('claude-sonnet'); // sole recorded model
-    expect(snap.fillPct).toBe(40);
-    expect(snap.fillSource).toBe('cursor-tally');
-    // fill-only score: 100 - 40/2 = 80 -> grade A per the extension's scale
-    expect(snap.contextQ).toEqual({ score: 80, grade: 'A', stale: false });
+    // Current fill and ContextQ are honestly unknown on Cursor.
+    expect(snap.fillPct).toBeNull();
+    expect(snap.fillSource).toBeNull();
+    expect(snap.contextQ).toBeNull();
+    // The preCompact peak survives as labeled history with its own ts.
+    expect(snap.lastCompaction).toEqual({ pct: 40, ts: 1_700_000_500 });
     expect(snap.compactions).toBe(1);
     expect(snap.durationSec).toBe(600);
     expect(snap.toolWarning).toBeNull();
@@ -51,7 +54,7 @@ describe('buildCursorSnapshot', () => {
       }),
       { nowMs: NOW, scoped: true }
     );
-    expect(snap.fillPct).toBe(50);
+    expect(snap.lastCompaction?.pct).toBe(50);
   });
 
   it('falls back to context_usage_percent when token fields are absent', () => {
@@ -59,7 +62,8 @@ describe('buildCursorSnapshot', () => {
       tally({ compactions: [{ context_usage_percent: 40.4 }] }),
       { nowMs: NOW, scoped: true }
     );
-    expect(snap.fillPct).toBe(40);
+    expect(snap.lastCompaction?.pct).toBe(40);
+    expect(snap.lastCompaction?.ts).toBeNull(); // no measurement time recorded
   });
 
   it('uses the LAST usable compaction entry', () => {
@@ -73,15 +77,16 @@ describe('buildCursorSnapshot', () => {
       }),
       { nowMs: NOW, scoped: true }
     );
-    expect(snap.fillPct).toBe(75);
+    expect(snap.lastCompaction?.pct).toBe(75);
   });
 
-  it('omits fill and ContextQ when no occupancy snapshot exists', () => {
+  it('omits fill, ContextQ, and history when no occupancy snapshot exists', () => {
     const snap = buildCursorSnapshot(tally({ compactions: [] }), { nowMs: NOW, scoped: true });
     expect(snap.hasData).toBe(true); // the session is real
     expect(snap.fillPct).toBeNull();
     expect(snap.fillSource).toBeNull();
     expect(snap.contextQ).toBeNull();
+    expect(snap.lastCompaction).toBeNull();
   });
 
   it('never derives fill from lifetime token fields', () => {
@@ -93,14 +98,25 @@ describe('buildCursorSnapshot', () => {
     );
     expect(snap.fillPct).toBeNull();
     expect(snap.contextQ).toBeNull();
+    expect(snap.lastCompaction).toBeNull();
   });
 
-  it('marks the grade stale when the tally is old', () => {
-    const snap = buildCursorSnapshot(tally({ updated_at: 1_700_000_600 - 301 }), {
-      nowMs: NOW,
-      scoped: true,
-    });
-    expect(snap.contextQ?.stale).toBe(true);
+  it('a newer hook event never refreshes the pre-compaction peak into current fill', () => {
+    // Judge-flagged regression: 95% preCompact is the peak that TRIGGERED the
+    // compaction. updated_at bumped by later events must not turn it into a
+    // current fill, a current ContextQ, or a fresh-looking measurement.
+    const snap = buildCursorSnapshot(
+      tally({
+        updated_at: 1_700_000_900, // later hook event, no occupancy measured
+        compactions: [
+          { context_tokens: 190_000, context_window_size: 200_000, ts: 1_700_000_500 },
+        ],
+      }),
+      { nowMs: 1_700_000_900_000, scoped: true }
+    );
+    expect(snap.fillPct).toBeNull();
+    expect(snap.contextQ).toBeNull();
+    expect(snap.lastCompaction).toEqual({ pct: 95, ts: 1_700_000_500 }); // history, own ts
   });
 
   it('maps nudge levels to tool warnings', () => {
@@ -140,6 +156,7 @@ describe('buildCursorSnapshot', () => {
     expect(snap.hasData).toBe(true);
     expect(snap.model).toBeNull();
     expect(snap.fillPct).toBeNull();
+    expect(snap.lastCompaction).toBeNull();
     expect(snap.compactions).toBeNull();
     expect(snap.durationSec).toBeNull();
     expect(snap.toolWarning).toBeNull();

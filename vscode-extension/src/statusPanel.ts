@@ -190,7 +190,8 @@ export class StatusPanel {
     h += '<div class="sub">' + esc(m.model || runtimeDisplay(m)) + (m.effort ? ' · ' + esc(m.effort) : '') + '</div>';
     if (m.sourceLabel) h += '<div class="sub">' + esc(m.sourceLabel) + '</div>';
     if (!m.scoped) h += '<div class="banner">⚠️ No folder open — showing the most recent session globally. Open a folder so this reflects this window\\'s session.</div>';
-    if (m.fillPct != null) h += row('Context', '<span class="bar">' + esc(m.fillBar) + '</span> ' + m.fillPct + '%' + (m.fillSource === 'jsonl' ? ' <span class="pill">panel</span>' : m.fillSource === 'cursor-tally' ? ' <span class="pill">preCompact</span>' : ''));
+    if (m.fillPct != null) h += row('Context', '<span class="bar">' + esc(m.fillBar) + '</span> ' + m.fillPct + '%' + (m.fillSource === 'jsonl' ? ' <span class="pill">panel</span>' : ''));
+    if (m.lastCompaction) h += row('Last compaction', esc(m.lastCompaction));
     if (m.contextQ) h += row('ContextQ', '<span class="' + gradeClass(m.contextQ.grade) + '">' + esc(m.contextQ.grade) + ' (' + m.contextQ.score + ')</span>' + (m.contextQ.stale ? ' <span class="pending">cached</span>' : ''));
     if (m.eff) h += row('Efficiency', '<span class="' + gradeClass(m.eff.grade) + '">' + esc(m.eff.grade) + ' (' + m.eff.score + ')</span>');
     if (m.qualityPending) h += row('ContextQ / Eff', '<span class="pending">warming up…</span>');

@@ -3,24 +3,25 @@
 // vscode-free and unit-testable, mirroring cacheReader.ts's posture: defensive
 // parsing, honest absence, never a fabricated value.
 //
-// Honesty contract (shared-interface contract v2 §4): fill comes ONLY from a
-// real host occupancy snapshot. On Cursor today that is the last preCompact
-// entry's context_tokens / context_window_size (or its context_usage_percent).
-// A lifetime token sum is NEVER a fill numerator. When no snapshot exists the
-// fill is omitted, not estimated. Cursor exposes no per-session usage limits
+// Honesty contract (shared-interface contract v2 §4): a fill number may only
+// come from a CURRENT host occupancy snapshot. On Cursor today the only
+// recorded occupancy is the last preCompact entry — the peak that TRIGGERED
+// that compaction, measured at the entry's own ts. After the compaction the
+// real occupancy dropped, and later hook events bump only the tally's
+// updated_at, so this number is history, not current fill. It is therefore
+// shown as "last compaction" context with its measurement time, NEVER as the
+// Context bar, and ContextQ is not derived from it. A lifetime token sum is
+// never a fill numerator either. Cursor exposes no per-session usage limits
 // and no cost data, so rateLimits stay null and nothing here derives dollars.
 import { Snapshot, emptySnapshot } from './types';
 
-// Mirrors the staleness rule for Claude's quality cache (cacheReader.ts): a
-// tally untouched for 5 minutes shows its grade as cached.
-const STALE_TALLY_SECONDS = 300;
 // Matches statusline.js's one-week sanity bound on session durations.
 const MAX_DURATION_SECONDS = 604800;
 
 // Shown in the tooltip/panel so Cursor data is never mistaken for the fuller
 // Claude pipeline's output.
 export const CURSOR_SOURCE_LABEL =
-  'Cursor hook tally · ContextQ from context fill only · no native token totals';
+  'Cursor hook tally · current context fill unknown · no native token totals';
 
 export interface CursorSnapshotOptions {
   nowMs: number;
@@ -35,40 +36,27 @@ function clampPct(n: number): number {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-// Same grade letters the extension uses everywhere (cacheReader.gradeFor).
-function gradeFor(score: number): string {
-  if (score >= 90) return 'S';
-  if (score >= 80) return 'A';
-  if (score >= 70) return 'B';
-  if (score >= 55) return 'C';
-  if (score >= 40) return 'D';
-  return 'F';
-}
-
-// Fill-only score, mirroring cursor_session.py's documented fallback formula
-// (score = 100 - fill*50) so the status bar and the CLI statusline agree.
-function fillScore(pct: number): number {
-  return Math.max(0, Math.round(100 - pct / 2));
-}
-
 function safeNumber(v: any): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
-// The most recent preCompact entry carrying usable occupancy numbers.
-function lastCompactionFill(compactions: any): number | null {
+// The most recent preCompact entry's recorded occupancy: the peak that
+// triggered that compaction, with its OWN measurement timestamp (never the
+// tally's updated_at, which any later hook event refreshes). Historical only.
+function lastCompaction(compactions: any): { pct: number; ts: number | null } | null {
   if (!Array.isArray(compactions)) return null;
   for (let i = compactions.length - 1; i >= 0; i--) {
     const entry = compactions[i];
     if (!isPlainObject(entry)) continue;
+    const ts = safeNumber(entry.ts);
     const used = safeNumber(entry.context_tokens);
     const window = safeNumber(entry.context_window_size);
     if (used != null && window != null && used > 0 && window > 0) {
-      return clampPct((used / window) * 100);
+      return { pct: clampPct((used / window) * 100), ts };
     }
     const pct = safeNumber(entry.context_usage_percent);
-    if (pct != null && pct > 0) return clampPct(pct);
+    if (pct != null && pct > 0) return { pct: clampPct(pct), ts };
   }
   return null;
 }
@@ -98,16 +86,12 @@ export function buildCursorSnapshot(tally: any, opts: CursorSnapshotOptions): Sn
 
   const nowSec = opts.nowMs / 1000;
   const updatedAt = safeNumber(tally.updated_at);
-  const stale = updatedAt == null || nowSec - updatedAt > STALE_TALLY_SECONDS;
 
-  // Context fill: last preCompact occupancy snapshot only (see header).
-  const fill = lastCompactionFill(tally.compactions);
-  if (fill != null) {
-    snap.fillPct = fill;
-    snap.fillSource = 'cursor-tally';
-    const score = fillScore(fill);
-    snap.contextQ = { score, grade: gradeFor(score), stale };
-  }
+  // The last compaction's occupancy is HISTORY (see header): surfaced as a
+  // labeled fact with its own measurement time, never as the current Context
+  // bar, and ContextQ stays null — no current-quality score can be derived
+  // from a pre-compaction peak.
+  snap.lastCompaction = lastCompaction(tally.compactions);
 
   if (Array.isArray(tally.compactions)) {
     snap.compactions = tally.compactions.length;

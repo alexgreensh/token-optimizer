@@ -151,13 +151,17 @@ export function buildTooltip(s: Snapshot, opts: RenderOptions): string {
   lines.push('|---|---|');
 
   if (s.fillPct != null) {
-    const src =
-      s.fillSource === 'jsonl'
-        ? ' _(panel)_'
-        : s.fillSource === 'cursor-tally'
-          ? ' _(preCompact)_'
-          : '';
+    const src = s.fillSource === 'jsonl' ? ' _(panel)_' : '';
     lines.push(`| Context | \`${fillBar(s.fillPct)}\` ${s.fillPct}%${src} |`);
+  }
+  if (s.lastCompaction) {
+    // Historical: the occupancy that triggered the last compaction, aged from
+    // its own measurement time — never presented as the current Context bar.
+    const age =
+      s.lastCompaction.ts != null ? formatAge(opts.nowMs / 1000 - s.lastCompaction.ts) : '';
+    lines.push(
+      `| Last compaction | was ${s.lastCompaction.pct}% full${age ? ` · ${age} ago` : ''} |`
+    );
   }
   if (s.contextQ) {
     lines.push(`| ContextQ | ${escapeMd(String(s.contextQ.grade))} (${escapeMd(String(s.contextQ.score))})${s.contextQ.stale ? ' _(cached)_' : ''} |`);
@@ -224,6 +228,7 @@ export interface PanelModel {
   scoped: boolean;
   runtimeName: RuntimeName;
   sourceLabel: string | null;
+  lastCompaction: string | null; // e.g. "was 95% full · 3m ago" (historical)
   model: string | null;
   effort: string | null;
   fillPct: number | null;
@@ -255,6 +260,12 @@ export function buildPanelModel(s: Snapshot, opts: RenderOptions): PanelModel {
     scoped: s.scoped,
     runtimeName: s.runtimeName,
     sourceLabel: s.sourceLabel,
+    lastCompaction: s.lastCompaction
+      ? `was ${s.lastCompaction.pct}% full` +
+        (s.lastCompaction.ts != null
+          ? ` · ${formatAge(opts.nowMs / 1000 - s.lastCompaction.ts)} ago`
+          : '')
+      : null,
     model: s.model,
     effort: s.effort,
     fillPct: s.fillPct,
@@ -274,7 +285,10 @@ export function buildPanelModel(s: Snapshot, opts: RenderOptions): PanelModel {
 }
 
 // Fill arrives before the quality hook writes scores for a fresh session.
+// Cursor has no quality pipeline at all, so it never shows "warming up" —
+// absence there is honest finality, not a pending state.
 function qualityPending(s: Snapshot): boolean {
+  if (s.runtimeName === 'cursor') return false;
   return s.hasData && !s.contextQ && !s.eff;
 }
 

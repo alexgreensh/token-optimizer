@@ -52,12 +52,16 @@ export interface Snapshot {
   model: string | null;
   effort: string | null; // 'lo' | 'med' | 'hi'
   fillPct: number | null;
-  fillSource: 'live-fill' | 'quality' | 'jsonl' | 'cursor-tally' | null;
+  fillSource: 'live-fill' | 'quality' | 'jsonl' | null;
   // Which runtime produced this snapshot, and a one-line provenance note for
   // surfaces whose data is thinner than Claude's (Cursor: hook tally only, no
-  // native token totals, ContextQ derived from fill alone).
+  // native token totals, no current context fill).
   runtimeName: RuntimeName;
   sourceLabel: string | null;
+  // Cursor-only: the occupancy recorded just BEFORE the most recent
+  // compaction (the peak that triggered it) with its own measurement time.
+  // Historical context, never the current fill.
+  lastCompaction: { pct: number; ts: number | null } | null;
   contextQ: ContextQ | null;
   eff: { score: number; grade: string } | null;
   fillWarning: Warning | null;
@@ -82,6 +86,7 @@ export function emptySnapshot(): Snapshot {
     fillSource: null,
     runtimeName: 'claude',
     sourceLabel: null,
+    lastCompaction: null,
     contextQ: null,
     eff: null,
     fillWarning: null,

@@ -38,15 +38,20 @@ read-only — it writes nothing, keeps the ~40ms hook-path budget (stdlib only,
 no heavy imports), and always exits 0. Any failure prints nothing rather than
 garbage into the footer.
 
-Line 1 (native-footer reconstruction): ``<model> · ctx <pct>% (<used>/<window>)``.
-Line 2 (Token Optimizer): fill-derived grade, compaction and tool-call counts
-from the session tally under ``<cursor_home>/token-optimizer/sessions/``.
+Line 1 (native-footer reconstruction): ``<model> · ctx <pct>% (<used>/<window>)``
+when a proven live fill exists, otherwise ``ctx ?`` — current occupancy is
+unknown on Cursor today.
+Line 2 (Token Optimizer): the LAST COMPACTION's recorded occupancy, labeled as
+history ("last compact 95% 3m ago", aged from the entry's own ``ts`` — never
+the tally's updated_at, which later hook events bump without measuring
+occupancy), plus compaction and tool-call counts from the session tally under
+``<cursor_home>/token-optimizer/sessions/``.
 
-The grade here is the fill-only formula mirrored from cursor_session's
-documented fallback (score = 100 - fill*50). The dashboard's multi-signal
-quality score lives in cursor_session/hermes_session; when the fuller scorer
-is what the user wants, the dashboard carries it — this footer stays a cheap,
-honest fill gauge.
+No fill-derived grade is shown on the tally path: the pre-compaction peak is
+history (context dropped right after), so scoring current quality from it
+would present stale data as current. A grade returns only if the gated live
+payload fill is ever proven (see PAYLOAD_FILL_PROVEN). The dashboard's
+multi-signal quality score lives in cursor_session/hermes_session.
 """
 
 from __future__ import annotations
@@ -54,6 +59,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -210,28 +216,48 @@ def _find_tally(sessions_dir: Path, sid: str) -> Optional[dict]:
     return best
 
 
-def _tally_fill(tally: dict) -> tuple[Optional[int], Optional[int], Optional[float]]:
-    """(used_tokens, window_tokens, usage_percent) from the newest usable preCompact entry.
+def _last_compaction(tally: dict) -> tuple[Optional[float], Optional[float]]:
+    """(fill_percent, measured_ts) of the newest usable preCompact entry.
 
-    The bridge records context_usage_percent as its own field, so an entry may
-    carry a percent without token counts; either shape is a proven occupancy
-    snapshot. Token counts are preferred because they also render the
-    used/window detail.
+    This is a HISTORICAL measurement: the occupancy the host reported just
+    BEFORE that compaction ran (the peak that triggered it), recorded with the
+    entry's own ``ts``. It is never the current fill — after the compaction the
+    real occupancy dropped, and later hook events bump only the tally's
+    updated_at, not this number. The bridge records context_usage_percent as
+    its own field, so an entry may carry a percent without token counts; token
+    counts are preferred when present.
     """
     compactions = tally.get("compactions")
     if not isinstance(compactions, list):
-        return None, None, None
+        return None, None
     for entry in reversed(compactions):
         if not isinstance(entry, dict):
             continue
+        ts = _safe_float(entry.get("ts"))
         used = _safe_float(entry.get("context_tokens"))
         window = _safe_float(entry.get("context_window_size"))
         if used and window and used > 0 and window > 0:
-            return int(used), int(window), None
+            return min(100.0, 100.0 * used / window), ts
         pct = _safe_float(entry.get("context_usage_percent"))
         if pct and pct > 0:
-            return None, None, pct
-    return None, None, None
+            return min(100.0, pct), ts
+    return None, None
+
+
+def _fmt_age(ts: Optional[float]) -> str:
+    """'3m ago' style age of a measurement timestamp; '' when unknown/implausible."""
+    if not ts or ts <= 0:
+        return ""
+    age = time.time() - ts
+    if age < 0 or age > 30 * 86400:
+        return ""
+    if age < 90:
+        return "just now"
+    if age < 3600:
+        return f"{int(age // 60)}m ago"
+    if age < 86400:
+        return f"{int(age // 3600)}h ago"
+    return f"{int(age // 86400)}d ago"
 
 
 # ---------------------------------------------------------------------------
@@ -263,19 +289,7 @@ def build_lines(payload: dict, tally: Optional[dict]) -> list[str]:
     no code path here on purpose.
     """
     used, window = _payload_context(payload) if PAYLOAD_FILL_PROVEN else (None, None)
-    pct_direct: Optional[float] = None
-    fill_source = "live"
-    if used is None and tally is not None:
-        used, window, pct_direct = _tally_fill(tally)
-        fill_source = "preCompact"
-
-    # Single fill fraction behind every consumer (percent, grade), from
-    # whichever proven shape exists; never a lifetime sum.
-    fill_frac: Optional[float] = None
-    if used is not None and window:
-        fill_frac = min(1.0, used / window)
-    elif pct_direct is not None:
-        fill_frac = min(1.0, pct_direct / 100.0)
+    live_fill = used is not None and bool(window)
 
     # Line 1: native-footer reconstruction (model + context fill).
     segments = []
@@ -291,13 +305,12 @@ def build_lines(payload: dict, tally: Optional[dict]) -> list[str]:
             model = str(next(iter(models)))[:_MAX_MODEL_LEN]
     if model:
         segments.append(model)
-    if fill_frac is not None:
-        pct = min(100, round(100 * fill_frac))
-        if used is not None and window:
-            segments.append(f"ctx {pct}% ({_fmt_tokens(used)}/{_fmt_tokens(window)})")
-        else:
-            segments.append(f"ctx {pct}%")
+    if live_fill:
+        pct = min(100, round(100 * used / window))
+        segments.append(f"ctx {pct}% ({_fmt_tokens(used)}/{_fmt_tokens(window)})")
     else:
+        # Current occupancy is UNKNOWN on Cursor today: the only recorded
+        # occupancy is the pre-compaction peak (historical), shown on line 2.
         segments.append("ctx ?")
     line1 = " · ".join(segments) if segments else ""
 
@@ -306,12 +319,22 @@ def build_lines(payload: dict, tally: Optional[dict]) -> list[str]:
         line2 = "TO · no session data"
     else:
         parts = []
-        if fill_frac is not None:
-            score, grade = _fill_grade(fill_frac)
+        if live_fill:
+            score, grade = _fill_grade(used / window)
             parts.append(f"TO {grade} {score}")
-            parts.append(f"fill {fill_source}")
+            parts.append("fill live")
         else:
-            parts.append("TO · fill ?")
+            # No grade: a fill-derived score from the historical pre-compaction
+            # peak would present stale data as current quality.
+            last_pct, last_ts = _last_compaction(tally)
+            if last_pct is not None:
+                note = f"last compact {round(last_pct)}%"
+                age = _fmt_age(last_ts)
+                if age:
+                    note += f" {age}"
+                parts.append("TO · " + note)
+            else:
+                parts.append("TO · ctx unknown")
         compactions = tally.get("compactions")
         if isinstance(compactions, list):
             parts.append(f"comp {len(compactions)}")

@@ -248,7 +248,10 @@ def _hooks_lock(hooks_path: Path):
     # 120s lease: the critical section copies the payload and rewrites
     # hooks.json; a 30s lease could lapse mid-RMW on a slow disk and let a
     # concurrent installer reclaim it, reintroducing the clobber.
-    with lease_lock(lock_path, acquire_timeout=5.0, lease_seconds=120.0) as acquired:
+    # reclaim_released: a cleanly FINISHED install (release marker written)
+    # must not block a fast re-run (git pull + reinstall) for the rest of the
+    # lease window; a crashed install's tombstone still holds until expiry.
+    with lease_lock(lock_path, acquire_timeout=5.0, lease_seconds=120.0, reclaim_released=True) as acquired:
         if not acquired:
             raise RuntimeError(
                 "another Cursor install/uninstall is in progress "

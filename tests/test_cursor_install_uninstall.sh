@@ -15,6 +15,12 @@ INSTALL_SH="${REPO}/install.sh"
 # Source install.sh in test mode so the functions are defined without
 # triggering the install flow / prerequisite checks.
 _TO_INSTALL_SH_TEST_MODE=1 source "${INSTALL_SH}"
+# install.sh sets `set -euo pipefail` at source time; that leaks errexit into
+# this harness, which deliberately guards every expected failure itself.
+# Restore the harness options so an expected non-zero status fails a named
+# assertion instead of killing the script silently.
+set +e +o pipefail
+set -u
 
 pass=0
 fail=0

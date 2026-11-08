@@ -797,8 +797,18 @@ def handle_post_tool_use(payload):
     tally, nudge_emitted = _update_tally(fields, count_tool=True, bump_nudge=True)
     if tally is None:
         return
-    if nudge_emitted:
-        _emit({"additional_context": _NUDGE_TEXT})
+    nudges = [_NUDGE_TEXT] if nudge_emitted else []
+    # U5 thrash guard: same streak/burn/inline-script logic as Claude,
+    # nudge-only, fail-open (cursor_thrash owns the env bridging).
+    if fields["tool_name"] == "Shell":
+        import cursor_thrash
+
+        thrash = cursor_thrash.shell_thrash_nudge(fields)
+        if thrash:
+            nudges.append(thrash)
+            _record_observed("thrashNudge", nudge="thrash")
+    if nudges:
+        _emit({"additional_context": "\n".join(nudges)})
 
 
 def handle_pre_compact(payload):

@@ -57,7 +57,7 @@ differently: every handler appends one line to
 `~/.cursor/token-optimizer/observed-events.jsonl`, and each event records whether
 the Shell rewrite was `attempted`, `honoured`, or `ignored`. `cursor-doctor
 --probe` replays the documented payloads through the installed `command`, so on
-any given build you can prove exactly which of the six events fire — no version
+any given build you can prove exactly which of the eleven events fire — no version
 table to rot.
 
 If a hook field upstream changes, the evidence is on disk, and
@@ -69,10 +69,14 @@ If a hook field upstream changes, the evidence is on disk, and
 |---|---|---|
 | `sessionStart` | per-workspace continuity restore (`additional_context`) | `{"additional_context": "..."}` |
 | `preToolUse` (Shell matcher) | bash output compression (`updated_input`) | `{"permission": "allow", "updated_input": {...}}` |
-| `postToolUse` | tally update + Shell rewrite-honoured evidence + context nudge | `{"additional_context": "..."}` |
+| `postToolUse` | tally update + Shell rewrite-honoured evidence + context nudge + thrash loop nudge (identical-output streak, burn streak, inline-script repeat — same thresholds as Claude) | `{"additional_context": "..."}` |
 | `preCompact` | record real `context_tokens` / `context_window_size` / `context_usage_percent` | none |
 | `stop` | per-turn tally + throttled rollup/dashboard refresh | none |
 | `sessionEnd` | finalise tally + unthrottled rollup/dashboard | none |
+| `afterAgentResponse` | hook-measured token accounting when Cursor carries token fields (`cursor_hook_measured` provenance, cache-inclusive input; absent/implausible values change nothing) | none |
+| `postToolUseFailure` | per-tool failure counts for the burn signal | none |
+| `afterShellExecution` | corroborates rewrite-honoured evidence (never double-counted) | none |
+| `subagentStart` / `subagentStop` | subagent fan-out counts for fleet rows | none |
 
 The bridge always exits 0 and never blocks a Cursor session. The `Shell`
 rewrite is limited to inspection commands that cannot write, delete or run

@@ -29,9 +29,17 @@ assert Path(bash_search_results.__file__).parent==root
 
 
 @pytest.mark.parametrize('adapter', ['grok', 'copilot', 'cursor', 'antigravity', 'devin', 'codex', 'cowork'])
-def test_installed_adapter_can_render_search_without_checkout(tmp_path, monkeypatch, adapter):
+def test_installed_adapter_can_render_search_without_checkout(tmp_path, monkeypatch, request, adapter):
     if adapter == 'devin' and os.name != 'posix':
         pytest.skip('Devin installer intentionally supports POSIX only')
+    if os.name == 'posix':
+        # Hosted CI Python can be world-writable. Use real copied executable
+        # bytes with private modes, never bypass the installers' trust gate.
+        binary, prefix = request.getfixturevalue('devin_real_python')
+        monkeypatch.setattr(sys, 'executable', str(binary))
+        monkeypatch.setenv('TOKEN_OPTIMIZER_PYTHON', str(binary))
+        monkeypatch.setenv('PYTHONHOME', prefix)
+        monkeypatch.setenv('LD_LIBRARY_PATH', str(Path(prefix) / 'lib'))
     monkeypatch.setenv('HOME', str(tmp_path))
     monkeypatch.setenv('USERPROFILE', str(tmp_path))
     monkeypatch.delenv('DEVIN_HOME', raising=False)

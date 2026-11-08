@@ -325,6 +325,42 @@ def main():
             _measure_facade.sys.exit(0)
         _measure_facade._cursor_summary()
         _measure_facade.sys.exit(0)
+    elif _measure_facade.args[0] == "cursor-coach":
+        # Native coach data for the Cursor runtime (Slice D): tallies,
+        # per-signal quality, and rollup trends - never a ~/.claude scan.
+        if _measure_facade.detect_runtime() != "cursor":
+            print(
+                "[Token Optimizer] cursor-coach reads only the Cursor runtime; "
+                "set TOKEN_OPTIMIZER_RUNTIME=cursor.",
+                file=_measure_facade.sys.stderr,
+            )
+            _measure_facade.sys.exit(0)
+        import cursor_coach as _measure_import_cc
+        _measure_facade.cursor_coach = _measure_import_cc
+        del _measure_import_cc
+        _measure_facade._cc_data = _measure_facade.cursor_coach.generate_cursor_coach_data()
+        if "--json" in _measure_facade.args:
+            print(_measure_facade.json.dumps(_measure_facade._cc_data, indent=2))
+        else:
+            _measure_facade._csnap = _measure_facade._cc_data["snapshot"]
+            print("Token Optimizer - Cursor coach data")
+            _measure_facade._chs = _measure_facade._cc_data["health_score"]
+            print(f"  Health score: {_measure_facade._chs if _measure_facade._chs is not None else 'no scored sessions'}")
+            print(f"  Sessions analyzed: {_measure_facade._csnap['sessions_analyzed']} "
+                  f"({_measure_facade._csnap['total_turns']} turns, "
+                  f"{_measure_facade._csnap['total_tool_calls']} tool calls, "
+                  f"{_measure_facade._csnap['total_compactions']} compactions)")
+            print(f"  Cost: {_measure_facade._csnap['cost']['detail']}")
+            if _measure_facade._cc_data["patterns_bad"]:
+                print("  Issues detected:")
+                for _p in _measure_facade._cc_data["patterns_bad"]:
+                    _sev = {"high": "!!!", "medium": "!!", "low": "!"}.get(_p["severity"], "!")
+                    print(f"    [{_sev}] {_p['name']}: {_p['detail']}")
+            if _measure_facade._cc_data["patterns_good"]:
+                print("  Good practices:")
+                for _p in _measure_facade._cc_data["patterns_good"]:
+                    print(f"    [OK] {_p['name']}: {_p['detail']}")
+        _measure_facade.sys.exit(0)
     elif _measure_facade.args[0] == "grok-summary":
         _measure_facade._grok_summary()
         _measure_facade.sys.exit(0)
@@ -2614,6 +2650,7 @@ def main():
         print("  python3 measure.py cursor-doctor         # Cursor adapter readiness check")
         print("  python3 measure.py cursor-install        # Install Cursor hooks (merged into ~/.cursor/hooks.json)")
         print("  python3 measure.py cursor-summary        # Token/quality Cursor session summary")
+        print("  python3 measure.py cursor-coach          # Cursor coach data (sessions, quality, patterns; --json)")
         print("  python3 measure.py cursor-rollup         # Ingest Cursor sessions into trends DB")
         print("  python3 measure.py cursor-audit          # Audit Cursor rules (.cursor/rules, AGENTS.md) + hooks.json health")
         print("  python3 measure.py antigravity-doctor    # Google Antigravity adapter readiness check")

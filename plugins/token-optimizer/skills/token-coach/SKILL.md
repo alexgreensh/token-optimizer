@@ -96,12 +96,14 @@ if [ "$RUNTIME" = "claude" ] || [ "$RUNTIME" = "codex" ]; then
   "$PY" "$MEASURE_PY" recommendations --json          # Claude Code: the daily usage-recommendations record
 fi
 [ "$RUNTIME" = "codex" ] && "$PY" "$MEASURE_PY" codex-doctor --project "$PWD" --json
-# Cursor: hook readiness/firing evidence, then the session token/quality summary.
+# Cursor: native coach data (sessions, quality, patterns), then hook evidence
+# and the session token/quality summary.
+[ "$RUNTIME" = "cursor" ] && "$PY" "$MEASURE_PY" cursor-coach --json
 [ "$RUNTIME" = "cursor" ] && "$PY" "$MEASURE_PY" cursor-doctor --json
 [ "$RUNTIME" = "cursor" ] && "$PY" "$MEASURE_PY" cursor-summary
 ```
 
-Under Cursor, `coach --json` does not run (it scans the Claude Code setup); the Cursor commands above are the data source, together with what the user tells you.
+Under Cursor, `coach --json` does not run (it scans the Claude Code setup); `cursor-coach --json` is the data source instead. It carries `snapshot` (sessions analyzed, turns/tool calls/compactions, token provenance counts, the cost block that always reads `cursor_no_cost_data`), `patterns_good`/`patterns_bad` built from real session evidence (hot pre-compaction fill, repeated compactions, recorded tool failures, unknown token footprints), `history` from the rollup's Cursor rows, `questions`, and a `health_score` built from per-session quality scores whose `signals_active`/`signals_omitted` say exactly which evidence backed them - plus what the user tells you.
 
 What the coach JSON holds: `snapshot` (current overhead), `patterns_good` and `patterns_bad` (named patterns with detail and fix), `history` (7-day against earlier: quality, session length, cache hit rate, grade spread, cost per session, short against long sessions, compression gap, share of sessions that switched model), `deterministic_candidates` when present (work the user repeats that a script could do), and `usage_recommendations` on Claude Code (the daily-measured record: one item each for the compact window and the subagent cache lifetime, plus `wins` once the user acted on an earlier recommendation and the numbers moved). Field-by-field meaning and the numbers to quote: [references/quick-reference.md](references/quick-reference.md).
 

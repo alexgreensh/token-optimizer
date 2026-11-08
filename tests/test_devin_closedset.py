@@ -404,7 +404,7 @@ def test_v3_upgrade_from_v2_closure_and_failed_refresh_restore(tmp_path,monkeypa
     import devin_install as d,json,hashlib
     monkeypatch.setenv('HOME',str(tmp_path));d.install();root=d.state.data_dir()/'plugin';manifest=d.manifest_path()
     record=json.loads(manifest.read_text())
-    for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py'):
+    for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py','bash_search_results.py'):
         (root/name).unlink();del record['files'][str(root/name)]
     manifest.write_text(json.dumps(record))
     original=d._atomic
@@ -413,7 +413,7 @@ def test_v3_upgrade_from_v2_closure_and_failed_refresh_restore(tmp_path,monkeypa
         return original(path,content)
     monkeypatch.setattr(d,'_atomic',fail)
     with pytest.raises(OSError,match='interrupted'):d.install()
-    assert not any((root/name).exists() for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py'))
+    assert not any((root/name).exists() for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py','bash_search_results.py'))
     assert json.loads(manifest.read_text())==record
     for name,digest in record['files'].items():assert hashlib.sha256(Path(name).read_bytes()).hexdigest()==digest
     monkeypatch.setattr(d,'_atomic',original);d.install()
@@ -425,7 +425,7 @@ def test_v3_interrupted_closure_upgrade_recovers_new_leaves(tmp_path,monkeypatch
     import devin_install as d,json,base64
     monkeypatch.setenv('HOME',str(tmp_path));d.install();root=d.state.data_dir()/'plugin'
     intended=json.loads(d.manifest_path().read_text());old=dict(intended['files'])
-    for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py'):del old[str(root/name)]
+    for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py','bash_search_results.py'):del old[str(root/name)]
     old_manifest=json.dumps({'owner':d.MARKER,'files':old}).encode()
     previous={name:base64.b64encode(Path(name).read_bytes()).decode() for name in old}
     d.manifest_path().write_bytes(old_manifest)
@@ -433,7 +433,7 @@ def test_v3_interrupted_closure_upgrade_recovers_new_leaves(tmp_path,monkeypatch
     pending.write_text(json.dumps({'owner':d.MARKER,'files':intended['files'],'previous':previous,
                                   'previous_manifest':base64.b64encode(old_manifest).decode()}));pending.chmod(0o600)
     with d._lock():d._recover_pending()
-    assert not any((root/name).exists() for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py'))
+    assert not any((root/name).exists() for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py','bash_search_results.py'))
     d.install()
     from devin_verify import verify_install
     assert verify_install()
@@ -792,7 +792,7 @@ def test_v11_bad_manifest_leaves_added_closure_intact(tmp_path,monkeypatch):
     import json,base64
     d,record=_v11_pending_fixture(tmp_path,monkeypatch)
     old=json.loads(base64.b64decode(record['previous_manifest']))
-    for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py'):
+    for name in ('plugin_env.py','refetch_fingerprint.py','devin_hooks.py','_tomli.py','bash_search_results.py'):
         key=str(d.state.data_dir()/'plugin'/name);del old['files'][key];del record['previous'][key]
     d.manifest_path().write_text(json.dumps(old))
     record['previous_manifest']='!!!'

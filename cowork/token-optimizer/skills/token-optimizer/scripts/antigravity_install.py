@@ -57,6 +57,7 @@ _PAYLOAD_MODULES = (
     "plugin_env.py",
     "bash_hook.py",
     "bash_compress.py",
+    "bash_search_results.py",
     # Dependency-free whitelist gate shared by bash_hook + bash_compress.
     "bash_whitelist.py",
     "command_filters.py",

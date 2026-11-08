@@ -106,6 +106,43 @@ class TestReadCursorMessages:
         assert len(messages) == 1
         assert malformed == 1
 
+    def test_message_count_cap_holds(self, tmp_path):
+        # G3: the documented 4000-message cap had no direct coverage.
+        home = tmp_path / "cursor-home"
+        tdir = home / "projects" / "-repo" / "agent-transcripts" / "conv-1"
+        tdir.mkdir(parents=True)
+        path = tdir / "transcript.jsonl"
+        total = cursor_transcript._MAX_MESSAGES + 250
+        with path.open("w", encoding="utf-8") as fh:
+            for i in range(total):
+                fh.write(json.dumps({"role": "user", "message": {"content": f"m{i}"}}) + "\n")
+        messages, malformed = cursor_transcript.read_cursor_messages(path, home)
+        assert len(messages) == cursor_transcript._MAX_MESSAGES
+        assert messages[-1]["content"] == f"m{cursor_transcript._MAX_MESSAGES - 1}"
+        assert malformed == 0
+
+    def test_byte_cap_holds_and_sentinel_past_cap_never_parses(self, tmp_path):
+        # G3: the documented 8MB byte cap had no direct coverage. A valid
+        # message line placed entirely past the cap must never parse.
+        home = tmp_path / "cursor-home"
+        tdir = home / "projects" / "-repo" / "agent-transcripts" / "conv-1"
+        tdir.mkdir(parents=True)
+        path = tdir / "transcript.jsonl"
+        # ~3KB lines keep the line count under the 4000-message cap so the
+        # BYTE cap is the mechanism under test, not the message cap.
+        filler_line = json.dumps({"role": "user", "message": {"content": "f" * 3000}}) + "\n"
+        n_filler = cursor_transcript._MAX_TRANSCRIPT_BYTES // len(filler_line)
+        with path.open("w", encoding="utf-8") as fh:
+            fh.writelines([filler_line] * n_filler)
+            # This line straddles the cap boundary (sliced mid-JSON).
+            fh.write(json.dumps({"role": "user", "message": {"content": "x" * 4096}}) + "\n")
+            # This valid line sits entirely past the 8MB cap.
+            fh.write(json.dumps({"role": "user", "message": {"content": "SENTINEL-PAST-CAP"}}) + "\n")
+        messages, _malformed = cursor_transcript.read_cursor_messages(path, home)
+        assert messages  # pre-cap content still parses; never raises
+        assert all("SENTINEL-PAST-CAP" not in m["content"] for m in messages)
+        assert all(len(m["content"]) < 4096 for m in messages)  # straddler sliced
+
     def test_confinement_refuses_outside_projects(self, tmp_path):
         home = tmp_path / "cursor-home"
         home.mkdir()

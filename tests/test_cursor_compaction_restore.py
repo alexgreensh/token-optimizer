@@ -192,6 +192,46 @@ class TestRestore:
         # blind a huge file into the rebuilt context)
         assert restores == []
 
+    def test_restore_budget_bounds_multibyte_checkpoint_in_utf8_bytes(self, env):
+        # G3 P2: a character cut let multibyte checkpoints inflate the restore
+        # inject past the 8KB contract (repro: 10048 bytes). The budget bounds
+        # the whole emitted string - provenance prefix + body + marker - in
+        # UTF-8 bytes.
+        cur, cp_dir, capsys = env
+        bridge.handle_pre_compact(_precompact_payload(cur))
+        cp = Path(_tally(cur)["compact_checkpoint"])
+        # ~12KB of 3-byte UTF-8 content: inside the 16KB read cap, outside the
+        # 8KB restore budget.
+        cp.write_text("\u20ac" * 4000, encoding="utf-8")
+        capsys.readouterr()
+        bridge.handle_post_tool_use(_tool_payload())
+        restores = [e["additional_context"] for e in _emitted(capsys)
+                    if "checkpoint captured before compaction"
+                    in e.get("additional_context", "")]
+        assert len(restores) == 1
+        emitted = restores[0]
+        assert len(emitted.encode("utf-8")) <= 8000
+        assert emitted.endswith("[truncated: checkpoint exceeds restore budget]")
+        assert not emit_contains_replacement_char(emitted)
+
+    def test_restore_budget_unchanged_for_ascii_checkpoint(self, env):
+        cur, cp_dir, capsys = env
+        bridge.handle_pre_compact(_precompact_payload(cur))
+        cp = Path(_tally(cur)["compact_checkpoint"])
+        cp.write_text("y" * 9000, encoding="utf-8")
+        capsys.readouterr()
+        bridge.handle_post_tool_use(_tool_payload())
+        restores = [e["additional_context"] for e in _emitted(capsys)
+                    if "checkpoint captured before compaction"
+                    in e.get("additional_context", "")]
+        assert len(restores) == 1
+        assert len(restores[0].encode("utf-8")) <= 8000
+        assert restores[0].endswith("[truncated: checkpoint exceeds restore budget]")
+
+
+def emit_contains_replacement_char(text):
+    return "\ufffd" in text
+
 
 class TestFailureModes:
     def test_no_transcript_path_records_numbers_only(self, env):

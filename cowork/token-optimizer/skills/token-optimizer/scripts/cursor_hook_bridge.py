@@ -940,15 +940,24 @@ def _read_checkpoint_bounded(path_str):
         text = path.read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError):
         return None
-    if not text.strip():
+    body = text.strip()
+    if not body:
         return None
-    if len(text.encode("utf-8", "replace")) > _COMPACT_RESTORE_MAX_BYTES:
-        cut = text[:_COMPACT_RESTORE_MAX_BYTES]
-        text = cut + "\n\n[truncated: checkpoint exceeds restore budget]"
-    return (
+    prefix = (
         "Token Optimizer checkpoint captured before compaction "
-        "(restore after context rebuild):\n\n" + text.strip()
+        "(restore after context rebuild):\n\n"
     )
+    marker = "\n\n[truncated: checkpoint exceeds restore budget]"
+    # The 8KB contract bounds the WHOLE emitted string (prefix + body +
+    # marker) in UTF-8 bytes; cut encoded bytes so multibyte checkpoints
+    # cannot inflate the inject (a character cut misses by up to ~4x).
+    body_budget = _COMPACT_RESTORE_MAX_BYTES - len(prefix.encode("utf-8"))
+    if len(body.encode("utf-8", "replace")) > body_budget:
+        cut = body.encode("utf-8", "replace")[
+            : body_budget - len(marker.encode("utf-8"))
+        ].decode("utf-8", errors="ignore")
+        body = cut + marker
+    return prefix + body
 
 
 def handle_pre_compact(payload):

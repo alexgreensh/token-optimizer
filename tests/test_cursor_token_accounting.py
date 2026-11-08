@@ -89,6 +89,21 @@ def test_after_agent_response_without_fields_ingests_nothing(cursor_dir, capsys)
     assert events and events[0].get("tokens") == "absent"
 
 
+def test_after_agent_response_rejects_nonintegral_floats(cursor_dir, capsys):
+    """G5: 1.5 must not silently truncate to 1 - a fractional token count is
+    not a plausible observation and is rejected, not rounded."""
+    bridge.handle_after_agent_response(_resp_payload(input_tokens=1.5, output_tokens=10))
+    assert capsys.readouterr().out == ""
+    tally = _tally(cursor_dir)
+    assert tally is None or "hook_measured_tokens" not in tally
+    events = [e for e in _observed(cursor_dir) if e["event"] == "afterAgentResponse"]
+    assert events and events[0].get("tokens") == "rejected"
+    # Integral floats (1200.0) remain plausible - JSON encoders emit them.
+    bridge.handle_after_agent_response(_resp_payload(input_tokens=1200.0, output_tokens=10))
+    events = [e for e in _observed(cursor_dir) if e["event"] == "afterAgentResponse"]
+    assert events[-1].get("tokens") == "measured"
+
+
 def test_after_agent_response_rejects_implausible_values(cursor_dir, capsys):
     bridge.handle_after_agent_response(_resp_payload(input_tokens=-5, output_tokens=10))
     bridge.handle_after_agent_response(_resp_payload(input_tokens="lots"))

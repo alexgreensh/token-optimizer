@@ -1203,8 +1203,12 @@ _RESPONSE_TOKEN_KEYS = (
 
 
 def _opt_nonneg_int(value):
-    """Plausible token count or None: rejects bools, negatives, non-numerics."""
+    """Plausible token count or None: rejects bools, negatives, non-numerics,
+    and non-integral floats (1.5 silently truncating to 1 would misstate the
+    observed count; G5)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not value.is_integer():
         return None
     try:
         ivalue = int(value)

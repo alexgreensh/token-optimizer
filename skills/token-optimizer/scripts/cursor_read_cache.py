@@ -74,7 +74,11 @@ def _load_config() -> dict:
 
 def configured_mode() -> str:
     """The install's configured mode; invalid/missing values mean shadow."""
-    mode = _load_config().get("mode")
+    return _mode_from(_load_config())
+
+
+def _mode_from(config: dict) -> str:
+    mode = config.get("mode")
     return mode if mode in _MODES else _DEFAULT_MODE
 
 
@@ -106,11 +110,13 @@ def _claude_to_hooks_present(workspace_roots) -> bool:
     return False
 
 
-def channel_owner(fields) -> str:
+def channel_owner(fields, config: dict | None = None) -> str:
     """Who emits on the Read channel: 'claude-import' (config presence, IDE
     toggle unverified) when Claude TO read hooks exist and no explicit mode
     overrides, else 'cursor'."""
-    explicit = _load_config().get("mode") in ("soft_block", "block", "warn")
+    if config is None:
+        config = _load_config()
+    explicit = config.get("mode") in ("soft_block", "block", "warn")
     if not explicit and _claude_to_hooks_present(fields.get("workspace_roots")):
         return "claude-import"
     return "cursor"
@@ -165,29 +171,33 @@ def _save_store(sid: str, store: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fingerprint(path: Path) -> tuple[str, int] | None:
+def _read_fingerprint(path: Path) -> tuple[str, int, str | None] | None:
+    """One read of the target: (sha1, size, text-if-delta-cacheable).
+
+    The text is retained only within delta_diff's content-cache cap so the
+    delta path never re-reads the file. Symlinks, unreadable and oversized
+    files return None (fail open).
+    """
     try:
         if path.is_symlink():
             return None
         st = path.stat()
         if not path.is_file() or st.st_size > _MAX_FILE_BYTES:
             return None
-        import hashlib
-
-        return hashlib.sha1(path.read_bytes()).hexdigest(), st.st_size
+        raw = path.read_bytes()
     except OSError:
         return None
+    import hashlib
 
-
-def _read_current(path: Path, size: int) -> str | None:
+    text = None
     try:
         from delta_diff import MAX_CONTENT_CACHE_BYTES
 
-        if size > MAX_CONTENT_CACHE_BYTES:
-            return None
-        return path.read_text(encoding="utf-8", errors="replace")
-    except (OSError, ImportError):
-        return None
+        if len(raw) <= MAX_CONTENT_CACHE_BYTES:
+            text = raw.decode("utf-8", errors="replace")
+    except ImportError:
+        pass
+    return hashlib.sha1(raw).hexdigest(), st.st_size, text
 
 
 def _structure_message(file_path: str) -> str | None:
@@ -272,13 +282,14 @@ def _evaluate(fields) -> dict | None:
 
     sid = fields.get("conversation_id") or "unknown"
     path = Path(file_path)
-    fp = _fingerprint(path)
+    fp = _read_fingerprint(path)
     if fp is None:
         return None
-    digest, size = fp
+    digest, size, current = fp
 
-    mode = configured_mode()
-    owner = channel_owner(fields)
+    config = _load_config()
+    mode = _mode_from(config)
+    owner = channel_owner(fields, config)
     if owner != "cursor":
         mode = "shadow"  # KTD9 defer: record-only while the import may own it
 
@@ -290,7 +301,6 @@ def _evaluate(fields) -> dict | None:
     if entry is None:
         # First read THIS session: record the fingerprint, never deny.
         new_entry = {"hash": digest, "size": size, "ts": time.time()}
-        current = _read_current(path, size)
         if current is not None:
             new_entry["content"] = current
         files[file_path] = new_entry
@@ -301,7 +311,6 @@ def _evaluate(fields) -> dict | None:
         # Changed since the observed read: serve a delta when we hold the
         # base content and the file is delta-eligible, else treat as new.
         old_content = entry.get("content")
-        current = _read_current(path, size)
         files[file_path] = {
             "hash": digest, "size": size, "ts": time.time(),
             **({"content": current} if current is not None else {}),
@@ -325,9 +334,8 @@ def _evaluate(fields) -> dict | None:
                 pass
         return {"emit": None, "observed": {**base, "decision": "changed_reread"}}
 
-    # Unchanged redundant read.
-    entry["ts"] = time.time()
-    _save_store(sid, store)
+    # Unchanged redundant read. No store write: the ts refresh would be a
+    # per-Read-hook disk write for pruning metadata only.
     msg = _structure_message(file_path) or _reason_message(file_path)
     return _decide(mode, msg, base, "redundant")
 
@@ -370,12 +378,14 @@ def channel_state(ledger_events) -> dict:
 
     ``ledger_events`` is the observed-events ledger (list of dicts, oldest
     first). State ladder: no config + no events -> ``unknown``; shadow mode
-    or no deny events -> ``shadow``; denies but no adaptation evidence ->
-    ``armed-unverified``; a deny whose file never reappears in a later
-    postToolUse Read while the session kept calling tools ->
-    ``armed-verified``. Absence of a matching postToolUse is consistent
-    with cancels, failures, dropped hooks and tool routing, so a single
-    deny with no later activity stays unverified.
+    or no deny events -> ``shadow``; deny events -> ``armed-unverified``.
+
+    There is NO ledger path to ``armed-verified``: a denied file absent
+    from later postToolUse events is negative evidence, consistent with
+    cancels, failures, dropped hooks and tool routing - never proof of
+    delivery or adaptation. Verification requires positive controlled
+    native evidence (a real Cursor session demonstrably receiving the deny
+    + user_message and adapting), which no current source establishes.
     """
     mode = configured_mode()
     owner_claude = False
@@ -384,36 +394,25 @@ def channel_state(ledger_events) -> dict:
     except Exception:
         pass
     events = [e for e in (ledger_events or []) if isinstance(e, dict)]
-    denies = [
-        (i, e) for i, e in enumerate(events)
-        if e.get("event") == "readCache"
+    denies = any(
+        e.get("event") == "readCache"
         and str(e.get("decision") or "").startswith("deny")
-    ]
+        for e in events
+    )
     if not events and mode == _DEFAULT_MODE:
         state = "unknown"
     elif mode == "shadow" or not denies:
         state = "shadow"
     else:
         state = "armed-unverified"
-        for idx, deny in denies:
-            path = deny.get("path")
-            later = events[idx + 1:]
-            later_tools = [e for e in later if e.get("event") == "postToolUse"]
-            reread = any(
-                e.get("event") == "postToolUse"
-                and e.get("tool_name") == "Read"
-                and e.get("path") == path
-                for e in later
-            )
-            if later_tools and not reread:
-                state = "armed-verified"
-                break
     return {
         "channel": "read",
         "state": state,
         "mode": mode,
         "claude_import_config_present": owner_claude,
         "note": ("Cursor's Claude-hook import toggle has no verified file "
-                 "surface; ownership follows config presence, and silence "
-                 "neither arms nor confirms anything"),
+                 "surface, so KTD9 ownership from config presence is "
+                 "inconclusive (record-only defer avoids damage, parity is "
+                 "not closed by it). armed-verified needs positive "
+                 "controlled native evidence; absence never verifies."),
     }

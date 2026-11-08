@@ -305,10 +305,11 @@ def _observed_checks() -> list:
 def _read_channel_check(entries: list) -> dict:
     """U2: report the Read channel state from config + the observed ledger.
 
-    States: unknown / shadow / armed-unverified / armed-verified, computed
-    by cursor_read_cache.channel_state. Shadow silence neither arms nor
-    confirms; a verified arm needs a deny whose file never reappears in a
-    later postToolUse Read while the session kept calling tools.
+    States: unknown / shadow / armed-unverified, computed by
+    cursor_read_cache.channel_state. Shadow silence neither arms nor
+    confirms, and NO ledger pattern promotes to verified: absence of a
+    reread is negative evidence, not delivery proof. armed-verified needs
+    positive controlled native evidence no current source provides.
     """
     try:
         import cursor_read_cache

@@ -237,12 +237,13 @@ class TestChannelState:
         _arm(cur)
         events = [{"event": "readCache", "decision": "deny_inject", "path": "demo.py"}]
         assert rc.channel_state(events)["state"] == "armed-unverified"
-        # armed-unverified: deny then the SAME file reread (deny not honoured)
+        # absence is never proof: a denied file missing from later
+        # postToolUse events stays unverified even while other tools run
+        events.append({"event": "postToolUse", "tool_name": "Shell"})
+        assert rc.channel_state(events)["state"] == "armed-unverified"
+        # and a reread of the denied file is likewise just unverified
         events.append({"event": "postToolUse", "tool_name": "Read", "path": "demo.py"})
         assert rc.channel_state(events)["state"] == "armed-unverified"
-        # armed-verified: deny honoured (no reread) while other tools ran
-        events[-1] = {"event": "postToolUse", "tool_name": "Shell"}
-        assert rc.channel_state(events)["state"] == "armed-verified"
 
 
 def test_installer_wires_read_matcher():

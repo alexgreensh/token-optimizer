@@ -168,9 +168,11 @@ def _hook_entries(bridge_path: Path) -> dict:
 
     return {
         "sessionStart": [entry("sessionStart")],
-        # Only the Shell tool is rewritten; matcher keeps every other tool out
-        # of the bridge's hot path (Cursor matchers are JS regex over tool name).
-        "preToolUse": [entry("preToolUse", matcher="Shell")],
+        # Shell is rewritten; Read is intercepted by the U2 read cache
+        # (shadow by default, emitting nothing until explicitly armed).
+        # The matcher keeps every other tool out of the bridge's hot path
+        # (Cursor matchers are JS regex over tool name).
+        "preToolUse": [entry("preToolUse", matcher="Shell|Read")],
         "postToolUse": [entry("postToolUse")],
         "preCompact": [entry("preCompact")],
         "stop": [entry("stop")],

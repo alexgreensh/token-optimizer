@@ -750,8 +750,37 @@ def handle_session_start(payload):
 
 
 def handle_pre_tool_use(payload):
-    """Shell bash-compression via updated_input, gated and fail-closed."""
+    """Shell bash-compression via updated_input, gated and fail-closed.
+
+    Read interception (U2) runs through cursor_read_cache: shadow by
+    default, deny + user_message only under an explicit per-install mode,
+    fail-open on every uncertainty.
+    """
     fields = decode_payload(payload)
+    if fields["tool_name"] == "Read":
+        try:
+            import cursor_read_cache
+
+            decision = cursor_read_cache.evaluate(fields)
+        except Exception:
+            decision = None
+        if decision is not None:
+            emit = decision.get("emit")
+            if emit:
+                _emit(emit)
+            observed = decision.get("observed")
+            if isinstance(observed, dict):
+                _record_observed("readCache",
+                                 conversation_id=fields["conversation_id"] or None,
+                                 **observed)
+        else:
+            # Not an interceptable read (ineligible, first read elsewhere,
+            # fail-open): keep the plain observed record.
+            _record_observed("preToolUse",
+                             conversation_id=fields["conversation_id"] or None,
+                             tool_name=fields["tool_name"] or None,
+                             rewrite=None)
+        return
     rewrite = None
     if fields["tool_name"] == "Shell" and _compression_enabled():
         command = fields["tool_args"].get("command")
@@ -777,6 +806,7 @@ def handle_pre_tool_use(payload):
                     _emit({"permission": "allow", "updated_input": updated})
                     rewrite = "attempted"
     _record_observed("preToolUse",
+                     conversation_id=fields["conversation_id"] or None,
                      tool_name=fields["tool_name"] or None,
                      rewrite=rewrite)
 
@@ -795,8 +825,15 @@ def handle_post_tool_use(payload):
         if isinstance(command, str) and command:
             if not _bash_hook._has_dangerous_chars(command) and _bash_hook._is_whitelisted(command):
                 rewrite = "honoured" if "bash_compress.py" in command else "ignored"
+    read_path = None
+    if fields["tool_name"] == "Read":
+        rp = fields["tool_args"].get("file_path")
+        if isinstance(rp, str) and rp:
+            read_path = Path(rp).name
     _record_observed("postToolUse",
+                     conversation_id=fields["conversation_id"] or None,
                      tool_name=fields["tool_name"] or None,
+                     path=read_path,
                      rewrite=rewrite)
 
     tally, nudge_emitted = _update_tally(fields, count_tool=True, bump_nudge=True)

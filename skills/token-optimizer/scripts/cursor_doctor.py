@@ -298,7 +298,39 @@ def _observed_checks() -> list:
     if honoured or ignored:
         detail += f"; Shell rewrite: {honoured} honoured, {ignored} ignored"
     checks.append(_check("ok", "observed events", detail))
+    checks.append(_read_channel_check(entries))
     return checks
+
+
+def _read_channel_check(entries: list) -> dict:
+    """U2: report the Read channel state from config + the observed ledger.
+
+    States: unknown / shadow / armed-unverified / armed-verified, computed
+    by cursor_read_cache.channel_state. Shadow silence neither arms nor
+    confirms; a verified arm needs a deny whose file never reappears in a
+    later postToolUse Read while the session kept calling tools.
+    """
+    try:
+        import cursor_read_cache
+
+        info = cursor_read_cache.channel_state(entries)
+    except Exception as exc:
+        return _check("warn", "read channel", f"state unavailable ({type(exc).__name__})")
+    state = info["state"]
+    detail = (f"{state} (mode={info['mode']}; Claude import config "
+              f"{'present' if info['claude_import_config_present'] else 'absent'})")
+    if state == "shadow":
+        return _check("ok", "read channel", detail,
+                      _hint("Shadow records what would be injected. To arm: set "
+                            "{\"mode\": \"soft_block\"} in "
+                            "<cursor-home>/token-optimizer/read-cache.json."))
+    if state == "armed-unverified":
+        return _check("warn", "read channel", detail,
+                      _hint("Denies are emitted but delivery is unproven; silence is "
+                            "consistent with cancels, failures and dropped hooks."))
+    if state == "unknown":
+        return _check("ok", "read channel", detail)
+    return _check("ok", "read channel", detail)
 
 
 def _data_checks() -> list:

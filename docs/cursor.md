@@ -92,6 +92,7 @@ closed** (emits nothing) on any uncertainty.
 | Compaction steering | Capture + restore shipped: `preCompact` captures a redacted checkpoint (U1 disk-transcript adapter -> `compact_capture`) and the next `postToolUse` offers exactly one bounded restore. Steering the compaction itself remains observational — Cursor compacts server-side/model-side, and the restore's delivery into the rebuilt context is claimed only with positive native evidence (ledgered `emitted` otherwise) | native validation open |
 | Database parity surfaces | Cursor moves token fields across `state.vscdb` releases; the reader maps the known shapes and falls back instead of guessing | read-only, never writes |
 | Native IDE Memories | Settings > Memories have no verified local file surface and the IDE state DB schema is unverified; `cursor-audit` performs no IDE DB reads and does not audit them. User Rules and Team Rules are also not file-backed and not audited | marked not-covered in audit output |
+| Read interception (structure maps / delta reads) | Shipped shadow-first: the `preToolUse` `Read` channel records redundant-read decisions by default and emits nothing. `soft_block`/`block` are a manual per-install opt-in (`read-cache.json`); `cursor-doctor` reports the channel as `unknown`/`shadow`/`armed-unverified`/`armed-verified` from observed evidence, and a `deny` is only called verified when the denied file never reappears in a later `postToolUse` Read while the session kept working. Silence arms nothing | native delivery validation open |
 
 Consequences and mitigations:
 

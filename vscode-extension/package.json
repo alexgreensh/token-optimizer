@@ -80,7 +80,7 @@
     "clean": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\"",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "vitest run",
+    "test": "vitest run --config vitest.cursor.config.mts",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {

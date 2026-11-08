@@ -849,19 +849,20 @@ def _capture_compact_checkpoint(fields):
         return None
     translated = None
     try:
-        from runtime_env import cursor_home
-
         import cursor_transcript
         from cursor_thrash import _restore_env, _set_env
 
+        home = cursor_home() if cursor_home is not None else None
+        if home is None:
+            return None
         translated = cursor_transcript.translate_transcript(
-            transcript_path, cursor_home(), sid
+            transcript_path, home, sid
         )
         if translated is None:
             return None
         old_snapshot = _set_env(
             "TOKEN_OPTIMIZER_SNAPSHOT_DIR",
-            str(cursor_home() / "token-optimizer" / "snapshot"),
+            str(home / "token-optimizer" / "snapshot"),
         )
         try:
             import measure
@@ -934,7 +935,10 @@ def handle_pre_compact(payload):
             "ts": time.time(),
         },
     )
-    checkpoint = _capture_compact_checkpoint(fields)
+    try:
+        checkpoint = _capture_compact_checkpoint(fields)
+    except Exception:
+        checkpoint = None  # fail-open: never raise into Cursor
     if checkpoint:
         _update_tally(fields, compact_checkpoint=checkpoint, restore_pending=True)
         _record_observed("compactCapture",

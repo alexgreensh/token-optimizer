@@ -89,7 +89,7 @@ closed** (emits nothing) on any uncertainty.
 | Gap | Why | Tracking |
 |---|---|---|
 | Per-session cost | Cursor exposes no billing figure to hooks or state files; there is no number to pass through, so cost-source is `cursor_no_cost_data` and no savings headline is shown rather than a wrong one | marked red in the capability matrix |
-| Compaction steering | Cursor compacts server-side/model-side; `preCompact` is observational (we record its numbers), not an injection point | — |
+| Compaction steering | Capture + restore shipped: `preCompact` captures a redacted checkpoint (U1 disk-transcript adapter -> `compact_capture`) and the next `postToolUse` offers exactly one bounded restore. Steering the compaction itself remains observational — Cursor compacts server-side/model-side, and the restore's delivery into the rebuilt context is claimed only with positive native evidence (ledgered `emitted` otherwise) | native validation open |
 | Database parity surfaces | Cursor moves token fields across `state.vscdb` releases; the reader maps the known shapes and falls back instead of guessing | read-only, never writes |
 | Native IDE Memories | Settings > Memories have no verified local file surface and the IDE state DB schema is unverified; `cursor-audit` performs no IDE DB reads and does not audit them. User Rules and Team Rules are also not file-backed and not audited | marked not-covered in audit output |
 
@@ -176,3 +176,18 @@ rm -rf ~/.cursor/token-optimizer
 6. If the whitelisted command ran bare (not through `bash_compress.py`), the
    `postToolUse` line records `rewrite: ignored` — file it against the hook
    contract, and `cursor-doctor` will show the observed toggle for it.
+
+### Compaction recovery (U3)
+
+1. Run a session long enough to compact (or force one).
+2. `observed-events.jsonl` should gain `compactCapture` at `preCompact` and
+   `compactRestore` at the next `postToolUse`; the tally's
+   `restore_pending` flips true then false, and `compact_checkpoint` names a
+   0o600 file under `token-optimizer/checkpoints/`.
+3. The checkpoint body must contain no credentials (redaction is applied at
+   translation and again at capture).
+4. The restore rides `additional_context` exactly once, byte-bounded;
+   consecutive compactions coalesce to a single restore. Delivery into the
+   rebuilt context is claimed only when a follow-on session demonstrably
+   uses it — the ledger says `emitted`, never `delivered`, without that
+   evidence.

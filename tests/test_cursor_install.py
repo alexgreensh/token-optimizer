@@ -88,7 +88,9 @@ def test_install_writes_merged_hooks_and_payload(home):
     assert result["hook_file"] == str(hooks_path)
     # every wired event is present
     assert set(data["hooks"]) == {
-        "sessionStart", "preToolUse", "postToolUse", "preCompact", "stop", "sessionEnd"
+        "sessionStart", "preToolUse", "postToolUse", "preCompact", "stop", "sessionEnd",
+        "afterAgentResponse", "postToolUseFailure", "afterShellExecution",
+        "subagentStart", "subagentStop"
     }
     # foreign entry preserved, stale ours replaced by exactly one fresh ours
     starts = data["hooks"]["sessionStart"]
@@ -305,7 +307,9 @@ def test_concurrent_installs_both_survive(tmp_path, monkeypatch):
     import json as _json
     data = _json.loads((cur / "hooks.json").read_text(encoding="utf-8"))
     assert set(data["hooks"]) == {"sessionStart", "preToolUse", "postToolUse",
-                                  "preCompact", "stop", "sessionEnd"}
+                                  "preCompact", "stop", "sessionEnd",
+                                  "afterAgentResponse", "postToolUseFailure",
+                                  "afterShellExecution", "subagentStart", "subagentStop"}
 
 
 @needs_posix

@@ -30,8 +30,8 @@ cat > "${tmp1}/home/.cursor/hooks.json" <<'JSON'
 JSON
 HOME="${tmp1}/home" TOKEN_OPTIMIZER_CURSOR_HOME="${tmp1}/home/.cursor" \
   out="$(install_cursor 2>&1)" || { nok "install-exits-zero" "exit=$?: $out"; rm -rf "$tmp1"; exit 1; }
-events_ok="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=sorted((d.get("hooks") or {}).keys()); print("ok" if s == ["postToolUse","preCompact","preToolUse","sessionEnd","sessionStart","stop"] else ",".join(s))' "${tmp1}/home/.cursor/hooks.json")"
-if [ "$events_ok" = "ok" ]; then ok "install-wires-six-events"; else nok "install-wires-six-events" "events=$events_ok"; fi
+events_ok="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=sorted((d.get("hooks") or {}).keys()); print("ok" if s == ["afterAgentResponse","afterShellExecution","postToolUse","postToolUseFailure","preCompact","preToolUse","sessionEnd","sessionStart","stop","subagentStart","subagentStop"] else ",".join(s))' "${tmp1}/home/.cursor/hooks.json")"
+if [ "$events_ok" = "ok" ]; then ok "install-wires-events"; else nok "install-wires-events" "events=$events_ok"; fi
 starts="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d["hooks"]["sessionStart"]))' "${tmp1}/home/.cursor/hooks.json")"
 if printf '%s' "$starts" | grep -q 'other-tool'; then ok "install-preserves-foreign-entry"; else nok "install-preserves-foreign-entry" "starts=$starts"; fi
 if [ -f "${tmp1}/home/.cursor/token-optimizer/plugin/cursor_hook_bridge.py" ]; then ok "install-copies-payload"; else nok "install-copies-payload" "payload missing"; fi

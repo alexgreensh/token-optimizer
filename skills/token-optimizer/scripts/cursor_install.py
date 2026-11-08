@@ -175,6 +175,12 @@ def _hook_entries(bridge_path: Path) -> dict:
         "preCompact": [entry("preCompact")],
         "stop": [entry("stop")],
         "sessionEnd": [entry("sessionEnd")],
+        # U4 record-only events: accounting, failure/burn signals, corroboration.
+        "afterAgentResponse": [entry("afterAgentResponse")],
+        "postToolUseFailure": [entry("postToolUseFailure")],
+        "afterShellExecution": [entry("afterShellExecution")],
+        "subagentStart": [entry("subagentStart")],
+        "subagentStop": [entry("subagentStop")],
     }
 
 

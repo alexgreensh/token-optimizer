@@ -185,6 +185,12 @@ def decode_payload(payload):
         "context_window_size": 0,
         "context_usage_percent": 0.0,
         "trigger": "",
+        # U4 correlation/output fields (CLI bundle 2026.11.05 evidence)
+        "generation_id": "",
+        "tool_use_id": "",
+        "parent_tool_call_id": "",
+        "tool_output": "",
+        "duration": 0.0,
     }
     if not isinstance(payload, dict):
         return out
@@ -221,6 +227,18 @@ def decode_payload(payload):
     tp = payload.get("transcript_path")
     if isinstance(tp, str):
         out["transcript_path"] = tp[:1024]
+
+    for key in ("generation_id", "tool_use_id", "parent_tool_call_id"):
+        v = payload.get(key)
+        if isinstance(v, str):
+            out[key] = v[:128]
+    to = payload.get("tool_output")
+    if isinstance(to, str):
+        out["tool_output"] = to[:262144]
+    try:
+        out["duration"] = float(payload.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        out["duration"] = 0.0
 
     model = payload.get("model")
     if isinstance(model, str):
@@ -363,7 +381,8 @@ def _session_lock(to_dir, sid):
 
 def _update_tally(fields, *, terminal=False, end_reason=None,
                   increment_turns=False, count_tool=False, compaction=None,
-                  bump_nudge=False):
+                  bump_nudge=False, hook_tokens=None, failure=False,
+                  subagent=False):
     """Read-modify-write the session tally; returns ``(tally, nudge_emitted)``.
 
     Non-terminal activity reopens an idle/sessionEnd-finalised tally (final set
@@ -425,6 +444,24 @@ def _update_tally(fields, *, terminal=False, end_reason=None,
             comps = tally.setdefault("compactions", [])
             comps.append(compaction)
             tally["compactions"] = comps[-200:]
+
+        if hook_tokens is not None:
+            hm = tally.setdefault("hook_measured_tokens", {
+                "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+                "responses": 0, "source": "cursor_hook_measured",
+            })
+            for k in ("input", "output", "cache_read", "cache_write"):
+                hm[k] = int(hm.get(k, 0) or 0) + int(hook_tokens.get(k) or 0)
+            hm["responses"] = int(hm.get("responses", 0) or 0) + 1
+            hm["source"] = "cursor_hook_measured"
+
+        if failure:
+            fails = tally.setdefault("failures", {})
+            fname = fields.get("tool_name") or "tool"
+            fails[fname] = int(fails.get(fname, 0) or 0) + 1
+
+        if subagent:
+            tally["subagents"] = int(tally.get("subagents", 0) or 0) + 1
 
         # Context-growth nudge (R10), folded into THIS locked RMW: computing it
         # in the caller needed a second lock (and a gap a concurrent stop/
@@ -801,6 +838,103 @@ def handle_session_end(payload):
     _spawn_dashboard()
 
 
+_RESPONSE_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+
+
+def _opt_nonneg_int(value):
+    """Plausible token count or None: rejects bools, negatives, non-numerics."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ivalue if ivalue >= 0 else None
+
+
+def handle_after_agent_response(payload):
+    """Record the event; ingest real per-response tokens when plausible (KTD3).
+
+    The token fields are third-party-observed and undocumented by Cursor, so
+    they are a candidate source only: present + plausible values accumulate
+    into the tally flagged ``cursor_hook_measured``; anything else leaves the
+    existing source ordering untouched. Record-only: never emits.
+    """
+    fields = decode_payload(payload)
+    raw = payload if isinstance(payload, dict) else {}
+    present = [k for k in _RESPONSE_TOKEN_KEYS if k in raw]
+    state = "absent"
+    tokens = None
+    if present:
+        vals = {k: _opt_nonneg_int(raw.get(k)) for k in present}
+        if all(v is not None for v in vals.values()):
+            state = "measured"
+            tokens = {
+                "input": vals.get("input_tokens") or 0,
+                "output": vals.get("output_tokens") or 0,
+                "cache_read": vals.get("cache_read_tokens") or 0,
+                "cache_write": vals.get("cache_write_tokens") or 0,
+            }
+        else:
+            state = "rejected"
+    _record_observed("afterAgentResponse",
+                     conversation_id=fields["conversation_id"] or None,
+                     generation_id=fields["generation_id"] or None,
+                     tokens=state)
+    if tokens is not None:
+        _update_tally(fields, hook_tokens=tokens)
+
+
+def handle_post_tool_use_failure(payload):
+    """Count tool failures by tool name; feeds the R9 burn signal. Record-only."""
+    fields = decode_payload(payload)
+    error = payload.get("error") if isinstance(payload, dict) else None
+    _record_observed("postToolUseFailure",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_name=fields["tool_name"] or None,
+                     tool_use_id=fields["tool_use_id"] or None,
+                     error=str(error)[:256] if error is not None else None)
+    if fields["conversation_id"]:
+        _update_tally(fields, failure=True)
+
+
+def handle_after_shell_execution(payload):
+    """Corroborate rewrite-honoured evidence. NEVER counts a tool call: the
+    matching postToolUse already did (a Shell call fires both events)."""
+    fields = decode_payload(payload)
+    command = payload.get("command") if isinstance(payload, dict) else None
+    output = payload.get("output") if isinstance(payload, dict) else None
+    _record_observed("afterShellExecution",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_use_id=fields["tool_use_id"] or None,
+                     rewrite=("honoured" if isinstance(command, str)
+                              and "bash_compress.py" in command else None),
+                     output_len=len(output) if isinstance(output, str) else None)
+
+
+def handle_subagent_start(payload):
+    """Record subagent fan-out; counted once per start for fleet rows."""
+    fields = decode_payload(payload)
+    _record_observed("subagentStart",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_use_id=fields["tool_use_id"] or None)
+    if fields["conversation_id"]:
+        _update_tally(fields, subagent=True)
+
+
+def handle_subagent_stop(payload):
+    """Record subagent completion. Record-only; the start already counted."""
+    fields = decode_payload(payload)
+    _record_observed("subagentStop",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_use_id=fields["tool_use_id"] or None)
+
+
 _HANDLERS = {
     "sessionStart": handle_session_start,
     "preToolUse": handle_pre_tool_use,
@@ -808,6 +942,11 @@ _HANDLERS = {
     "preCompact": handle_pre_compact,
     "stop": handle_stop,
     "sessionEnd": handle_session_end,
+    "afterAgentResponse": handle_after_agent_response,
+    "postToolUseFailure": handle_post_tool_use_failure,
+    "afterShellExecution": handle_after_shell_execution,
+    "subagentStart": handle_subagent_start,
+    "subagentStop": handle_subagent_stop,
 }
 
 

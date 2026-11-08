@@ -41,8 +41,12 @@ from cursor_install import _py_path_is_trusted  # noqa: E402
 DAEMON_PORT = 24846
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-# The six events the installer wires (order = probe order = docs order).
-_WIRED_EVENTS = ("sessionStart", "preToolUse", "postToolUse", "preCompact", "stop", "sessionEnd")
+# The events the installer wires (order = probe order = docs order).
+_WIRED_EVENTS = (
+    "sessionStart", "preToolUse", "postToolUse", "preCompact", "stop",
+    "sessionEnd", "afterAgentResponse", "postToolUseFailure",
+    "afterShellExecution", "subagentStart", "subagentStop",
+)
 
 
 def _check(status: str, name: str, detail: str, hint: str = "") -> dict:
@@ -402,6 +406,44 @@ def _probe_payloads() -> dict:
             "hook_event_name": "sessionEnd",
             "conversation_id": "to-probe-conv",
             "reason": "probe",
+            "cursor_version": cv or "3.18.9",
+        },
+        "afterAgentResponse": {
+            "hook_event_name": "afterAgentResponse",
+            "conversation_id": "to-probe-conv",
+            "generation_id": "to-probe-gen",
+            "model": "to-probe-model",
+            "text": "probe",
+            # Synthetic: third-party-observed fields, flagged in the ledger.
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cursor_version": cv or "3.18.9",
+        },
+        "postToolUseFailure": {
+            "hook_event_name": "postToolUseFailure",
+            "tool_name": "Shell",
+            "tool_input": {"command": "false"},
+            "error": "exit 1 (synthetic probe)",
+            "conversation_id": "to-probe-conv",
+            "cursor_version": cv or "3.18.9",
+        },
+        "afterShellExecution": {
+            "hook_event_name": "afterShellExecution",
+            "command": "echo token-optimizer-probe",
+            "output": "token-optimizer-probe",
+            "conversation_id": "to-probe-conv",
+            "cursor_version": cv or "3.18.9",
+        },
+        "subagentStart": {
+            "hook_event_name": "subagentStart",
+            "conversation_id": "to-probe-conv",
+            "tool_use_id": "to-probe-tu",
+            "cursor_version": cv or "3.18.9",
+        },
+        "subagentStop": {
+            "hook_event_name": "subagentStop",
+            "conversation_id": "to-probe-conv",
+            "tool_use_id": "to-probe-tu",
             "cursor_version": cv or "3.18.9",
         },
     }

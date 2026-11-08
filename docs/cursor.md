@@ -127,10 +127,38 @@ Consequences and mitigations:
 measure.py cursor-install     # read-merge hooks.json + copy the payload
 measure.py cursor-doctor      # readiness + hook-firing probe (--probe)
 measure.py cursor-summary     # token/quality session summary (reads tallies)
+measure.py cursor-coach       # native coach data: sessions, quality, patterns (--json)
 measure.py cursor-rollup      # ingest sessions into trends.db (auto on stop/sessionEnd)
 measure.py cursor-audit       # rules + hooks setup audit (read-only, never fatal)
 measure.py cursor-uninstall   # remove only what we installed
 ```
+
+## Quality score signals
+
+The Cursor quality score uses every signal the Cursor data planes actually
+feed, each with named provenance, and omits the rest with named reasons —
+unavailable signals are never filled with a neutral-healthy default and the
+composite renormalizes:
+
+- **Context fill** — always omitted on Cursor: there is no current
+  occupancy source. The host's preCompact numbers (`context_tokens` /
+  `context_window_size`) are HISTORICAL (taken at compaction time), so
+  they are reported as labeled metadata only (`fill_ratio`,
+  `fill_is_current: false`, `fill_measured_at`) and feed compaction
+  depth's event heat - they never grade the current session, and no
+  lifetime token sum ever stands in for occupancy.
+- **Message count** — tally turns.
+- **Output/input ratio** — only with verified state.vscdb token pairs.
+- **Compaction depth** — preCompact event frequency and heat.
+- **Agent efficiency** — recorded tool failures plus terminal `turn_ended`
+  status/error (the disk transcript's only failure evidence).
+- **Decision density** — from the disk transcript (tool calls + substantive
+  text).
+
+`stale reads`, `bloated results` and `duplicate reminders` stay omitted:
+Cursor disk transcripts never persist tool outputs (bundle-proven), no read
+ledger exists yet, and the writer strips system reminders. The grade scale
+(S/A/B/C/D/F) is identical to every other runtime.
 
 `.cursor/rules/*.mdc`, AGENTS.md and legacy `.cursorrules` get the same
 attention-curve audit CLAUDE.md gets, plus `~/.cursor/hooks.json` health

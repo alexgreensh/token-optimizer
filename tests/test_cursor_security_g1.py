@@ -21,6 +21,7 @@ import os
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -67,6 +68,110 @@ class TestCheckpointConfinement:
         victim.write_text("dotdot body")
         sneaky = str(home / "token-optimizer" / ".." / ".." / "victim.md")
         assert bridge._read_checkpoint_bounded(sneaky) is None
+
+
+class TestTallySymlinkSafety:
+    def test_symlinked_tally_never_clobbers_victim(self, home, tmp_path):
+        """G1-F2 byte-level: a planted tally symlink must not redirect the
+        write. Non-JSON victim so no merge can mask the clobber."""
+        victim = tmp_path / "victim-notes"
+        victim.write_text("PRECIOUS ORIGINAL BYTES - my notes")
+        sdir = home / "token-optimizer" / "sessions"
+        sdir.mkdir(parents=True)
+        link = sdir / "convtally9.json"
+        link.symlink_to(victim)
+        fields = bridge.decode_payload({
+            "conversation_id": "convtally9", "hook_event_name": "stop",
+        })
+        bridge._update_tally(fields, increment_turns=True)
+        assert victim.read_text() == "PRECIOUS ORIGINAL BYTES - my notes"
+        # The link itself is replaced by a real tally file (or removed):
+        # either way the write never went through it.
+        assert not link.is_symlink() or not link.exists()
+
+    def test_symlinked_tally_reads_as_absent(self, home, tmp_path):
+        victim = tmp_path / "evil.json"
+        victim.write_text(json.dumps({"conversation_id": "convtally8", "tool_calls": 9999}))
+        sdir = home / "token-optimizer" / "sessions"
+        sdir.mkdir(parents=True)
+        link = sdir / "convtally8.json"
+        link.symlink_to(victim)
+        assert bridge._load_tally(link) is None
+
+
+def _run(fn, payload):
+    """Call a bridge handler, capturing its stdout JSON envelope."""
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        fn(payload)
+    return json.loads(buf.getvalue() or "{}")
+
+
+def _stage_rewrite(home, monkeypatch, conv, tuid, command):
+    """Drive preToolUse as Cursor would so a real rewrite is staged."""
+    monkeypatch.setattr(bridge, "_bash_hook", SimpleNamespace(
+        _is_whitelisted=lambda c: True,
+        _has_dangerous_chars=lambda c: False,
+        _is_auto_approvable=lambda c: True,
+    ))
+    monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
+    monkeypatch.setattr(bridge, "_COMPRESS_PATH", SCRIPTS / "bash_compress.py")
+    out = _run(bridge.handle_pre_tool_use, {
+        "conversation_id": conv,
+        "tool_name": "Shell",
+        "tool_use_id": tuid,
+        "tool_input": {"command": command},
+    })
+    assert "bash_compress.py" in out["updated_input"]["command"]
+    return out
+
+
+class TestPendingRewriteSecretFree:
+    def test_staged_rewrite_stores_hash_only(self, home, monkeypatch):
+        """The rewritten command text never touches disk: a whitelisted
+        command can still embed a credential in its arguments."""
+        _stage_rewrite(home, monkeypatch, "convpendsec", "tool-use-secret-1",
+                       "git status # S3CR3T-MARKER-9f8e7d")
+        d = home / "token-optimizer" / "pending-rewrites"
+        staged = list(d.glob("*.json"))
+        assert len(staged) == 1
+        raw = staged[0].read_bytes()
+        assert b"S3CR3T-MARKER-9f8e7d" not in raw
+        payload = json.loads(raw)
+        assert set(payload) == {"sha256", "ts"}
+        if os.name == "posix":
+            assert stat.S_IMODE(staged[0].stat().st_mode) == 0o600
+
+    def test_pending_rewrite_paired_by_session_and_tool_use_id(self, home, monkeypatch):
+        """Two sessions sharing a tool_use_id never cross-pair."""
+        _stage_rewrite(home, monkeypatch, "convpairea", "shared-tool-use-id-1", "git status")
+        _stage_rewrite(home, monkeypatch, "convpaireb", "shared-tool-use-id-1", "git status")
+        staged = list((home / "token-optimizer" / "pending-rewrites").glob("*.json"))
+        assert len(staged) == 2
+        names = {p.name for p in staged}
+        assert any(n.startswith("convpairea--") for n in names)
+        assert any(n.startswith("convpaireb--") for n in names)
+
+
+class TestRewriteClassificationUnknown:
+    def test_missing_executed_command_is_unknown_not_ignored(self, home, monkeypatch):
+        """A staged rewrite plus absent/invalid postToolUse command data says
+        nothing about what Cursor ran - never classify it as ignored."""
+        _stage_rewrite(home, monkeypatch, "convunk1", "tool-use-unk-1", "git status")
+        out = _run(bridge.handle_post_tool_use, {
+            "conversation_id": "convunk1",
+            "tool_name": "Shell",
+            "tool_use_id": "tool-use-unk-1",
+            "tool_input": {"working_directory": "/tmp"},  # no command key
+        })
+        ledger = (home / "token-optimizer" / "observed-events.jsonl")
+        events = [json.loads(l) for l in ledger.read_text().splitlines()]
+        posts = [e for e in events if e.get("event") == "postToolUse"]
+        assert posts, "expected a postToolUse ledger event"
+        assert all("rewrite" not in e for e in posts)
 
 
 class TestLedgerHardening:

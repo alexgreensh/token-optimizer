@@ -298,11 +298,18 @@ def _sessions_dir():
 
 
 def _atomic_write_json(path, obj):
-    """Atomic JSON write via codex_io; concurrent writers never corrupt."""
+    """Atomic JSON write via codex_io; concurrent writers never corrupt.
+
+    replace_symlink=True: codex_io FOLLOWS a symlinked destination by default
+    (dotfile-manager contract), which would redirect a tally/pending-rewrite
+    write through an attacker-planted link into a victim file (G1-F2, proven
+    with byte-level victim replacement). Our data-dir files must always
+    replace the link itself.
+    """
     if _atomic_write_json_impl is None:
         return False
     try:
-        _atomic_write_json_impl(path, obj)
+        _atomic_write_json_impl(path, obj, replace_symlink=True)
         return True
     except OSError:
         return False
@@ -363,6 +370,10 @@ def _tally_path(fields):
 
 def _load_tally(path):
     if path is None or not path.exists():
+        return None
+    if path.is_symlink():
+        # A planted link reads attacker-chosen bytes into the tally RMW; treat
+        # it as absent (the next write replaces the link itself).
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -934,29 +945,34 @@ _MAX_REWRITE_COMMAND_BYTES = 8_192  # shlex is quadratic past this (G0)
 _PENDING_REWRITE_MAX_AGE = 600  # seconds; staged rewrite evidence horizon
 
 
-def _pending_rewrite_path(tool_use_id):
-    safe = _SESSION_ID_RE.sub("", str(tool_use_id))[:64]
-    if len(safe) < 6:
+def _pending_rewrite_path(fields):
+    sid = _SESSION_ID_RE.sub("", str(fields.get("conversation_id") or ""))[:64]
+    tuid = _SESSION_ID_RE.sub("", str(fields.get("tool_use_id") or ""))[:64]
+    if len(sid) < 6 or len(tuid) < 6:
         return None
     to_dir = _to_dir()
     if to_dir is None:
         return None
-    return to_dir / "pending-rewrites" / f"{safe}.json"
+    return to_dir / "pending-rewrites" / f"{sid}--{tuid}.json"
 
 
 def _stage_pending_rewrite(fields, rewritten):
-    """Stage THIS tool_use_id's rewritten command for postToolUse pairing.
+    """Stage THIS session+tool_use_id's rewrite for postToolUse pairing.
 
-    Best-effort and bounded: the dir is pruned by age on each stage so a
-    crash between pre and post never leaks files. Never raises.
+    Hash-only: the rewritten command text never touches disk (a whitelisted
+    command can still embed a credential in its arguments). Equality is
+    proven by comparing digests at postToolUse. Best-effort and bounded:
+    the dir is pruned by age on each stage. Never raises.
     """
     try:
-        if not fields.get("tool_use_id"):
-            return
-        path = _pending_rewrite_path(fields["tool_use_id"])
+        path = _pending_rewrite_path(fields)
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
         now = time.time()
         for old in path.parent.glob("*.json"):
             try:
@@ -964,7 +980,12 @@ def _stage_pending_rewrite(fields, rewritten):
                     old.unlink()
             except OSError:
                 pass
-        _atomic_write_json(path, {"command": rewritten, "ts": now})
+        import hashlib
+
+        _atomic_write_json(path, {
+            "sha256": hashlib.sha256(rewritten.encode("utf-8")).hexdigest(),
+            "ts": now,
+        })
     except Exception:
         pass
 
@@ -972,33 +993,43 @@ def _stage_pending_rewrite(fields, rewritten):
 def _classify_rewrite(fields):
     """Pair the executed Shell command with this tool_use_id's staged rewrite.
 
-    honoured: executed command is byte-identical to what preToolUse emitted.
+    honoured: the executed command's digest matches the staged digest.
     ignored: a rewrite was staged but a different command actually ran.
     None: no staged attempt (unknown - never proof in either direction, G0).
+    The pop is claim-by-rename so two processes can never both classify one
+    staged rewrite.
     """
     try:
-        if not fields.get("tool_use_id"):
-            return None
-        path = _pending_rewrite_path(fields["tool_use_id"])
+        path = _pending_rewrite_path(fields)
         if path is None or not path.is_file() or path.is_symlink():
             return None
+        claimed = path.with_name(path.name + f".claimed-{os.getpid()}")
         try:
-            staged = json.loads(path.read_text(encoding="utf-8"))
+            os.replace(path, claimed)
+        except OSError:
+            return None  # another process claimed it first (or it vanished)
+        try:
+            staged = json.loads(claimed.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             staged = None
         try:
-            path.unlink()
+            claimed.unlink()
         except OSError:
             pass
         if not isinstance(staged, dict):
             return None
-        expected = staged.get("command")
+        expected = staged.get("sha256")
         if not isinstance(expected, str):
             return None
         actual = fields["tool_args"].get("command")
         if not isinstance(actual, str) or not actual:
-            return "ignored"  # an attempt was staged but nothing comparable ran
-        return "honoured" if actual == expected else "ignored"
+            # Missing/invalid executed-command data is UNKNOWN, never
+            # 'ignored' - we cannot say what Cursor actually ran.
+            return None
+        import hashlib
+
+        digest = hashlib.sha256(actual.encode("utf-8")).hexdigest()
+        return "honoured" if digest == expected else "ignored"
     except Exception:
         return None
 

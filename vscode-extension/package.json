@@ -1,7 +1,7 @@
 {
   "name": "token-optimizer-statusline",
   "displayName": "Token Optimizer",
-  "description": "See your Claude Code or GitHub Copilot context health, efficiency, and usage limits in the VS Code status bar.",
+  "description": "See your Claude Code, GitHub Copilot, or Cursor context health, efficiency, and usage limits in the VS Code status bar.",
   "version": "0.1.19",
   "publisher": "alexgreensh",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -22,6 +22,8 @@
   "keywords": [
     "claude",
     "claude-code",
+    "copilot",
+    "cursor",
     "token",
     "context",
     "status bar"
@@ -53,15 +55,17 @@
           "enum": [
             "auto",
             "claude",
-            "copilot"
+            "copilot",
+            "cursor"
           ],
           "enumDescriptions": [
-            "Detect automatically: read whichever runtime (Claude Code or GitHub Copilot) you've used most recently. Pure-Copilot and pure-Claude setups just work; no setting to flip.",
+            "Detect automatically: read whichever runtime (Claude Code, GitHub Copilot, or Cursor) you've used most recently. Single-runtime setups just work; no setting to flip.",
             "Always read cache files written by the Claude Code Token Optimizer plugin (~/.claude/token-optimizer/).",
-            "Always read cache files written by the GitHub Copilot Token Optimizer install (~/.copilot/token-optimizer/). Requires a Copilot Token Optimizer installation."
+            "Always read cache files written by the GitHub Copilot Token Optimizer install (~/.copilot/token-optimizer/). Requires a Copilot Token Optimizer installation.",
+            "Always read session tallies written by the Cursor Token Optimizer hooks (~/.cursor/token-optimizer/sessions/). Requires a Cursor Token Optimizer installation."
           ],
           "default": "auto",
-          "markdownDescription": "Which AI coding assistant runtime to read Token Optimizer cache data from. **auto** (default) picks whichever of Claude Code or GitHub Copilot you used most recently, so Copilot users don't have to change anything. Set it explicitly to `claude` or `copilot` to pin one. Changing this setting takes effect immediately without reloading VS Code."
+          "markdownDescription": "Which AI coding assistant runtime to read Token Optimizer data from. **auto** (default) picks whichever of Claude Code, GitHub Copilot, or Cursor you used most recently. Set it explicitly to `claude`, `copilot`, or `cursor` to pin one. Changing this setting takes effect immediately without reloading VS Code."
         },
         "tokenOptimizer.staleAfterSeconds": {
           "type": "number",

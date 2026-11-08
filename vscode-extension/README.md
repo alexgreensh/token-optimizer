@@ -73,7 +73,37 @@ The setting takes effect immediately without reloading VS Code.
 
 | Setting | Values | Default |
 |---|---|---|
-| `tokenOptimizer.runtime` | `"claude"` · `"copilot"` | `"claude"` |
+| `tokenOptimizer.runtime` | `"claude"` · `"copilot"` · `"cursor"` | `"auto"` |
+
+## Cursor mode
+
+If you run Token Optimizer's Cursor hooks, set:
+
+```json
+"tokenOptimizer.runtime": "cursor"
+```
+
+The extension reads the per-conversation hook tallies from
+`~/.cursor/token-optimizer/sessions/` and resolves the active session by the tally's
+`updated_at`, scoped to this window's workspace folder when one is open (a tally whose
+`cwd` or `workspace_roots` matches wins over a globally newer one).
+
+What Cursor data can and cannot show today:
+
+- **Context fill** comes from the last `preCompact` occupancy snapshot the hooks recorded
+  (labeled _preCompact_ in the tooltip and panel) — never from a lifetime token sum.
+- **ContextQ** on Cursor is derived from that fill alone; the full multi-signal quality
+  score is Claude-only for now. The tooltip says so.
+- **Compactions, session duration, and tool-call pressure** come from the tally.
+- **Usage limits, efficiency, and cost are absent on Cursor**: Cursor exposes no
+  per-session limit or billing data, and Token Optimizer does not invent either.
+
+A separate, strictly opt-in Cursor CLI `statusLine` command
+(`skills/token-optimizer/scripts/cursor_statusline.py`) renders the same grade/fill in the
+Cursor CLI footer. It **replaces the native footer** (Cursor offers no append mode), so the
+installer wires it only on explicit request.
+
+The setting takes effect immediately without reloading VS Code.
 
 ## Requires
 
@@ -82,3 +112,6 @@ The setting takes effect immediately without reloading VS Code.
 
 For Copilot mode, a GitHub Copilot Token Optimizer installation at `~/.copilot/token-optimizer/`
 is required.
+
+For Cursor mode, a Cursor Token Optimizer installation at `~/.cursor/token-optimizer/`
+is required. Auto mode picks whichever runtime you used most recently.

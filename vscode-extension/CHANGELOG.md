@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add: Cursor mode. The extension can read Cursor Token Optimizer hook tallies (`~/.cursor/token-optimizer/sessions/`), with workspace-scoped session resolution, preCompact-snapshot context fill, fill-derived ContextQ, compaction/duration/tool-pressure rows, and provenance labeling in the tooltip and panel. `tokenOptimizer.runtime` gains `"cursor"`; auto-detect covers all three runtimes. Usage limits and cost stay honestly absent on Cursor.
+- Add: `cursor_statusline.py`, an opt-in Cursor CLI `statusLine` command that renders model/context plus the fill-derived grade in the CLI footer. Opt-in because a custom statusLine replaces Cursor's native footer; it never fabricates approval-mode state the CLI does not expose.
+
 ## 0.1.17
 
 - Fix: the context fill bar no longer reads about double on turns that called the advisor tool. It now uses the real context size, the same number Claude Code shows (#287).

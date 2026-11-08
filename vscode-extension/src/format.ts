@@ -1,7 +1,7 @@
 // Pure presentation: Snapshot -> display strings. No `vscode` import, so the
 // exact rendered text is unit-testable. statusBar.ts wraps the tooltip string
 // into a MarkdownString and applies status-bar colors.
-import { RateWindow, Snapshot, UsageLimitDisplayStatus, UsageLimitStatus } from './types';
+import { RateWindow, RuntimeName, Snapshot, UsageLimitDisplayStatus, UsageLimitStatus } from './types';
 
 export interface RenderOptions {
   nowMs: number;
@@ -81,6 +81,12 @@ export function healthIcon(score: number | null): string {
 
 // ---- status bar item texts (two adjacent items) ----
 
+const RUNTIME_DISPLAY: Record<RuntimeName, string> = {
+  claude: 'Claude Code',
+  copilot: 'GitHub Copilot',
+  cursor: 'Cursor',
+};
+
 // The extension is running but the Token Optimizer CLI plugin has never written
 // data on this machine — surface the install funnel instead of a bare "--%".
 export function isFunnel(s: Snapshot): boolean {
@@ -118,6 +124,11 @@ export function buildTooltip(s: Snapshot, opts: RenderOptions): string {
     ? `**Token Optimizer** · ${escapeMd(s.model)}${s.effort ? ` · ${escapeMd(s.effort)}` : ''}`
     : '**Token Optimizer**';
   lines.push(title);
+  // Provenance note for thinner data sources (Cursor: hook tally only) so its
+  // numbers are never mistaken for the full Claude pipeline's.
+  if (s.sourceLabel) {
+    lines.push(`_${escapeMd(s.sourceLabel)}_`);
+  }
   lines.push('');
 
   if (isFunnel(s)) {
@@ -130,7 +141,7 @@ export function buildTooltip(s: Snapshot, opts: RenderOptions): string {
   }
 
   if (!s.hasData) {
-    lines.push('_No active Claude Code session detected yet._');
+    lines.push(`_No active ${RUNTIME_DISPLAY[s.runtimeName]} session detected yet._`);
     lines.push('');
     lines.push(`[Open dashboard](${DASHBOARD_CMD})`);
     return lines.join('\n');
@@ -140,7 +151,12 @@ export function buildTooltip(s: Snapshot, opts: RenderOptions): string {
   lines.push('|---|---|');
 
   if (s.fillPct != null) {
-    const src = s.fillSource === 'jsonl' ? ' _(panel)_' : '';
+    const src =
+      s.fillSource === 'jsonl'
+        ? ' _(panel)_'
+        : s.fillSource === 'cursor-tally'
+          ? ' _(preCompact)_'
+          : '';
     lines.push(`| Context | \`${fillBar(s.fillPct)}\` ${s.fillPct}%${src} |`);
   }
   if (s.contextQ) {
@@ -206,6 +222,8 @@ export interface PanelModel {
   hasData: boolean;
   funnel: boolean; // extension present but CLI plugin missing -> show install funnel
   scoped: boolean;
+  runtimeName: RuntimeName;
+  sourceLabel: string | null;
   model: string | null;
   effort: string | null;
   fillPct: number | null;
@@ -235,6 +253,8 @@ export function buildPanelModel(s: Snapshot, opts: RenderOptions): PanelModel {
     hasData: s.hasData,
     funnel: isFunnel(s),
     scoped: s.scoped,
+    runtimeName: s.runtimeName,
+    sourceLabel: s.sourceLabel,
     model: s.model,
     effort: s.effort,
     fillPct: s.fillPct,

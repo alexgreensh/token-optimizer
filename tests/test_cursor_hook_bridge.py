@@ -161,6 +161,19 @@ def test_session_end_marks_tally_final(cursor_dir, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_pre_tool_use_no_rewrite_on_native_windows(cursor_dir, monkeypatch, capsys):
+    """G4: shlex single-quote quoting is POSIX-only; cmd.exe would break, and
+    the actual Windows Shell host is unverified - record-only there."""
+    _fake_bash(monkeypatch, whitelisted=True, dangerous=False)
+    monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
+    monkeypatch.setattr(bridge, "_COMPRESS_PATH", SCRIPTS / "bash_compress.py")
+    monkeypatch.setattr(bridge.os, "name", "nt")
+
+    bridge.handle_pre_tool_use(_shell_payload("git status"))
+
+    assert capsys.readouterr().out.strip() == ""  # no rewrite emitted
+
+
 def test_pre_tool_use_rewrites_and_echoes_fields(cursor_dir, monkeypatch, capsys):
     _fake_bash(monkeypatch, whitelisted=True, dangerous=False)
     monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
@@ -458,17 +471,20 @@ def test_observed_append_failure_warns_once(monkeypatch, tmp_path, caplog):
     (first failure) instead of a traceback per hook event."""
     import logging
 
-    class ReadOnlyDir:
-        def open(self, *a, **k):
-            raise OSError(13, "read-only")
-        def __truediv__(self, name):
-            return self
-
+    # A genuinely unwritable data dir (mode 0o500): os.open O_CREAT fails
+    # with EACCES. The earlier ReadOnlyDir mock only intercepted .open();
+    # the ledger now appends via os.open (O_NOFOLLOW, 0o600) instead.
+    ro = tmp_path / "ro-dir"
+    ro.mkdir()
     monkeypatch.setattr(bridge, "_observed_warned", False)
-    monkeypatch.setattr(bridge, "_to_dir", lambda: ReadOnlyDir())
-    with caplog.at_level(logging.WARNING, logger="cursor_hook_bridge"):
-        bridge._record_observed("stop")
-        bridge._record_observed("stop")
+    monkeypatch.setattr(bridge, "_to_dir", lambda: ro)
+    ro.chmod(0o500)
+    try:
+        with caplog.at_level(logging.WARNING, logger="cursor_hook_bridge"):
+            bridge._record_observed("stop")
+            bridge._record_observed("stop")
+    finally:
+        ro.chmod(0o700)
     warns = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warns) == 1
 

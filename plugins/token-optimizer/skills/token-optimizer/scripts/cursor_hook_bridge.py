@@ -273,6 +273,10 @@ def _to_dir():
     try:
         d = cursor_home() / "token-optimizer"
         d.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(d, 0o700)  # session tallies/ledger hold file contents (G1)
+        except OSError:
+            pass
         return d
     except OSError:
         return None
@@ -319,7 +323,18 @@ def _record_observed(event, **extra):
     }
     entry.update({k: v for k, v in extra.items() if v is not None})
     try:
-        with (to_dir / "observed-events.jsonl").open("a", encoding="utf-8") as fh:
+        ledger = to_dir / "observed-events.jsonl"
+        # O_NOFOLLOW where the platform has it: a symlinked ledger must never
+        # redirect the append into a victim file (G1). 0o600 on create.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(str(ledger), flags, 0o600)
+        try:
+            os.fchmod(fd, 0o600)  # tighten a pre-existing 0o644 ledger
+        except OSError:
+            pass
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
     except OSError:
         # Log once per process: on a persistently unwritable data dir this fires
@@ -361,6 +376,15 @@ def _session_lock(to_dir, sid):
     Fail-open on contention: a contender skips after 75ms rather than blocking
     a Cursor hot path. The tally is a soft counter, so a skipped update is
     tolerable. A missing ``hook_runtime`` (broken install) proceeds unlocked.
+
+    Every Cursor hook event is its own process, so the default cohort
+    throttle (reuse_wall = lease expiry) would suppress every distinct-PID
+    acquirer for ~10s after a clean release and silently drop tally updates
+    (G2 P1, executed repro: 2 of 3 sequential events lost). Distinct
+    mutation writers opt out via ``cohort_throttle=False``;
+    ``reclaim_released=True`` lets a cleanly FINISHED event's successor in
+    without ever stealing a LIVE lease (release marker is written only on
+    clean finish).
     """
     if to_dir is None or sid in (None, "", "unknown"):
         yield False
@@ -375,7 +399,8 @@ def _session_lock(to_dir, sid):
         yield True
         return
     lock_path = lock_dir / f"{sid}.lock"
-    with lease_lock(lock_path, acquire_timeout=0.075) as acquired:
+    with lease_lock(lock_path, acquire_timeout=0.075,
+                    cohort_throttle=False, reclaim_released=True) as acquired:
         yield acquired
 
 
@@ -486,6 +511,31 @@ def _update_tally(fields, *, terminal=False, end_reason=None,
         return tally, nudge_emitted
 
 
+def _claim_restore(fields):
+    """Atomically claim a pending compact restore; checkpoint path or None.
+
+    The restore_pending pop happens inside ONE locked RMW, so concurrent
+    postToolUse processes (each its own PID) can never both observe True:
+    only the claimer emits the restore (G2 P2). Fail-open: a skipped claim
+    just defers the restore to the next event.
+    """
+    to_dir = _to_dir()
+    path = _tally_path(fields) if to_dir is not None else None
+    if path is None:
+        return None
+    sid = fields.get("conversation_id") or "unknown"
+    with _session_lock(to_dir, sid) as acquired:
+        if not acquired:
+            return None
+        tally = _load_tally(path)
+        if not tally or not tally.get("restore_pending"):
+            return None
+        tally["restore_pending"] = False
+        tally["updated_at"] = time.time()
+        _atomic_write_json(path, tally)
+        return tally.get("compact_checkpoint")
+
+
 # ---------------------------------------------------------------------------
 # Restore context (per workspace)
 # ---------------------------------------------------------------------------
@@ -557,6 +607,12 @@ def _restore_for_workspace(fields):
 
 
 def _compression_enabled():
+    # Native Windows stays record-only: the rewrite quotes with shlex
+    # (POSIX single quotes), which cmd.exe does not honor, and which host
+    # shell Cursor's Windows Shell tool actually uses is unverified - an
+    # unsafe rewrite is worse than no rewrite (G4). POSIX shells keep it.
+    if os.name == "nt":
+        return False
     return (
         _bash_hook is not None
         and _COMPRESS_AVAILABLE
@@ -842,12 +898,12 @@ def handle_post_tool_use(payload):
     nudges = [_NUDGE_TEXT] if nudge_emitted else []
     # U3: post-compaction restore - exactly one bounded inject, then clear.
     # Consecutive compactions without a tool call coalesce to this one.
-    if tally.get("restore_pending"):
-        restore_text = None
-        cp = tally.get("compact_checkpoint")
-        if isinstance(cp, str) and cp:
-            restore_text = _read_checkpoint_bounded(cp)
-        _update_tally(fields, restore_pending=False)
+    # The claim pops restore_pending inside ONE locked RMW: with distinct
+    # hook processes no longer suppressed, a check-then-clear across two
+    # locks would let concurrent postToolUse events both emit (G2 P2).
+    cp = _claim_restore(fields)
+    if isinstance(cp, str) and cp:
+        restore_text = _read_checkpoint_bounded(cp)
         if restore_text:
             nudges.append(restore_text)
             _record_observed("compactRestore",
@@ -930,14 +986,27 @@ def _capture_compact_checkpoint(fields):
 
 
 def _read_checkpoint_bounded(path_str):
-    """Read a checkpoint for restore injection, byte-bounded. Never raises."""
+    """Read a checkpoint for restore injection, byte-bounded. Never raises.
+
+    The tally is forgeable local state: only paths that resolve under our own
+    data dir (<cursor_home>/token-optimizer) may be read into model context.
+    resolve() collapses parent-directory symlink escapes; the leaf symlink
+    check above covers the file itself (G1).
+    """
     try:
         path = Path(path_str)
         if not path.is_file() or path.is_symlink():
             return None
-        if path.stat().st_size > _RESTORE_MAX_BYTES:
+        home = cursor_home() if cursor_home is not None else None
+        if home is None:
             return None
-        text = path.read_text(encoding="utf-8", errors="replace")
+        root = (home / "token-optimizer").resolve()
+        resolved = path.resolve()
+        if resolved != root and root not in resolved.parents:
+            return None
+        if resolved.stat().st_size > _RESTORE_MAX_BYTES:
+            return None
+        text = resolved.read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError):
         return None
     body = text.strip()
@@ -1068,15 +1137,31 @@ def handle_after_agent_response(payload):
         _update_tally(fields, hook_tokens=tokens)
 
 
+def _redact_for_ledger(text):
+    """Redact before the observed-events ledger; fail CLOSED (drop the field).
+
+    Redaction runs on the full string BEFORE any truncation - a mid-shape
+    cut could slice a credential past its pattern's anchors (G1).
+    """
+    try:
+        from credential_patterns import redact_credentials
+
+        redacted = redact_credentials(text)
+        return redacted if isinstance(redacted, str) else None
+    except Exception:
+        return None
+
+
 def handle_post_tool_use_failure(payload):
     """Count tool failures by tool name; feeds the R9 burn signal. Record-only."""
     fields = decode_payload(payload)
     error = payload.get("error") if isinstance(payload, dict) else None
+    redacted_error = _redact_for_ledger(str(error)) if error is not None else None
     _record_observed("postToolUseFailure",
                      conversation_id=fields["conversation_id"] or None,
                      tool_name=fields["tool_name"] or None,
                      tool_use_id=fields["tool_use_id"] or None,
-                     error=str(error)[:256] if error is not None else None)
+                     error=redacted_error[:256] if redacted_error is not None else None)
     if fields["conversation_id"]:
         _update_tally(fields, failure=True)
 

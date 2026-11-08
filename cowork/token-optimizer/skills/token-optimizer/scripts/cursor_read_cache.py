@@ -173,8 +173,24 @@ def _save_store(sid: str, store: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _redact_for_storage(text: str) -> str | None:
+    """Redact file text before it reaches the persisted fingerprint store.
+
+    Fail CLOSED: a redactor failure degrades the entry to hash-only (the
+    delta path just never engages) rather than persisting raw file content
+    (G1). Change detection is unaffected - the sha1 is over the raw bytes.
+    """
+    try:
+        from credential_patterns import redact_credentials
+
+        redacted = redact_credentials(text)
+        return redacted if isinstance(redacted, str) else None
+    except Exception:
+        return None
+
+
 def _read_fingerprint(path: Path) -> tuple[str, int, str | None] | None:
-    """One read of the target: (sha1, size, text-if-delta-cacheable).
+    """One read of the target: (sha1, size, redacted-text-if-delta-cacheable).
 
     The text is retained only within delta_diff's content-cache cap so the
     delta path never re-reads the file. Symlinks, unreadable and oversized
@@ -196,7 +212,7 @@ def _read_fingerprint(path: Path) -> tuple[str, int, str | None] | None:
         from delta_diff import MAX_CONTENT_CACHE_BYTES
 
         if len(raw) <= MAX_CONTENT_CACHE_BYTES:
-            text = raw.decode("utf-8", errors="replace")
+            text = _redact_for_storage(raw.decode("utf-8", errors="replace"))
     except ImportError:
         pass
     return hashlib.sha1(raw).hexdigest(), st.st_size, text

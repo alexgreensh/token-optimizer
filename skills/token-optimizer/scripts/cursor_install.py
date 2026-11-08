@@ -333,12 +333,24 @@ def install(*, dry_run: bool = False, home: Path = None) -> dict:
     with _hooks_lock(hooks_path):
         existing = _read_hooks(hooks_path)
         hooks = existing.get("hooks")
-        if not isinstance(hooks, dict):
+        if hooks is None:
             hooks = {}
+        elif not isinstance(hooks, dict):
+            # Fail closed like the non-object root: replacing a malformed
+            # member would silently destroy foreign configuration (G4).
+            raise RuntimeError(
+                f"{hooks_path} has a non-object 'hooks' member "
+                f"({type(hooks).__name__}); refusing to replace it. "
+                "Fix or remove the member and re-run."
+            )
         for event, new_entries in _hook_entries(bridge_path).items():
             old = hooks.get(event, [])
             if not isinstance(old, list):
-                old = []
+                raise RuntimeError(
+                    f"{hooks_path} event {event!r} is not a list "
+                    f"({type(old).__name__}); refusing to replace it. "
+                    "Fix or remove the entry and re-run."
+                )
             hooks[event] = [e for e in old if not _is_ours(e, bridge_path)] + new_entries
         existing["hooks"] = hooks
         existing.setdefault("version", 1)

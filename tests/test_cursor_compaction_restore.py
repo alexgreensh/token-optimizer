@@ -52,7 +52,10 @@ def env(monkeypatch, tmp_path, capsys):
         del sys.modules["measure"]
     measure = importlib.import_module("measure")
     importlib.reload(measure)
-    cp_dir = tmp_path / "checkpoints"
+    # Checkpoints live under the confined data dir, matching production
+    # (SNAPSHOT_DIR is pinned to <cursor_home>/token-optimizer): the G1
+    # confinement in _read_checkpoint_bounded refuses anything outside it.
+    cp_dir = cur / "token-optimizer" / "snapshot" / "checkpoints"
     cp_dir.mkdir(parents=True, exist_ok=True)
     for name, value in (
         ("CHECKPOINT_DIR", cp_dir),

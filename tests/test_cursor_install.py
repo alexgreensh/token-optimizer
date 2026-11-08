@@ -198,6 +198,32 @@ def test_install_aborts_on_corrupt_hooks_json(home):
 
 
 @needs_posix
+def test_install_aborts_on_non_dict_hooks_member(home):
+    """G4: a malformed 'hooks' member must fail closed, never be replaced."""
+    home.mkdir()
+    hooks_path = ci._host_hooks_path(home)
+    original = json.dumps({"version": 1, "hooks": ["foreign-tool-entry"]})
+    hooks_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="non-object 'hooks' member"):
+        ci.install(home=home)
+    assert hooks_path.read_text(encoding="utf-8") == original
+
+
+@needs_posix
+def test_install_aborts_on_non_list_event(home):
+    """G4: a malformed event entry must fail closed, never be replaced."""
+    home.mkdir()
+    hooks_path = ci._host_hooks_path(home)
+    original = json.dumps({"version": 1, "hooks": {"preToolUse": {"foreign": True}}})
+    hooks_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="not a list"):
+        ci.install(home=home)
+    assert hooks_path.read_text(encoding="utf-8") == original
+
+
+@needs_posix
 def test_install_aborts_on_non_object_hooks_root(home):
     home.mkdir()
     hooks_path = ci._host_hooks_path(home)

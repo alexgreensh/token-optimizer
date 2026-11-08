@@ -83,6 +83,11 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)")),
     ("Database URI",            re.compile(r"(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis)://[^:\s/]+:[^@\s]+@", re.I)),
     ("HTTP basic auth URL",     re.compile(r"https?://[^:\s/@]+:[^@\s]+@", re.I)),
+    # Token-only userinfo (https://TOKEN@host): how git embeds PATs in remote
+    # URLs (https://ghp_xxx@github.com/org/repo). No colon, so the basic-auth
+    # shape above misses it. The 8-char floor keeps ordinary short usernames
+    # out; userinfo on an http(s) URL is almost never benign (G1).
+    ("HTTP token userinfo URL", re.compile(r"https?://[^:\s/@]{8,}@", re.I)),
     # Credentials passed as URL query/matrix parameters OR OAuth-implicit-flow
     # fragment params (e.g. ?token=..., ?api_key=..., ;password=..., #access_token=...).
     # The named `keep` group captures the "?name="/"#name=" prefix so redaction
@@ -1128,6 +1133,7 @@ _PATTERN_ANCHORS = {
     "Bearer token": ("bearer",),
     "Database URI": ("://",),
     "HTTP basic auth URL": ("://",),
+    "HTTP token userinfo URL": ("://",),
     "URL auth param": ("=",),
     "MySQL password flag": ("mysql",),
     "Database env password": ("password=", "pwd=", "passwd=",

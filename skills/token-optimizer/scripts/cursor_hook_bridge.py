@@ -382,7 +382,7 @@ def _session_lock(to_dir, sid):
 def _update_tally(fields, *, terminal=False, end_reason=None,
                   increment_turns=False, count_tool=False, compaction=None,
                   bump_nudge=False, hook_tokens=None, failure=False,
-                  subagent=False):
+                  subagent=False, compact_checkpoint=None, restore_pending=None):
     """Read-modify-write the session tally; returns ``(tally, nudge_emitted)``.
 
     Non-terminal activity reopens an idle/sessionEnd-finalised tally (final set
@@ -444,6 +444,11 @@ def _update_tally(fields, *, terminal=False, end_reason=None,
             comps = tally.setdefault("compactions", [])
             comps.append(compaction)
             tally["compactions"] = comps[-200:]
+
+        if compact_checkpoint is not None:
+            tally["compact_checkpoint"] = compact_checkpoint
+        if restore_pending is not None:
+            tally["restore_pending"] = bool(restore_pending)
 
         if hook_tokens is not None:
             hm = tally.setdefault("hook_measured_tokens", {
@@ -798,6 +803,19 @@ def handle_post_tool_use(payload):
     if tally is None:
         return
     nudges = [_NUDGE_TEXT] if nudge_emitted else []
+    # U3: post-compaction restore - exactly one bounded inject, then clear.
+    # Consecutive compactions without a tool call coalesce to this one.
+    if tally.get("restore_pending"):
+        restore_text = None
+        cp = tally.get("compact_checkpoint")
+        if isinstance(cp, str) and cp:
+            restore_text = _read_checkpoint_bounded(cp)
+        _update_tally(fields, restore_pending=False)
+        if restore_text:
+            nudges.append(restore_text)
+            _record_observed("compactRestore",
+                             conversation_id=fields["conversation_id"] or None,
+                             emitted=True)
     # U5 thrash guard: same streak/burn/inline-script logic as Claude,
     # nudge-only, fail-open (cursor_thrash owns the env bridging).
     if fields["tool_name"] == "Shell":
@@ -811,8 +829,99 @@ def handle_post_tool_use(payload):
         _emit({"additional_context": "\n".join(nudges)})
 
 
+_COMPACT_RESTORE_MAX_BYTES = 8_000  # restore payload cap (bounded inject)
+
+
+def _capture_compact_checkpoint(fields):
+    """U3: translate the Cursor disk transcript and capture a checkpoint.
+
+    Returns the checkpoint path (str) or None. Uses the U1 adapter's
+    bundle-proven schema translation and compact_capture's trusted internal
+    path; the translated temp file is always removed. Imported ``measure``
+    resolves CHECKPOINT_DIR under the Cursor runtime home (CURSOR_VERSION is
+    exported to every Cursor hook process), so checkpoint state never lands
+    in Claude's ledger. Fail-open: any error returns None and preCompact
+    degrades to today's numbers-only recording.
+    """
+    transcript_path = fields.get("transcript_path")
+    sid = fields.get("conversation_id") or ""
+    if not transcript_path or not sid:
+        return None
+    translated = None
+    try:
+        from runtime_env import cursor_home
+
+        import cursor_transcript
+        from cursor_thrash import _restore_env, _set_env
+
+        translated = cursor_transcript.translate_transcript(
+            transcript_path, cursor_home(), sid
+        )
+        if translated is None:
+            return None
+        old_snapshot = _set_env(
+            "TOKEN_OPTIMIZER_SNAPSHOT_DIR",
+            str(cursor_home() / "token-optimizer" / "snapshot"),
+        )
+        try:
+            import measure
+
+            fill_pct = fields.get("context_usage_percent")
+            try:
+                fill_pct = float(fill_pct) if fill_pct is not None else None
+            except (TypeError, ValueError):
+                fill_pct = None
+            checkpoint = measure.compact_capture(
+                session_id=sid,
+                trigger=fields.get("trigger") or "precompact",
+                cwd=fields.get("cwd") or None,
+                fill_pct=fill_pct,
+                _trusted_transcript=translated,
+            )
+        finally:
+            _restore_env("TOKEN_OPTIMIZER_SNAPSHOT_DIR", old_snapshot)
+        return str(checkpoint) if checkpoint else None
+    except Exception:
+        return None
+    finally:
+        if translated is not None:
+            try:
+                translated.unlink()
+            except OSError:
+                pass
+
+
+def _read_checkpoint_bounded(path_str):
+    """Read a checkpoint for restore injection, byte-bounded. Never raises."""
+    try:
+        path = Path(path_str)
+        if not path.is_file() or path.is_symlink():
+            return None
+        if path.stat().st_size > _RESTORE_MAX_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+    if not text.strip():
+        return None
+    if len(text.encode("utf-8", "replace")) > _COMPACT_RESTORE_MAX_BYTES:
+        cut = text[:_COMPACT_RESTORE_MAX_BYTES]
+        text = cut + "\n\n[truncated: checkpoint exceeds restore budget]"
+    return (
+        "Token Optimizer checkpoint captured before compaction "
+        "(restore after context rebuild):\n\n" + text.strip()
+    )
+
+
 def handle_pre_compact(payload):
-    """Record Cursor's real context numbers and compaction trigger."""
+    """Record Cursor's real context numbers and compaction trigger.
+
+    U3: when the payload names a transcript, capture a redacted checkpoint
+    through the U1 adapter + compact_capture and mark restore-pending; the
+    next postToolUse emits exactly one bounded restore. The preCompact
+    ``user_message`` note is emitted and ledgered as ``emitted`` - delivery
+    into Cursor's UI is claimed only with positive native evidence.
+    """
     fields = decode_payload(payload)
     _record_observed("preCompact", conversation_id=fields["conversation_id"] or None)
     _update_tally(
@@ -825,6 +934,15 @@ def handle_pre_compact(payload):
             "ts": time.time(),
         },
     )
+    checkpoint = _capture_compact_checkpoint(fields)
+    if checkpoint:
+        _update_tally(fields, compact_checkpoint=checkpoint, restore_pending=True)
+        _record_observed("compactCapture",
+                         conversation_id=fields["conversation_id"] or None,
+                         checkpoint=os.path.basename(checkpoint))
+        _emit({"user_message":
+               "Token Optimizer: checkpoint captured before compaction; "
+               "it will be offered back after the context rebuild."})
 
 
 def handle_stop(payload):

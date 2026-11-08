@@ -221,3 +221,18 @@ class TestCompactCaptureIntegration:
         # nothing in the checkpoint may claim tool calls succeeded - disk
         # transcripts carry no results to support that.
         assert "pytest" in text or "build" in text
+
+    def test_turn_ended_error_reaches_cc_records(self, tmp_path):
+        """Judge U1 medium: terminal failure evidence must not be dropped at
+        the CC-records boundary - compact_capture is a consumer."""
+        home, path = _home_with_transcript(tmp_path)
+        messages, _ = cursor_transcript.read_cursor_messages(path, home)
+        records = cursor_transcript.messages_to_cc_records(messages)
+        texts = [
+            b.get("text", "") for r in records
+            for b in (r["message"]["content"] if isinstance(r["message"]["content"], list) else [])
+            if isinstance(b, dict)
+        ]
+        assert any("turn_ended status=error" in t and "aborted" in t for t in texts), texts
+        # a success terminal adds no fabricated error content
+        assert not any("status=success" in t for t in texts)

@@ -167,6 +167,18 @@ def messages_to_cc_records(messages: list[dict]) -> list[dict]:
                 name = call.get("name")
                 if isinstance(name, str) and name:
                     blocks.append({"type": "tool_use", "name": name, "input": call.get("input") or {}})
+            # Carry the disk's only terminal failure evidence INTO the CC
+            # records as a bracketed provenance-tagged text block, so
+            # compact_capture's error-context extraction can see a
+            # turn_ended error. A success line adds nothing (absence of
+            # error is the disk's healthy signal, stated, not fabricated).
+            status = msg.get("turn_ended_status")
+            if msg.get("turn_ended") and isinstance(status, str) and status != "success":
+                note = f"[cursor turn_ended status={status}"
+                err = msg.get("turn_ended_error")
+                if isinstance(err, str) and err.strip():
+                    note += f": {err.strip()[:200]}"
+                blocks.append({"type": "text", "text": note + "]"})
             if blocks:
                 records.append({"type": "assistant", "message": {"role": "assistant", "content": blocks}})
     return records

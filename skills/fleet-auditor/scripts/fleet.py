@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Fleet Auditor: Cross-Platform Agent Token Waste Auditor.
 
-Detects agent systems (Claude Code, Codex, OpenClaw, NanoClaw, Hermes, OpenCode, IronClaw),
-collects token usage data, identifies waste patterns, and recommends fixes with
+Detects agent systems (Claude Code, Codex, OpenClaw, NanoClaw, Hermes, OpenCode, IronClaw,
+Cursor), collects token usage data, identifies waste patterns, and recommends fixes with
 dollar savings estimates.
+
+Cursor runs carry no dollar figures: Cursor exposes no local billing data, so the
+Cursor adapter reports tokens only and every cost surface says "no cost data"
+instead of a fabricated $0.00.
 
 Zero external dependencies. Python 3.10+.
 
@@ -74,6 +78,15 @@ except Exception:  # pragma: no cover - optional Codex adapter dependency
 
     def codex_home() -> Path:
         return HOME / ".codex"
+
+try:  # noqa: E402
+    import cursor_session as _cursor_session  # type: ignore
+    import cursor_state as _cursor_state  # type: ignore
+except Exception:  # pragma: no cover - optional Cursor adapter dependency
+    # Standalone copies of fleet.py (no token-optimizer/scripts beside it) still
+    # collect Cursor tallies through the adapter's native fallback reader.
+    _cursor_session = None
+    _cursor_state = None
 
 try:  # noqa: E402
     import tomllib
@@ -522,6 +535,11 @@ def unpriced_summary(runs) -> dict[str, int]:
     """
     out: dict[str, int] = {}
     for r in runs:
+        if r.system == "cursor":
+            # Cursor exposes no local billing data: its $0 is structural, not a
+            # missing pricing row (KD3/R15). Nudging Cursor users to "add rates"
+            # would fabricate a cost surface the host does not have.
+            continue
         # Require a real model name: an empty/blank model can't be priced OR named
         # in the warning, and the dashboard SQL excludes it (model != '') — skip it
         # here too so all three surfaces agree.
@@ -592,6 +610,9 @@ class AgentRun:
     source_path: str = ""
     error_message: str | None = None
     exit_code: int | None = None
+    # Token provenance label (e.g. "cursor_rollup", "cursor_tally_only").
+    # Empty when the source system carries a single authoritative token record.
+    token_source: str = ""
 
 
 @dataclass
@@ -637,6 +658,7 @@ CREATE TABLE IF NOT EXISTS fleet_runs (
     error_message TEXT,
     exit_code INTEGER,
     collected_at TEXT,
+    token_source TEXT,
     UNIQUE(system, source_path, session_id)
 );
 
@@ -687,6 +709,12 @@ def _init_fleet_db() -> sqlite3.Connection:
             ("schema_version", SCHEMA_VERSION),
         )
         conn.commit()
+    # Migration: token_source provenance column (Cursor honesty work). CREATE
+    # TABLE IF NOT EXISTS leaves pre-existing databases on the old shape.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(fleet_runs)").fetchall()}
+    if "token_source" not in cols:
+        conn.execute("ALTER TABLE fleet_runs ADD COLUMN token_source TEXT")
+        conn.commit()
     return conn
 
 
@@ -706,8 +734,9 @@ def _insert_run(conn: sqlite3.Connection, run: AgentRun):
         (source_path, system, session_id, date, agent_name, project,
          duration_seconds, input_tokens, output_tokens, cache_read_tokens,
          cache_write_tokens, cost_usd, model, context_window_size,
-         run_type, outcome, message_count, error_message, exit_code, collected_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         run_type, outcome, message_count, error_message, exit_code, collected_at,
+         token_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run.source_path,
             run.system,
@@ -729,6 +758,7 @@ def _insert_run(conn: sqlite3.Connection, run: AgentRun):
             run.error_message,
             run.exit_code,
             datetime.now(timezone.utc).isoformat(),
+            run.token_source or None,
         ),
     )
 
@@ -1525,6 +1555,315 @@ class IronClawAdapter(BaseAdapter):
         return False, 0.0, "~/.ironclaw/ not found"
 
 
+def _cursor_home() -> Path:
+    """Cursor's home directory for the fleet collector.
+
+    TOKEN_OPTIMIZER_CURSOR_HOME wins (the same override the rest of Token
+    Optimizer's Cursor support honors); otherwise ~/.cursor. Cursor has no
+    documented CURSOR_HOME of its own.
+    """
+    override = os.environ.get("TOKEN_OPTIMIZER_CURSOR_HOME", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return HOME / ".cursor"
+
+
+def _cursor_trends_db_candidates(home: Path) -> list[Path]:
+    """Candidate rollup trends.db locations, in priority order.
+
+    measure.py's cursor-rollup writes to $TOKEN_OPTIMIZER_SNAPSHOT_DIR/trends.db
+    when that override is set, else <runtime_home>/_backups/token-optimizer/
+    trends.db — under the cursor runtime that is <cursor_home>/_backups/...
+    """
+    candidates: list[Path] = []
+    snap = os.environ.get("TOKEN_OPTIMIZER_SNAPSHOT_DIR", "").strip()
+    if snap:
+        candidates.append(Path(snap).expanduser() / "trends.db")
+    candidates.append(home / "_backups" / "token-optimizer" / "trends.db")
+    return candidates
+
+
+class CursorAdapter(BaseAdapter):
+    """Adapter for Cursor via Token Optimizer's own Cursor data planes.
+
+    Reads (never writes) the two planes the Cursor hook bridge and rollup
+    already produce:
+
+    - Tallies: ``<cursor_home>/token-optimizer/sessions/<conversation_id>.json``
+      — the authoritative record (turns, tool calls, models, compactions, cwd,
+      timestamps). Written by cursor_hook_bridge._update_tally.
+    - Rollup trends: ``<cursor_home>/_backups/token-optimizer/trends.db``
+      ``session_log`` rows (``platform='cursor'``) carrying the token figures
+      the rollup already resolved (state.vscdb tokenCount, else a transcript
+      estimate, else zero).
+
+    Honesty rules (R15 / KD3): Cursor exposes no local billing data, so
+    cost_usd is always 0.0 and cost surfaces render "no cost data" — never a
+    computed or implied $0.00 and never a pricing-table lookup. A tally with
+    no trends row is collected with token_source='cursor_tally_only' and zero
+    tokens, and scan() SAYS the figures are unknown — a silent zero is a
+    defect (#149 class).
+    """
+
+    name = "cursor"
+    display_name = "Cursor"
+
+    _MAX_TALLY_FILES = 10_000
+    _MAX_TALLY_BYTES = 4 * 1024 * 1024
+
+    def _tally_dir(self, home: Path) -> Path:
+        return home / "token-optimizer" / "sessions"
+
+    # -- detection ----------------------------------------------------------
+
+    def detect(self) -> tuple[bool, float, str]:
+        home = _cursor_home()
+        tally_dir = self._tally_dir(home)
+        if tally_dir.is_dir():
+            try:
+                n = sum(1 for p in tally_dir.iterdir() if p.is_file() and p.suffix == ".json")
+            except OSError:
+                n = 0
+            if n:
+                return True, 1.0, f"Found {n} Token Optimizer tally file(s) in {tally_dir}"
+        if home.exists():
+            return True, 0.3, (f"Found {home} but no Token Optimizer session tallies — "
+                               f"install the Cursor hooks (measure.py cursor-install) and run a session")
+        return False, 0.0, f"{home} not found"
+
+    # -- data-plane readers -------------------------------------------------
+
+    def _read_tally_native(self, path: Path) -> dict | None:
+        """Fallback tally reader for standalone copies (no cursor_state import).
+
+        Mirrors cursor_state.read_tally's defensive posture: bounded bytes,
+        JSON object required, None on any failure. The idle-finalisation pass
+        is cursor_state's and is skipped here (documented drift risk).
+        """
+        try:
+            if path.stat().st_size > self._MAX_TALLY_BYTES:
+                return None
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            return data if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError, ValueError):
+            return None
+
+    def _read_tallies(self, home: Path) -> tuple[list[tuple[Path, dict]], list[str]]:
+        sessions_dir = self._tally_dir(home)
+        tallies: list[tuple[Path, dict]] = []
+        errors: list[str] = []
+        try:
+            paths = sorted(p for p in sessions_dir.iterdir() if p.is_file() and p.suffix == ".json")
+        except OSError as exc:
+            return [], [f"cannot list {sessions_dir}: {exc}"]
+        for path in paths[: self._MAX_TALLY_FILES]:
+            if _cursor_state is not None:
+                tally = _cursor_state.read_tally(path)
+                if tally is not None:
+                    tally = _cursor_state.idle_finalise(tally)
+            else:
+                tally = self._read_tally_native(path)
+            if tally is None:
+                errors.append(f"skipped unreadable tally {path.name} (corrupt or oversized)")
+                continue
+            tallies.append((path, tally))
+        if len(paths) > self._MAX_TALLY_FILES:
+            errors.append(f"tally cap {self._MAX_TALLY_FILES} reached; remaining tallies skipped this pass")
+        return tallies, errors
+
+    def _trends_rows(self, home: Path) -> tuple[dict[str, dict], str | None]:
+        """Read platform='cursor' session_log rows, keyed by conversation_id.
+
+        Returns (rows, note): note is None on success, else a human string
+        explaining the absence (no DB / no table / no columns) so scan() can
+        report it instead of silently zeroing tokens. Opened mode=ro: the
+        collector can never write to the rollup's DB.
+        """
+        db_path = next((p for p in _cursor_trends_db_candidates(home) if p.is_file()), None)
+        if db_path is None:
+            return {}, (f"trends.db not found under {home / '_backups' / 'token-optimizer'} "
+                        f"— token figures unknown; run measure.py cursor-rollup to resolve them")
+        try:
+            conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=2)
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error as exc:
+            return {}, f"trends.db at {db_path} would not open read-only: {exc}"
+        try:
+            available = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
+            want = {"jsonl_path", "input_tokens", "output_tokens", "message_count",
+                    "quality_score", "quality_grade", "cost_source"}
+            if not {"jsonl_path", "input_tokens", "output_tokens"} <= available:
+                return {}, f"trends.db at {db_path} lacks the session_log columns the collector needs"
+            cols = sorted(want & available)
+            if "platform" in available:
+                query = f"SELECT {', '.join(cols)} FROM session_log WHERE platform = 'cursor'"
+            else:
+                query = f"SELECT {', '.join(cols)} FROM session_log WHERE jsonl_path LIKE 'cursor:%'"
+            rows = {}
+            for row in conn.execute(query):
+                key = str(row["jsonl_path"] or "")
+                if not key.startswith("cursor:"):
+                    continue
+                rows[key[len("cursor:"):]] = {c: row[c] for c in cols}
+            return rows, None
+        except sqlite3.Error as exc:
+            return {}, f"trends.db at {db_path} read failed: {exc}"
+        finally:
+            conn.close()
+
+    # -- collection ----------------------------------------------------------
+
+    def scan(self, since: datetime, conn: sqlite3.Connection | None = None) -> tuple[list[AgentRun], list[str]]:
+        home = _cursor_home()
+        if not self._tally_dir(home).is_dir():
+            return [], [f"{self._tally_dir(home)} not found — Token Optimizer has recorded no Cursor "
+                        f"sessions (install: measure.py cursor-install, then run a session; 0 is not a measurement)"]
+
+        tallies, errors = self._read_tallies(home)
+        trends, note = self._trends_rows(home)
+        if note:
+            errors.append(note)
+
+        runs: list[AgentRun] = []
+        missing_tokens = 0
+        since_ts = since.timestamp()
+        for tally_path, tally in tallies:
+            cid = str(tally.get("conversation_id") or tally.get("session_id") or "")
+            if not cid:
+                errors.append(f"skipped tally {tally_path.name}: no conversation_id")
+                continue
+            try:
+                first_ts = float(tally["first_ts"]) if tally.get("first_ts") is not None else None
+                updated_at = float(tally["updated_at"]) if tally.get("updated_at") is not None else None
+            except (TypeError, ValueError, OverflowError):
+                first_ts = updated_at = None
+            last_activity = updated_at if updated_at is not None else first_ts
+            if last_activity is None:
+                errors.append(f"skipped cursor tally {cid}: no usable timestamps")
+                continue
+            # Window on LAST activity, not start: long-lived IDE composer chats
+            # span days and stay relevant while they are active.
+            if last_activity < since_ts:
+                continue
+            source_path = f"cursor:tally#{cid}"
+            if conn and _is_run_collected(conn, "cursor", source_path, cid):
+                continue
+
+            def _count(key) -> int:
+                try:
+                    return max(0, int(tally.get(key) or 0))
+                except (TypeError, ValueError, OverflowError):
+                    return 0
+
+            turns = _count("turns")
+            tool_calls = _count("tool_calls")
+
+            models = tally.get("models") if isinstance(tally.get("models"), dict) else {}
+            model_raw = ""
+            if models:
+                try:
+                    model_raw = str(max(models, key=lambda k: int(models.get(k) or 0)))
+                except (TypeError, ValueError):
+                    model_raw = ""
+            model = (normalize_model_name(model_raw) or model_raw) if model_raw else "unknown"
+            if _cursor_session is not None:
+                ctx_window = _cursor_session.context_window_for_model(model_raw or model)
+            else:
+                ctx_window = 128_000  # matches cursor_session's conservative default
+
+            row = trends.get(cid)
+            if row is None:
+                missing_tokens += 1
+                tokens = TokenBreakdown()
+                token_source = "cursor_tally_only"
+            else:
+                try:
+                    tokens = TokenBreakdown(
+                        input=max(0, int(row.get("input_tokens") or 0)),
+                        output=max(0, int(row.get("output_tokens") or 0)),
+                        cache_read=0,   # Cursor hooks report no cache breakdown (yet)
+                        cache_write=0,
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    # Schema-defensive: a drifted/crafted row degrades to
+                    # tally-only honesty instead of killing the scan.
+                    missing_tokens += 1
+                    tokens = TokenBreakdown()
+                    row = None
+                token_source = "cursor_rollup" if row is not None else "cursor_tally_only"
+
+            duration = 0.0
+            if first_ts is not None and updated_at is not None and updated_at >= first_ts:
+                duration = updated_at - first_ts
+
+            project = "unknown"
+            if isinstance(tally.get("cwd"), str) and tally["cwd"]:
+                project = tally["cwd"]
+            else:
+                roots = tally.get("workspace_roots")
+                if isinstance(roots, list) and roots and isinstance(roots[0], str) and roots[0]:
+                    project = roots[0]
+
+            outcome = "success"
+            if turns == 0 and tool_calls == 0:
+                outcome = "empty"
+
+            try:
+                started = datetime.fromtimestamp(
+                    first_ts if first_ts is not None else last_activity, timezone.utc)
+            except (OSError, OverflowError, ValueError):
+                # A crafted/pathological tally float must not kill the scan.
+                errors.append(f"skipped cursor tally {cid}: out-of-range timestamp")
+                continue
+
+            runs.append(AgentRun(
+                system="cursor",
+                session_id=cid,
+                agent_name="main",
+                project=project,
+                timestamp=started,
+                duration_seconds=duration,
+                tokens=tokens,
+                cost_usd=0.0,  # Cursor exposes no local billing data — never priced.
+                model=model,
+                context_window_size=ctx_window,
+                run_type="manual",
+                outcome=outcome,
+                message_count=turns,
+                source_path=source_path,
+                token_source=token_source,
+            ))
+
+        if missing_tokens:
+            errors.append(
+                f"{missing_tokens} cursor session(s) have no trends row yet; their token figures are "
+                f"unknown (shown as 0) — run measure.py cursor-rollup to resolve them"
+            )
+        return runs, errors
+
+    def parse_config(self) -> dict:
+        home = _cursor_home()
+        hooks_path = home / "hooks.json"
+        to_bridge = False
+        try:
+            # Shape-proof check: the bridge path appears anywhere in the file.
+            raw = hooks_path.read_text(encoding="utf-8", errors="replace")[:1_000_000]
+            to_bridge = "token-optimizer" in raw
+        except OSError:
+            pass
+        return {
+            "home": str(home),
+            "hooks_json_present": hooks_path.is_file(),
+            "to_bridge_installed": to_bridge,
+            "trends_db_present": any(p.is_file() for p in _cursor_trends_db_candidates(home)),
+            # Tier-1 detectors read these keys; Cursor has no comparable config
+            # surface today, so they stay empty and no detector can false-fire.
+            "skills": [],
+            "mcp_servers": [],
+            "hooks": {},
+        }
+
+
 # Adapter registry
 ADAPTER_REGISTRY: list[type[BaseAdapter]] = [
     ClaudeCodeAdapter,
@@ -1534,6 +1873,7 @@ ADAPTER_REGISTRY: list[type[BaseAdapter]] = [
     HermesAdapter,
     OpenCodeAdapter,
     IronClawAdapter,
+    CursorAdapter,
 ]
 
 
@@ -2308,6 +2648,7 @@ def cmd_audit(args: list[str]):
             source_path=rd.get("source_path", ""),
             error_message=rd.get("error_message"),
             exit_code=rd.get("exit_code"),
+            token_source=rd.get("token_source") or "",
         )
         runs_by_system.setdefault(system, []).append(run)
 
@@ -2470,6 +2811,10 @@ def cmd_report(args: list[str]):
                 "abandoned_runs": row[6] or 0, "avg_duration_s": row[7] or 0,
                 "active_days": row[8] or 0,
             }
+            if row[0] == "cursor":
+                # R15: total_cost 0 for Cursor means "no billing data exists",
+                # never "free". Say it in the machine-readable surface too.
+                system_data["cost_note"] = "Cursor exposes no local billing data; totals are tokens only."
             report["systems"].append(system_data)
             report["total_cost"] += system_data["total_cost"]
         for wr in waste_rows:
@@ -2505,7 +2850,12 @@ def cmd_report(args: list[str]):
         print(f"\n  {adapter_name}")
         print(f"    Runs: {runs} ({active_days or 0} active days)")
         print(f"    Tokens: {(inp or 0):,} input / {(out or 0):,} output")
-        print(f"    Cost: ${cost:.2f}")
+        if system == "cursor":
+            # R15: no local billing data exists for Cursor — say so instead of
+            # printing a $0.00 that would read as "free".
+            print("    Cost: no local billing data (tokens only)")
+        else:
+            print(f"    Cost: ${cost:.2f}")
         if empty:
             print(f"    Empty runs: {empty} ({empty/runs*100:.0f}%)")
         if abandoned:
@@ -2514,7 +2864,11 @@ def cmd_report(args: list[str]):
             print(f"    Avg duration: {avg_dur/60:.1f} min")
 
     print(f"\n  {'=' * 60}")
-    print(f"  Total: {total_runs} runs, ${total_cost:.2f}")
+    if stats and all(row[0] == "cursor" for row in stats):
+        # A Cursor-only total of $0.00 would read as "free"; it is "no data".
+        print(f"  Total: {total_runs} runs, no local billing data (tokens only)")
+    else:
+        print(f"  Total: {total_runs} runs, ${total_cost:.2f}")
 
     if waste_rows:
         total_waste = sum((wr[4] or 0) for wr in waste_rows)
@@ -2692,10 +3046,12 @@ def _generate_dashboard_html(daily_rows, waste_rows, system_stats, model_mix, to
     for s in systems_data:
         name = sys_names.get(s["system"], s["system"])
         pct_empty = (s["empty"] / s["runs"] * 100) if s["runs"] > 0 else 0
+        # Cursor exposes no local billing data: show that, never a fake $0.00.
+        cost_display = "no cost data" if s["system"] == "cursor" else fmt_cost(s["cost"])
         sys_html += f'''
       <div class="card">
         <div class="card-header"><span>{esc(name)}</span><span class="label">{esc(s["system"])}</span></div>
-        <div class="metric-large">{fmt_cost(s["cost"])}</div>
+        <div class="metric-large">{cost_display}</div>
         <div class="metric-sub">{s["runs"]:,} runs over {s["active_days"]} days</div>
         <div class="mini-stats">
           <div class="mini-stat-item"><span class="mini-val">{s["avg_dur"]/60:.0f}m</span><span class="mini-label">avg duration</span></div>
@@ -3607,7 +3963,7 @@ def fleet_cli(args: list[str] | None = None):
   Flags:
     --json          Output as JSON
     --days N        Look back N days (default: 30)
-    --system X      Filter to one system (claude, openclaw, hermes, etc.)
+    --system X      Filter to one system (claude, codex, openclaw, hermes, cursor, etc.)
     --serve         Start HTTP server for dashboard
     --quiet, -q     Suppress non-essential output
 """)

@@ -202,13 +202,23 @@ def test_questions_and_cursor_terminology(cursor_home):
 def test_skill_detects_default_cursor_install_before_fallback(tmp_path):
     import os
     import subprocess
-    skill = (REPO / "skills" / "token-coach" / "SKILL.md").read_text()
+    from helpers.install_sparse import install_bash
+
+    try:
+        bash = install_bash()
+    except RuntimeError:
+        pytest.skip("Git Bash is unavailable; the WSL launcher cannot run this probe")
+    skill = (REPO / "skills" / "token-coach" / "SKILL.md").read_text(encoding="utf-8")
     assert len(skill.splitlines()) < 150
     detection = skill.split('RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"', 1)[1].split(
         '# Resolve measure.py', 1)[0]
     (tmp_path / ".cursor" / "token-optimizer").mkdir(parents=True)
     (tmp_path / ".codex").mkdir()
-    env = {"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
-    result = subprocess.run(["bash", "-c", 'RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"' + detection + '\nprintf "%s" "$RUNTIME"'],
-                            env=env, text=True, capture_output=True, check=True)
+    env = {key: os.environ[key] for key in
+           ("PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "TEMP", "TMP", "USERPROFILE")
+           if key in os.environ}
+    env["HOME"] = tmp_path.as_posix()
+    result = subprocess.run([bash, "-c", 'RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"' + detection + '\nprintf "%s" "$RUNTIME"'],
+                            env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
     assert result.stdout == "cursor"

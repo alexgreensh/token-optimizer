@@ -1,8 +1,9 @@
 """U9: run the real savings-story renderer (assets/savings_story.js) in Node.
 
 Synthetic payloads only. Covers: old payloads render nothing and never throw;
-one hero card whose total is the sum of its measured and estimated rows, with
-exactly one percentage visible; one 2x2 block; one coverage line; unfinished
+one hero card whose total is the sum of its measured and estimated rows, led
+by two big numbers; no percentage anywhere above the folds (per-session shares,
+split by where sessions ran, live in the hero's fold); one 2x2 block; one coverage line; unfinished
 pools say "Measuring" with no number; the Savings tab folds everything else
 into one row; context quality moves to Health; the Tokens Saved card shows no
 share against the fresh-only spent basis; the generator inlines the module.
@@ -71,7 +72,9 @@ def effect():
         'available': True,
         'window': {'start': '2026-01-01T00:00:00', 'end': '2026-01-31T00:00:00'},
         'per_session': {'sessions': 120, 'median': 0.05, 'p75': 0.11, 'p90': 0.2,
-                        'net_median': 0.048, 'net_p75': 0.105},
+                        'net_median': 0.048, 'net_p75': 0.105,
+                        'by_place': {'local': {'sessions': 100, 'net_median': 0.031, 'net_p75': 0.09},
+                                     'cloud': {'sessions': 20, 'net_median': 0.22, 'net_p75': 0.4}}},
         'coverage': {'sessions': 200, 'ran_sessions': 150, 'ran_traffic_share': 0.75,
                      'ran_no_ledger_sessions': 12, 'unknown_sessions': 0,
                      'classes': {'ledger': {'sessions': 138, 'traffic_share': 0.6}}},
@@ -96,6 +99,9 @@ def base():
         'model_routing': {'baseline_opus_share': 0.95, 'baseline_source': 'pretool_baseline',
                           'current_opus_share': 0.9, 'actual_cost_usd': 900.0, 'realized_cost_usd': 50.0},
         'structural_potential': {'cost_saved_usd': 11.0, 'unused_skills': 3},
+        'since_install': {'days': 90, 'install_date': '2025-11-01',
+                          'all_in': {'components_usd': {'logged': 100.0, 'reread': 200.0, 'class_premium': 10.0,
+                                                        'routing': 999.0}, 'estimated_usd': 40.0}},
     }
 
 
@@ -145,32 +151,52 @@ def test_hero_total_is_sum_of_bands_in_whole_dollars_and_excludes_routing():
     assert 'Cheaper cache writes' in h and 'Write-class' not in h and 'ratio' not in h
 
 
-def test_exactly_one_percentage_visible_in_hero():
-    h = hero(story({'savings': full()}))
-    visible = h.split('<details')[0]
-    text = re.sub(r'<[^>]+>', ' ', visible)  # visible text, not style widths
-    assert re.findall(r'[\d.]+%', text) == ['4.8%']
-    assert 'In a typical session, <span class="st-num">4.8%' in visible
+def _visible(html):
+    """Text outside every fold: what shows before anything is opened."""
+    return re.sub(r'<[^>]+>', ' ', re.sub(r'(?s)<details.*?</details>', '', html))
+
+
+def test_no_percentage_above_the_fold_and_split_lives_in_the_fold():
+    out = story({'savings': full()})
+    h = hero(out)
+    assert 'st-mega st-mega--usd">$118</span>' in h and 'st-mega st-mega--tok">' in h
+    assert 'tokens kept out of context' in h
+    assert '%' not in _visible(out)  # hero, 2x2 and coverage line: absolute numbers only
+    fold = h.split('<details')[1]
+    assert "share of that session&rsquo;s own context" in fold
+    assert 'On this Mac: typical 3.1%, top quarter 9% or more (100 sessions)' in fold
+    assert 'Cloud sessions: typical 22%, top quarter 40% or more (20 sessions)' in fold
+
+
+def test_split_falls_back_to_all_sessions_without_by_place():
+    s = full()
+    del s['session_effect']['per_session']['by_place']
+    fold = hero(story({'savings': s})).split('<details')[1]
+    assert 'All sessions: typical 4.8%' in fold and 'On this Mac' not in fold
 
 
 def test_four_cards_in_one_grid_then_one_coverage_line():
     out = story({'savings': full()})
     grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
     titles = re.findall(r'<h2 class="st-h">([^<]+)', grid)
-    assert titles == ['Removed once, saved on every later turn', 'Setup cleanup', 'Your limits ', 'Model routing ']
+    assert titles == ['Removed once, saved on every later turn', 'Setup cleanup', 'Room in your limits', 'Model routing ']
     cov = out.split('class="st-cov"')[1]
     assert 'ran in 150 of your 200 sessions' in cov and '12 of them are not in the ledger yet' in cov
     assert 'svg' not in cov and '%' not in cov
-    assert 'stretch about <span class="st-num">13.1%' in out  # 118 / 900
-    assert 'spared about <strong>40 more reads' in out
+    # Compounding leads with the re-reads as the big number.
+    assert 'st-mega--tok st-mega--card">80.0M</span><span class="st-mega__unit">re-reads avoided' in grid
+    assert 'From <strong>2.0M tokens removed once</strong>, each spared about <strong>40 more reads' in grid
+    # Limits: since-install dollars, routing never added (100+200+10+40).
+    assert 'st-mega--usd st-mega--card">$350</span><span class="st-mega__unit">since you installed' in grid
+    assert 'stretch' not in out and '$1,349' not in out
 
 
 def test_unfinished_pools_say_measuring_with_no_number():
     out = story({'savings': base()})
     grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
     cards = grid.split('class="card st-card"')[1:]
-    setup = [c for c in cards if 'Setup cleanup' in c][0]
-    routing = [c for c in cards if 'Model routing' in c][0]
+    setup = [c for c in cards if '<h2 class="st-h">Setup cleanup' in c][0]
+    routing = [c for c in cards if '<h2 class="st-h">Model routing' in c][0]
     for c in (setup, routing):
         assert 'Measuring' in c and '$' not in c and not re.search(r'\d', c.split('</h2>')[1])
     assert 'Still measuring, not in the total yet: setup cleanup and shorter answers' in hero(out)

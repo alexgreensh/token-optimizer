@@ -29,7 +29,7 @@ REPO_MODULES = frozenset((
     'copilot_state', 'copilot_vscode', 'cowork_doctor', 'cowork_install',
     'credential_patterns', 'heal_report', 'hook_heal', 'hook_provenance', 'owned_hooks',
     'shipped_hook_templates', 'shipped_starter_hooks', 'cursor_doctor', 'cursor_hook_bridge', 'cursor_install',
-    'cursor_session', 'cursor_state', 'delta_diff', 'detectors', 'deterministic_candidates',
+    'cursor_session', 'cursor_state', 'dashboard_assets', 'delta_diff', 'detectors', 'deterministic_candidates',
     'devin_compress', 'devin_doctor', 'devin_hooks', 'devin_install', 'devin_source', 'devin_state',
     'devin_verify', 'grok_doctor', 'grok_hook_bridge', 'grok_install', 'grok_session',
     'grok_state', 'hermes_doctor', 'hermes_hook_bridge', 'hermes_install', 'hermes_session',

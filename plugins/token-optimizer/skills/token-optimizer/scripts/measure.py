@@ -161,7 +161,7 @@ if __name__ in ("__main__",):
     from runtime_env import consume_runtime_flag as _consume_runtime_flag_early
     sys.argv[:] = _consume_runtime_flag_early(sys.argv, os.environ)
 
-from _measure import _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5
+from _measure import _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5, transcript_backfill as _transcript_backfill
 _measure_providers = _measure_compat.prepare(sys.modules[__name__])
 
 from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared

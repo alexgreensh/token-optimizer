@@ -1714,6 +1714,78 @@ input:checked + .slider:before {
   border: 1px solid var(--c-border);
 }
 
+/* ========== SAVINGS STORY (U9, assets/savings_story.js) ==========
+   Headings carry the card titles (no small-caps labels above them). Body copy
+   uses --c-text-main; --c-text-dim only for the one-line meta under a value. */
+.st { display: grid; gap: var(--s-3); margin-bottom: var(--s-4); }
+.st .card { padding: var(--s-4); }
+.st-hero { padding: var(--s-5) var(--s-4) var(--s-4) !important; }
+.st-hero__line { font: 300 clamp(28px, 3.6vw, 44px)/1.2 var(--font-sans); color: var(--c-text-main); letter-spacing: -0.015em; max-width: 24ch; text-wrap: balance; }
+.st-num { font-family: var(--font-mono); font-weight: 500; color: var(--c-accent-cyan); letter-spacing: -0.03em; white-space: nowrap; }
+.st-hero__sub { font-size: 21px; line-height: 1.5; color: var(--c-text-main); margin-top: var(--s-3); }
+.st-meta { font: 400 14px/1.6 var(--font-mono); color: var(--c-text-dim); margin-top: var(--s-3); }
+.st-h { font: 600 20px/1.3 var(--font-sans); color: var(--c-text-main); display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) 12px; }
+.st-tag { font: 500 13px/1 var(--font-mono); color: var(--c-text-main); border: 1px solid var(--c-border-strong); border-radius: 999px; padding: 5px 10px; }
+.st-lead { font-size: 17px; line-height: 1.65; color: var(--c-text-main); margin-top: var(--s-3); max-width: 60ch; text-wrap: pretty; }
+.st-lead strong { font-weight: 600; }
+.st-big { font: 300 22px/1.45 var(--font-sans); color: var(--c-text-main); margin-top: var(--s-3); text-wrap: pretty; }
+.st-big .st-num { font-size: 40px; font-weight: 400; margin-right: 4px; }
+.st-v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--c-text-main); text-align: right; white-space: nowrap; }
+.st-total__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-4); margin: var(--s-3) 0 var(--s-3); }
+.st-total__usd { font: 300 clamp(52px, 6vw, 76px)/1 var(--font-mono); color: var(--c-accent-cyan); letter-spacing: -0.03em; }
+.st-total__tok { font-size: 19px; color: var(--c-text-main); }
+.st-bar { display: flex; gap: 3px; height: 14px; border-radius: 7px; overflow: hidden; }
+.st-bar__m { background: var(--c-savings); border-radius: 7px 0 0 7px; }
+.st-bar__e { background: repeating-linear-gradient(135deg, var(--c-savings) 0 3px, transparent 3px 7px); box-shadow: inset 0 0 0 1.5px var(--c-savings); border-radius: 0 7px 7px 0; }
+.st-bands { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3) var(--s-5); margin-top: var(--s-4); }
+.st-band h3 { display: flex; align-items: center; gap: 10px; font: 600 17px/1.3 var(--font-sans); color: var(--c-text-main); }
+.st-band__name { flex: 1; }
+.st-band h3 .st-v { font-size: 20px; font-weight: 500; }
+.st-band__sub { font-size: 15px; color: var(--c-text-dim); margin: 2px 0 0 24px; }
+.st-sw { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+.st-sw.st-m { background: var(--c-savings); }
+.st-sw.st-e { background: repeating-linear-gradient(135deg, var(--c-savings) 0 2px, transparent 2px 4px); box-shadow: inset 0 0 0 1.5px var(--c-savings); }
+.st-rows { list-style: none; margin-top: var(--s-2); border-top: 1px solid var(--c-border); }
+.st-rows li { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--s-3); padding: 10px 0; border-bottom: 1px solid var(--c-border); font-size: 16px; line-height: 1.4; color: var(--c-text-main); }
+.st-rows__k { min-width: 0; }
+.st-rows__n { display: block; font: 400 13px/1.5 var(--font-mono); color: var(--c-text-dim); margin-top: 2px; white-space: normal; }
+.st-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); }
+.st-pair > :only-child { grid-column: 1 / -1; }
+.st-trims { list-style: none; margin-top: var(--s-3); }
+.st-trim { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px var(--s-3); padding: var(--s-3) 0; border-top: 1px solid var(--c-border); }
+.st-trim__what strong { font-weight: 600; font-size: 17px; color: var(--c-text-main); }
+.st-trim__val { font-size: 18px; }
+.st-trim__math { grid-column: 1 / -1; font: 400 14px/1.6 var(--font-mono); color: var(--c-text-main); }
+.st-ratio { display: grid; gap: 14px; margin-top: var(--s-4); }
+.st-ratio__row { display: grid; grid-template-columns: 9.5em minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); font-size: 15px; color: var(--c-text-main); }
+.st-ratio__track { height: 12px; border-radius: 6px; background: var(--c-elev-2); overflow: hidden; }
+.st-ratio__once, .st-ratio__carry { display: block; height: 100%; border-radius: 6px; background: var(--c-accent-cyan); }
+.st-ratio__once { min-width: 4px; }
+.st-cov { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: 12px; padding: var(--s-3) var(--s-4); }
+.st-cov__line { font-size: 18px; line-height: 1.6; color: var(--c-text-main); }
+.st-cov__line strong { font-family: var(--font-mono); font-weight: 500; color: var(--c-accent-cyan); }
+.st-warn { display: flex; gap: 10px; align-items: flex-start; margin-top: var(--s-2); font-size: 16px; line-height: 1.55; color: var(--c-text-main); max-width: 80ch; }
+.st-warn__icon { width: 20px; height: 20px; flex: none; margin-top: 2px; color: var(--c-warning-2); }
+.st-windows { list-style: none; margin-top: var(--s-3); border-top: 1px solid var(--c-border); }
+.st-windows li { display: flex; justify-content: space-between; gap: var(--s-3); padding: 10px 0; border-bottom: 1px solid var(--c-border); font-size: 16px; }
+.st-meta span { white-space: nowrap; }
+.st-more, .st-legacy { margin-top: 0; }
+.st-more { padding-top: var(--s-1); }
+.st-more > summary { font-size: 15px; }
+.st-legacy > summary { font-size: 15px; }
+.st-legacy .fold__body { max-width: none; }
+@media (max-width: 900px) {
+  .st-pair, .st-bands { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .st .card { padding: var(--s-3); }
+  .st-hero { padding: var(--s-4) var(--s-3) var(--s-3) !important; }
+  .st-cov { padding: var(--s-3); }
+  .st-ratio__row { grid-template-columns: 1fr auto; }
+  .st-ratio__track { grid-column: 1 / -1; grid-row: 2; }
+  .st-band__sub { margin-left: 0; }
+}
+
 /* ========== RESPONSIVE ========== */
 @media (max-width: 1024px) {
   .layout { grid-template-columns: 200px 1fr; }
@@ -2419,6 +2491,8 @@ function tokenSplitText(h, fmt) {
   parts.push(h.reread_available ? '~' + fmt(h.reread_tokens || 0) + ' re-reads avoided' : 're-reads unavailable');
   return parts.join(' &middot; ');
 }
+// U9 savings story: assets/savings_story.js, inlined here at generation.
+/*@include savings_story.js*/
 
 function hostRefreshHtml(data) {
   return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard --user</span>');
@@ -4678,14 +4752,20 @@ var DB = (function() {
     var unusedSkills = Number(sp.unused_skills) || 0;
     var currOpus  = Math.round((Number(mr.current_opus_share) || 0) * 100);
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
+    // U9: the savings story leads when the payload carries session_effect;
+    // older payloads (or a template without the inlined module) keep the
+    // previous layout unchanged.
+    var story = '';
+    try { story = (typeof savingsStoryHtml === 'function') ? savingsStoryHtml(data) : ''; } catch (e) { story = ''; }
 
     var html = '<div class="section-header">' +
-      '<div class="label">Value</div><h1>Savings</h1>' +
+      (story ? '' : '<div class="label">Value</div>') + '<h1>Savings</h1>' +
       '<p>Your savings, with the time period and method shown for each total.</p>' +
       '</div>' +
       '<div class="last-updated">Updated ' + esc(ts) + ' &middot; refreshes after every session</div>';
 
-    html += runwayCardHtml();
+    html += story || runwayCardHtml();
+    var storyHead = html; html = '';
 
     // ---- HERO: the before/after transformation (THE headline). Current activity priced at
     // your pre-TO per-session weight + mix vs actual — comprehensive (volume + structural +
@@ -4788,6 +4868,8 @@ var DB = (function() {
           ' estimate is <strong>' + signedMoney(crossUsd) + '</strong> over ' + days + ' days. They are too far apart to headline either one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
       '</div>';
     }
+
+    var transformHtml = html; html = '';
 
     // ---- Tokens Saved card: the full card (hero + spent-vs-saved + model-
     // mix-as-usage + footer). Rendered as the 2nd card in the Savings view,
@@ -4957,6 +5039,8 @@ var DB = (function() {
     }
     html += '</div>';
     html += fold('Token savings and model usage', tokensSavedCardHtml(s));
+    var ledgerHtml = html;
+    html = storyHead + (story ? '' : transformHtml + ledgerHtml);
 
     // ---- SAVE MORE: suggestions, promoted right under the hero ----
     var parts = [];
@@ -4975,7 +5059,25 @@ var DB = (function() {
     if ((Number(ow.cost_saved_usd) || 0) > 0) {
       parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + moneyCents(oppCents.output) + per + ' in output.');
     }
-    if (parts.length > 0) {
+    if (story) {
+      // U9: opportunity stays out of sight unless opened, never in amber type,
+      // then the previous cards (full ledger, whole-workload comparison) fold
+      // below it so nothing is lost.
+      if (parts.length > 0) {
+        html += '<details class="fold st-more"><summary>Room to save more' +
+          (opportunityMo > 0 ? ': about ' + moneyCents(oppCents.total) + (runRate ? ' per 30 days' : ' so far') : '') + '</summary><div class="fold__body">' +
+          '<p>Changes you could make to your setup or habits. None of this is in any total above.</p>' +
+          parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
+          (routingPotentialMo > 0 ? '<p>If about ' + routingFracPct + '% of your Opus work ran on ' + esc(routingTarget) +
+            ', about ' + money(routingPotentialMo) + esc(per) + ' at API rates. This is an assumption about your own work.</p>' : '') +
+          (data.runtime !== 'cursor' && data.runtime !== 'antigravity' ? '<p>Run <strong>/token-optimizer</strong> and follow its suggestions to claim it.</p>' : '') +
+          '</div></details>';
+      }
+      html += '<details class="fold st-legacy"><summary>Full ledger, history and method</summary><div class="fold__body">' + ledgerHtml + '</div></details>';
+      if (transformHtml) {
+        html += '<details class="fold st-legacy"><summary>Whole-workload comparison (overlaps the total, never add the two)</summary><div class="fold__body">' + transformHtml + '</div></details>';
+      }
+    } else if (parts.length > 0) {
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);border:1px solid var(--c-amber);box-shadow:0 0 0 1px rgba(217,164,65,0.18), 0 0 44px rgba(217,164,65,0.12);">';
       html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-amber);letter-spacing:0.08em;">Money on the table &middot; opportunity</div>';
       if (opportunityMo > 0) {

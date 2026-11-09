@@ -462,15 +462,18 @@ def cli_lines(effect):
         return []
     ps, cov, fl = effect['per_session'], effect['coverage'], effect['fleet']
     lines = []
+    # Same wording as the dashboard's savings story (assets/savings_story.js).
     if ps.get('sessions'):
-        lines.append('  Typical session: {} of context never sent; top quarter {}+, top tenth {}+ '
-                     '({:,} sessions, net of TO\'s own nudges: {}).'.format(
-                         _pct(ps['median']), _pct(ps['p75']), _pct(ps['p90']), ps['sessions'],
-                         _pct(ps['net_median'])))
-    lines.append('  Coverage: TO ran in {} of traffic ({:,} of {:,} sessions); {:,} ran with an empty ledger'
-                 '{}.'.format(_pct(cov['ran_traffic_share']), cov['ran_sessions'], cov['sessions'],
-                              cov['ran_no_ledger_sessions'],
-                              ', {:,} not yet scanned'.format(cov['unknown_sessions']) if cov['unknown_sessions'] else ''))
-    lines.append('  Fleet share where TO ran: {} of tokens, {} of cost (estimated limit proxy).'.format(
-        _pct(fl['token_share_net']), _pct(fl['cost_share_net'])))
+        lines.append('  In a typical session, {} of your context never gets sent; in your top quarter of sessions, '
+                     '{} or more ({:,} sessions, net of Token Optimizer\'s own notes).'.format(
+                         _pct(ps['net_median']), _pct(ps['net_p75']), ps['sessions']))
+    lines.append('  Token Optimizer ran in {} of your traffic ({:,} of {:,} sessions).'.format(
+        _pct(cov['ran_traffic_share']), cov['ran_sessions'], cov['sessions']))
+    if cov['ran_no_ledger_sessions']:
+        lines.append('  {:,} sessions ran Token Optimizer but are missing from the ledger; the total understates.'.format(
+            cov['ran_no_ledger_sessions']))
+    if cov['unknown_sessions']:
+        lines.append('  {:,} sessions not scanned yet (transcript missing).'.format(cov['unknown_sessions']))
+    lines.append('  Your limits (estimated, weighted by API price): {} of what this work would have cost never got spent, '
+                 'counted ledger alone where Token Optimizer ran.'.format(_pct(fl['cost_share_net'])))
     return lines

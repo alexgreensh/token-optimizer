@@ -182,7 +182,8 @@ def test_cli_lines_render(tmp_path):
     _session(db, 'a', None, 900, 1000)
     _counted(db, 'a', 50, 50)
     text = '\n'.join(se.cli_lines(se.compute(db, START, END)))
-    assert 'Typical session: 10.0%' in text and 'Coverage: TO ran in 100.0% of traffic' in text
+    assert 'In a typical session, 10.0% of your context never gets sent' in text
+    assert 'Token Optimizer ran in 100.0% of your traffic' in text and 'Your limits (estimated' in text
     assert se.cli_lines({'available': False}) == []
 
 

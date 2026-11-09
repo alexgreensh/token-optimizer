@@ -32,7 +32,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-KEEP_ASSETS = {"dashboard.html"}
+KEEP_ASSETS = {"dashboard.html", "savings_story.js"}  # savings_story.js is inlined into the dashboard at generation
 SHIPPED_ROOTS = ("hooks", "skills", ".claude-plugin")
 # Everything git must report clean before --pack (SHIPPED_ROOTS plus what
 # stage() copies from elsewhere).

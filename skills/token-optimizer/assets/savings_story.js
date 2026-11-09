@@ -1,8 +1,9 @@
 // Savings story (U9): the Savings tab, top to bottom.
-//   1. One hero card: the 30-day total ($ and tokens), the measured/estimated
-//      bar, and one sentence on the typical session. The only percentage above
-//      the fold. The full row list and the method sit in its fold.
-//   2. One 2x2 block: compounding, setup cleanup, limits, model routing.
+//   1. One hero card: the 30-day total as two huge numbers ($ and tokens kept
+//      out), then the measured/estimated split. No percentage above the fold:
+//      per-session shares live in its fold, each named with its base.
+//   2. One 2x2 block, each card led by one big number where a real one exists:
+//      compounding, setup cleanup, room in your limits, model routing.
 //   3. One coverage line.
 //   4. One row of folds (the caller adds opportunity, ledger and diagnostics).
 // healthNotesHtml() renders the parts that moved to the Health tab.
@@ -140,8 +141,6 @@ function savingsStoryHtml(data) {
   var mUsd = B.mUsd, eUsd = B.eUsd, totalUsd = B.totalUsd, totalTok = B.totalTok;
   measuringNames = B.measuringNames;
   function sum(rows, k) { return rows.reduce(function(a, r) { return a + num(r[k]); }, 0); }
-  var med = has(ps.net_median) ? ps.net_median : ps.median;
-  var p75 = has(ps.net_p75) ? ps.net_p75 : ps.p75;
   if (measured.length || estimated.length) {
     var mPct = totalUsd > 0 ? Math.max(0, Math.min(100, mUsd / totalUsd * 100)) : 0;
     function top(rows) {
@@ -162,17 +161,18 @@ function savingsStoryHtml(data) {
     var method = table('Measured, counted event by event', measured) +
       table('Estimated, sized by a stated method', estimated) +
       '<p>Measured rows come from the ledger: each removal, the cache rate the next call would have paid, and every later turn that would have re-read it, up to the session&rsquo;s next compaction.</p>' +
-      (num(ps.sessions) > 0 && has(p75) ? '<p>The typical session is the median of ' + count(ps.sessions) + ' sessions with ledger entries; in the top quarter it is ' +
-        pct(p75) + ' or more. Both are after subtracting the notes Token Optimizer itself adds to context' +
-        (num(overhead.usd) > 0 ? ' (' + tok(overhead.reread_tokens) + ' tokens re-read, about ' + usd(overhead.usd) + ')' : '') + '.</p>' : '') +
+      savingsPerSessionHtml(ps, overhead) +
+      (measuringNames.length ? '<p>Still measuring, not in the total yet: ' + measuringNames.join(' and ') + '.</p>' : '') +
       (incomplete ? '<p>Some older history has no exact price, so this total understates.</p>' : '') +
       (carry.available && num(carry.carry_cost_usd) > 0 ? '<p>Diagnostic, not counted' + ': lean resumes also keep the resumed session lighter. Followed to each session&rsquo;s first compaction that is ' +
         tok(carry.carry_tokens) + ' tokens, about ' + usd(carry.carry_cost_usd) + '. It stays out of every total until the method is reviewed.</p>' : '') +
       '<p>Valued at API rates. On a subscription this is room inside your limits; nothing is refunded. Model routing and opportunity are never part of this total.</p>';
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">Saved in the last ' + days + ' days</h2>' +
-      '<div class="st-total__row"><span class="st-total__usd">' + usd(totalUsd) + '</span>' +
-        (totalTok > 0 ? '<span class="st-total__tok">' + tok(totalTok) + ' tokens kept out of context</span>' : '') + '</div>' +
+      '<div class="st-mega__row">' +
+        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
+        (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
+      '</div>' +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
@@ -180,9 +180,6 @@ function savingsStoryHtml(data) {
         (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(mUsd) + '</span></p>' + top(measured) + '</div>' : '') +
         (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(eUsd) + '</span></p>' + top(estimated) + '</div>' : '') +
       '</div>' +
-      (num(ps.sessions) > 0 && has(med)
-        ? '<p class="st-hero__line">In a typical session, <span class="st-num">' + pct(med) + '</span> of your context never gets sent.</p>' : '') +
-      (measuringNames.length ? '<p class="st-lead">Still measuring, not in the total yet: ' + measuringNames.join(' and ') + '.</p>' : '') +
       f.fold('How this total is built', method) +
       '</div>';
   }
@@ -192,14 +189,10 @@ function savingsStoryHtml(data) {
   var removedOnce = num(cp.removed_tokens), rereads = num(cp.reread_tokens);
   if (removedOnce > 0 && rereads > 0) {
     var carryN = rereads / removedOnce;
-    var oncePct = Math.max(1.2, 100 / (1 + carryN));
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Removed once, saved on every later turn</h2>' +
-      '<div class="st-ratio" role="img" aria-label="' + tok(removedOnce) + ' removed once, ' + tok(rereads) + ' re-reads avoided">' +
-        '<div class="st-ratio__row"><span>Removed once</span><span class="st-ratio__track"><span class="st-ratio__once" style="width:' + oncePct.toFixed(2) + '%"></span></span><span class="st-v">' + tok(removedOnce) + '</span></div>' +
-        '<div class="st-ratio__row"><span>Re-reads avoided</span><span class="st-ratio__track"><span class="st-ratio__carry" style="width:100%"></span></span><span class="st-v">' + tok(rereads) + '</span></div>' +
-      '</div>' +
-      '<p class="st-lead">Each removed token was spared about <strong>' + Math.round(carryN) + ' more reads</strong> before its session compacted.</p>' +
+      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + tok(rereads) + '</span><span class="st-mega__unit">re-reads avoided</span></p>' +
+      '<p class="st-lead">From <strong>' + tok(removedOnce) + ' tokens removed once</strong>, each spared about <strong>' + Math.round(carryN) + ' more reads</strong> before its session compacted.</p>' +
       '</div>');
   }
   if (!trimLedger) {
@@ -229,24 +222,21 @@ function savingsStoryHtml(data) {
         : '<p class="st-lead">No setup cleanup recorded yet. When an audit archives or rewrites part of your setup, it appears here with its value.</p>') +
       '</div>');
   }
-  var actual = num(mr.actual_cost_usd);
-  var stretch = (actual > 0 && totalUsd > 0) ? totalUsd / actual : null;
+  var SI = savingsSinceInstall(data);
   var ledgerShare = has(fleet.cost_share_net) ? num(fleet.cost_share_net) : (has(fleet.cost_share) ? num(fleet.cost_share) : null);
-  if (stretch != null) {
-    var windows = ((data.runway || {}).windows || []).filter(function(w) {
-      return isFinite(Number(w.headroom_pct)) && isFinite(Number(w.without_headroom_pct));
-    });
+  if (SI && SI.total > 0) {
+    var windows = ((data.runway || {}).windows || []).filter(function(w) { return isFinite(Number(w.headroom_pct)); });
     var names = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
     cards.push('<div class="card st-card">' +
-      '<h2 class="st-h">Your limits <span class="st-tag">Estimated</span></h2>' +
-      '<p class="st-big">Your limits stretch about <span class="st-num">' + pct(stretch) + '</span> further.</p>' +
-      (windows.length ? '<ul class="st-rows st-rows--card">' + windows.map(function(w) {
-          return '<li><span>' + esc(names[w.key] || ((w.label || 'Window') + ' limit')) + '</span><span class="st-v">' +
-            num(w.headroom_pct) + '% left</span></li>';
-        }).join('') + '</ul>' : '') +
-      f.fold('How this is estimated', '<p>The saved total divided by what the same ' + days + ' days actually cost, both at API rates. ' +
-        'Providers do not publish how they weight models and cache reads inside a limit; price is the closest public stand-in, so this stays an estimate.</p>' +
-        (ledgerShare != null ? '<p>Counted ledger alone, in sessions where Token Optimizer ran: ' + pct(ledgerShare) + ' of the would-be cost.</p>' : '')) +
+      '<h2 class="st-h">Room in your limits</h2>' +
+      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(SI.total) + '</span><span class="st-mega__unit">since you installed</span></p>' +
+      '<p class="st-lead">Work your limits never had to carry over <strong>' + count(SI.days) + ' days</strong>, valued at API rates.</p>' +
+      f.fold('How this is valued', '<p>The same rows as the total above, summed since ' + (SI.date ? esc(SI.date) : 'install') +
+        '. Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is an estimate of room, not a refund. Model routing is never part of it.</p>' +
+        (windows.length ? '<p>Right now: ' + windows.map(function(w) {
+          return esc(names[w.key] || ((w.label || 'Window') + ' limit')) + ' ' + num(w.headroom_pct) + '% left';
+        }).join(', ') + ' (share of each limit window).</p>' : '') +
+        (ledgerShare != null ? '<p>Counted ledger alone, as a share of the API-rate cost of the sessions where Token Optimizer ran: ' + pct(ledgerShare) + '.</p>' : '')) +
       '</div>');
   }
   var routingUsd = has(as.routing_usd) ? num(as.routing_usd) : num(mr.realized_cost_usd);
@@ -260,10 +250,10 @@ function savingsStoryHtml(data) {
     var handEntered = mr.baseline_source === 'pretool_baseline';
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Model routing <span class="st-tag">Assumption</span></h2>' +
-      '<p class="st-big"><span class="st-num">' + usd(routingUsd) + '</span>' +
-        (handEntered ? ' if ' + base + ' of your work ran on Opus before Token Optimizer.' : ' against a measured ' + base + ' Opus baseline.') + '</p>' +
-      '<p class="st-lead">' + (handEntered ? 'That starting share was entered by hand, so this stays out of the total.' : 'Shown on its own, outside the total.') + '</p>' +
-      f.fold('Measured alternative', (has(mr.current_opus_share) ? '<p>You now run ' + Math.round(num(mr.current_opus_share) * 100) + '% of your work on Opus.</p>' : '') +
+      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(routingUsd) + '</span><span class="st-mega__unit">from lighter models</span></p>' +
+      '<p class="st-lead">' + (handEntered ? 'Against the starting model mix you entered by hand, so it stays out of the total.' : 'Against your measured starting model mix. Shown on its own, outside the total.') + '</p>' +
+      f.fold('Starting mix and measured alternative', '<p>Starting share of work on Opus: ' + base + (handEntered ? ', entered by hand' : ', measured') + '.</p>' +
+        (has(mr.current_opus_share) ? '<p>You now run ' + Math.round(num(mr.current_opus_share) * 100) + '% of your work on Opus.</p>' : '') +
         (has(mr.measured_baseline_opus_share)
           ? '<p>Your earliest tracked month ran ' + Math.round(num(mr.measured_baseline_opus_share) * 100) + '% Opus' +
             '. Against that, routing saved ' + usd(mr.measured_baseline_realized_cost_usd) + '.</p>'
@@ -282,6 +272,41 @@ function savingsStoryHtml(data) {
   return out ? '<section class="st" aria-label="What Token Optimizer saved">' + out + '</section>' : '';
 }
 
+// Per-session shares for the hero fold: each named with its base (that
+// session's own context), split by where the session ran. Never above the fold.
+function savingsPerSessionHtml(ps, overhead) {
+  var f = savingsStoryFmt(), num = f.num, has = f.has;
+  ps = ps || {};
+  var bp = ps.by_place || {};
+  var rows = [['On this Mac', bp.local], ['Cloud sessions', bp.cloud]].filter(function(r) {
+    return r[1] && num(r[1].sessions) > 0 && has(r[1].net_median);
+  });
+  if (!rows.length && num(ps.sessions) > 0 && has(ps.net_median)) rows = [['All sessions', ps]];
+  if (!rows.length) return '';
+  overhead = overhead || {};
+  return '<p><strong>Per session, share of that session&rsquo;s own context that never got sent</strong></p><ul>' + rows.map(function(r) {
+      var v = r[1];
+      return '<li>' + r[0] + ': typical ' + f.pct(v.net_median) + (has(v.net_p75) ? ', top quarter ' + f.pct(v.net_p75) + ' or more' : '') +
+        ' (' + f.count(v.sessions) + ' sessions)</li>';
+    }).join('') + '</ul><p>Medians of sessions with ledger entries, after subtracting the notes Token Optimizer itself adds' +
+    (num(overhead.usd) > 0 ? ' (' + f.tok(overhead.reread_tokens) + ' tokens re-read, about ' + f.usd(overhead.usd) + ')' : '') +
+    '. Cloud means the session&rsquo;s events were rebuilt from its transcript because its hooks ran on another machine.</p>';
+}
+
+// Since-install total from the same components as the hero, routing excluded.
+function savingsSinceInstall(data) {
+  var f = savingsStoryFmt(), num = f.num;
+  var si = ((data && data.savings) || {}).since_install || {};
+  var ai = si.all_in || {};
+  var c = ai.components_usd || {};
+  if (!(num(si.days) > 0)) return null;
+  var parts = [['Context removed', c.logged], ['Cheaper cache writes', c.class_premium], ['Re-reads avoided', c.reread], ['Estimates', ai.estimated_usd]]
+    .filter(function(p) { return num(p[1]) !== 0; });
+  if (!parts.length) return null;
+  var date = si.install_date ? new Date(si.install_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  return { parts: parts, total: parts.reduce(function(a, p) { return a + num(p[1]); }, 0), days: num(si.days), date: date };
+}
+
 // "Where your sessions ran" fold body, for the caller's row of folds.
 function savingsCoverageFold(data) {
   if (!savingsStoryOn(data)) return '';
@@ -296,7 +321,7 @@ function savingsCoverageFold(data) {
   if (!items.length) return '';
   return f.fold('Where your sessions ran', '<ul>' + items.map(function(c) {
     var k = classes[c[0]];
-    return '<li>' + c[1] + ': ' + f.count(k.sessions) + ' sessions, ' + f.pct(k.traffic_share) + ' of traffic</li>';
+    return '<li>' + c[1] + ': ' + f.count(k.sessions) + ' sessions, ' + f.pct(k.traffic_share) + ' of all your traffic</li>';
   }).join('') + '</ul><p>A session counts as covered only on evidence: a ledger row, a logged event, or Token Optimizer&rsquo;s own note in its transcript.</p>');
 }
 
@@ -361,17 +386,11 @@ function savingsLedgerHtml(data) {
     B.measured.map(function(r) { return row(r.label + ' (measured)', r.usd, r.tok); }).join('') +
     B.estimated.map(function(r) { return row(r.label + ' (estimated)', r.usd, r.tok); }).join('') +
     '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(B.totalUsd) + '</strong></span></li></ul>';
-  var si = s.since_install || {};
-  var ai = si.all_in || {};
-  var c = ai.components_usd || {};
-  if (num(si.days) > 0 && (num(c.logged) || num(c.reread) || num(ai.estimated_usd))) {
-    var parts = [['Context removed', c.logged], ['Cheaper cache writes', c.class_premium], ['Re-reads avoided', c.reread], ['Estimates', ai.estimated_usd]]
-      .filter(function(p) { return num(p[1]) !== 0; });
-    var total = parts.reduce(function(a, p) { return a + num(p[1]); }, 0);
-    var since = si.install_date ? new Date(si.install_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-    out += '<h3 class="ts-section-label st-gap">Since you installed' + (since ? ' on ' + esc(since) : '') + ' (' + f.count(si.days) + ' days)</h3><ul class="st-rows">' +
-      parts.map(function(p) { return row(p[0], p[1], 0); }).join('') +
-      '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(total) + '</strong></span></li></ul>';
+  var SI = savingsSinceInstall(data);
+  if (SI) {
+    out += '<h3 class="ts-section-label st-gap">Since you installed' + (SI.date ? ' on ' + esc(SI.date) : '') + ' (' + f.count(SI.days) + ' days)</h3><ul class="st-rows">' +
+      SI.parts.map(function(p) { return row(p[0], p[1], 0); }).join('') +
+      '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(SI.total) + '</strong></span></li></ul>';
   }
   out += '<p class="st-lead">Model routing is not part of either total; it is still being measured.</p>';
   var cp = s.counted_period || {};

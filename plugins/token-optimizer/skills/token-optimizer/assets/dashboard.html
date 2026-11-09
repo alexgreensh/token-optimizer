@@ -396,13 +396,12 @@ h1, h2, h3, h4 { font-weight: 400; }
   text-transform: uppercase;
   letter-spacing: 0.1em;
   font-size: 15px;
-  border-left: 2px solid transparent;
+  border-radius: 6px;
 }
 
 .nav-item:hover, .nav-item.active {
   color: var(--c-text-main);
   background: var(--c-accent-soft);
-  border-left-color: var(--c-accent-cyan);
   text-shadow: var(--glow-text);
 }
 
@@ -431,7 +430,7 @@ h1, h2, h3, h4 { font-weight: 400; }
 
 .user-profile i {
   font-family: var(--font-mono);
-  font-style: italic;
+  font-style: normal;
   color: var(--c-accent-cyan);
 }
 
@@ -1375,9 +1374,8 @@ input:checked + .slider:before {
 .metric-unit {
   font-family: var(--font-sans);
   font-weight: 500;
-  font-size: 24px;
-  color: var(--c-text-dim);
-  letter-spacing: 0.03em;
+  font-size: 22px;
+  color: var(--c-text-main);
 }
 .metric-sub.tight {
   font-size: 18px;
@@ -1392,18 +1390,17 @@ input:checked + .slider:before {
 .ts-divider { height: 1px; background: var(--c-border); margin: var(--s-4) 0 var(--s-3); }
 
 .ts-section-label {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--c-text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--c-text-main);
   margin-bottom: var(--s-2);
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: var(--s-3);
 }
-.ts-section-label .muted { text-transform: none; letter-spacing: 0; color: var(--c-text-faint); font-size: 12px; }
+.ts-section-label .muted { color: var(--c-text-main); font-weight: 400; font-size: 14px; }
 
 /* spent-vs-saved combined bar: one row, two proportional segments. */
 .sv-bar {
@@ -1424,9 +1421,9 @@ input:checked + .slider:before {
 
 .ts-foot {
   margin-top: var(--s-4);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--c-text-faint);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--c-text-main);
   line-height: 1.6;
   text-wrap: pretty;
 }
@@ -1715,75 +1712,64 @@ input:checked + .slider:before {
 }
 
 /* ========== SAVINGS STORY (U9, assets/savings_story.js) ==========
-   Headings carry the card titles (no small-caps labels above them). Body copy
-   uses --c-text-main; --c-text-dim only for the one-line meta under a value. */
-.st { display: grid; gap: var(--s-3); margin-bottom: var(--s-4); }
+   Card titles are headings (no small-caps labels above them). Sans for words,
+   mono only for standalone figures; numbers inside sentences use the sans face
+   with tabular figures. Secondary lines stay in --c-text-main for readability. */
+.st { display: grid; gap: var(--s-3); margin-bottom: var(--s-3); }
 .st .card { padding: var(--s-4); }
-.st-hero { padding: var(--s-5) var(--s-4) var(--s-4) !important; }
-.st-hero__line { font: 300 clamp(28px, 3.6vw, 44px)/1.2 var(--font-sans); color: var(--c-text-main); letter-spacing: -0.015em; max-width: 24ch; text-wrap: balance; }
-.st-num { font-family: var(--font-mono); font-weight: 500; color: var(--c-accent-cyan); letter-spacing: -0.03em; white-space: nowrap; }
-.st-hero__sub { font-size: 21px; line-height: 1.5; color: var(--c-text-main); margin-top: var(--s-3); }
-.st-meta { font: 400 14px/1.6 var(--font-mono); color: var(--c-text-dim); margin-top: var(--s-3); }
 .st-h { font: 600 20px/1.3 var(--font-sans); color: var(--c-text-main); display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) 12px; }
-.st-tag { font: 500 13px/1 var(--font-mono); color: var(--c-text-main); border: 1px solid var(--c-border-strong); border-radius: 999px; padding: 5px 10px; }
-.st-lead { font-size: 17px; line-height: 1.65; color: var(--c-text-main); margin-top: var(--s-3); max-width: 60ch; text-wrap: pretty; }
-.st-lead strong { font-weight: 600; }
-.st-big { font: 300 22px/1.45 var(--font-sans); color: var(--c-text-main); margin-top: var(--s-3); text-wrap: pretty; }
-.st-big .st-num { font-size: 40px; font-weight: 400; margin-right: 4px; }
+.st-tag { font: 500 13px/1 var(--font-sans); letter-spacing: 0.01em; color: var(--c-text-main); border: 1px solid var(--c-border-strong); border-radius: 999px; padding: 5px 10px; }
+.st-num { font-family: var(--font-sans); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--c-accent-cyan); white-space: nowrap; }
 .st-v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--c-text-main); text-align: right; white-space: nowrap; }
-.st-total__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-4); margin: var(--s-3) 0 var(--s-3); }
-.st-total__usd { font: 300 clamp(52px, 6vw, 76px)/1 var(--font-mono); color: var(--c-accent-cyan); letter-spacing: -0.03em; }
-.st-total__tok { font-size: 19px; color: var(--c-text-main); }
+.st-lead { font-size: 17px; line-height: 1.6; color: var(--c-text-main); margin-top: var(--s-3); max-width: 60ch; text-wrap: pretty; }
+.st-lead strong { font-weight: 600; }
+.st-big { font: 400 22px/1.45 var(--font-sans); color: var(--c-text-main); margin-top: var(--s-3); text-wrap: pretty; }
+.st-big .st-num { font-size: 34px; }
+.st-hero { padding: var(--s-5) var(--s-4) var(--s-4) !important; }
+.st-total__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-4); margin: var(--s-2) 0 var(--s-3); }
+.st-total__usd { font: 300 clamp(56px, 6.5vw, 84px)/1 var(--font-mono); color: var(--c-accent-cyan); letter-spacing: -0.03em; }
+.st-total__tok { font-size: 20px; color: var(--c-text-main); }
 .st-bar { display: flex; gap: 3px; height: 14px; border-radius: 7px; overflow: hidden; }
 .st-bar__m { background: var(--c-savings); border-radius: 7px 0 0 7px; }
 .st-bar__e { background: repeating-linear-gradient(135deg, var(--c-savings) 0 3px, transparent 3px 7px); box-shadow: inset 0 0 0 1.5px var(--c-savings); border-radius: 0 7px 7px 0; }
-.st-bands { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3) var(--s-5); margin-top: var(--s-4); }
-.st-band h3 { display: flex; align-items: center; gap: 10px; font: 600 17px/1.3 var(--font-sans); color: var(--c-text-main); }
-.st-band__name { flex: 1; }
-.st-band h3 .st-v { font-size: 20px; font-weight: 500; }
-.st-band__sub { font-size: 15px; color: var(--c-text-dim); margin: 2px 0 0 24px; }
+.st-bands { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2) var(--s-5); margin-top: var(--s-3); }
+.st-legend { display: flex; align-items: center; gap: 10px; font: 600 17px/1.3 var(--font-sans); color: var(--c-text-main); }
+.st-legend .st-v { margin-left: auto; font-size: 19px; font-weight: 500; }
 .st-sw { width: 14px; height: 14px; border-radius: 3px; flex: none; }
 .st-sw.st-m { background: var(--c-savings); }
 .st-sw.st-e { background: repeating-linear-gradient(135deg, var(--c-savings) 0 2px, transparent 2px 4px); box-shadow: inset 0 0 0 1.5px var(--c-savings); }
 .st-rows { list-style: none; margin-top: var(--s-2); border-top: 1px solid var(--c-border); }
-.st-rows li { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--s-3); padding: 10px 0; border-bottom: 1px solid var(--c-border); font-size: 16px; line-height: 1.4; color: var(--c-text-main); }
-.st-rows__k { min-width: 0; }
-.st-rows__n { display: block; font: 400 13px/1.5 var(--font-mono); color: var(--c-text-dim); margin-top: 2px; white-space: normal; }
-.st-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); }
-.st-pair > :only-child { grid-column: 1 / -1; }
-.st-trims { list-style: none; margin-top: var(--s-3); }
-.st-trim { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px var(--s-3); padding: var(--s-3) 0; border-top: 1px solid var(--c-border); }
-.st-trim__what strong { font-weight: 600; font-size: 17px; color: var(--c-text-main); }
-.st-trim__val { font-size: 18px; }
-.st-trim__math { grid-column: 1 / -1; font: 400 14px/1.6 var(--font-mono); color: var(--c-text-main); }
+.st-rows li { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-3); padding: 9px 0; border-bottom: 1px solid var(--c-border); font-size: 16px; line-height: 1.4; color: var(--c-text-main); }
+.st-rows--card { margin-top: var(--s-3); }
+.st-sub { display: block; font: 400 14px/1.5 var(--font-sans); color: var(--c-text-main); margin-top: 2px; }
+.st-hero__line { font: 400 22px/1.45 var(--font-sans); color: var(--c-text-main); margin-top: var(--s-4); text-wrap: pretty; }
+.st-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); }
+.st-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
 .st-ratio { display: grid; gap: 14px; margin-top: var(--s-4); }
 .st-ratio__row { display: grid; grid-template-columns: 9.5em minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); font-size: 15px; color: var(--c-text-main); }
-.st-ratio__track { height: 12px; border-radius: 6px; background: var(--c-elev-2); overflow: hidden; }
+.st-ratio__track { display: block; height: 12px; border-radius: 6px; background: var(--c-elev-3); overflow: hidden; }
 .st-ratio__once, .st-ratio__carry { display: block; height: 100%; border-radius: 6px; background: var(--c-accent-cyan); }
 .st-ratio__once { min-width: 4px; }
-.st-cov { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: 12px; padding: var(--s-3) var(--s-4); }
-.st-cov__line { font-size: 18px; line-height: 1.6; color: var(--c-text-main); }
-.st-cov__line strong { font-family: var(--font-mono); font-weight: 500; color: var(--c-accent-cyan); }
-.st-warn { display: flex; gap: 10px; align-items: flex-start; margin-top: var(--s-2); font-size: 16px; line-height: 1.55; color: var(--c-text-main); max-width: 80ch; }
-.st-warn__icon { width: 20px; height: 20px; flex: none; margin-top: 2px; color: var(--c-warning-2); }
-.st-windows { list-style: none; margin-top: var(--s-3); border-top: 1px solid var(--c-border); }
-.st-windows li { display: flex; justify-content: space-between; gap: var(--s-3); padding: 10px 0; border-bottom: 1px solid var(--c-border); font-size: 16px; }
-.st-meta span { white-space: nowrap; }
-.st-more, .st-legacy { margin-top: 0; }
-.st-more { padding-top: var(--s-1); }
-.st-more > summary { font-size: 15px; }
-.st-legacy > summary { font-size: 15px; }
-.st-legacy .fold__body { max-width: none; }
+.st-quality { margin-top: var(--s-3); max-width: 640px; }
+.st-cov { font-size: 17px; line-height: 1.6; color: var(--c-text-main); padding: 0 var(--s-1); max-width: 90ch; }
+.st-morerow { display: flex; flex-wrap: wrap; gap: 0 var(--s-4); padding: var(--s-2) var(--s-1) 0; border-top: 1px solid var(--c-border); margin-bottom: var(--s-4); }
+.st-morerow > .fold { margin-top: 0; }
+.st-morerow > .fold[open] { flex-basis: 100%; }
+.st-morerow > .fold > summary { font-size: 15px; }
+.st-morerow .fold__body { max-width: none; }
+.st-health { margin-top: var(--s-3); }
 @media (max-width: 900px) {
-  .st-pair, .st-bands { grid-template-columns: 1fr; }
+  .st-grid, .st-bands { grid-template-columns: 1fr; }
+  .st-grid > :last-child:nth-child(odd) { grid-column: auto; }
 }
 @media (max-width: 520px) {
   .st .card { padding: var(--s-3); }
   .st-hero { padding: var(--s-4) var(--s-3) var(--s-3) !important; }
-  .st-cov { padding: var(--s-3); }
+  .st-hero .st-rows { display: none; }
+  .st-bands { gap: var(--s-2); }
   .st-ratio__row { grid-template-columns: 1fr auto; }
   .st-ratio__track { grid-column: 1 / -1; grid-row: 2; }
-  .st-band__sub { margin-left: 0; }
+  .st-morerow { flex-direction: column; }
 }
 
 /* ========== RESPONSIVE ========== */
@@ -1800,6 +1786,12 @@ input:checked + .slider:before {
     padding: var(--s-3);
   }
   .main-col { padding: var(--s-3); }
+  .nav-col .brand { margin-bottom: var(--s-2); font-size: 20px; }
+  .nav-menu { flex-direction: row; overflow-x: auto; gap: 4px; margin: 0 calc(-1 * var(--s-3)); padding: 0 var(--s-3) 2px; scrollbar-width: none; }
+  .nav-menu::-webkit-scrollbar { display: none; }
+  .nav-menu .nav-item { flex: none; white-space: nowrap; padding: 8px 12px; gap: 8px; }
+  .nav-menu .nav-separator { display: none; }
+  .user-profile { display: none; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .stat-row { grid-template-columns: 1fr; }
 }
@@ -3564,12 +3556,7 @@ var DB = (function() {
     var untrackedTokens = (denom > modelTotal) ? (denom - modelTotal) : 0;
     var out = '';
     if (isCodex) {
-      out += '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:var(--s-2);">Codex model names are read from session logs when available. Unknown future model IDs are shown by name but left unpriced until rates are known.</p>';
-    } else if (modelCount <= 1) {
-      var singleModel = Object.keys(modelMix)[0] || 'unknown';
-      out += '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:var(--s-2);">All sessions use ' + esc(singleModel) + '. Consider defaulting agents to haiku (5x cheaper) or sonnet for data-gathering tasks.</p>';
-    } else {
-      out += '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:var(--s-2);">Haiku is 5x cheaper for data-gathering. If you see mostly Opus, consider defaulting agents to Sonnet/Haiku.</p>';
+      out += '<p style="font-size:15px;color:var(--c-text-main);margin-bottom:var(--s-2);">Codex model names are read from session logs when available. Unknown future model IDs are shown by name but left unpriced until rates are known.</p>';
     }
     out += '<div class="model-bar">';
     modelOrder.forEach(function(m) {
@@ -3673,48 +3660,22 @@ var DB = (function() {
     // Missing dated coverage must not be replaced by lifetime model totals.
     var tsReportedTotal = Number(tsTrends.total_tokens) || 0;
     var tsSpentTokens = Object.prototype.hasOwnProperty.call(tsTrends, 'total_tokens') ? Math.max(0, tsReportedTotal) : tsModelTotal;
-    // (tsWouldSendTotal / percentages are computed below, AFTER the estimated
-    // tier is summed: the card headlines the FULL saved total in every state.)
-    // FULL saved total = measured floor + estimated tier. The headline is
-    // ALWAYS the full number, never the floor alone; the measured-vs-estimated
-    // split stays visible right under it so the honesty travels with the size,
-    // and the %-prevented / spent-vs-saved bar / would-send total are all
-    // computed against the same full figure.
     var tsFullSaved = tsSavedTokens + tsEstTokens;
-    var tsWouldSendTotal = tsSpentTokens + tsFullSaved;
-    var tsSavedPct = (tsWouldSendTotal > 0) ? Math.round(tsFullSaved / tsWouldSendTotal * 100) : 0;
-    var tsSpentPct = 100 - tsSavedPct; // no 101% rounding
     var tsSplitShort = fn(tsSavedTokens) + ' measured' + (tsEstTokens > 0 ? ' + ' + fn(tsEstTokens) + ' estimated' : '');
-
-    var out = '<div class="card wide"><div class="card-header"><span>Tokens Saved</span><span class="label">Last ' + tsPeriodDays + ' days · measured + estimated</span></div>';
-    // HERO: total tokens saved, savings-green, mono, tabular-nums.
-    out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + fn(tsFullSaved) + '</div><div class="metric-unit">tokens saved</div></div>';
-    out += '<div class="metric-sub tight" style="margin-top:2px;">' + fn(tsFullSaved) + ' saved · ' + tsSplitShort + '</div>';
-    if (tsSpentTokens > 0) {
-      out += '<div class="metric-sub tight">Token Optimizer prevented <span class="pct">≈' + tsSavedPct + '%</span> of the tokens this workload would otherwise have sent. Claude <code>/stats</code>-compatible spent: <b>' + fn(tsSpentTokens) + '</b>; tokens never sent: <b>' + fn(tsFullSaved) + '</b> (' + tsSplitShort + ').</div>';
-      // Spent vs Saved bar: one row, two proportional segments (spent+saved).
+    // U9: no share or spent-vs-saved bar here. The spent figure this card has
+    // (trends.total_tokens, /stats-compatible) is fresh input and output only,
+    // while saved tokens include cache-class reloads, so any ratio of the two
+    // mixes token classes (the retired x1.216 bug). The Savings story carries
+    // the only percentages, on the traffic-including-cache and cost bases.
+    var out = '<div class="card wide"><div class="card-header"><span>Tokens Saved</span></div>';
+    out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + fn(tsFullSaved) + '</div><div class="metric-unit">tokens saved in the last ' + tsPeriodDays + ' days</div></div>';
+    out += '<div class="metric-sub tight">' + tsSplitShort + '.</div>';
+    if (tsModelTotal > 0) {
       out += '<div class="ts-divider"></div>';
-      out += '<div class="ts-section-label"><span>Spent vs Saved</span><span class="muted">without Token Optimizer: ≈' + fn(tsWouldSendTotal) + '</span></div>';
-      out += '<div class="sv-bar" title="spent ' + fn(tsSpentTokens) + ' + saved ' + fn(tsFullSaved) + ' (' + tsSplitShort + ') = ' + fn(tsWouldSendTotal) + ' would-be total">';
-      out += '<div class="sv-seg spent" style="width:' + tsSpentPct + '%">spent · ' + fn(tsSpentTokens) + '</div>';
-      out += '<div class="sv-seg saved" style="width:' + tsSavedPct + '%">saved · ' + fn(tsFullSaved) + '</div>';
-      out += '</div>';
-      out += '<div class="sv-caption">Without Token Optimizer you\'d have sent <b>≈' + fn(tsWouldSendTotal) + '</b> to do the same work.</div>';
-      // Model mix relabeled as USAGE: where the SPENT went. Bar + legend
-      // reconcile to SPENT via a trailing "untracked" segment for tokens
-      // billed without a model tag (SPENT - sum(model_mix)).
-      if (tsModelTotal > 0) {
-        out += '<div class="ts-divider"></div>';
-        out += '<div class="ts-section-label"><span>Where the ' + fn(tsSpentTokens) + ' you spent went</span><span class="muted">which models do the work</span></div>';
-        out += modelMixBodyHtml(tsModelMix, tsIsCodex, tsSpentTokens);
-      }
-    } else {
-      // SAVED exists but SPENT is unknown (no billable total AND no
-      // model_mix). Render the hero + footer only.
-      out += '<div class="metric-sub tight">Token Optimizer saved <b>' + fn(tsFullSaved) + '</b> tokens that never had to be sent (' + tsSplitShort + ').</div>';
+      out += '<h3 class="ts-section-label">Which models did the work</h3>';
+      out += modelMixBodyHtml(tsModelMix, tsIsCodex, tsSpentTokens > 0 ? tsSpentTokens : tsModelTotal);
     }
-    // Footer: metered floor + optional estimated-slice sentence + plan note.
-    out += '<div class="ts-foot"><span class="tier">Measured + estimated.</span> ' + fn(tsSavedTokens) + ' of these tokens are metered action by action (the floor)' + (tsEstTokens > 0 ? '; ≈' + fn(tsEstTokens) + ' are estimated (' + esc(tsEstLabelList) + ') and are included in the headline, labelled.' : '.') + (tsSpentBasis.basis ? ' Spent basis: ' + esc(tsSpentBasis.basis) + '.' : '') + ' Subscription plan — counted in tokens, no per-token cost.</div>';
+    out += '<div class="ts-foot">' + fn(tsSavedTokens) + ' of these tokens are counted action by action' + (tsEstTokens > 0 ? '; about ' + fn(tsEstTokens) + ' are estimated (' + esc(tsEstLabelList) + ') and included, labelled.' : '.') + '</div>';
     out += '</div>';
     return out;
   }
@@ -4759,8 +4720,8 @@ var DB = (function() {
     try { story = (typeof savingsStoryHtml === 'function') ? savingsStoryHtml(data) : ''; } catch (e) { story = ''; }
 
     var html = '<div class="section-header">' +
-      (story ? '' : '<div class="label">Value</div>') + '<h1>Savings</h1>' +
-      '<p>Your savings, with the time period and method shown for each total.</p>' +
+      (story ? '<h1>Savings</h1>' : '<div class="label">Value</div><h1>Savings</h1>' +
+        '<p>Your savings, with the time period and method shown for each total.</p>') +
       '</div>' +
       '<div class="last-updated">Updated ' + esc(ts) + ' &middot; refreshes after every session</div>';
 
@@ -5059,24 +5020,24 @@ var DB = (function() {
     if ((Number(ow.cost_saved_usd) || 0) > 0) {
       parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + moneyCents(oppCents.output) + per + ' in output.');
     }
+    var moreFolds = [];
     if (story) {
-      // U9: opportunity stays out of sight unless opened, never in amber type,
-      // then the previous cards (full ledger, whole-workload comparison) fold
-      // below it so nothing is lost.
+      // U9: nothing else on the tab. Opportunity, coverage detail, the previous
+      // cards and diagnostics sit in one row of folds at the bottom; the
+      // whole-workload comparison is no longer shown here.
       if (parts.length > 0) {
-        html += '<details class="fold st-more"><summary>Room to save more' +
-          (opportunityMo > 0 ? ': about ' + moneyCents(oppCents.total) + (runRate ? ' per 30 days' : ' so far') : '') + '</summary><div class="fold__body">' +
+        moreFolds.push('<details class="fold"><summary>Room to save more' +
+          (opportunityMo > 0 ? ': about ' + money(oppCents.total / 100) + (runRate ? ' per 30 days' : ' so far') : '') + '</summary><div class="fold__body">' +
           '<p>Changes you could make to your setup or habits. None of this is in any total above.</p>' +
           parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
           (routingPotentialMo > 0 ? '<p>If about ' + routingFracPct + '% of your Opus work ran on ' + esc(routingTarget) +
             ', about ' + money(routingPotentialMo) + esc(per) + ' at API rates. This is an assumption about your own work.</p>' : '') +
           (data.runtime !== 'cursor' && data.runtime !== 'antigravity' ? '<p>Run <strong>/token-optimizer</strong> and follow its suggestions to claim it.</p>' : '') +
-          '</div></details>';
+          '</div></details>');
       }
-      html += '<details class="fold st-legacy"><summary>Full ledger, history and method</summary><div class="fold__body">' + ledgerHtml + '</div></details>';
-      if (transformHtml) {
-        html += '<details class="fold st-legacy"><summary>Whole-workload comparison (overlaps the total, never add the two)</summary><div class="fold__body">' + transformHtml + '</div></details>';
-      }
+      var covFold = (typeof savingsCoverageFold === 'function') ? savingsCoverageFold(data) : '';
+      if (covFold) moreFolds.push(covFold);
+      moreFolds.push('<details class="fold"><summary>Full ledger and history</summary><div class="fold__body">' + ledgerHtml + '</div></details>');
     } else if (parts.length > 0) {
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);border:1px solid var(--c-amber);box-shadow:0 0 0 1px rgba(217,164,65,0.18), 0 0 44px rgba(217,164,65,0.12);">';
       html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-amber);letter-spacing:0.08em;">Money on the table &middot; opportunity</div>';
@@ -5156,7 +5117,7 @@ var DB = (function() {
         trendTxt = dd > 3 ? 'trending up' : (dd < -3 ? 'trending down' : 'holding steady');
       }
     }
-    if (avgQ !== null) {
+    if (avgQ !== null && !story) {
       var barPct = Math.min(100, Math.max(0, avgQ));
       html += '<div class="card wide" style="margin-top:var(--s-3);"><div class="card-header"><span>Context quality &middot; 30-day average</span>' +
         (trendTxt ? '<span class="label">' + esc(trendTxt) + '</span>' : '') + '</div>';
@@ -5249,7 +5210,8 @@ var DB = (function() {
         ccHtml += '</div>';
       }
       ccHtml += '</div>';
-      html += ccHtml;
+      if (story) moreFolds.push('<details class="fold"><summary>Compression coverage (diagnostic)</summary><div class="fold__body">' + ccHtml + '</div></details>');
+      else html += ccHtml;
     }
 
     // ---- Cache Health: TTL-expiry watchdog (opportunity tier). Observed
@@ -5415,6 +5377,7 @@ var DB = (function() {
       kwHtml += '</div>';
       html += kwHtml;
     }
+    if (moreFolds.length) html += '<div class="st-morerow">' + moreFolds.join('') + '</div>';
 
     el.innerHTML = html;
     el.querySelectorAll('details > summary').forEach(function(summary) {
@@ -5656,6 +5619,8 @@ var DB = (function() {
       });
       html += '</div>';
     }
+    // U9: context quality and hook time limits moved here from the Savings tab.
+    try { if (typeof healthNotesHtml === 'function') html += healthNotesHtml(data); } catch (e) {}
 
     el.innerHTML = html;
   }

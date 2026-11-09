@@ -1,9 +1,11 @@
 """U9: run the real savings-story renderer (assets/savings_story.js) in Node.
 
-Synthetic payloads only. Covers: old payloads render nothing and never throw,
-the total is the sum of its measured and estimated rows, routing and opportunity
-stay out of it, the Savings tab folds the previous cards under the story, and the
-generator inlines the module (a missing module leaves the old layout).
+Synthetic payloads only. Covers: old payloads render nothing and never throw;
+one hero card whose total is the sum of its measured and estimated rows, with
+exactly one percentage visible; one 2x2 block; one coverage line; unfinished
+pools say "Measuring" with no number; the Savings tab folds everything else
+into one row; context quality moves to Health; the Tokens Saved card shows no
+share against the fresh-only spent basis; the generator inlines the module.
 """
 import json
 import re
@@ -22,7 +24,8 @@ sys.path.insert(0, str(ROOT / 'skills/token-optimizer/scripts'))
 import dashboard_assets  # noqa: E402
 
 ESC = ("const esc = x => String(x == null ? '' : x).replace(/[&<>\"']/g, "
-       "c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));\n")
+       "c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));\n"
+       "const fn = n => String(Math.round(Number(n) || 0));\n")
 
 
 def _node(script, payload):
@@ -34,16 +37,18 @@ def _node(script, payload):
     return r.stdout
 
 
-def story(data):
-    script = ESC + STORY.read_text() + (
-        '\nconst data = JSON.parse(process.argv[2]);'
-        '\nprocess.stdout.write(savingsStoryHtml(data));')
+def call(expr, data):
+    script = ESC + STORY.read_text() + '\nconst data = JSON.parse(process.argv[2]);\nprocess.stdout.write(' + expr + ');'
     return _node(script, data)
 
 
-def render_savings(savings, with_story=True):
+def story(data):
+    return call('savingsStoryHtml(data)', data)
+
+
+def _harness(fn_start, fn_end, call_js, data, with_story=True):
     html = TEMPLATE.read_text()
-    body = html[html.index('  function renderSavings()'):html.index('  function renderHealth()')]
+    body = html[html.index(fn_start):html.index(fn_end)]
     helper = html[html.index('function tokenSplitText('):html.index('function hostRefreshHtml(')]
     if with_story:
         helper = dashboard_assets.inline(helper, ASSETS)
@@ -51,9 +56,14 @@ def render_savings(savings, with_story=True):
               "const el = {innerHTML: '', querySelectorAll: () => []};\n"
               'const document = {getElementById: () => el};\n' + ESC +
               "const runwayCardHtml = () => '<div id=\"legacy-runway\"></div>';\n"
-              "const tokensSavedCardHtml = () => '';\n")
-    return _node(prefix + helper + body + '\nrenderSavings(); process.stdout.write(el.innerHTML);',
-                 {'savings': savings})
+              "const tokensSavedCardHtml = () => '';\nconst tcliHtml = x => x;\n")
+    return _node(prefix + helper + body + '\n' + call_js, data)
+
+
+def render_savings(savings, with_story=True, extra=None):
+    data = dict(extra or {}, savings=savings)
+    return _harness('  function renderSavings()', '  function renderHealth()',
+                    'renderSavings(); process.stdout.write(el.innerHTML);', data, with_story)
 
 
 def effect():
@@ -70,45 +80,53 @@ def effect():
     }
 
 
-def full():
+def base():
+    """Fields that exist today (U4 + U1 + U8); U3, U5 and U7 not landed."""
     return {
         'period_days': 30,
         'session_effect': effect(),
-        'action_savings': {'logged_usd': 40.0, 'reread_usd': 30.0, 'estimated_usd': 12.0,
-                           'class_premium_usd': 8.0, 'routing_usd': 50.0,
+        'action_savings': {'logged_usd': 40.2, 'reread_usd': 30.4, 'estimated_usd': 12.0,
+                           'class_premium_usd': 8.4, 'routing_usd': 50.0,
                            'estimates_usd': {'resume_lean_estimated': 5.0}},
         'token_headline': {'context_removed_tokens': 2000000, 'output_not_generated_tokens': 0,
                            'reload_avoided_tokens': 1000000, 'reread_tokens': 80000000,
                            'reread_available': True},
-        'counted_period': {'removed_tokens': 2000000, 'reread_tokens': 80000000,
-                           'oneshot_usd': 10.0, 'reread_usd': 30.0},
-        'structural_detail': {'method': 'trim_ledger', 'cost_saved_usd': 4.0, 'tokens_saved': 500000,
-                              'estimated': {'cost_saved_usd': 20.0, 'tokens_saved': 90000000},
-                              'trims': [{'label': 'Archived skills', 'ts': '2026-01-20T00:00:00+00:00',
-                                         'source': 'audit_action', 'tokens_per_call': 1000,
-                                         'requests': 500, 'cost_saved_usd': 4.0,
-                                         'projected_30d_usd': 9.0}]},
-        'transcript_backfill': {'sessions': 30, 'measured_usd': 6.0, 'measured_tokens': 9000000},
-        'output_reread': {'available': True, 'cost_saved_usd': 3.0, 'tokens_saved': 7000000,
-                          'control_net': None},
-        'hook_skips': {'overruns': 40, 'skipped_compressions': 3, 'skip_rate': 0.02},
-        'lean_resume_carry': {'available': True, 'carry_tokens': 1000000, 'carry_cost_usd': 77.0},
+        'counted_period': {'removed_tokens': 2000000, 'reread_tokens': 80000000},
+        'structural_detail': {'cost_saved_usd': 0, 'tokens_saved': 0, 'evidence': 'measured'},
         'model_routing': {'baseline_opus_share': 0.95, 'baseline_source': 'pretool_baseline',
-                          'current_opus_share': 0.9, 'actual_cost_usd': 900.0,
-                          'measured_baseline_opus_share': 0.8, 'measured_baseline_realized_cost_usd': 0.0},
+                          'current_opus_share': 0.9, 'actual_cost_usd': 900.0, 'realized_cost_usd': 50.0},
         'structural_potential': {'cost_saved_usd': 11.0, 'unused_skills': 3},
     }
 
 
+def full():
+    s = base()
+    s['action_savings']['logged_usd'] = 44.2
+    s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 4.0, 'tokens_saved': 500000,
+                              'estimated': {'cost_saved_usd': 20.0, 'tokens_saved': 90000000},
+                              'trims': [{'label': 'Archived skills', 'ts': '2026-01-20T00:00:00+00:00',
+                                         'source': 'audit_action', 'tokens_per_call': 1000,
+                                         'requests': 500, 'cost_saved_usd': 4.0, 'projected_30d_usd': 9.0}]}
+    s['output_reread'] = {'available': True, 'cost_saved_usd': 3.0, 'tokens_saved': 7000000, 'control_net': None}
+    s['model_routing'].update(measured_baseline_opus_share=0.8, measured_baseline_realized_cost_usd=0.0)
+    s['lean_resume_carry'] = {'available': True, 'carry_tokens': 1000000, 'carry_cost_usd': 77.0}
+    return s
+
+
+def hero(out):
+    return out.split('class="card st-hero"')[1].split('class="st-grid"')[0]
+
+
 @pytest.mark.parametrize('savings', [
     {}, {'session_effect': None}, {'session_effect': {'available': False, 'reason': 'codex'}},
-    {'session_effect': {'available': True}},  # available but every block missing
+    {'session_effect': {'available': True}},
     {'session_effect': {'available': True, 'per_session': 'junk', 'coverage': 7}, 'action_savings': None,
      'structural_detail': {'method': 'trim_ledger', 'trims': [None, {}]}, 'model_routing': []},
 ])
 def test_old_or_malformed_payloads_never_throw(savings):
-    out = story({'savings': savings})
-    assert 'NaN' not in out and 'undefined' not in out
+    for fn in ('savingsStoryHtml(data)', 'healthNotesHtml(data)', 'savingsCoverageFold(data)'):
+        out = call(fn, {'savings': savings})
+        assert 'NaN' not in out and 'undefined' not in out
 
 
 def test_old_payload_returns_nothing_and_tab_keeps_previous_layout():
@@ -118,58 +136,96 @@ def test_old_payload_returns_nothing_and_tab_keeps_previous_layout():
     assert '<div class="label">Value</div>' in html
 
 
-def test_total_is_the_sum_of_its_bands_and_excludes_routing():
+def test_hero_total_is_sum_of_bands_in_whole_dollars_and_excludes_routing():
+    h = hero(story({'savings': full()}))
+    # measured: context 44.2-4=40.2, rereads 30.4, premium 8.4, setup 4 = 83; estimated: 20+3+5+7 = 35
+    assert '$118' in h and 'Measured <span class="st-v">$83' in h and 'Estimated <span class="st-v">$35' in h
+    assert not re.search(r'\$\d+\.\d\d', h)  # whole dollars only
+    assert '$50' not in h  # routing never enters the total
+    assert 'Cheaper cache writes' in h and 'Write-class' not in h and 'ratio' not in h
+
+
+def test_exactly_one_percentage_visible_in_hero():
+    h = hero(story({'savings': full()}))
+    visible = h.split('<details')[0]
+    text = re.sub(r'<[^>]+>', ' ', visible)  # visible text, not style widths
+    assert re.findall(r'[\d.]+%', text) == ['4.8%']
+    assert 'In a typical session, <span class="st-num">4.8%' in visible
+
+
+def test_four_cards_in_one_grid_then_one_coverage_line():
     out = story({'savings': full()})
-    # measured: context 40-4=36, premium 8, rereads 30, cloud 6, setup 4 = 84
-    # estimated: attested 20, output 3, resumes 5, other 12-5=7 = 35
-    assert '$119' in out and '$84.00' in out and '$35.00' in out
-    assert 'Context removed' in out and '$36.00' in out and 'Other estimates' in out and '$7.00' in out
-    total = out.split('st-total')[1].split('st-pair')[0]
-    assert '$50' not in total  # routing never enters the total
-    assert 'Model routing' not in total.split('How this total is built')[0]
+    grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
+    titles = re.findall(r'<h2 class="st-h">([^<]+)', grid)
+    assert titles == ['Removed once, saved on every later turn', 'Setup cleanup', 'Your limits ', 'Model routing ']
+    cov = out.split('class="st-cov"')[1]
+    assert 'ran in 150 of your 200 sessions' in cov and '12 of them are not in the ledger yet' in cov
+    assert 'svg' not in cov and '%' not in cov
+    assert 'stretch about <span class="st-num">13.1%' in out  # 118 / 900
+    assert 'spared about <strong>40 more reads' in out
 
 
-def test_hero_coverage_limit_and_routing_copy():
-    out = story({'savings': full()})
-    assert 'In a typical session, <span class="st-num">4.8%' in out
-    assert 'top quarter of sessions, 10.5% or more' in out
-    assert '120 sessions measured' in out
-    assert 'ran in <strong>75%</strong>' in out and '12 sessions ran Token Optimizer but are' in out
-    assert 'understates' in out
-    assert 'Hooks ran out of time 40 times' in out
-    assert 'Estimated' in out and re.search(r'11\.7%</span> of what this work', out)  # 119/(900+119)
-    assert 'assuming 95% of your work ran on Opus' in out and 'earliest tracked month ran 80% Opus' in out
-    assert 'Diagnostic, not counted' in out and '$77.00' in out
+def test_unfinished_pools_say_measuring_with_no_number():
+    out = story({'savings': base()})
+    grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
+    cards = grid.split('class="card st-card"')[1:]
+    setup = [c for c in cards if 'Setup cleanup' in c][0]
+    routing = [c for c in cards if 'Model routing' in c][0]
+    for c in (setup, routing):
+        assert 'Measuring' in c and '$' not in c and not re.search(r'\d', c.split('</h2>')[1])
+    assert 'Still measuring, not in the total yet: setup cleanup and shorter answers' in hero(out)
 
 
-def test_no_forbidden_wording():
-    out = story({'savings': full()})
+def test_no_forbidden_wording_or_eyebrows():
+    out = story({'savings': full()}) + call('healthNotesHtml(data)', {'savings': full(), 'trends': {
+        'quality_trend': [{'avg_quality': 56, 'sessions': 10}] * 8}})
     low = out.lower()
     assert '$0 on subscription' not in low and 'fresh' not in low
-    assert '<em' not in out and 'font-style:italic' not in low
-    assert 'class="label"' not in out  # no small-caps eyebrow labels in the story
+    assert '<em' not in out and 'italic' not in low
+    assert 'class="label"' not in out and 'holding steady' not in low
+    assert 'Diagnostic, not counted' in out
 
 
-def test_setup_trims_empty_state():
-    s = full(); s['structural_detail'] = {'method': 'trim_ledger', 'status': 'no_trims', 'trims': []}
-    out = story({'savings': s})
-    assert 'No setup trims recorded yet' in out
-
-
-def test_savings_tab_folds_previous_cards_and_opportunity_under_the_story():
+def test_savings_tab_one_row_of_folds_and_quality_moves_to_health():
     s = full(); s['total_cost_usd'] = 40.0
     s['before_after'] = {'monthly_savings_usd': 300, 'actual_monthly_usd': 1000, 'counterfactual_monthly_usd': 1300}
-    html = render_savings(s)
-    assert html.index('class="st"') < html.index('Room to save more') < html.index('Full ledger, history and method')
-    assert 'Whole-workload comparison' in html and 'legacy-runway' not in html
-    assert '<div class="label">Value</div>' not in html
-    assert 'still on the table' not in html  # the large amber opportunity card is gone
-    assert 'per 30 days' in html.split('Room to save more')[1][:60]
+    extra = {'trends': {'quality_trend': [{'avg_quality': 60, 'sessions': 5}] * 6}}
+    html = render_savings(s, extra=extra)
+    row = html.split('class="st-morerow"')[1]
+    assert html.index('class="st"') < html.index('class="st-morerow"')
+    assert re.findall(r'<summary>([^<:]+)', row)[:3] == ['Room to save more', 'Where your sessions ran', 'Full ledger and history']
+    assert 'Whole-workload' not in html and 'Context quality' not in html and 'legacy-runway' not in html
+    assert '<div class="label">Value</div>' not in html and 'still on the table' not in html
+    health = call('healthNotesHtml(data)', dict(extra, savings=s))
+    assert 'Context quality' in health and 'scored <span class="st-num">60</span> out of 100' in health
 
 
 def test_template_without_inlined_module_falls_back():
     html = render_savings(full(), with_story=False)
     assert 'class="st"' not in html and 'legacy-runway' in html
+
+
+def test_tokens_saved_card_has_no_fresh_only_share():
+    """Guard: trends.total_tokens is fresh input + output (no cache); saved tokens
+    include cache-class reloads. No surface may divide one by the other."""
+    tpl = TEMPLATE.read_text()
+    a, b = tpl.index('  function tokensSavedCardHtml('), tpl.index('  function renderTrends()')
+    card_src = tpl[a:b]
+    mix = tpl[tpl.index('  function modelMixBodyHtml('):a]
+    data = {'runtime': 'claude', 'trends': {'total_tokens': 80000000, 'period_days': 30,
+                                            'model_mix': {'opus': 60000000, 'sonnet': 20000000}},
+            'savings': {'total_tokens': 1000000, 'resume_lean_estimated': {'tokens_saved': 9000000}}}
+    prefix = 'const data = JSON.parse(process.argv[2]);\n' + ESC
+    out = _node(prefix + mix + card_src + '\nprocess.stdout.write(tokensSavedCardHtml(data.savings));', data)
+    assert '10' in out and 'tokens saved' in out
+    assert '%' not in out.split('model-bar')[0]  # no share before the model-mix bar
+    for banned in ('prevented', 'would otherwise', 'without Token Optimizer', 'Spent vs Saved', 'class="label"',
+                   'Consider defaulting', 'defaulting agents'):
+        assert banned not in out
+    # Static: no surface in the template builds a share from the fresh-only spent basis.
+    assert not re.search(r'tsSpentTokens\s*\+\s*tsFullSaved', tpl)
+    assert not re.search(r'/\s*tsWouldSendTotal|tsSavedPct', tpl)
+    assert 'spent_token_basis' not in STORY.read_text() and 'trends.total_tokens' not in STORY.read_text()
 
 
 def test_inliner(tmp_path):
@@ -180,5 +236,5 @@ def test_inliner(tmp_path):
     assert '/*@include savings_story.js*/' in tpl
     once = dashboard_assets.inline(tpl, ASSETS)
     assert 'function savingsStoryHtml' in once
-    assert '@include' not in STORY.read_text()  # inlining twice must be a no-op
+    assert '@include' not in STORY.read_text()
     assert dashboard_assets.inline(once, ASSETS) == once

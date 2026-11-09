@@ -5,7 +5,7 @@
 - `measure.py report` -- Token overhead report with per-component breakdown
 - `measure.py snapshot [label]` -- Save a measurement snapshot
 - `measure.py compare` -- Compare before/after snapshots
-- `measure.py dashboard [--coord-path PATH]` -- Generate interactive HTML dashboard
+- `measure.py dashboard [--user] [--coord-path PATH]` -- Generate interactive HTML dashboard (`--user` marks a person-initiated run so the 20s hook budget does not apply on piped stdin)
 - `measure.py setup-daemon [--uninstall]` -- Bookmarkable dashboard URL (macOS/Windows)
 - `measure.py trends [--days N] [--json]` -- Skill adoption, model mix, overhead over time
 - `measure.py health` -- Session hygiene: stale/zombie sessions, version checks

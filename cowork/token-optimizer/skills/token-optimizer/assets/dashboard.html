@@ -2406,7 +2406,7 @@ function isNoInstructionHost(data) {
   return !!data && (data.runtime === 'cursor' || data.runtime === 'antigravity');
 }
 function hostRefreshHtml(data) {
-  return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard</span>');
+  return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard --user</span>');
 }
 function hermesComponentDetails(c) {
   function fileSub(x, missing) {
@@ -3971,7 +3971,7 @@ var DB = (function() {
         names.forEach(function(name) {
           cmd += ' && mv "$HOME/.claude/skills/"' + shellQuote(name) + ' "$ARCHIVE_DIR/"';
         });
-        cmd += ' && echo "Archived ' + names.length + tcli(' skill(s). Regenerate dashboard: python3 measure.py dashboard"');
+        cmd += ' && echo "Archived ' + names.length + tcli(' skill(s). Regenerate dashboard: python3 measure.py dashboard --user"');
 
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
@@ -5801,8 +5801,8 @@ var DB = (function() {
     var isCodex = data.runtime === 'codex';
     var codexSetup = (data.manage && data.manage.codex) || {};
     var refreshCmd = isCodex
-      ? tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard')
-      : tcli('python3 measure.py dashboard');
+      ? tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard --user')
+      : tcli('python3 measure.py dashboard --user');
 
     var html = '<div class="section-header">' +
       '<div class="label">Configuration</div>' +
@@ -6064,7 +6064,7 @@ var DB = (function() {
           ? 'Your ' + esc(data.runtime_label || 'runtime') + ' skills and MCP servers, read from its own files. Token Optimizer feature toggles are below.'
           : window.__TOKEN_API_LIVE
           ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : isNoInstructionHost(data) ? esc(data.runtime_label || 'the runtime') : 'Claude') + '</strong> to activate changes.'
-          : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
+          : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --user --serve</code>')) +
       '</p>' +
       '</div>';
 
@@ -6442,7 +6442,7 @@ var DB = (function() {
             title: 'Toggling v5 features needs a terminal',
             body: 'The read-only dashboard server can\u2019t write config. Run this in a terminal:',
             cmd: cliCmd,
-            hint: tcli('Or re-open the dashboard with full API: python3 measure.py dashboard --serve')
+            hint: tcli('Or re-open the dashboard with full API: python3 measure.py dashboard --user --serve')
           });
           return;
         }
@@ -7480,7 +7480,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   var data = window.__TOKEN_DATA__;
   if (!data) {
-    document.body.innerHTML = '<div style="max-width:820px;margin:80px auto;padding:32px;border:1px solid var(--c-border);border-radius:14px;background:var(--c-surface);color:var(--c-text-main);font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p><strong>You opened the dashboard template.</strong> This file intentionally contains no local metrics. Generate the runtime dashboard first, then open the generated file.</p><p style="margin-bottom:8px;color:var(--c-text-dim);">From the Token Optimizer checkout:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard</code><p style="margin:18px 0 8px;color:var(--c-text-dim);">Generated Codex dashboard path:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">~/.codex/_backups/token-optimizer/dashboard.html</code></div>';
+    document.body.innerHTML = '<div style="max-width:820px;margin:80px auto;padding:32px;border:1px solid var(--c-border);border-radius:14px;background:var(--c-surface);color:var(--c-text-main);font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p><strong>You opened the dashboard template.</strong> This file intentionally contains no local metrics. Generate the runtime dashboard first, then open the generated file.</p><p style="margin-bottom:8px;color:var(--c-text-dim);">From the Token Optimizer checkout:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard --user</code><p style="margin:18px 0 8px;color:var(--c-text-dim);">Generated Codex dashboard path:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">~/.codex/_backups/token-optimizer/dashboard.html</code></div>';
     return;
   }
   var runtimeLabel = data.runtime_label || (data.runtime === 'codex' ? 'Codex' : 'Claude Code');

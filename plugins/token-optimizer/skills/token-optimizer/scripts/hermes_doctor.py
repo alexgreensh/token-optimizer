@@ -80,6 +80,9 @@ REQUIRED_ENGINE_SCRIPTS = (
     "read_cache.py",
     "refetch_guard.py",
     "credential_patterns.py",
+    # credential_patterns imports this at module import time (URL family split
+    # under the 1,000-line ratchet); missing = import failure in the payload.
+    "credential_url_patterns.py",
 )
 
 # Copied into the plugin dir by hermes_install; a copy older than the checkout

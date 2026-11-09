@@ -100,9 +100,10 @@ printf 'PY=%q\n' "$PY" >&2
 ```bash
 # TOKEN_OPTIMIZER_INTERACTIVE=1 marks this as a user-initiated open, so the 20s
 # hook budget does not cut off a heavy rebuild on a large history. The user is
-# waiting for this open, so it runs unbounded.
-TOKEN_OPTIMIZER_INTERACTIVE=1 "$PY" "$MEASURE_PY" collect --quiet && \
-  TOKEN_OPTIMIZER_INTERACTIVE=1 "$PY" "$MEASURE_PY" dashboard
+# waiting for this open, so it runs unbounded. --user is the argv twin of the
+# env var for shells where `VAR=1 cmd` does not parse (Windows).
+TOKEN_OPTIMIZER_INTERACTIVE=1 "$PY" "$MEASURE_PY" collect --quiet --user && \
+  TOKEN_OPTIMIZER_INTERACTIVE=1 "$PY" "$MEASURE_PY" dashboard --user
 ```
 
 This collects the latest session data into the trends database, regenerates the dashboard HTML, and opens it in your default browser.

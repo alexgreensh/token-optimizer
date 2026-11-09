@@ -48,7 +48,7 @@ The installer merges six events into `~/.cursor/hooks.json` and every fired even
 | `stop` | per-turn tally, throttled rollup + dashboard |
 | `sessionEnd` | finalise tally, unthrottled rollup + dashboard |
 
-The `Shell` rewrite inherits the existing whitelist and dangerous-character exclusions and fails closed on uncertainty. `postToolUse` writes `rewrite: honoured` or `rewrite: ignored` to the ledger, so compression is measured rather than presumed.
+The `Shell` rewrite inherits the existing whitelist and dangerous-character exclusions and fails closed on uncertainty. `postToolUse` writes `rewrite: honoured` or `rewrite: ignored` to the ledger only when the executed command pairs byte-for-byte with the rewrite staged under the same `tool_use_id`; an unpaired execution records nothing rather than presuming. On native Windows the rewrite is disabled (record-only): its quoting is POSIX `shlex` and the host shell there is unverified.
 
 ## Explicit gaps
 

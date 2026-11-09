@@ -40,13 +40,15 @@ During an uninstall, `python3 measure.py purge --confirm --force` stops the daem
 cd ~/.claude/skills/token-optimizer/scripts
 
 # Generate and open the dashboard in your browser
-python3 measure.py dashboard
+# (--user marks a person-initiated run; without it a piped-stdin invocation
+# is treated as a hook and capped at a 20s rebuild budget)
+python3 measure.py dashboard --user
 
 # Serve it over HTTP instead of opening a file
-python3 measure.py dashboard --serve --port 8080
+python3 measure.py dashboard --user --serve --port 8080
 
 # Quiet mode, custom history window
-python3 measure.py dashboard --serve --quiet --days 30
+python3 measure.py dashboard --user --serve --quiet --days 30
 
 # Diagnose an empty or broken panel (validates the data shape)
 python3 measure.py dashboard-diagnose

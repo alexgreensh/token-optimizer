@@ -39,7 +39,7 @@ What should we tackle first?
 ## Dashboard Generation
 
 ```bash
-"$PY" "$MEASURE_PY" dashboard --coord-path "$COORD_PATH"
+"$PY" "$MEASURE_PY" dashboard --user --coord-path "$COORD_PATH"
 ```
 
 Tell the user: "Dashboard opened in your browser. Browse findings by category, check the optimizations you want, click Copy Prompt and paste back here. Or just tell me directly what to tackle."

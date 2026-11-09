@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Fleet Auditor: Cross-Platform Agent Token Waste Auditor.
 
-Detects agent systems (Claude Code, Codex, OpenClaw, NanoClaw, Hermes, OpenCode, IronClaw),
-collects token usage data, identifies waste patterns, and recommends fixes with
+Detects agent systems (Claude Code, Codex, OpenClaw, NanoClaw, Hermes, OpenCode, IronClaw,
+Cursor), collects token usage data, identifies waste patterns, and recommends fixes with
 dollar savings estimates.
+
+Cursor runs carry no dollar figures: Cursor exposes no local billing data, so the
+Cursor adapter reports tokens only and every cost surface says "no cost data"
+instead of a fabricated $0.00.
 
 Zero external dependencies. Python 3.10+.
 
@@ -59,6 +63,7 @@ from shared import (  # noqa: E402 — must follow sys.path.insert above
     estimate_tokens_from_file,
     estimate_tokens_from_text,
 )
+from fleet_base import AgentRun, BaseAdapter, TokenBreakdown, _is_run_collected  # noqa: E402,F401
 
 try:  # noqa: E402
     import codex_session  # type: ignore
@@ -74,6 +79,15 @@ except Exception:  # pragma: no cover - optional Codex adapter dependency
 
     def codex_home() -> Path:
         return HOME / ".codex"
+
+try:  # noqa: E402
+    import cursor_session as _cursor_session  # type: ignore
+    import cursor_state as _cursor_state  # type: ignore
+except Exception:  # pragma: no cover - optional Cursor adapter dependency
+    # Standalone copies of fleet.py (no token-optimizer/scripts beside it) still
+    # collect Cursor tallies through the adapter's native fallback reader.
+    _cursor_session = None
+    _cursor_state = None
 
 try:  # noqa: E402
     import tomllib
@@ -522,6 +536,11 @@ def unpriced_summary(runs) -> dict[str, int]:
     """
     out: dict[str, int] = {}
     for r in runs:
+        if r.system == "cursor":
+            # Cursor exposes no local billing data: its $0 is structural, not a
+            # missing pricing row (KD3/R15). Nudging Cursor users to "add rates"
+            # would fabricate a cost surface the host does not have.
+            continue
         # Require a real model name: an empty/blank model can't be priced OR named
         # in the warning, and the dashboard SQL excludes it (model != '') — skip it
         # here too so all three surfaces agree.
@@ -559,39 +578,6 @@ def _with_measure_cli(text: str) -> str:
         else (lambda m: f"TOKEN_OPTIMIZER_RUNTIME={m.group(1)} {python} {quoted}"),
         text)
     return text.replace("python3 measure.py", f"{python} {quoted}")
-
-
-@dataclass
-class TokenBreakdown:
-    input: int = 0
-    output: int = 0
-    cache_read: int = 0
-    cache_write: int = 0
-
-    @property
-    def total(self) -> int:
-        return self.input + self.output + self.cache_read + self.cache_write
-
-
-@dataclass
-class AgentRun:
-    system: str                    # "claude", "codex", "openclaw", "hermes", "opencode", "nanoclaw", "ironclaw"
-    session_id: str = ""
-    agent_name: str = ""
-    project: str = ""
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    duration_seconds: float = 0.0
-    tokens: TokenBreakdown = field(default_factory=TokenBreakdown)
-    cost_usd: float = 0.0
-    model: str = ""                # Normalized: "opus", "sonnet", "haiku", etc.
-    context_window_size: int = 200_000
-    run_type: str = "manual"       # "heartbeat", "task", "cron", "manual", "delegate"
-    outcome: str = "success"       # "success", "failure", "empty", "loop", "abandoned"
-    message_count: int = 0
-    tools_used: list = field(default_factory=list)
-    source_path: str = ""
-    error_message: str | None = None
-    exit_code: int | None = None
 
 
 @dataclass
@@ -637,6 +623,7 @@ CREATE TABLE IF NOT EXISTS fleet_runs (
     error_message TEXT,
     exit_code INTEGER,
     collected_at TEXT,
+    token_source TEXT,
     UNIQUE(system, source_path, session_id)
 );
 
@@ -687,16 +674,13 @@ def _init_fleet_db() -> sqlite3.Connection:
             ("schema_version", SCHEMA_VERSION),
         )
         conn.commit()
+    # Migration: token_source provenance column (Cursor honesty work). CREATE
+    # TABLE IF NOT EXISTS leaves pre-existing databases on the old shape.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(fleet_runs)").fetchall()}
+    if "token_source" not in cols:
+        conn.execute("ALTER TABLE fleet_runs ADD COLUMN token_source TEXT")
+        conn.commit()
     return conn
-
-
-def _is_run_collected(conn: sqlite3.Connection, system: str, source_path: str, session_id: str) -> bool:
-    """Check if a specific run has already been collected."""
-    cur = conn.execute(
-        "SELECT 1 FROM fleet_runs WHERE system = ? AND source_path = ? AND session_id = ?",
-        (system, source_path, session_id),
-    )
-    return cur.fetchone() is not None
 
 
 def _insert_run(conn: sqlite3.Connection, run: AgentRun):
@@ -706,8 +690,9 @@ def _insert_run(conn: sqlite3.Connection, run: AgentRun):
         (source_path, system, session_id, date, agent_name, project,
          duration_seconds, input_tokens, output_tokens, cache_read_tokens,
          cache_write_tokens, cost_usd, model, context_window_size,
-         run_type, outcome, message_count, error_message, exit_code, collected_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         run_type, outcome, message_count, error_message, exit_code, collected_at,
+         token_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run.source_path,
             run.system,
@@ -729,8 +714,10 @@ def _insert_run(conn: sqlite3.Connection, run: AgentRun):
             run.error_message,
             run.exit_code,
             datetime.now(timezone.utc).isoformat(),
+            run.token_source or None,
         ),
     )
+
 
 
 def _insert_waste(conn: sqlite3.Connection, finding: WasteFinding):
@@ -780,48 +767,6 @@ def _update_daily_aggregates(conn: sqlite3.Connection):
 # ===================================================================
 # ADAPTER PATTERN
 # ===================================================================
-
-class BaseAdapter:
-    """Base class for agent system adapters.
-
-    Each adapter implements three methods:
-    - detect() -> (bool, float, str): Is this system installed? (found, confidence 0-1, detail)
-    - scan(since, conn) -> (list[AgentRun], list[str]): Collect runs since date. Returns (runs, errors).
-    - parse_config() -> dict: Extract system configuration for Tier 1 analysis.
-    """
-
-    name: str = "base"
-    display_name: str = "Base"
-
-    def detect(self) -> tuple[bool, float, str]:
-        """Detect if this system is installed.
-
-        Returns (found, confidence, detail_message).
-        Confidence: 0.0-1.0 where 1.0 = definitely installed with data.
-        """
-        return False, 0.0, "Not implemented"
-
-    def scan(self, since: datetime, conn: sqlite3.Connection | None = None) -> tuple[list[AgentRun], list[str]]:
-        """Scan for agent runs since the given datetime.
-
-        Returns (runs, errors) where errors is a list of non-fatal error messages.
-        If conn is provided, skips already-collected runs.
-
-        The default is for adapters that can detect a system but not read its
-        runs yet. It says so: a bare ([], []) printed "0 scanned" for a system
-        detect() had just reported as installed, the silent-zero of #149.
-        """
-        return [], [f"{self.display_name} fleet collection is not implemented yet, "
-                    f"so its runs are not counted here (0 is not a measurement)."]
-
-    def parse_config(self) -> dict:
-        """Parse system configuration for Tier 1 waste analysis.
-
-        Returns dict with system-specific config details like:
-        - model settings, skill counts, cron configs, tool definitions
-        """
-        return {}
-
 
 class ClaudeCodeAdapter(BaseAdapter):
     """Adapter for Claude Code (~/.claude/projects/)."""
@@ -1525,6 +1470,15 @@ class IronClawAdapter(BaseAdapter):
         return False, 0.0, "~/.ironclaw/ not found"
 
 
+# CursorAdapter lives in fleet_cursor_adapter (1,000-line file-size ratchet).
+# The HOME resolver is injected, not imported, so tests monkeypatching
+# fleet.HOME keep working and `python3 fleet.py` never double-loads fleet.
+import fleet_cursor_adapter  # noqa: E402
+
+fleet_cursor_adapter._HOME_RESOLVER = lambda: HOME
+from fleet_cursor_adapter import CursorAdapter  # noqa: E402,F401
+
+
 # Adapter registry
 ADAPTER_REGISTRY: list[type[BaseAdapter]] = [
     ClaudeCodeAdapter,
@@ -1534,6 +1488,7 @@ ADAPTER_REGISTRY: list[type[BaseAdapter]] = [
     HermesAdapter,
     OpenCodeAdapter,
     IronClawAdapter,
+    CursorAdapter,
 ]
 
 
@@ -2308,6 +2263,7 @@ def cmd_audit(args: list[str]):
             source_path=rd.get("source_path", ""),
             error_message=rd.get("error_message"),
             exit_code=rd.get("exit_code"),
+            token_source=rd.get("token_source") or "",
         )
         runs_by_system.setdefault(system, []).append(run)
 
@@ -2470,6 +2426,10 @@ def cmd_report(args: list[str]):
                 "abandoned_runs": row[6] or 0, "avg_duration_s": row[7] or 0,
                 "active_days": row[8] or 0,
             }
+            if row[0] == "cursor":
+                # R15: total_cost 0 for Cursor means "no billing data exists",
+                # never "free". Say it in the machine-readable surface too.
+                system_data["cost_note"] = "Cursor exposes no local billing data; totals are tokens only."
             report["systems"].append(system_data)
             report["total_cost"] += system_data["total_cost"]
         for wr in waste_rows:
@@ -2505,7 +2465,12 @@ def cmd_report(args: list[str]):
         print(f"\n  {adapter_name}")
         print(f"    Runs: {runs} ({active_days or 0} active days)")
         print(f"    Tokens: {(inp or 0):,} input / {(out or 0):,} output")
-        print(f"    Cost: ${cost:.2f}")
+        if system == "cursor":
+            # R15: no local billing data exists for Cursor — say so instead of
+            # printing a $0.00 that would read as "free".
+            print("    Cost: no local billing data (tokens only)")
+        else:
+            print(f"    Cost: ${cost:.2f}")
         if empty:
             print(f"    Empty runs: {empty} ({empty/runs*100:.0f}%)")
         if abandoned:
@@ -2514,7 +2479,11 @@ def cmd_report(args: list[str]):
             print(f"    Avg duration: {avg_dur/60:.1f} min")
 
     print(f"\n  {'=' * 60}")
-    print(f"  Total: {total_runs} runs, ${total_cost:.2f}")
+    if stats and all(row[0] == "cursor" for row in stats):
+        # A Cursor-only total of $0.00 would read as "free"; it is "no data".
+        print(f"  Total: {total_runs} runs, no local billing data (tokens only)")
+    else:
+        print(f"  Total: {total_runs} runs, ${total_cost:.2f}")
 
     if waste_rows:
         total_waste = sum((wr[4] or 0) for wr in waste_rows)
@@ -2692,10 +2661,12 @@ def _generate_dashboard_html(daily_rows, waste_rows, system_stats, model_mix, to
     for s in systems_data:
         name = sys_names.get(s["system"], s["system"])
         pct_empty = (s["empty"] / s["runs"] * 100) if s["runs"] > 0 else 0
+        # Cursor exposes no local billing data: show that, never a fake $0.00.
+        cost_display = "no cost data" if s["system"] == "cursor" else fmt_cost(s["cost"])
         sys_html += f'''
       <div class="card">
         <div class="card-header"><span>{esc(name)}</span><span class="label">{esc(s["system"])}</span></div>
-        <div class="metric-large">{fmt_cost(s["cost"])}</div>
+        <div class="metric-large">{cost_display}</div>
         <div class="metric-sub">{s["runs"]:,} runs over {s["active_days"]} days</div>
         <div class="mini-stats">
           <div class="mini-stat-item"><span class="mini-val">{s["avg_dur"]/60:.0f}m</span><span class="mini-label">avg duration</span></div>
@@ -3607,7 +3578,7 @@ def fleet_cli(args: list[str] | None = None):
   Flags:
     --json          Output as JSON
     --days N        Look back N days (default: 30)
-    --system X      Filter to one system (claude, openclaw, hermes, etc.)
+    --system X      Filter to one system (claude, codex, openclaw, hermes, cursor, etc.)
     --serve         Start HTTP server for dashboard
     --quiet, -q     Suppress non-essential output
 """)

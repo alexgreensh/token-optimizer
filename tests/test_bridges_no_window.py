@@ -73,6 +73,10 @@ BRIDGE_FILES = (
     "cursor_install.py",
     "cursor_doctor.py",
     "cursor_session.py",
+    "cursor_bridge_checkpoint.py",
+    "cursor_bridge_payload.py",
+    "cursor_bridge_rewrite.py",
+    "cursor_bridge_rollup.py",
     "cursor_hook_bridge.py",
     "cursor_state.py",
     "grok_install.py",
@@ -280,11 +284,15 @@ def test_detached_sites_still_route_through_spawn_utils():
     asserts the helper is still the path (the scan above catches the raw Popen).
     """
     # +1 each for the Gap-2 session-end dashboard regen (also via spawn_detached).
-    # Cursor: one rollup + one dashboard spawn (stop shares both throttle paths).
+    # Cursor: one rollup + one dashboard spawn (stop shares both throttle paths);
+    # both call sites live in cursor_bridge_rollup (split under the 1,000-line
+    # ratchet) - the bridge and the other helper modules must stay at zero.
     # Grok: one shared _spawn_measure helper (rollup + dashboard collapsed).
     # Hermes: +1 for the background session checkpoint (spawn_checkpoint).
     expected = {"hermes_hook_bridge.py": 4, "copilot_hook_bridge.py": 2,
-                "cursor_hook_bridge.py": 2, "grok_hook_bridge.py": 1}
+                "cursor_hook_bridge.py": 0, "cursor_bridge_rollup.py": 2,
+                "cursor_bridge_payload.py": 0, "cursor_bridge_rewrite.py": 0,
+                "cursor_bridge_checkpoint.py": 0, "grok_hook_bridge.py": 1}
     for name, count in expected.items():
         tree = _parse(name)
         calls = [

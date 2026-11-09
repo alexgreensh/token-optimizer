@@ -85,6 +85,9 @@ _PAYLOAD_MODULES = (
     # credential_patterns: bash_compress's credential-preservation patterns
     # (the inline fallback misses e.g. ghp_/github_pat_ tokens, #171).
     "credential_patterns.py",
+    # credential_patterns imports this at module import time (URL family split
+    # under the 1,000-line ratchet); missing = import failure in the payload.
+    "credential_url_patterns.py",
 )
 
 # One-line locator written next to the bridge, naming the canonical measure.py

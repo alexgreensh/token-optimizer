@@ -10,6 +10,7 @@ Run: python3 -m pytest tests/test_dashboard_user_flag.py -v
 """
 import importlib
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -37,7 +38,9 @@ def _stub_dispatch(m, monkeypatch):
 
     def fake_budget(_seconds):
         calls["budget"] += 1
-        return None
+        # Production _install_hook_budget returns the started HookDeadline
+        # (never None); the dispatch gates its stderr note on `is not None`.
+        return object()
 
     def fake_generate(**_kw):
         calls["generated"] += 1
@@ -105,3 +108,52 @@ def test_user_flag_is_inert_when_budget_unrelated(m, monkeypatch):
     assert _run(m, ["dashboard", "--user", "--quiet"]) == 0
     assert calls["budget"] == 0
     assert calls["opened"] == 0
+
+
+def test_devnull_stdin_with_user_flag_is_unbounded(m, monkeypatch):
+    """The literal `< /dev/null` invocation: a real non-tty stdin plus --user.
+
+    StringIO covers the isatty()==False contract, but this pins the actual
+    reported failure shape -- a runner redirecting stdin from /dev/null --
+    end to end through _running_under_hook and the dispatch budget gate.
+    """
+    calls = _stub_dispatch(m, monkeypatch)
+    devnull = open(os.devnull, "r")
+    monkeypatch.setattr(sys, "stdin", devnull)
+    monkeypatch.setattr(sys, "argv", ["measure.py", "dashboard", "--user"])
+    try:
+        assert _run(m, ["dashboard", "--user"]) == 0
+    finally:
+        devnull.close()
+    assert calls["budget"] == 0, "--user must beat the non-tty stdin heuristic"
+    assert calls["generated"] == 1
+    assert calls["opened"] == 1
+
+
+def test_hook_context_nonquiet_warns_on_stderr(m, monkeypatch, capsys):
+    """A bounded non-quiet run says why and names --user, on stderr only."""
+    calls = _stub_dispatch(m, monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["measure.py", "dashboard"])
+    assert _run(m, ["dashboard"]) == 0
+    assert calls["budget"] == 1
+    err = capsys.readouterr().err
+    assert "--user" in err
+    assert "hook" in err.lower()
+
+
+def test_hook_context_quiet_stays_silent(m, monkeypatch, capsys):
+    """Real hook launchers pass --quiet; their logs must not gain the note."""
+    calls = _stub_dispatch(m, monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["measure.py", "dashboard", "--quiet"])
+    assert _run(m, ["dashboard", "--quiet"]) == 0
+    assert calls["budget"] == 1
+    assert "--user" not in capsys.readouterr().err
+
+
+def test_user_flag_prints_no_hook_note(m, monkeypatch, capsys):
+    """--user means interactive: no budget, so no hook-context note either."""
+    calls = _stub_dispatch(m, monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["measure.py", "dashboard", "--user"])
+    assert _run(m, ["dashboard", "--user"]) == 0
+    assert calls["budget"] == 0
+    assert "--user" not in capsys.readouterr().err

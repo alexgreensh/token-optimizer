@@ -325,6 +325,42 @@ def main():
             _measure_facade.sys.exit(0)
         _measure_facade._cursor_summary()
         _measure_facade.sys.exit(0)
+    elif _measure_facade.args[0] == "cursor-coach":
+        # Native coach data for the Cursor runtime (Slice D): tallies,
+        # per-signal quality, and rollup trends - never a ~/.claude scan.
+        if _measure_facade.detect_runtime() != "cursor":
+            print(
+                "[Token Optimizer] cursor-coach reads only the Cursor runtime; "
+                "set TOKEN_OPTIMIZER_RUNTIME=cursor.",
+                file=_measure_facade.sys.stderr,
+            )
+            _measure_facade.sys.exit(0)
+        import cursor_coach as _measure_import_cc
+        _measure_facade.cursor_coach = _measure_import_cc
+        del _measure_import_cc
+        _measure_facade._cc_data = _measure_facade.cursor_coach.generate_cursor_coach_data()
+        if "--json" in _measure_facade.args:
+            print(_measure_facade.json.dumps(_measure_facade._cc_data, indent=2))
+        else:
+            _measure_facade._csnap = _measure_facade._cc_data["snapshot"]
+            print("Token Optimizer - Cursor coach data")
+            _measure_facade._chs = _measure_facade._cc_data["health_score"]
+            print(f"  Health score: {_measure_facade._chs if _measure_facade._chs is not None else 'no scored sessions'}")
+            print(f"  Sessions analyzed: {_measure_facade._csnap['sessions_analyzed']} "
+                  f"({_measure_facade._csnap['total_turns']} turns, "
+                  f"{_measure_facade._csnap['total_tool_calls']} tool calls, "
+                  f"{_measure_facade._csnap['total_compactions']} compactions)")
+            print(f"  Cost: {_measure_facade._csnap['cost']['detail']}")
+            if _measure_facade._cc_data["patterns_bad"]:
+                print("  Issues detected:")
+                for _measure_facade._p in _measure_facade._cc_data["patterns_bad"]:
+                    _measure_facade._sev = {"high": "!!!", "medium": "!!", "low": "!"}.get(_measure_facade._p["severity"], "!")
+                    print(f"    [{_measure_facade._sev}] {_measure_facade._p['name']}: {_measure_facade._p['detail']}")
+            if _measure_facade._cc_data["patterns_good"]:
+                print("  Good practices:")
+                for _measure_facade._p in _measure_facade._cc_data["patterns_good"]:
+                    print(f"    [OK] {_measure_facade._p['name']}: {_measure_facade._p['detail']}")
+        _measure_facade.sys.exit(0)
     elif _measure_facade.args[0] == "grok-summary":
         _measure_facade._grok_summary()
         _measure_facade.sys.exit(0)
@@ -2483,6 +2519,23 @@ def main():
                                stale_days=_measure_facade.stale_d, project_dir=_measure_facade.proj_dir)
         if _measure_facade.output_json and _measure_facade.result:
             print(_measure_facade.json.dumps(_measure_facade.result, indent=2, default=str))
+    elif _measure_facade.args[0] == "cursor-audit":
+        # Read-only audit of Cursor rules + hooks; deliberately NOT gated on
+        # detect_runtime() == "cursor": beyond the Cursor runtime itself it
+        # reads only 4 Claude settings files for hook-import coexistence
+        # detection (never other ~/.claude state), so a Claude-runtime user
+        # auditing their Cursor setup is legitimate.
+        _measure_facade.output_json = "--json" in _measure_facade.args
+        _measure_facade.proj_dir = None
+        for _measure_facade.i, _measure_facade.a in enumerate(_measure_facade.args):
+            if _measure_facade.a == "--project-dir" and _measure_facade.i + 1 < len(_measure_facade.args):
+                _measure_facade.proj_dir = _measure_facade.args[_measure_facade.i + 1]
+        import cursor_audit as _measure_import_ca
+        _measure_facade.cursor_audit_mod = _measure_import_ca
+        del _measure_import_ca
+        _measure_facade.result = _measure_facade.cursor_audit_mod.cursor_audit(project_dir=_measure_facade.proj_dir, as_json=_measure_facade.output_json)
+        if _measure_facade.output_json and _measure_facade.result:
+            print(_measure_facade.json.dumps(_measure_facade.result, indent=2, default=str))
     elif _measure_facade.args[0] == "archive-result":
         # PostToolUse hook handler: archive large tool results
         _measure_facade.quiet = "--quiet" in _measure_facade.args or "-q" in _measure_facade.args
@@ -2600,7 +2653,9 @@ def main():
         print("  python3 measure.py cursor-doctor         # Cursor adapter readiness check")
         print("  python3 measure.py cursor-install        # Install Cursor hooks (merged into ~/.cursor/hooks.json)")
         print("  python3 measure.py cursor-summary        # Token/quality Cursor session summary")
+        print("  python3 measure.py cursor-coach          # Cursor coach data (sessions, quality, patterns; --json)")
         print("  python3 measure.py cursor-rollup         # Ingest Cursor sessions into trends DB")
+        print("  python3 measure.py cursor-audit          # Audit Cursor rules (.cursor/rules, AGENTS.md) + hooks.json health")
         print("  python3 measure.py antigravity-doctor    # Google Antigravity adapter readiness check")
         print("  python3 measure.py antigravity-install   # Install Antigravity hooks (consent-gated)")
         print("  python3 measure.py antigravity-uninstall # Remove Antigravity hooks + trend rows")

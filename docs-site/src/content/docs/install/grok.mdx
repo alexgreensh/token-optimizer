@@ -27,7 +27,7 @@ The installer writes its own `<grok-home>/hooks/token-optimizer.json` and copies
 ```bash
 TOKEN_OPTIMIZER_RUNTIME=grok python3 skills/token-optimizer/scripts/measure.py grok-doctor --probe
 TOKEN_OPTIMIZER_RUNTIME=grok python3 skills/token-optimizer/scripts/measure.py grok-summary
-TOKEN_OPTIMIZER_RUNTIME=grok python3 skills/token-optimizer/scripts/measure.py dashboard --serve
+TOKEN_OPTIMIZER_RUNTIME=grok python3 skills/token-optimizer/scripts/measure.py dashboard --user --serve
 ```
 
 The doctor checks binary discovery, safe home resolution, payload integrity, hook wiring, stored session shapes, and synthetic probe behavior. A passing synthetic probe does not establish real host hook firing. The dashboard port is 24848.

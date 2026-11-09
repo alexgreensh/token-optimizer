@@ -275,7 +275,7 @@ RTK와 Boost는 첫 번째 표면에 도달합니다. Headroom은 첫 번째와 
 
 ![Token Optimizer 대시보드](skills/token-optimizer/assets/dashboard-demo.gif)
 
-하나의 HTML 페이지, SessionEnd 훅을 통해 매 세션 후 자동 재생, 수동 트리거 불필요. 북마크 가능한 URL `http://localhost:24842/token-optimizer`는 옵트인입니다: 로컬 서버를 시작하려면 `python3 skills/token-optimizer/scripts/measure.py setup-daemon`을 실행한 후에만 작동합니다. 그 전에는 `measure.py dashboard`가 `  Dashboard: ` 줄에 출력하는 파일 경로를 여세요.
+하나의 HTML 페이지, SessionEnd 훅을 통해 매 세션 후 자동 재생, 수동 트리거 불필요. 북마크 가능한 URL `http://localhost:24842/token-optimizer`는 옵트인입니다: 로컬 서버를 시작하려면 `python3 skills/token-optimizer/scripts/measure.py setup-daemon`을 실행한 후에만 작동합니다. 그 전에는 `measure.py dashboard --user`가 `  Dashboard: ` 줄에 출력하는 파일 경로를 여세요.
 
 턴별 토큰 분석, 네 가지 가격 티어에 걸친 비용, TTL 믹스와 적중률이 있는 캐시 분석, 모든 세션에 겹쳐진 품질 점수, 서브에이전트 비용 분석, 측정됨과 추정을 분리해 유지하는 절감 추적기. 설치 후 설정 불필요. [전체 대시보드 문서 →](https://alexgreensh.github.io/token-optimizer/features/dashboard/)
 

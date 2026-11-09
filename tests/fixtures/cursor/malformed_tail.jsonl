@@ -1,0 +1,2 @@
+{"role": "user", "message": {"content": [{"type": "text", "text": "why does the build keep failing? run the test again"}]}}
+{"role": "assistant", "message": {"content": [{"type": "text", "text": "partial

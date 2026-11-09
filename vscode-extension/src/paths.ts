@@ -15,6 +15,10 @@ export interface ClaudePaths {
   // Copilot-only: directory that holds per-session state dirs.
   // Undefined for Claude mode; used by findActiveCopilotSession.
   sessionStateDir?: string;
+  // Cursor-only: directory that holds per-conversation hook tallies
+  // (<cursor home>/token-optimizer/sessions/*.json). Used by
+  // findActiveCursorSession.
+  cursorSessionsDir?: string;
 }
 
 // Claude Code's config dir, resolved exactly like the plugin's statusline.js and
@@ -148,8 +152,62 @@ export function resolveCopilotPaths(homeDir: string = os.homedir()): ClaudePaths
   };
 }
 
+// Cursor's home for Token Optimizer data, resolved like the plugin's
+// runtime_env.cursor_home(): TOKEN_OPTIMIZER_CURSOR_HOME wins when it is an
+// absolute, existing, non-symlink directory strictly under the user's home (or,
+// inside WSL only, under /mnt/ for a Windows-profile install); anything else
+// falls back to ~/.cursor, as the plugin does. Keep both copies in step.
+export function resolveCursorDir(
+  homeDir: string = os.homedir(),
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const fallback = path.join(homeDir, '.cursor');
+  const raw = (env.TOKEN_OPTIMIZER_CURSOR_HOME || '').trim();
+  if (!raw) return fallback;
+  try {
+    const win = process.platform === 'win32';
+    const tilde = win ? /^~(?=$|[\\/])/ : /^~(?=$|\/)/;
+    const p = tilde.test(raw) ? homeDir + raw.slice(1) : raw;
+    if (!path.isAbsolute(p)) return fallback;
+    const st = fs.lstatSync(p);
+    if (st.isSymbolicLink() || !st.isDirectory()) return fallback;
+    const resolved = realOrResolved(p);
+    if (isUnder(resolved, realOrResolved(homeDir))) return resolved;
+    if (isWsl() && isUnder(resolved, realOrResolved('/mnt'))) return resolved;
+  } catch {
+    // missing or unreadable override: fall back like the plugin does
+  }
+  return fallback;
+}
+
+// Paths for a Cursor Token Optimizer install at <cursor home>/token-optimizer/
+// (~/.cursor unless TOKEN_OPTIMIZER_CURSOR_HOME relocates it). Cursor writes no
+// live-fill.json / rate-limits.json / quality-cache-*.json — those paths are
+// filled in for shape parity but never exist, so the generic readers degrade
+// to null and the Cursor-specific reader (cursorReader.ts) does the real work
+// off the hook tallies in cursorSessionsDir.
+export function resolveCursorPaths(homeDir: string = os.homedir()): ClaudePaths {
+  const cursorDir = resolveCursorDir(homeDir);
+  const cacheDir = path.join(cursorDir, 'token-optimizer');
+  return {
+    // Pointed at the cursor dir so DataSource.readEffort finds no settings.json
+    // and returns null gracefully (Cursor has no effortLevel setting).
+    claudeDir: cursorDir,
+    cacheDir,
+    projectsDir: path.join(cursorDir, 'projects'),
+    liveFill: path.join(cacheDir, 'live-fill.json'),
+    rateLimits: path.join(cacheDir, 'rate-limits.json'),
+    // Mirrors the Claude layout (<home>/_backups/token-optimizer/dashboard.html);
+    // openDashboard probes the local daemon first, so this is a fallback only.
+    dashboardFile: path.join(cursorDir, '_backups', 'token-optimizer', 'dashboard.html'),
+    qualityCache: (sessionId: string) =>
+      path.join(cacheDir, `quality-cache-${sanitizeSessionId(sessionId)}.json`),
+    cursorSessionsDir: path.join(cacheDir, 'sessions'),
+  };
+}
+
 // The runtime setting value.  Matches tokenOptimizer.runtime in package.json.
-export type Runtime = 'auto' | 'claude' | 'copilot';
+export type Runtime = 'auto' | 'claude' | 'copilot' | 'cursor';
 
 // Most-recent mtime (ms) of any file directly in `dir`, or 0 if the dir is
 // missing/empty/unreadable. Used as a cheap "was this runtime active recently"
@@ -172,24 +230,29 @@ function mostRecentMtimeMs(dir: string): number {
   }
 }
 
-// Auto-detect the active runtime so Copilot users don't have to flip a setting.
+// Auto-detect the active runtime so users don't have to flip a setting.
 // Compares the most recent write to each runtime's token-optimizer cache and
-// prefers Copilot ONLY when its cache exists and is strictly more recent than
-// Claude's. A pure-Copilot user (no Claude cache) gets Copilot; a pure-Claude
-// user or the no-data case falls back to Claude (the historical default); a
-// mixed user follows whichever runtime they used most recently.
+// prefers a non-Claude runtime ONLY when its cache exists and is strictly more
+// recent than every other. A pure-Claude user or the no-data case falls back to
+// Claude (the historical default); a mixed user follows whichever runtime they
+// used most recently.
 export function resolveAutoPaths(homeDir: string = os.homedir()): ClaudePaths {
   const claudeCache = path.join(resolveClaudeDir(homeDir), 'token-optimizer');
   const copilotCache = path.join(resolveCopilotDir(homeDir), 'token-optimizer');
-  const copilotMs = mostRecentMtimeMs(copilotCache);
+  const cursorCache = path.join(resolveCursorDir(homeDir), 'token-optimizer');
   const claudeMs = mostRecentMtimeMs(claudeCache);
+  const copilotMs = mostRecentMtimeMs(copilotCache);
+  const cursorMs = mostRecentMtimeMs(cursorCache);
+  if (cursorMs > 0 && cursorMs > claudeMs && cursorMs > copilotMs) {
+    return resolveCursorPaths(homeDir);
+  }
   if (copilotMs > 0 && copilotMs > claudeMs) return resolveCopilotPaths(homeDir);
   return resolvePaths(homeDir);
 }
 
 // Has the Token Optimizer CLI plugin ever run on this machine? True when a
-// token-optimizer cache dir exists under any known runtime home (~/.claude or
-// ~/.copilot) — the plugin creates it on first run. Used to tell "installed but
+// token-optimizer cache dir exists under any known runtime home (~/.claude,
+// ~/.copilot or ~/.cursor) — the plugin creates it on first run. Used to tell "installed but
 // idle" (show the normal empty state) from "extension present, plugin missing"
 // (show the install funnel). Directory presence, not freshness: a plugin the
 // user hasn't run today is still installed.
@@ -197,6 +260,7 @@ export function detectPluginInstalled(homeDir: string = os.homedir()): boolean {
   const candidates = [
     path.join(resolveClaudeDir(homeDir), 'token-optimizer'),
     path.join(resolveCopilotDir(homeDir), 'token-optimizer'),
+    path.join(resolveCursorDir(homeDir), 'token-optimizer'),
   ];
   for (const dir of candidates) {
     try {
@@ -209,13 +273,15 @@ export function detectPluginInstalled(homeDir: string = os.homedir()): boolean {
 }
 
 // Factory: pick the right paths object based on the runtime setting string.
-// 'claude' / 'copilot' are explicit overrides; 'auto' (the default) and any
-// unrecognized value resolve by detecting the most recently active runtime.
+// 'claude' / 'copilot' / 'cursor' are explicit overrides; 'auto' (the default)
+// and any unrecognized value resolve by detecting the most recently active
+// runtime.
 export function resolvePathsForRuntime(
   runtime: string | undefined,
   homeDir: string = os.homedir()
 ): ClaudePaths {
   if (runtime === 'copilot') return resolveCopilotPaths(homeDir);
+  if (runtime === 'cursor') return resolveCursorPaths(homeDir);
   if (runtime === 'claude') return resolvePaths(homeDir);
   return resolveAutoPaths(homeDir);
 }

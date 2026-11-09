@@ -73,7 +73,7 @@ The repeated **No** entries fall into a few clear groups.
 
 ## Quality scoring depth
 
-Where a platform exposes 7 signals, the score uses the full set: context-fill degradation, stale reads, bloated results, duplicate system reminders, compaction depth, decision density, and agent-dispatch efficiency. Hermes, Copilot, Cursor, and Antigravity fall back to a 3-signal subset because their session schemas do not persist the other signals reliably. The S/A/B/C/D/F grade scale is identical everywhere, so grades are comparable across platforms even when the underlying signal count differs.
+Where a platform exposes 7 signals, the score uses the full set: context-fill degradation, stale reads, bloated results, duplicate system reminders, compaction depth, decision density, and agent-dispatch efficiency. Hermes, Copilot, and Antigravity fall back to a 3-signal subset because their session schemas do not persist the other signals reliably. Cursor scores with every signal its data planes actually feed - message count, output/input ratio (verified tokens only), compaction depth, agent efficiency from recorded failures and terminal turn status, and decision density from the disk transcript - and omits the rest with named reasons, renormalizing the composite instead of fabricating health. Context fill is always omitted on Cursor: the host's preCompact occupancy numbers are historical (taken at compaction time), so they survive as labeled metadata and as compaction depth's event-heat input, never as a current-fill grade. The S/A/B/C/D/F grade scale is identical everywhere, so grades are comparable across platforms even when the underlying signal count differs.
 
 ## Grok Build and Pi
 

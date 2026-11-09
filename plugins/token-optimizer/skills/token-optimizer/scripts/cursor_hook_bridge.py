@@ -102,145 +102,39 @@ try:
 except ImportError:  # pragma: no cover - broken install
     lease_lock = None  # type: ignore[assignment]
 
-_MAX_STDIN_BYTES = 4 * 1024 * 1024  # refuse absurd payloads (amplification)
-_RESTORE_MAX_BYTES = 16_384        # restore-context files above this are ignored
+
+# Bridge helper modules (same installed payload; split under the 1,000-line
+# file-size ratchet). Optional like every sibling import above: a partial
+# install missing them degrades the bridge to a no-op via the main() guard
+# rather than raising into Cursor.
+try:
+    import cursor_bridge_checkpoint
+    import cursor_bridge_payload
+    import cursor_bridge_rewrite
+    import cursor_bridge_rollup
+    from cursor_bridge_checkpoint import _RESTORE_MAX_BYTES
+    from cursor_bridge_payload import _parse_tool_input, _sanitize_session_id, decode_payload
+except ImportError:  # pragma: no cover - broken/partial install
+    cursor_bridge_checkpoint = None  # type: ignore[assignment]
+    cursor_bridge_payload = None  # type: ignore[assignment]
+    cursor_bridge_rewrite = None  # type: ignore[assignment]
+    cursor_bridge_rollup = None  # type: ignore[assignment]
+    decode_payload = None  # type: ignore[assignment]
+    _parse_tool_input = None  # type: ignore[assignment]
+    _sanitize_session_id = None  # type: ignore[assignment]
+    _RESTORE_MAX_BYTES = 16_384  # degraded-mode ceiling only; the enforced value lives in cursor_bridge_checkpoint
+
 _ACTIVE_WORKSPACE_SECS = 600        # skip restore when a sibling tally is live
-_STOP_ROLLUP_SECS = 120             # R12: at most one stop rollup per machine per 120s
-_STALE_LOCK_SECS = 7 * 24 * 3600    # sessionStart lock sweep threshold
 _NUDGE_TOOL_CALLS = (30, 80)        # context-growth nudge thresholds (turn proxy)
 
 # Snapshot at import: the installed payload is static for the process lifetime.
 _COMPRESS_PATH = _SCRIPT_DIR / "bash_compress.py"
 _COMPRESS_AVAILABLE = _COMPRESS_PATH.exists()
 
-_SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_-]")
-
-
-def _sanitize_session_id(sid):
-    """Strip everything but [A-Za-z0-9_-] so a payload id can never traverse.
-
-    Mirrors measure.sanitize_session_id / copilot_hook_bridge: a conversation_id
-    like "../../../etc/passwd" would otherwise let _atomic_write_json / the lock
-    path escape the data dir.
-    """
-    if not sid:
-        return "unknown"
-    cleaned = _SESSION_ID_RE.sub("", sid)[:64]
-    return cleaned if len(cleaned) >= 6 else "unknown"
-
 
 def _read_stdin_payload():
-    """Read and decode the Cursor hook payload from stdin. None on any failure."""
-    try:
-        raw = sys.stdin.read(_MAX_STDIN_BYTES + 1)
-    except (OSError, UnicodeDecodeError):
-        return None
-    if not raw or len(raw) > _MAX_STDIN_BYTES:
-        return None
-    try:
-        payload = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    return payload
-
-
-def _parse_tool_input(raw):
-    """tool_input as a dict, or as a JSON-encoded string -> dict; {} otherwise."""
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str) and raw:
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return {}
-
-
-def decode_payload(payload):
-    """Normalize a Cursor hook payload into a flat, safe dict.
-
-    ``conversation_id`` wins over ``session_id`` (sessionStart carries only
-    session_id; the tool events carry conversation_id). ``workspace_roots`` is
-    the list Cursor exports; ``cwd`` is capped at 1024 chars because it is
-    rewritten into the tally on every tool call and into restore-context.
-    Missing fields default to empty values so callers never KeyError.
-    """
-    out = {
-        "tool_name": "",
-        "tool_args": {},
-        "conversation_id": "",
-        "hook_event_name": "",
-        "cwd": "",
-        "cursor_version": "",
-        "workspace_roots": [],
-        "transcript_path": None,
-        "model": None,
-        "timestamp": None,
-        # preCompact numbers (0/0.0 when absent or the payload is not a dict)
-        "context_tokens": 0,
-        "context_window_size": 0,
-        "context_usage_percent": 0.0,
-        "trigger": "",
-    }
-    if not isinstance(payload, dict):
-        return out
-
-    tool_name = payload.get("tool_name", payload.get("toolName", ""))
-    if isinstance(tool_name, str):
-        out["tool_name"] = tool_name.strip()
-    out["tool_args"] = _parse_tool_input(
-        payload.get("tool_input", payload.get("toolInput", {}))
-    )
-
-    sid = payload.get("conversation_id", payload.get("session_id", ""))
-    if isinstance(sid, str):
-        out["conversation_id"] = _sanitize_session_id(sid)
-
-    event = payload.get("hook_event_name", "")
-    if isinstance(event, str):
-        out["hook_event_name"] = event.strip()
-
-    cwd = payload.get("cwd", "")
-    if isinstance(cwd, str):
-        out["cwd"] = cwd[:1024]
-
-    version = payload.get("cursor_version", "")
-    if isinstance(version, str):
-        out["cursor_version"] = version[:64]
-
-    roots = payload.get("workspace_roots")
-    if isinstance(roots, list):
-        out["workspace_roots"] = [
-            str(r)[:1024] for r in roots if isinstance(r, str)
-        ][:8]
-
-    tp = payload.get("transcript_path")
-    if isinstance(tp, str):
-        out["transcript_path"] = tp[:1024]
-
-    model = payload.get("model")
-    if isinstance(model, str):
-        out["model"] = model[:128]
-
-    out["timestamp"] = payload.get("timestamp")
-
-    for key in ("context_tokens", "context_window_size"):
-        try:
-            out[key] = int(payload.get(key) or 0)
-        except (TypeError, ValueError):
-            out[key] = 0
-    try:
-        out["context_usage_percent"] = float(payload.get("context_usage_percent") or 0.0)
-    except (TypeError, ValueError):
-        out["context_usage_percent"] = 0.0
-    trigger = payload.get("trigger")
-    if isinstance(trigger, str):
-        out["trigger"] = trigger
-    return out
+    # seam wrapper: tests monkeypatch this name on the bridge
+    return cursor_bridge_payload._read_stdin_payload()
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +149,10 @@ def _to_dir():
     try:
         d = cursor_home() / "token-optimizer"
         d.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(d, 0o700)  # session tallies/ledger hold file contents (G1)
+        except OSError:
+            pass
         return d
     except OSError:
         return None
@@ -274,11 +172,18 @@ def _sessions_dir():
 
 
 def _atomic_write_json(path, obj):
-    """Atomic JSON write via codex_io; concurrent writers never corrupt."""
+    """Atomic JSON write via codex_io; concurrent writers never corrupt.
+
+    replace_symlink=True: codex_io FOLLOWS a symlinked destination by default
+    (dotfile-manager contract), which would redirect a tally/pending-rewrite
+    write through an attacker-planted link into a victim file (G1-F2, proven
+    with byte-level victim replacement). Our data-dir files must always
+    replace the link itself.
+    """
     if _atomic_write_json_impl is None:
         return False
     try:
-        _atomic_write_json_impl(path, obj)
+        _atomic_write_json_impl(path, obj, replace_symlink=True)
         return True
     except OSError:
         return False
@@ -301,7 +206,19 @@ def _record_observed(event, **extra):
     }
     entry.update({k: v for k, v in extra.items() if v is not None})
     try:
-        with (to_dir / "observed-events.jsonl").open("a", encoding="utf-8") as fh:
+        ledger = to_dir / "observed-events.jsonl"
+        # O_NOFOLLOW where the platform has it: a symlinked ledger must never
+        # redirect the append into a victim file (G1). 0o600 on create.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(str(ledger), flags, 0o600)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)  # tighten a pre-existing 0o644 ledger
+        except OSError:
+            pass
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
     except OSError:
         # Log once per process: on a persistently unwritable data dir this fires
@@ -329,6 +246,10 @@ def _tally_path(fields):
 def _load_tally(path):
     if path is None or not path.exists():
         return None
+    if path.is_symlink():
+        # A planted link reads attacker-chosen bytes into the tally RMW; treat
+        # it as absent (the next write replaces the link itself).
+        return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else None
@@ -343,6 +264,15 @@ def _session_lock(to_dir, sid):
     Fail-open on contention: a contender skips after 75ms rather than blocking
     a Cursor hot path. The tally is a soft counter, so a skipped update is
     tolerable. A missing ``hook_runtime`` (broken install) proceeds unlocked.
+
+    Every Cursor hook event is its own process, so the default cohort
+    throttle (reuse_wall = lease expiry) would suppress every distinct-PID
+    acquirer for ~10s after a clean release and silently drop tally updates
+    (G2 P1, executed repro: 2 of 3 sequential events lost). Distinct
+    mutation writers opt out via ``cohort_throttle=False``;
+    ``reclaim_released=True`` lets a cleanly FINISHED event's successor in
+    without ever stealing a LIVE lease (release marker is written only on
+    clean finish).
     """
     if to_dir is None or sid in (None, "", "unknown"):
         yield False
@@ -357,13 +287,15 @@ def _session_lock(to_dir, sid):
         yield True
         return
     lock_path = lock_dir / f"{sid}.lock"
-    with lease_lock(lock_path, acquire_timeout=0.075) as acquired:
+    with lease_lock(lock_path, acquire_timeout=0.075,
+                    cohort_throttle=False, reclaim_released=True) as acquired:
         yield acquired
 
 
 def _update_tally(fields, *, terminal=False, end_reason=None,
                   increment_turns=False, count_tool=False, compaction=None,
-                  bump_nudge=False):
+                  bump_nudge=False, hook_tokens=None, failure=False,
+                  subagent=False, compact_checkpoint=None, restore_pending=None):
     """Read-modify-write the session tally; returns ``(tally, nudge_emitted)``.
 
     Non-terminal activity reopens an idle/sessionEnd-finalised tally (final set
@@ -426,6 +358,29 @@ def _update_tally(fields, *, terminal=False, end_reason=None,
             comps.append(compaction)
             tally["compactions"] = comps[-200:]
 
+        if compact_checkpoint is not None:
+            tally["compact_checkpoint"] = compact_checkpoint
+        if restore_pending is not None:
+            tally["restore_pending"] = bool(restore_pending)
+
+        if hook_tokens is not None:
+            hm = tally.setdefault("hook_measured_tokens", {
+                "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+                "responses": 0, "source": "cursor_hook_measured",
+            })
+            for k in ("input", "output", "cache_read", "cache_write"):
+                hm[k] = int(hm.get(k, 0) or 0) + int(hook_tokens.get(k) or 0)
+            hm["responses"] = int(hm.get("responses", 0) or 0) + 1
+            hm["source"] = "cursor_hook_measured"
+
+        if failure:
+            fails = tally.setdefault("failures", {})
+            fname = fields.get("tool_name") or "tool"
+            fails[fname] = int(fails.get(fname, 0) or 0) + 1
+
+        if subagent:
+            tally["subagents"] = int(tally.get("subagents", 0) or 0) + 1
+
         # Context-growth nudge (R10), folded into THIS locked RMW: computing it
         # in the caller needed a second lock (and a gap a concurrent stop/
         # preCompact could exploit to clobber either the tool_calls increment
@@ -444,6 +399,31 @@ def _update_tally(fields, *, terminal=False, end_reason=None,
         return tally, nudge_emitted
 
 
+def _claim_restore(fields):
+    """Atomically claim a pending compact restore; checkpoint path or None.
+
+    The restore_pending pop happens inside ONE locked RMW, so concurrent
+    postToolUse processes (each its own PID) can never both observe True:
+    only the claimer emits the restore (G2 P2). Fail-open: a skipped claim
+    just defers the restore to the next event.
+    """
+    to_dir = _to_dir()
+    path = _tally_path(fields) if to_dir is not None else None
+    if path is None:
+        return None
+    sid = fields.get("conversation_id") or "unknown"
+    with _session_lock(to_dir, sid) as acquired:
+        if not acquired:
+            return None
+        tally = _load_tally(path)
+        if not tally or not tally.get("restore_pending"):
+            return None
+        tally["restore_pending"] = False
+        tally["updated_at"] = time.time()
+        _atomic_write_json(path, tally)
+        return tally.get("compact_checkpoint")
+
+
 # ---------------------------------------------------------------------------
 # Restore context (per workspace)
 # ---------------------------------------------------------------------------
@@ -457,56 +437,9 @@ def _workspace_root(fields):
 
 
 def _restore_for_workspace(fields):
-    """Return the restore-context for THIS workspace, or None.
-
-    Cursor IDE runs many concurrent chats across repos, so a single global
-    restore file would seed every new chat with whichever conversation rolled
-    up last. Files are keyed by ``sha1(workspace_root)`` and injected only for
-    the matching root. Injection is skipped while a non-final sibling tally in
-    that workspace has activity in the last 10 minutes.
-    """
-    root = _workspace_root(fields)
-    to_dir = _to_dir()
-    if to_dir is None or not root:
-        return None
-
-    sdir = _sessions_dir()
-    now = time.time()
-    own_id = fields.get("conversation_id") or ""
-    if sdir is not None:
-        try:
-            for p in sdir.glob("*.json"):
-                t = _load_tally(p)
-                if not t or t.get("final"):
-                    continue
-                # Exclude the session being started: its own freshly-written
-                # tally is active by definition and must not suppress restore.
-                if own_id and str(t.get("conversation_id") or "") == own_id:
-                    continue
-                troot = None
-                wroots = t.get("workspace_roots")
-                if isinstance(wroots, list) and wroots and isinstance(wroots[0], str):
-                    troot = wroots[0]
-                else:
-                    troot = t.get("cwd")
-                if str(troot) == str(root):
-                    try:
-                        if now - float(t.get("updated_at") or 0) < _ACTIVE_WORKSPACE_SECS:
-                            return None
-                    except (TypeError, ValueError):
-                        pass
-        except OSError:
-            pass
-
-    digest = hashlib.sha1(root.encode("utf-8", "replace")).hexdigest()
-    path = to_dir / "restore-context" / f"{digest}.md"
-    try:
-        if path.exists() and path.stat().st_size <= _RESTORE_MAX_BYTES:
-            text = path.read_text(encoding="utf-8").strip()
-            return text or None
-    except OSError:
-        return None
-    return None
+    return cursor_bridge_checkpoint.restore_for_workspace(
+        fields, _workspace_root(fields), _to_dir(), _sessions_dir(), _load_tally,
+        _ACTIVE_WORKSPACE_SECS)
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +448,12 @@ def _restore_for_workspace(fields):
 
 
 def _compression_enabled():
+    # Native Windows stays record-only: the rewrite quotes with shlex
+    # (POSIX single quotes), which cmd.exe does not honor, and which host
+    # shell Cursor's Windows Shell tool actually uses is unverified - an
+    # unsafe rewrite is worse than no rewrite (G4). POSIX shells keep it.
+    if os.name == "nt":
+        return False
     return (
         _bash_hook is not None
         and _COMPRESS_AVAILABLE
@@ -542,21 +481,6 @@ _NUDGE_TEXT = (
 # ---------------------------------------------------------------------------
 
 
-def _measure_env(interactive=False):
-    env = dict(os.environ)
-    env["TOKEN_OPTIMIZER_RUNTIME"] = "cursor"
-    env["PYTHONUTF8"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-    if interactive:
-        env["TOKEN_OPTIMIZER_INTERACTIVE"] = "1"
-    return env
-
-
-# The installer does NOT copy measure.py into the plugin dir (version-drift
-# risk); it writes a one-line "measure-path" locator next to this bridge naming
-# the canonical measure.py in the checkout. Resolution order: a sibling
-# measure.py (dev/test checkout), then the locator. Mirrors
-# hermes_hook_bridge._locate_measure_py.
 _MEASURE_LOCATOR = _SCRIPT_DIR / "measure-path"
 
 
@@ -582,40 +506,13 @@ def _locate_measure_py():
 
 
 def _spawn_rollup():
-    # cursor-doctor --probe replays the installed command to prove it fires;
-    # it must not trigger a real detached rollup/dashboard as a side effect.
-    if os.environ.get("TOKEN_OPTIMIZER_PROBE") == "1":
-        return
-    measure = _locate_measure_py()
-    if measure is None:
-        return
-    try:
-        spawn_detached(
-            [sys.executable, str(measure), "cursor-rollup", "--quiet"],
-            env=_measure_env(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
-        logger.warning("[cursor_hook_bridge] detached rollup spawn failed", exc_info=True)
+    # seam wrapper: bridge globals resolved at call time (tests monkeypatch them)
+    return cursor_bridge_rollup._spawn_rollup(_locate_measure_py, spawn_detached)
 
 
 def _spawn_dashboard():
-    # Same probe guard as _spawn_rollup(): replay must not spawn detached work.
-    if os.environ.get("TOKEN_OPTIMIZER_PROBE") == "1":
-        return
-    measure = _locate_measure_py()
-    if measure is None:
-        return
-    try:
-        spawn_detached(
-            [sys.executable, str(measure), "dashboard", "--quiet"],
-            env=_measure_env(interactive=True),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
-        logger.warning("[cursor_hook_bridge] detached dashboard spawn failed", exc_info=True)
+    # seam wrapper: bridge globals resolved at call time (tests monkeypatch them)
+    return cursor_bridge_rollup._spawn_dashboard(_locate_measure_py, spawn_detached)
 
 
 def _stop_rollup_due():
@@ -647,42 +544,13 @@ def _stop_rollup_due():
 
 
 def _stop_rollup_due_locked(state, now):
-    last = None
-    try:
-        if state.exists():
-            data = json.loads(state.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                last = float(data.get("last", 0) or 0)
-    except (OSError, json.JSONDecodeError, ValueError, TypeError):
-        last = None
-    if last is not None and now - last < _STOP_ROLLUP_SECS:
-        return False
-    # Fail closed: if the throttle-state write fails (disk full, read-only data
-    # dir), do NOT spawn — otherwise every stop would spawn a rollup+dashboard
-    # storm precisely under the degraded conditions the throttle is meant to
-    # contain. _atomic_write_json returns True only on a successful write.
-    return _atomic_write_json(state, {"last": now})
+    # seam wrapper: _atomic_write_json resolved from bridge globals at call time
+    return cursor_bridge_rollup._stop_rollup_due_locked(state, now, _atomic_write_json)
 
 
 def _sweep_stale_locks():
-    """Remove stale lock/candidate artifacts (7d) on sessionStart. Never fatal."""
-    to_dir = _to_dir()
-    if to_dir is None:
-        return
-    lock_dir = to_dir / ".locks"
-    if not lock_dir.is_dir():
-        return
-    now = time.time()
-    try:
-        for pattern in ("*.lock", ".*.lock.candidate-*"):
-            for p in lock_dir.glob(pattern):
-                try:
-                    if now - p.stat().st_mtime > _STALE_LOCK_SECS:
-                        p.unlink()
-                except OSError:
-                    continue
-    except OSError:
-        pass
+    # seam wrapper: _to_dir resolved from bridge globals at call time
+    return cursor_bridge_rollup._sweep_stale_locks(_to_dir())
 
 
 # ---------------------------------------------------------------------------
@@ -708,12 +576,45 @@ def handle_session_start(payload):
 
 
 def handle_pre_tool_use(payload):
-    """Shell bash-compression via updated_input, gated and fail-closed."""
+    """Shell bash-compression via updated_input, gated and fail-closed.
+
+    Read interception (U2) runs through cursor_read_cache: shadow by
+    default, deny + user_message only under an explicit per-install mode,
+    fail-open on every uncertainty.
+    """
     fields = decode_payload(payload)
+    if fields["tool_name"] == "Read":
+        try:
+            import cursor_read_cache
+
+            decision = cursor_read_cache.evaluate(fields)
+        except Exception:
+            decision = None
+        if decision is not None:
+            emit = decision.get("emit")
+            if emit:
+                _emit(emit)
+            observed = decision.get("observed")
+            if isinstance(observed, dict):
+                _record_observed("readCache",
+                                 conversation_id=fields["conversation_id"] or None,
+                                 **observed)
+        else:
+            # Not an interceptable read (ineligible, first read elsewhere,
+            # fail-open): keep the plain observed record.
+            _record_observed("preToolUse",
+                             conversation_id=fields["conversation_id"] or None,
+                             tool_name=fields["tool_name"] or None,
+                             rewrite=None)
+        return
     rewrite = None
     if fields["tool_name"] == "Shell" and _compression_enabled():
         command = fields["tool_args"].get("command")
-        if isinstance(command, str) and command:
+        # G0: cap BEFORE the whitelist/shlex path - shlex.split is quadratic
+        # on hostile lengths (measured: 300KB=2s, 1MB=23.7s) and the stdin
+        # cap permits multi-MB commands. Oversized commands pass through
+        # uncompressed; compression is a savings feature, never a gate.
+        if isinstance(command, str) and 0 < len(command) <= _MAX_REWRITE_COMMAND_BYTES:
             # The rewrite is emitted with permission "allow", so it is limited
             # to commands that cannot write, delete or run other programs.
             if _bash_hook._is_auto_approvable(command):
@@ -733,8 +634,10 @@ def handle_pre_tool_use(payload):
                     updated = dict(fields["tool_args"])
                     updated["command"] = rewritten
                     _emit({"permission": "allow", "updated_input": updated})
+                    _stage_pending_rewrite(fields, rewritten)
                     rewrite = "attempted"
     _record_observed("preToolUse",
+                     conversation_id=fields["conversation_id"] or None,
                      tool_name=fields["tool_name"] or None,
                      rewrite=rewrite)
 
@@ -742,30 +645,105 @@ def handle_pre_tool_use(payload):
 def handle_post_tool_use(payload):
     """Update the tally and, for Shell, record whether the rewrite was honoured.
 
-    Cursor's postToolUse tool_input carries the command as actually executed:
-    ``command`` containing ``bash_compress.py`` proves the rewrite was honoured;
-    a whitelisted command that arrived bare proves it was ignored.
+    G0: honoured/ignored is PAIRED, never inferred from substrings. preToolUse
+    stages the exact rewritten command under this tool_use_id; postToolUse
+    compares the executed command against it byte-for-byte. No staged attempt
+    means unknown - neither honoured nor ignored is provable (a bare
+    whitelisted command or an executed 'ls bash_compress.py' both say
+    nothing), and the old substring heuristic lied in both directions.
     """
     fields = decode_payload(payload)
     rewrite = None
     if fields["tool_name"] == "Shell" and _compression_enabled():
-        command = fields["tool_args"].get("command")
-        if isinstance(command, str) and command:
-            if not _bash_hook._has_dangerous_chars(command) and _bash_hook._is_whitelisted(command):
-                rewrite = "honoured" if "bash_compress.py" in command else "ignored"
+        rewrite = _classify_rewrite(fields)
+    read_path = None
+    if fields["tool_name"] == "Read":
+        try:
+            import cursor_read_cache
+            cursor_read_cache.confirm_read(fields)
+        except Exception:
+            pass
+        rp = fields["tool_args"].get("file_path")
+        if isinstance(rp, str) and rp:
+            read_path = Path(rp).name
     _record_observed("postToolUse",
+                     conversation_id=fields["conversation_id"] or None,
                      tool_name=fields["tool_name"] or None,
+                     path=read_path,
                      rewrite=rewrite)
 
     tally, nudge_emitted = _update_tally(fields, count_tool=True, bump_nudge=True)
     if tally is None:
         return
-    if nudge_emitted:
-        _emit({"additional_context": _NUDGE_TEXT})
+    nudges = [_NUDGE_TEXT] if nudge_emitted else []
+    # U3: post-compaction restore - exactly one bounded inject, then clear.
+    # Consecutive compactions without a tool call coalesce to this one.
+    # The claim pops restore_pending inside ONE locked RMW: with distinct
+    # hook processes no longer suppressed, a check-then-clear across two
+    # locks would let concurrent postToolUse events both emit (G2 P2).
+    cp = _claim_restore(fields)
+    if isinstance(cp, str) and cp:
+        restore_text = _read_checkpoint_bounded(cp)
+        if restore_text:
+            nudges.append(restore_text)
+            _record_observed("compactRestore",
+                             conversation_id=fields["conversation_id"] or None,
+                             emitted=True)
+    # U5 thrash guard: same streak/burn/inline-script logic as Claude,
+    # nudge-only, fail-open (cursor_thrash owns the env bridging).
+    if fields["tool_name"] == "Shell":
+        import cursor_thrash
+
+        thrash = cursor_thrash.shell_thrash_nudge(fields)
+        if thrash:
+            nudges.append(thrash)
+            _record_observed("thrashNudge", nudge="thrash")
+    if nudges:
+        _emit({"additional_context": "\n".join(nudges)})
+
+
+_MAX_REWRITE_COMMAND_BYTES = 8_192  # shlex is quadratic past this (G0)
+
+
+def _pending_rewrite_path(fields):
+    # seam wrapper: _to_dir resolved from bridge globals at call time
+    return cursor_bridge_rewrite._pending_rewrite_path(fields, _to_dir())
+
+
+def _stage_pending_rewrite(fields, rewritten):
+    # seam wrapper: _to_dir + _atomic_write_json resolved from bridge globals at call time
+    return cursor_bridge_rewrite._stage_pending_rewrite(
+        fields, rewritten, to_dir=_to_dir(), atomic_write=_atomic_write_json)
+
+
+def _classify_rewrite(fields):
+    # seam wrapper: _to_dir resolved from bridge globals at call time
+    return cursor_bridge_rewrite._classify_rewrite(fields, to_dir=_to_dir())
+
+
+def _capture_compact_checkpoint(fields):
+    # seam wrapper: cursor_home + _locate_measure_py resolved from bridge
+    # globals at call time (tests monkeypatch both)
+    home = cursor_home() if cursor_home is not None else None
+    return cursor_bridge_checkpoint._capture_compact_checkpoint(
+        fields, home, _locate_measure_py)
+
+
+def _read_checkpoint_bounded(path_str):
+    # seam wrapper: cursor_home resolved from bridge globals at call time
+    home = cursor_home() if cursor_home is not None else None
+    return cursor_bridge_checkpoint._read_checkpoint_bounded(path_str, home)
 
 
 def handle_pre_compact(payload):
-    """Record Cursor's real context numbers and compaction trigger."""
+    """Record Cursor's real context numbers and compaction trigger.
+
+    U3: when the payload names a transcript, capture a redacted checkpoint
+    through the U1 adapter + compact_capture and mark restore-pending; the
+    next postToolUse emits exactly one bounded restore. The preCompact
+    ``user_message`` note is emitted and ledgered as ``emitted`` - delivery
+    into Cursor's UI is claimed only with positive native evidence.
+    """
     fields = decode_payload(payload)
     _record_observed("preCompact", conversation_id=fields["conversation_id"] or None)
     _update_tally(
@@ -778,6 +756,18 @@ def handle_pre_compact(payload):
             "ts": time.time(),
         },
     )
+    try:
+        checkpoint = _capture_compact_checkpoint(fields)
+    except Exception:
+        checkpoint = None  # fail-open: never raise into Cursor
+    if checkpoint:
+        _update_tally(fields, compact_checkpoint=checkpoint, restore_pending=True)
+        _record_observed("compactCapture",
+                         conversation_id=fields["conversation_id"] or None,
+                         checkpoint=os.path.basename(checkpoint))
+        _emit({"user_message":
+               "Token Optimizer: checkpoint captured before compaction; "
+               "it will be offered back after the context rebuild."})
 
 
 def handle_stop(payload):
@@ -801,6 +791,119 @@ def handle_session_end(payload):
     _spawn_dashboard()
 
 
+_RESPONSE_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+
+
+def _opt_nonneg_int(value):
+    """Plausible token count or None: rejects bools, negatives, non-numerics,
+    and non-integral floats (1.5 silently truncating to 1 would misstate the
+    observed count; G5)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ivalue if ivalue >= 0 else None
+
+
+def handle_after_agent_response(payload):
+    """Record the event; ingest real per-response tokens when plausible (KTD3).
+
+    The token fields are third-party-observed and undocumented by Cursor, so
+    they are a candidate source only: present + plausible values accumulate
+    into the tally flagged ``cursor_hook_measured``; anything else leaves the
+    existing source ordering untouched. Record-only: never emits.
+    """
+    fields = decode_payload(payload)
+    raw = payload if isinstance(payload, dict) else {}
+    present = [k for k in _RESPONSE_TOKEN_KEYS if k in raw]
+    state = "absent"
+    tokens = None
+    if present:
+        vals = {k: _opt_nonneg_int(raw.get(k)) for k in present}
+        if all(v is not None for v in vals.values()):
+            state = "measured"
+            tokens = {
+                "input": vals.get("input_tokens") or 0,
+                "output": vals.get("output_tokens") or 0,
+                "cache_read": vals.get("cache_read_tokens") or 0,
+                "cache_write": vals.get("cache_write_tokens") or 0,
+            }
+        else:
+            state = "rejected"
+    _record_observed("afterAgentResponse",
+                     conversation_id=fields["conversation_id"] or None,
+                     generation_id=fields["generation_id"] or None,
+                     tokens=state)
+    if tokens is not None:
+        _update_tally(fields, hook_tokens=tokens)
+
+
+def _redact_for_ledger(text):
+    """Redact before the observed-events ledger; fail CLOSED (drop the field).
+
+    Redaction runs on the full string BEFORE any truncation - a mid-shape
+    cut could slice a credential past its pattern's anchors (G1).
+    """
+    try:
+        from credential_patterns import redact_credentials
+
+        redacted = redact_credentials(text)
+        return redacted if isinstance(redacted, str) else None
+    except Exception:
+        return None
+
+
+def handle_post_tool_use_failure(payload):
+    """Count tool failures by tool name; feeds the R9 burn signal. Record-only."""
+    fields = decode_payload(payload)
+    error = payload.get("error") if isinstance(payload, dict) else None
+    redacted_error = _redact_for_ledger(str(error)) if error is not None else None
+    _record_observed("postToolUseFailure",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_name=fields["tool_name"] or None,
+                     tool_use_id=fields["tool_use_id"] or None,
+                     error=redacted_error[:256] if redacted_error is not None else None)
+    if fields["conversation_id"]:
+        _update_tally(fields, failure=True)
+
+
+def handle_after_shell_execution(payload):
+    """Record shell completion; postToolUse owns rewrite classification."""
+    fields = decode_payload(payload)
+    output = payload.get("output") if isinstance(payload, dict) else None
+    _record_observed("afterShellExecution",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_use_id=fields["tool_use_id"] or None,
+                     output_len=len(output) if isinstance(output, str) else None)
+
+
+def handle_subagent_start(payload):
+    """Record subagent fan-out; counted once per start for fleet rows."""
+    fields = decode_payload(payload)
+    _record_observed("subagentStart",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_use_id=fields["tool_use_id"] or None)
+    if fields["conversation_id"]:
+        _update_tally(fields, subagent=True)
+
+
+def handle_subagent_stop(payload):
+    """Record subagent completion. Record-only; the start already counted."""
+    fields = decode_payload(payload)
+    _record_observed("subagentStop",
+                     conversation_id=fields["conversation_id"] or None,
+                     tool_use_id=fields["tool_use_id"] or None)
+
+
 _HANDLERS = {
     "sessionStart": handle_session_start,
     "preToolUse": handle_pre_tool_use,
@@ -808,10 +911,17 @@ _HANDLERS = {
     "preCompact": handle_pre_compact,
     "stop": handle_stop,
     "sessionEnd": handle_session_end,
+    "afterAgentResponse": handle_after_agent_response,
+    "postToolUseFailure": handle_post_tool_use_failure,
+    "afterShellExecution": handle_after_shell_execution,
+    "subagentStart": handle_subagent_start,
+    "subagentStop": handle_subagent_stop,
 }
 
 
 def main(argv=None):
+    if decode_payload is None:  # broken install: bridge helper modules missing; fail open
+        return 0
     try:
         from utf8_io import enforce_utf8_io
         enforce_utf8_io()

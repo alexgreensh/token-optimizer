@@ -53,6 +53,8 @@
     "copilot-summary",
     "copilot-uninstall",
     "counted-backfill",
+    "cursor-audit",
+    "cursor-coach",
     "cursor-doctor",
     "cursor-install",
     "cursor-rollup",
@@ -168,7 +170,7 @@
       ]
     },
     {
-      "line": 63886,
+      "line": 66129,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -232,7 +234,7 @@
       ]
     },
     {
-      "line": 63935,
+      "line": 66129,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -456,7 +458,7 @@
       ]
     },
     {
-      "line": 64112,
+      "line": 64163,
       "expression": "detect_runtime() != 'cursor'",
       "lhs": "detect_runtime()",
       "values": [
@@ -509,6 +511,22 @@
       "lhs": "args[0]",
       "values": [
         "cursor-summary"
+      ]
+    },
+    {
+      "line": 64163,
+      "expression": "detect_runtime() != 'cursor'",
+      "lhs": "detect_runtime()",
+      "values": [
+        "cursor"
+      ]
+    },
+    {
+      "line": 63936,
+      "expression": "args[0] == 'cursor-coach'",
+      "lhs": "args[0]",
+      "values": [
+        "cursor-coach"
       ]
     },
     {
@@ -617,7 +635,7 @@
       ]
     },
     {
-      "line": 64254,
+      "line": 66051,
       "expression": "args[i] == '--days'",
       "lhs": "args[i]",
       "values": [
@@ -755,7 +773,7 @@
       ]
     },
     {
-      "line": 64419,
+      "line": 66129,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -955,7 +973,7 @@
       ]
     },
     {
-      "line": 64719,
+      "line": 66129,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -963,7 +981,7 @@
       ]
     },
     {
-      "line": 64730,
+      "line": 64760,
       "expression": "args[0] == 'setup-coach-injection'",
       "lhs": "args[0]",
       "values": [
@@ -979,7 +997,7 @@
       ]
     },
     {
-      "line": 64767,
+      "line": 66129,
       "expression": "detect_runtime() == 'codex'",
       "lhs": "detect_runtime()",
       "values": [
@@ -1108,7 +1126,7 @@
       ]
     },
     {
-      "line": 64789,
+      "line": 65744,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1204,7 +1222,7 @@
       ]
     },
     {
-      "line": 64941,
+      "line": 65547,
       "expression": "sub == 'status'",
       "lhs": "sub",
       "values": [
@@ -1220,7 +1238,7 @@
       ]
     },
     {
-      "line": 64959,
+      "line": 65744,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1260,7 +1278,7 @@
       ]
     },
     {
-      "line": 65108,
+      "line": 65744,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1276,7 +1294,7 @@
       ]
     },
     {
-      "line": 65166,
+      "line": 65744,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1550,7 +1568,7 @@
       ]
     },
     {
-      "line": 65678,
+      "line": 65744,
       "expression": "a == '--days'",
       "lhs": "a",
       "values": [
@@ -1679,7 +1697,7 @@
       ]
     },
     {
-      "line": 66036,
+      "line": 66051,
       "expression": "args[i] == '--days'",
       "lhs": "args[i]",
       "values": [
@@ -1736,7 +1754,7 @@
       ]
     },
     {
-      "line": 66088,
+      "line": 66112,
       "expression": "action in ('disable', 'enable')",
       "lhs": "action",
       "values": [
@@ -1753,7 +1771,7 @@
       ]
     },
     {
-      "line": 66104,
+      "line": 66112,
       "expression": "action in ('disable', 'enable')",
       "lhs": "action",
       "values": [
@@ -1883,19 +1901,19 @@
       ]
     },
     {
+      "line": 66059,
+      "expression": "args[0] == 'cursor-audit'",
+      "lhs": "args[0]",
+      "values": [
+        "cursor-audit"
+      ]
+    },
+    {
       "line": 66249,
       "expression": "args[0] == 'archive-result'",
       "lhs": "args[0]",
       "values": [
         "archive-result"
-      ]
-    },
-    {
-      "line": 66253,
-      "expression": "args[0] == 'session-cost'",
-      "lhs": "args[0]",
-      "values": [
-        "session-cost"
       ]
     },
     {
@@ -1907,11 +1925,11 @@
       ]
     },
     {
-      "line": 66256,
-      "expression": "args[0] == 'expand'",
+      "line": 66253,
+      "expression": "args[0] == 'session-cost'",
       "lhs": "args[0]",
       "values": [
-        "expand"
+        "session-cost"
       ]
     },
     {
@@ -1920,6 +1938,22 @@
       "lhs": "a",
       "values": [
         "--project-dir"
+      ]
+    },
+    {
+      "line": 66243,
+      "expression": "a == '--project-dir'",
+      "lhs": "a",
+      "values": [
+        "--project-dir"
+      ]
+    },
+    {
+      "line": 66256,
+      "expression": "args[0] == 'expand'",
+      "lhs": "args[0]",
+      "values": [
+        "expand"
       ]
     },
     {
@@ -1939,7 +1973,7 @@
       ]
     },
     {
-      "line": 66275,
+      "line": 66332,
       "expression": "a == '--session'",
       "lhs": "a",
       "values": [
@@ -1988,7 +2022,7 @@
       ]
     },
     {
-      "line": 66318,
+      "line": 66332,
       "expression": "a == '--session'",
       "lhs": "a",
       "values": [
@@ -2311,6 +2345,21 @@
         "--quiet"
       ],
       "line": 64151
+    },
+    {
+      "expression": "args[0] == 'cursor-coach'",
+      "argv": [
+        "cursor-coach"
+      ],
+      "line": 63936
+    },
+    {
+      "expression": "'--json' in args",
+      "argv": [
+        "cursor-coach",
+        "--json"
+      ],
+      "line": 63950
     },
     {
       "expression": "args[0] == 'grok-summary'",
@@ -2871,7 +2920,7 @@
       "argv": [
         "setup-coach-injection"
       ],
-      "line": 64730
+      "line": 64760
     },
     {
       "expression": "'--uninstall' in args",
@@ -3133,7 +3182,7 @@
         "keepwarm-scheduler",
         "--quiet"
       ],
-      "line": 64934
+      "line": 64938
     },
     {
       "expression": "'--json' in args",
@@ -3413,7 +3462,7 @@
         "quality-cache",
         "--once-mark"
       ],
-      "line": 65495
+      "line": 65519
     },
     {
       "expression": "'--json' in args",
@@ -3666,7 +3715,7 @@
         "ensure-health",
         "--once-mark"
       ],
-      "line": 65919
+      "line": 65934
     },
     {
       "expression": "args[0] == 'setup-quality-bar'",
@@ -3681,7 +3730,7 @@
         "ensure-health",
         "--once-per-session"
       ],
-      "line": 65921
+      "line": 65932
     },
     {
       "expression": "'--once-per-session' in args",
@@ -4079,6 +4128,21 @@
         "--apply"
       ],
       "line": 66234
+    },
+    {
+      "expression": "args[0] == 'cursor-audit'",
+      "argv": [
+        "cursor-audit"
+      ],
+      "line": 66059
+    },
+    {
+      "expression": "'--json' in args",
+      "argv": [
+        "cursor-audit",
+        "--json"
+      ],
+      "line": 66065
     },
     {
       "expression": "args[0] == 'archive-result'",
@@ -18731,6 +18795,124 @@
       "hook_event": "Stop",
       "input_variant": "deadline",
       "host_variant": "cowork"
+    },
+    {
+      "id": "cli-cursor-audit",
+      "entry": "cli",
+      "argv": [
+        "cursor-audit"
+      ],
+      "runtime": "cursor",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-cursor-audit/stdout",
+      "stderr": "cli-cursor-audit/stderr",
+      "side_effects": "cli-cursor-audit/effects.json"
+    },
+    {
+      "id": "cli-cursor-audit---json",
+      "entry": "cli",
+      "argv": [
+        "cursor-audit",
+        "--json"
+      ],
+      "runtime": "cursor",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-cursor-audit---json/stdout",
+      "stderr": "cli-cursor-audit---json/stderr",
+      "side_effects": "cli-cursor-audit---json/effects.json"
+    },
+    {
+      "id": "cli-cursor-audit---quiet",
+      "entry": "cli",
+      "argv": [
+        "cursor-audit",
+        "--quiet"
+      ],
+      "runtime": "cursor",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-cursor-audit---quiet/stdout",
+      "stderr": "cli-cursor-audit---quiet/stderr",
+      "side_effects": "cli-cursor-audit---quiet/effects.json"
+    },
+    {
+      "id": "cli-cursor-audit---help",
+      "entry": "cli",
+      "argv": [
+        "cursor-audit",
+        "--help"
+      ],
+      "runtime": "cursor",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-cursor-audit---help/stdout",
+      "stderr": "cli-cursor-audit---help/stderr",
+      "side_effects": "cli-cursor-audit---help/effects.json"
+    },
+    {
+      "id": "cli-cursor-coach",
+      "entry": "cli",
+      "argv": [
+        "cursor-coach"
+      ],
+      "runtime": "cursor",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-cursor-coach/stdout",
+      "stderr": "cli-cursor-coach/stderr",
+      "side_effects": "cli-cursor-coach/effects.json"
+    },
+    {
+      "id": "cli-cursor-coach---json",
+      "entry": "cli",
+      "argv": [
+        "cursor-coach",
+        "--json"
+      ],
+      "runtime": "cursor",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-cursor-coach---json/stdout",
+      "stderr": "cli-cursor-coach---json/stderr",
+      "side_effects": "cli-cursor-coach---json/effects.json"
+    },
+    {
+      "id": "cli-cursor-coach---quiet",
+      "entry": "cli",
+      "argv": [
+        "cursor-coach",
+        "--quiet"
+      ],
+      "runtime": "cursor",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-cursor-coach---quiet/stdout",
+      "stderr": "cli-cursor-coach---quiet/stderr",
+      "side_effects": "cli-cursor-coach---quiet/effects.json"
+    },
+    {
+      "id": "cli-cursor-coach---help",
+      "entry": "cli",
+      "argv": [
+        "cursor-coach",
+        "--help"
+      ],
+      "runtime": "cursor",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-cursor-coach---help/stdout",
+      "stderr": "cli-cursor-coach---help/stderr",
+      "side_effects": "cli-cursor-coach---help/effects.json"
     }
   ]
 }

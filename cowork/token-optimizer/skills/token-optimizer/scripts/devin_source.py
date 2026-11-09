@@ -9,7 +9,7 @@ import stat
 import sys
 
 PAYLOAD = ('devin_compress.py', 'devin_state.py', 'devin_doctor.py', 'devin_verify.py', 'devin_source.py',
-           'bash_compress.py', 'bash_whitelist.py', 'credential_patterns.py',
+           'bash_compress.py', 'bash_whitelist.py', 'credential_patterns.py', 'credential_url_patterns.py',
            'token_estimate.py', 'command_filters.py', 'runtime_env.py', 'py_trust.py', 'plugin_env.py', 'refetch_fingerprint.py',
            '_tomli.py', 'devin_hooks.py')
 ALLOWED_MODULES = frozenset(Path(name).stem for name in PAYLOAD)
@@ -39,6 +39,8 @@ REPO_MODULES = frozenset((
     'structure_replay', 'thrash_guard', 'token_estimate', 'tool_search_diagnostic', 'utf8_io', 'archive_window', 'checkpoint_state',
     'cursor_audit',
     'cursor_coach',
+    'cursor_bridge_checkpoint', 'cursor_bridge_payload', 'cursor_bridge_rewrite', 'cursor_bridge_rollup',
+    'credential_url_patterns',
     'cursor_quality',
     'cursor_read_cache',
     'cursor_statusline',

@@ -75,6 +75,17 @@ _PAYLOAD_MODULES = (
     # credential_patterns: bash_compress's credential-preservation patterns
     # (the inline fallback misses e.g. ghp_/github_pat_ tokens, #171).
     "credential_patterns.py",
+    # credential_url_patterns: credential_patterns imports it at module import
+    # time (URL pattern family split under the 1,000-line ratchet) — without it
+    # EVERY payload consumer of credential_patterns breaks at import.
+    "credential_url_patterns.py",
+    # cursor_bridge_*: cursor_hook_bridge's helper modules (payload decode,
+    # rewrite staging, rollup spawn, checkpoint I/O) split under the ratchet.
+    # The bridge degrades to a no-op without them.
+    "cursor_bridge_payload.py",
+    "cursor_bridge_rewrite.py",
+    "cursor_bridge_rollup.py",
+    "cursor_bridge_checkpoint.py",
 )
 
 # One-line locator written next to the bridge, naming the canonical measure.py

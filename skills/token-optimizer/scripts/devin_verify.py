@@ -71,13 +71,15 @@ def payload_key_shapes(plugin, names, skill_md):
     """Recorded-key sets for every payload shape an install record may carry.
 
     Returns ``(expected, shapes)``: the current payload's path set plus the
-    sorted key lists of the current, pre-Tomli, previous and legacy shapes.
-    Earlier releases shipped fewer payload files: 5.13.43 had no hook module,
-    releases before it also lacked the two plugin-env modules, and every
-    existing record predates the _tomli.py payload module shipped now.
+    sorted key lists of the current, pre-split, pre-Tomli, previous and legacy
+    shapes. Earlier releases shipped fewer payload files: 5.13.43 had no hook
+    module, releases before it also lacked the two plugin-env modules, every
+    record predates the _tomli.py payload module, and every existing record
+    predates the credential_url_patterns.py split out of credential_patterns.
     """
     expected={str(plugin/name) for name in names}|{str(skill_md)}
     tomli=str(plugin/'_tomli.py')
-    previous=expected-{str(plugin/'devin_hooks.py'),tomli}
+    pre_split=expected-{str(plugin/'credential_url_patterns.py')}
+    previous=pre_split-{str(plugin/'devin_hooks.py'),tomli}
     legacy=previous-{str(plugin/name) for name in ('plugin_env.py','refetch_fingerprint.py')}
-    return expected,tuple(sorted(keys) for keys in (expected,expected-{tomli},previous,legacy))
+    return expected,tuple(sorted(keys) for keys in (expected,pre_split,pre_split-{tomli},previous,legacy))

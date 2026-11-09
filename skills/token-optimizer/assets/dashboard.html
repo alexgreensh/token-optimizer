@@ -4234,11 +4234,13 @@ var DB = (function() {
         var savedUsd = Number(w.saved_usd);
         var spanWord = w.key === 'five_hour' ? '5h' : 'week';
         var hasUsd = isFinite(savedUsd) && (w.key === 'five_hour' ? savedUsd > 0 : savedUsd >= 15);
-        var usdCaption = w.key === 'seven_day'
-          ? 'in API-equivalent savings this week' : 'in API-equivalent savings this 5h';
+        // Without a whole-week estimate the figure is only the event-by-event count, so say so.
+        var usdCaption = w.full_value
+          ? (w.key === 'seven_day' ? 'in API-equivalent savings this week' : 'in API-equivalent savings this 5h')
+          : (w.key === 'seven_day' ? 'in counted savings this week (partial)' : 'in counted savings this 5h (partial)');
         var usdExplainer = w.full_value
           ? 'Estimated additional cost at API prices for the same work without Token Optimizer. Includes lighter context, fewer repeat reads and working habits, counted once. Your plan may cover some or all of that usage.'
-          : 'API-equivalent value of the savings recorded in this window, including the available estimates.';
+          : 'Only the savings counted one event at a time, at API prices. This is a floor, not the whole saving. A whole-week estimate appears when your work measures consistently against your baseline; this window it did not.';
         if (w.full_value && w.full_value.coverage && w.full_value.coverage.priced_sessions < w.full_value.coverage.total_sessions && Number(w.full_value.saved_usd) >= savedUsd) usdExplainer += ' Based on ' + Number(w.full_value.coverage.priced_sessions) + ' of ' + Number(w.full_value.coverage.total_sessions) + ' sessions; missing sessions are not estimated.';
         if (w.full_value && w.full_value.start) {
           usdExplainer += ' Since ' + esc(new Date(w.full_value.start).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'})) + '.';

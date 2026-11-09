@@ -283,7 +283,8 @@ def test_dashboard_leads_with_pct_headline_usd_in_cards():
     a headline that mixed $ and % read as confusing.)"""
     html = (Path(SCRIPTS).parent / "assets" / "dashboard.html").read_text(encoding="utf-8")
     start = html.index("function runwayCardHtml(")
-    body = html[start:start + 16000]
+    end = html.find("\n  function ", start + 1)
+    body = html[start:end if end > start else len(html)]
     # The headline metric-large leads with the throughput %, phrased "more work per token".
     assert "more work per token</div>" in body, (
         "the % throughput is not the headline metric-large"
@@ -341,3 +342,12 @@ def test_dashboard_html_trees_byte_identical():
         / "assets" / "dashboard.html"
     )
     assert a.read_bytes() == b.read_bytes(), "dashboard.html drifted between the two install trees"
+
+
+def test_counted_only_weekly_dollars_are_labelled_partial():
+    """Without a whole-week estimate, the card must not present the event count as the full saving."""
+    html = (Path(SCRIPTS).parent / "assets" / "dashboard.html").read_text(encoding="utf-8")
+    start = html.index("function runwayCardHtml(")
+    body = html[start:html.find("\n  function ", start + 1)]
+    assert "in counted savings this week (partial)" in body
+    assert "This is a floor, not the whole saving." in body

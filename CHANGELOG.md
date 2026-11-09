@@ -4,7 +4,7 @@
 
 ## [5.13.69] - 2026-11-09
 
-- Weekly savings can include the available workload when a few transcripts were cleaned up, with coverage disclosed.
+- Weekly savings stay whole when a few old transcripts were cleaned up (coverage shown), a partial count is labelled as one, and the savings report names its real period instead of "/mo".
 - Cursor adds re-read warnings, checkpoints, quality, coaching and fleet audit (beta). Counts use Cursor data where available; estimates are labelled. Read blocking is off by default pending live verification.
 - Dashboard history is easier to explore with 90-day, 180-day and All ranges, a remembered choice and on-demand full history when served locally.
 - Dashboard opens reliably when Claude runs it and reports interrupted builds instead of silently skipping them.

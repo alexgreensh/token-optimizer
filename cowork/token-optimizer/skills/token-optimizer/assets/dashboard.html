@@ -1757,6 +1757,7 @@ input:checked + .slider:before {
 .st-morerow > .fold > summary { font-size: 15px; }
 .st-morerow .fold__body { max-width: none; }
 .st-health { margin-top: var(--s-3); }
+.st-gap { margin-top: var(--s-4); }
 @media (max-width: 900px) {
   .st-grid, .st-bands { grid-template-columns: 1fr; }
   .st-grid > :last-child:nth-child(odd) { grid-column: auto; }
@@ -5037,7 +5038,14 @@ var DB = (function() {
       }
       var covFold = (typeof savingsCoverageFold === 'function') ? savingsCoverageFold(data) : '';
       if (covFold) moreFolds.push(covFold);
-      moreFolds.push('<details class="fold"><summary>Full ledger and history</summary><div class="fold__body">' + ledgerHtml + '</div></details>');
+      // The previous action-savings, since-install and Tokens Saved cards are not
+      // shown in story mode: they still add routing to their totals and count
+      // tokens on another basis, so they would contradict the hero.
+      var ledgerBody = (typeof savingsLedgerHtml === 'function') ? savingsLedgerHtml(data) : ledgerHtml;
+      var mixTotal = 0, mix = (data.trends && data.trends.model_mix) || {};
+      for (var mixK in mix) { mixTotal += Number(mix[mixK]) || 0; }
+      if (mixTotal > 0 && typeof modelMixBodyHtml === 'function') ledgerBody += '<h3 class="ts-section-label st-gap">Which models did the work</h3>' + modelMixBodyHtml(mix, data.runtime === 'codex', mixTotal);
+      moreFolds.push('<details class="fold"><summary>Full ledger and history</summary><div class="fold__body">' + ledgerBody + '</div></details>');
     } else if (parts.length > 0) {
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);border:1px solid var(--c-amber);box-shadow:0 0 0 1px rgba(217,164,65,0.18), 0 0 44px rgba(217,164,65,0.12);">';
       html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-amber);letter-spacing:0.08em;">Money on the table &middot; opportunity</div>';

@@ -239,3 +239,19 @@ def test_inliner(tmp_path):
     assert 'function savingsStoryHtml' in once
     assert '@include' not in STORY.read_text()
     assert dashboard_assets.inline(once, ASSETS) == once
+
+
+def test_ledger_fold_matches_hero_and_never_adds_routing():
+    s = full()
+    s['since_install'] = {'install_date': '2025-12-01', 'days': 60, 'all_in': {
+        'components_usd': {'logged': 100.0, 'class_premium': 10.0, 'reread': 200.0,
+                           'routing_estimated': 999.0, 'routing_measured': 0.0},
+        'estimated_usd': 40.0, 'total_usd': 1349.0}}
+    out = call('savingsLedgerHtml(data)', {'savings': s})
+    assert '$118.00' in out  # same total as the hero (83 + 35), to the cent
+    assert '$350.00' in out and '$1,349' not in out and '999' not in out  # since install, routing left out
+    assert 'Model routing is not part of either total' in out
+    assert 'class="label"' not in out
+    html = render_savings(s)
+    ledger = html.split('Full ledger and history')[1]
+    assert 'savings-actions' not in ledger and 'savings-history' not in ledger  # contradicting cards are gone

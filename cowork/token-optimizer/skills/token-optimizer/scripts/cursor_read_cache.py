@@ -36,6 +36,7 @@ store failures emit nothing.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 import time
@@ -139,6 +140,12 @@ def _store_path(sid: str) -> Path:
     return _to_dir() / "read-fingerprints" / f"{safe}.json"
 
 
+def _file_key(file_path: str) -> str:
+    if len(file_path) <= 1024:
+        return file_path
+    return "sha256:" + hashlib.sha256(file_path.encode("utf-8", "surrogatepass")).hexdigest()
+
+
 def _load_store(sid: str) -> dict:
     try:
         path = _store_path(sid)
@@ -232,8 +239,6 @@ def _read_fingerprint(path: Path) -> tuple[str, int, str | None] | None:
         raw = path.read_bytes()
     except OSError:
         return None
-    import hashlib
-
     text = None
     try:
         from delta_diff import MAX_CONTENT_CACHE_BYTES
@@ -321,7 +326,6 @@ def _evaluate(fields) -> dict | None:
         value = args.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value:
             return None
-    file_path = file_path[:1024]
     if not _eligible(file_path):
         return None
 
@@ -349,7 +353,8 @@ def _evaluate(fields) -> dict | None:
 def _evaluate_locked(fields, sid, file_path, digest, size, current, mode, owner):
     store = _load_store(sid)
     files = store.setdefault("files", {})
-    entry = files.get(file_path)
+    key = _file_key(file_path)
+    entry = files.get(key)
     base = {"mode": mode, "owner": owner, "path": Path(file_path).name}
 
     if entry is None or not entry.get("hash"):
@@ -358,7 +363,7 @@ def _evaluate_locked(fields, sid, file_path, digest, size, current, mode, owner)
         if current is not None:
             new_entry["content"] = current
         new_entry["tool_use_id"] = fields.get("tool_use_id") or ""
-        files[file_path] = {"ts": new_entry["ts"], "pending": new_entry}
+        files[key] = {"ts": new_entry["ts"], "pending": new_entry}
         _save_store(sid, store)
         return {"emit": None, "observed": {**base, "decision": "first_read"}}
 
@@ -373,7 +378,7 @@ def _evaluate_locked(fields, sid, file_path, digest, size, current, mode, owner)
     # Unchanged redundant read. Shadow/warn do no store write: the ts
     # refresh would be a per-Read-hook disk write for pruning metadata only.
     msg = _structure_message(file_path) or _reason_message(file_path)
-    return _soft_block_decide(mode, msg, base, "redundant", store, sid, file_path, entry)
+    return _soft_block_decide(mode, msg, base, "redundant", store, sid, key, entry)
 
 
 def confirm_read(fields):
@@ -383,11 +388,12 @@ def confirm_read(fields):
         path = fields.get("tool_args", {}).get("file_path")
         if not sid or sid == "unknown" or not isinstance(path, str):
             return
+        key = _file_key(path)
         with _store_lock(sid) as acquired:
             if not acquired:
                 return
             store = _load_store(sid)
-            entry = store.get("files", {}).get(path)
+            entry = store.get("files", {}).get(key)
             pending = entry.get("pending") if isinstance(entry, dict) else None
             if not isinstance(pending, dict):
                 return
@@ -398,7 +404,7 @@ def confirm_read(fields):
             if fp is None or fp[0] != pending.get("hash"):
                 return
             pending.pop("tool_use_id", None)
-            store["files"][path] = pending
+            store["files"][key] = pending
             _save_store(sid, store)
     except Exception:
         return

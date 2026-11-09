@@ -390,3 +390,23 @@ def test_missing_tool_use_id_cannot_confirm_a_read(env):
     rc.evaluate(fields)
     rc.confirm_read(fields)
     assert rc.evaluate(fields)["emit"] is None
+
+
+def test_long_paths_confirm_without_aliasing(env, monkeypatch):
+    cur, repo, _, _ = env
+    _arm(cur, "block")
+    parent = repo
+    while len(str(parent)) < 1100:
+        parent = parent / ("directory-" + "x" * 80)
+    first, second = parent / "first.py", parent / "second.py"
+    seen = []
+    monkeypatch.setattr(rc, "_eligible", lambda path: path.endswith(".py"))
+    monkeypatch.setattr(rc, "_read_fingerprint", lambda path: (seen.append(str(path)) or ("hash", 1, None)))
+    monkeypatch.setattr(rc, "_structure_message", lambda path: None)
+    fields = _fields(first)
+    assert len(str(first)) > 1100
+    assert rc.evaluate(fields)["observed"]["decision"] == "first_read"
+    rc.confirm_read(fields)
+    assert rc.evaluate(fields)["emit"]["permission"] == "deny"
+    assert rc.evaluate(_fields(second))["observed"]["decision"] == "first_read"
+    assert str(first) in seen and str(second) in seen

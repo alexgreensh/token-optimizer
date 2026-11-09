@@ -186,7 +186,9 @@ def test_moved_savings_consumer_uses_patched_connection(m, tmp_path, monkeypatch
     monkeypatch.setattr(m, '_session_model_reprice', lambda *a, **kw: ({}, 0, 0))
     result = consumer()
     assert result['total_tokens'] == 123
-    assert factory.call_count == 1 and connection.execute.call_count == 1
+    # One summary query, plus (savings-truth U4) the schema probe of the exact-card
+    # resume_lean reprice on the SAME patched connection.
+    assert factory.call_count == 1 and connection.execute.call_count == 2
     connection.close.assert_called_once()
 
 

@@ -4607,6 +4607,9 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
     # can never hold the flush; the backlog converges over passes.
     counted_pending = 0
     try:
+        # Sessions where Token Optimizer ran elsewhere (cloud) and logged nothing
+        # here: rebuild their events from its own transcript markers first.
+        _measure_facade._transcript_backfill.collect_pass(conn, _measure_facade, drain, budgets, quiet=quiet)
         if drain == "full":
             counted_pending = int(_measure_facade._counted_backfill_all(conn, quiet=quiet).get("pending_sessions", 0) or 0)
         else:

@@ -369,8 +369,8 @@ def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data, oneshot_flo
     import bisect as _bisect
     import math
     out = dict.fromkeys(_measure_facade._COUNTED_COVERAGE_KEYS, 0)
-    out.update(oneshot_usd=0.0, oneshot_class_premium_usd=0.0, reread_tokens=0,
-               reread_usd=0.0, turns_counted=0, observed=False)
+    out.update(oneshot_usd=0.0, oneshot_class_premium_usd=0.0, reread_tokens=0, reread_usd=0.0,
+               turns_counted=0, observed=False, reread_miss_turns=0, reread_miss_premium_usd=0.0)
     times = [turn[0] for turn in turns]
     first = _bisect.bisect_right(times, ev_dt)
     boundary = next((c for c in compacts if c > ev_dt), None)
@@ -386,10 +386,13 @@ def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data, oneshot_flo
             rate, basis = _measure_facade._counted_oneshot_rate(card, cache_class)
             if oneshot_floor_only and basis == "class":
                 rate, basis = card["input"], "floor"
-        else:
-            rate = (card or {}).get("cache_read")
+        else:  # v5: a full cache-miss turn rewrote the removed context at its write class
+            rate, miss = _measure_facade._counted_pricing_v5.reread_turn_rate(card, turns[i][3] if len(turns[i]) > 3 else None, tokens, _measure_facade._counted_oneshot_rate)
             out["reread_tokens"] += tokens
             out["turns_counted"] += 1
+            if miss:
+                out["reread_miss_turns"] += 1
+                out["reread_miss_premium_usd"] += tokens * (rate - card["cache_read"]) / 1e6
         if isinstance(rate, (int, float)) and math.isfinite(rate) and rate >= 0:
             out[kind + "_usd"] += tokens * rate / 1e6
             out["priced_oneshot_events" if kind == "oneshot" else "priced_reread_turns"] += 1
@@ -674,6 +677,8 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
         return False
     detail = {key: score[key] for key in _measure_facade._COUNTED_COVERAGE_KEYS}
     detail.update(oneshot_class_premium_usd=round(score["oneshot_class_premium_usd"], 6),
+                  reread_miss_turns=score.get("reread_miss_turns", 0),
+                  reread_miss_premium_usd=round(score.get("reread_miss_premium_usd", 0.0), 6),
                   version=_measure_facade._COUNTED_PRICING_VERSION, refresh_incomplete=False,
                   magnitude_basis=magnitude_basis, file_size=proof["file_size"],
                   file_sha256=proof["file_sha256"])
@@ -1059,18 +1064,8 @@ def _counted_session_cache_mix(conn, session_uuid, tier_data, memo, rate_key=Non
     except (_measure_facade.sqlite3.Error, TypeError, ValueError):
         breakdown = None
     if isinstance(breakdown, dict):
-        terms = []
-        for model, parts in breakdown.items():
-            weight = parts.get("cache_read") if isinstance(parts, dict) else None
-            if not isinstance(weight, int) or isinstance(weight, bool) or weight <= 0:
-                continue
-            card = _measure_facade._counted_exact_card(model, tier_data)
-            rate = (card or {}).get(rate_key)
-            if not (isinstance(rate, (int, float)) and _measure_facade.math.isfinite(rate) and rate >= 0):
-                rate = None
-            terms.append((weight, rate))
-        if any(rate is not None for _, rate in terms):
-            mix = terms
+        mix = _measure_facade._counted_pricing_v5.session_cache_mix_terms(
+            breakdown, lambda model: _measure_facade._counted_exact_card(model, tier_data), rate_key)
     memo[memo_key] = mix
     return mix
 
@@ -1088,6 +1083,7 @@ def _counted_rollup_rows(rows, conn=None):
     out = dict.fromkeys(_measure_facade._COUNTED_COVERAGE_KEYS, 0)
     out.update(events=0, removed_tokens=0, reread_tokens=0, oneshot_usd=0.0,
                oneshot_class_premium_usd=0.0, reread_usd=0.0, legacy_unverified_events=0,
+               reread_miss_turns=0, reread_miss_premium_usd=0.0,
                unverified_history_events=0, estimated_magnitude_events=0,
                refresh_incomplete_events=0, reread_session_mix_priced_tokens=0,
                session_mix_priced_events=0)
@@ -1105,6 +1101,8 @@ def _counted_rollup_rows(rows, conn=None):
             out["oneshot_usd"] += float(row["oneshot_usd"] or 0)
             out["reread_usd"] += float(row["reread_usd"] or 0)
             out["oneshot_class_premium_usd"] += float(detail.get("oneshot_class_premium_usd") or 0)
+            out["reread_miss_turns"] += int(detail.get("reread_miss_turns") or 0)
+            out["reread_miss_premium_usd"] += float(detail.get("reread_miss_premium_usd") or 0)
             for key in _measure_facade._COUNTED_COVERAGE_KEYS:
                 out[key] += detail[key]
         else:
@@ -1114,30 +1112,17 @@ def _counted_rollup_rows(rows, conn=None):
             input_mix = (_measure_facade._counted_session_cache_mix(conn, row.get("session_uuid"), tier_data,
                                                     mix_memo, rate_key="input")
                          if conn is not None and tokens else None)
-            for kind, amount in (("oneshot", tokens), ("reread", rereads)):
-                if kind == "oneshot" and input_mix:
-                    total_weight = sum(weight for weight, _ in input_mix)
-                    rated = [(weight, rate) for weight, rate in input_mix if rate is not None]
-                    rated_weight = sum(weight for weight, _ in rated)
-                    priced = round(abs(amount) * rated_weight / total_weight)
-                    out["oneshot_usd"] += (_measure_facade.math.copysign(1, amount) * abs(amount)
-                                           * sum(weight * rate for weight, rate in rated)
-                                           / total_weight / 1e6)
-                    out["oneshot_floor_events"] += 1
-                    out["oneshot_floor_tokens"] += priced
-                    amount = int(_measure_facade.math.copysign(abs(amount) - priced, amount))
-                if kind == "reread" and mix:
-                    total_weight = sum(weight for weight, _ in mix)
-                    rated = [(weight, rate) for weight, rate in mix if rate is not None]
-                    rated_weight = sum(weight for weight, _ in rated)
-                    priced = round(abs(amount) * rated_weight / total_weight)
-                    out["reread_usd"] += (_measure_facade.math.copysign(1, amount) * abs(amount)
-                                          * sum(weight * rate for weight, rate in rated)
-                                          / total_weight / 1e6)
-                    out["reread_session_mix_priced_tokens"] += priced
-                    out["session_mix_priced_events"] += 1
-                    out["priced_reread_turns"] += max(1, int(row.get("turns_counted") or 0))
-                    amount = int(_measure_facade.math.copysign(abs(amount) - priced, amount))
+            for kind, amount, terms in (("oneshot", tokens, input_mix), ("reread", rereads, mix)):
+                if terms:
+                    usd, priced, amount = _measure_facade._counted_pricing_v5.session_mix_price(amount, terms)
+                    out[kind + "_usd"] += usd
+                    if kind == "oneshot":
+                        out["oneshot_floor_events"] += 1
+                        out["oneshot_floor_tokens"] += priced
+                    else:
+                        out["reread_session_mix_priced_tokens"] += priced
+                        out["session_mix_priced_events"] += 1
+                        out["priced_reread_turns"] += max(1, int(row.get("turns_counted") or 0))
                 out[kind + "_unpriced_" + ("credit" if amount >= 0 else "debit") + "_tokens"] += abs(amount)
         if not current and row["transcript_mtime"] is None and row["source"] != "mk":
             out["unverified_history_events"] += 1
@@ -1147,6 +1132,7 @@ def _counted_rollup_rows(rows, conn=None):
         out["refresh_incomplete_events"] += bool(detail.get("refresh_incomplete"))
     out["oneshot_usd"] = round(out["oneshot_usd"], 6)
     out["oneshot_class_premium_usd"] = round(out["oneshot_class_premium_usd"], 6)
+    out["reread_miss_premium_usd"] = round(out["reread_miss_premium_usd"], 6)
     out["reread_usd"] = round(out["reread_usd"], 6)
     out["total_usd"] = round(out["oneshot_usd"] + out["reread_usd"], 6)
     return _measure_facade._counted_coverage_totals(out)
@@ -1190,8 +1176,10 @@ def _counted_cumulative_summary(days=None, now=None):
                     "SELECT 'ce:'||id FROM counted_compression_events"))
             rows = []
             stored = _measure_facade._counted_stored_rows(conn)
+            candidates = _measure_facade._counted_candidate_events(conn)
+            orphaned = _measure_facade._counted_pricing_v5.orphaned_keys(stored.values(), {c[0] for c in candidates}, conn)
             for row in stored.values():
-                if row["event_key"] in excluded:
+                if row["event_key"] in excluded or row["event_key"] in orphaned:
                     continue
                 if start is not None:
                     if row["source"] == "mk":
@@ -1209,7 +1197,7 @@ def _counted_cumulative_summary(days=None, now=None):
                         continue
                 rows.append(row)
             missing_by_month = {}
-            for key, _uuid, ts, tokens, _cost, _model in _measure_facade._counted_candidate_events(conn):
+            for key, _uuid, ts, tokens, _cost, _model in candidates:
                 # A media archive without a row has no measured size yet; it
                 # adds nothing until the collect pass sizes it from its transcript.
                 if key in stored or key.startswith("md:"):
@@ -1287,6 +1275,7 @@ def _counted_cumulative_summary(days=None, now=None):
             "media_priced_events": len(media_priced),
             "media_removed_tokens": sum(int(row["tokens"] or 0) for row in media_priced),
             "media_note": media_note,
+            "orphaned_rows_excluded": len(orphaned),
             # Same construction as the estimated tiers: the method is counted,
             # the one modeling choice (trajectory held fixed) is disclosed on
             # the card.
@@ -1525,6 +1514,9 @@ def _get_savings_summary(days=None, since=None):
             unpriced_reprice = {}
             reprice_deltas, repriced_tokens, unmeasured_tokens = _measure_facade._session_model_reprice(
                 conn, cutoff, unpriced_out=unpriced_reprice)
+            tier_data = _measure_facade.PRICING_TIERS.get(_measure_facade._load_pricing_tier(), _measure_facade.PRICING_TIERS["anthropic"])
+            resume_fix = _measure_facade._counted_pricing_v5.resume_lean_reprice(conn, _measure_facade._counted_table(conn, "savings_events"), cutoff,
+                                                lambda model: _measure_facade._counted_exact_card(model, tier_data))
         finally:
             conn.close()
 
@@ -1535,6 +1527,9 @@ def _get_savings_summary(days=None, since=None):
         hint_followed_est = popped["hint_followed"]
         verbosity_steer_est = popped["verbosity_steer"]
         resume_lean_est = popped["resume_lean"]
+        if resume_lean_est and resume_fix["repriced_events"]:  # exact model card, not the family card
+            resume_lean_est["cost_saved_usd"] = round(max(0.0, resume_lean_est["cost_saved_usd"] + resume_fix["delta_usd"]), 4)
+            resume_lean_est["exact_card_reprice"] = resume_fix
         checkpoint_restore_est = popped["checkpoint_restore"]
 
         daily_avg = total_cost / days if days > 0 else 0.0
@@ -6470,15 +6465,15 @@ def _format_cents(cents):
 
 
 def _action_savings_display(logged, routing_measured, routing_estimated, repeat_reads,
-                            estimates, total_clamped=None):
+                            estimates, total_clamped=None, class_premium=None):
     """Whole-cent display values for the action-savings components.
 
     Raw component values stay exact elsewhere in the payload. Every displayed
     part below adds up to `total_usd`, which is the cents of the exact total."""
     _measure_facade = _compat.facade()
-    names = ["logged", "routing_measured", "routing_estimated", "reread"] + [
+    names = ["logged", "class_premium", "routing_measured", "routing_estimated", "reread"] + [
         "estimate:" + key for key in estimates]
-    values = [logged, routing_measured, routing_estimated, repeat_reads, *estimates.values()]
+    values = [logged, class_premium or 0.0, routing_measured, routing_estimated, repeat_reads, *estimates.values()]
     parts, total_cents = _measure_facade._allocate_cents(values)
     if total_clamped:
         total_cents = 0
@@ -6519,10 +6514,13 @@ def _action_savings_components(summary, reread=None):
     routing_measured = routing if routing_data.get("evidence", "measured") == "measured" else 0.0
     reread_available = bool((reread or {}).get("available"))
     repeat_reads = float(reread.get("reread_usd", 0) or 0) if reread_available else 0.0
+    premium = _measure_facade._counted_pricing_v5.class_premium_usd(reread)  # measured: the next call billed a cache write
     estimated = sum(estimates.values())
-    net_total = logged + routing + repeat_reads + estimated
+    net_total = logged + premium + routing + repeat_reads + estimated
     return {
         "logged_usd": logged,
+        "class_premium_usd": premium,
+        "class_premium_events": int((reread or {}).get("oneshot_class_events", 0) or 0) if premium else 0,
         "routing_usd": routing,
         "routing_measured_usd": routing_measured,
         "routing_estimated_usd": routing - routing_measured,
@@ -6540,7 +6538,7 @@ def _action_savings_components(summary, reread=None):
         "total_clamped": net_total < 0,
         "display": _measure_facade._action_savings_display(
             logged, routing_measured, routing - routing_measured, repeat_reads,
-            estimates, total_clamped=net_total < 0),
+            estimates, total_clamped=net_total < 0, class_premium=premium),
     }
 
 
@@ -6981,7 +6979,7 @@ def savings_report(days=None, as_json=None):
         _mo(_act["logged_usd"]), _mo(_act["routing_measured_usd"]),
         _mo(_act["routing_estimated_usd"]), _mo(_act["reread_usd"]),
         {k: _mo(v) for k, v in _act["estimates_usd"].items()},
-        total_clamped=_act["total_clamped"])
+        total_clamped=_act["total_clamped"], class_premium=_mo(_act.get("class_premium_usd", 0.0)))
     _cents = _shown["components_cents"]
     _est_cents = _shown["estimates_cents"]
     _money = _measure_facade._format_cents
@@ -7194,11 +7192,9 @@ def savings_report(days=None, as_json=None):
     oneshot = summary.get("oneshot_pricing") or {}
     if oneshot.get("removal_events"):
         print("  Initial removals above are priced at the input rate, a minimum.")
-        premium = float(oneshot.get("class_premium_usd", 0.0) or 0.0)
-        if premium >= 0.005:
+        if _cents.get("class_premium"):
             print(f"  The next call billed new context at a cache-write rate for "
-                  f"{int(oneshot.get('class_events', 0)):,} removals: about ${premium:.2f} more, "
-                  f"not in the total.")
+                  f"{int(oneshot.get('class_events', 0)):,} removals; that premium is its own line below.")
     trip = _measure_facade._headline_tripwire(total_cost + rr_usd, total_events, days)
     if trip:
         print()
@@ -7210,6 +7206,9 @@ def savings_report(days=None, as_json=None):
         print(f"  Estimated monthly: ${_money(_cents['logged'])} (measured)")
     else:
         print(f"  Total so far ({tracked} day{'' if tracked == 1 else 's'} tracked): ${_money(_cents['logged'])} (measured)")
+    if _cents.get("class_premium"):
+        print(f"  + write-class premium: ~${_money(_cents['class_premium'])}{per} ({_act.get('class_premium_events', 0):,} "
+              "removals whose next call wrote to the cache, priced at that write rate) [measured]")
 
     # Realized tier — model routing you already did (mix shift vs install baseline).
     routing = summary.get("model_routing") or {}

@@ -493,7 +493,7 @@ def trusted_python(tmp_path_factory, monkeypatch):
 _DEVIN_TEST_FILES = {
     'test_devin_closedset.py', 'test_devin_compress.py', 'test_devin_install.py',
     'test_devin_lifecycle_matrix.py', 'test_devin_review_regressions.py',
-    'test_devin_state.py', 'test_devin_hooks.py',
+    'test_devin_state.py', 'test_devin_hooks.py', 'test_devin_integration_payload.py',
 }
 
 

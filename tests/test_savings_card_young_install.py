@@ -80,6 +80,17 @@ def _summary_fixture():
 # ---------------------------------------------------------------- CLI guard
 
 
+@pytest.mark.parametrize('days', [7, 30])
+def test_transformation_uses_selected_period_label(measure, monkeypatch, capsys, days):
+    summary = _summary_fixture()
+    summary['before_after'] = {'monthly_savings_usd': 813}
+    monkeypatch.setattr(measure, '_get_merged_savings', lambda days=30: summary)
+    measure.savings_report(days=days)
+    headline = next(line for line in capsys.readouterr().out.splitlines() if 'YOUR TRANSFORMATION:' in line)
+    assert headline.endswith(f'over {days} days')
+    assert '/mo' not in headline
+
+
 def test_young_install_cli_prints_so_far_not_monthly(measure, monkeypatch, capsys):
     four_days_ago = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d")
     monkeypatch.setattr(measure, "_install_date", lambda: four_days_ago)

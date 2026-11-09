@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from credential_url_patterns import URL_CREDENTIAL_PATTERNS
+
 # (label, compiled_regex) pairs. Label is used in redaction placeholders.
 CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("AWS access key",          re.compile(r"AKIA[0-9A-Z]{16}")),
@@ -81,25 +83,7 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     # of the text so a truncated body is never left behind.
     ("PEM private key",         re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)")),
-    ("Database URI",            re.compile(r"(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis)://[^:\s/]+:[^@\s]+@", re.I)),
-    ("HTTP basic auth URL",     re.compile(r"https?://[^:\s/@]+:[^@\s]+@", re.I)),
-    # Credentials passed as URL query/matrix parameters OR OAuth-implicit-flow
-    # fragment params (e.g. ?token=..., ?api_key=..., ;password=..., #access_token=...).
-    # The named `keep` group captures the "?name="/"#name=" prefix so redaction
-    # preserves the parameter name and blanks only the value (see redact_credentials).
-    # The value class stops at the next delimiter (& # ; whitespace quote < >) but
-    # otherwise matches EVERYTHING — including brackets — so a secret that itself
-    # contains a `[` (common in passwords) is redacted whole, not leaked past the
-    # bracket. To still avoid re-wrapping an already-inserted "[CREDENTIAL REDACTED:
-    # ...]" placeholder (when the value is itself another credential shape an earlier
-    # pattern redacted, e.g. ?token=<Bearer ...>), a negative lookahead skips a value
-    # that begins with the placeholder rather than excluding brackets from real values.
-    ("URL auth param",          re.compile(
-        r"(?P<keep>[?&#;](?:authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret"
-        r"|session[_-]?token|id[_-]?token|api[_-]?key|sessionid|session|password|passwd|signature"
-        r"|secret|bearer|token|auth|sig|pwd|key|jwt)=)(?!\[CREDENTIAL REDACTED:)[^&#;\s\"'<>]+",
-        re.I,
-    )),
+    *URL_CREDENTIAL_PATTERNS,
     # M-12: mysql -p<password> (inline password after -p with no space).
     # The -p flag is special: the password immediately follows with no = or space.
     # N-3: re.I so "MySQL -pSECRET" (capitalized client name, as MySQL ships
@@ -1128,6 +1112,7 @@ _PATTERN_ANCHORS = {
     "Bearer token": ("bearer",),
     "Database URI": ("://",),
     "HTTP basic auth URL": ("://",),
+    "HTTP token userinfo URL": ("://",),
     "URL auth param": ("=",),
     "MySQL password flag": ("mysql",),
     "Database env password": ("password=", "pwd=", "passwd=",

@@ -139,7 +139,7 @@ export class StatusPanel {
 </style>
 </head>
 <body>
-<div id="app"><div class="empty">Waiting for an active Claude Code session…</div></div>
+<div id="app"><div class="empty">Waiting for an active session…</div></div>
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -179,15 +179,19 @@ export class StatusPanel {
     h += '</div>';
     return h;
   }
+  const RUNTIME_DISPLAY = { claude: 'Claude Code', copilot: 'GitHub Copilot', cursor: 'Cursor' };
+  const runtimeDisplay = (m) => RUNTIME_DISPLAY[m && m.runtimeName] || 'Claude Code';
   function render(m) {
     const app = document.getElementById('app');
     if (m && m.funnel) { app.innerHTML = funnelHtml(); wireButtons(app); return; }
-    if (!m || !m.hasData) { app.innerHTML = '<div class="empty">No active Claude Code session in this window yet.</div>'; return; }
+    if (!m || !m.hasData) { app.innerHTML = '<div class="empty">No active ' + esc(runtimeDisplay(m)) + ' session in this window yet.</div>'; return; }
     let h = '';
     h += '<h1>Token Optimizer</h1>';
-    h += '<div class="sub">' + esc(m.model || 'Claude') + (m.effort ? ' · ' + esc(m.effort) : '') + '</div>';
+    h += '<div class="sub">' + esc(m.model || runtimeDisplay(m)) + (m.effort ? ' · ' + esc(m.effort) : '') + '</div>';
+    if (m.sourceLabel) h += '<div class="sub">' + esc(m.sourceLabel) + '</div>';
     if (!m.scoped) h += '<div class="banner">⚠️ No folder open — showing the most recent session globally. Open a folder so this reflects this window\\'s session.</div>';
     if (m.fillPct != null) h += row('Context', '<span class="bar">' + esc(m.fillBar) + '</span> ' + m.fillPct + '%' + (m.fillSource === 'jsonl' ? ' <span class="pill">panel</span>' : ''));
+    if (m.lastCompaction) h += row('Last compaction', esc(m.lastCompaction));
     if (m.contextQ) h += row('ContextQ', '<span class="' + gradeClass(m.contextQ.grade) + '">' + esc(m.contextQ.grade) + ' (' + m.contextQ.score + ')</span>' + (m.contextQ.stale ? ' <span class="pending">cached</span>' : ''));
     if (m.eff) h += row('Efficiency', '<span class="' + gradeClass(m.eff.grade) + '">' + esc(m.eff.grade) + ' (' + m.eff.score + ')</span>');
     if (m.qualityPending) h += row('ContextQ / Eff', '<span class="pending">warming up…</span>');

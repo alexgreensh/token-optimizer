@@ -34,6 +34,7 @@ import importlib
 import json
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -185,7 +186,6 @@ def test_two_sessions_arm_independently(m, tmp_path):
 
 
 def _race_two_arms(mod, transcript):
-    import threading
     barrier = threading.Barrier(2)
     results, errors = [], []
 
@@ -228,23 +228,47 @@ def test_concurrent_arms_collapse_to_one_record(m, tmp_path):
 
 
 def test_concurrent_arms_when_the_lock_holder_outlasts_the_lease(m, tmp_path):
-    """Forced contention: the holder spends longer than the 75ms lease timeout scanning the
-    sidecar, so the other racer is skipped (None). Still one record, no exception."""
+    """A contender skips after the 75ms acquisition timeout while the holder scans."""
     mod, _ = m
     transcript = _arm(m, tmp_path)
     original = mod.load_keepwarm_records
+    holder_scanning = threading.Event()
+    release_holder = threading.Event()
+    results, errors = [], []
 
-    def slow_load(*args, **kwargs):
-        time.sleep(0.3)
+    def held_load(*args, **kwargs):
+        holder_scanning.set()
+        release_holder.wait()
         return original(*args, **kwargs)
 
-    mod.load_keepwarm_records = slow_load
+    def arm_again():
+        try:
+            results.append(mod.write_keepwarm_arm_record("abc123", str(transcript)))
+        except Exception as exc:
+            errors.append(exc)
+
+    # A start barrier plus a fixed sleep does not guarantee contention: the
+    # scheduler can delay one racer until the other has released the lease.
+    # Start the contender only once the holder is inside its critical section,
+    # and keep the holder there until the contender has actually returned.
+    holder = threading.Thread(target=arm_again, daemon=True)
+    contender = threading.Thread(target=arm_again, daemon=True)
+    mod.load_keepwarm_records = held_load
     try:
-        results, errors = _race_two_arms(mod, transcript)
+        holder.start()
+        assert holder_scanning.wait(timeout=5), "holder never reached the locked sidecar scan"
+        contender.start()
+        contender.join(timeout=5)
+        assert not contender.is_alive(), "contender did not respect the acquisition timeout"
+        assert results == [None], "contender must skip while the holder still has the lease"
     finally:
+        release_holder.set()
+        for thread in (holder, contender):
+            if thread.ident is not None:
+                thread.join(timeout=5)
         mod.load_keepwarm_records = original
+    assert not holder.is_alive(), "holder did not finish after being released"
     _assert_race_invariants(mod, results, errors)
-    assert any(r is None for r in results), "precondition: the lease timeout skipped one racer"
 
 
 def test_truncated_rotated_transcript_rearms(m, tmp_path):

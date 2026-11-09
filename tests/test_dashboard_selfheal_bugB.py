@@ -97,7 +97,7 @@ def test_sessionend_flush_regen_wires_selfheal_on_timeout(m):
     import inspect
     src = _split_inspect_source(m)
     # locate the flush-worker's standalone regen call and its enclosing try/except
-    idx = src.find("generate_standalone_dashboard(days=30, quiet=True)")
+    idx = src.find("generate_standalone_dashboard(quiet=True)")
     assert idx != -1, "flush-worker standalone regen call not found"
     window = src[idx: idx + 1000]
     assert "except _HookTimeout" in window, "flush regen must catch _HookTimeout"

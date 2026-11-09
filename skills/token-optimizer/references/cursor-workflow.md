@@ -42,7 +42,7 @@ Resolve `$MEASURE_PY` and `$PY` first with the SKILL.md Step 0b snippet (this fi
 "$PY" "$MEASURE_PY" cursor-doctor --probe   # replay each wired event through the installed command
 TOKEN_OPTIMIZER_RUNTIME=cursor "$PY" "$MEASURE_PY" cursor-summary
 TOKEN_OPTIMIZER_RUNTIME=cursor "$PY" "$MEASURE_PY" cursor-rollup
-"$PY" "$MEASURE_PY" cursor-uninstall   # remove only Token Optimizer's entries + payload
+"$PY" "$MEASURE_PY" cursor-uninstall   # remove hooks, payload and derived caches; keep session history
 ```
 
 Install from a checkout with `bash install.sh --cursor` (merges into Cursor's

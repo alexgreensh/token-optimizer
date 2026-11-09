@@ -1603,7 +1603,7 @@ _manage_mcp = _measure_compat.bind(_measure_providers['dashboard']._manage_mcp, 
 _codex_memory_review_data = _measure_compat.bind(_measure_providers['dashboard']._codex_memory_review_data, __name__)
 
 
-generate_standalone_dashboard = _measure_compat.bind(_measure_providers['dashboard'].generate_standalone_dashboard, __name__, defaults=(30, False, False,))
+generate_standalone_dashboard = _measure_compat.bind(_measure_providers['dashboard'].generate_standalone_dashboard, __name__, defaults=(None, False, False,))
 
 
 _acquire_session_end_flush_lock = _measure_compat.bind(_measure_providers['lifecycle']._acquire_session_end_flush_lock, __name__, defaults=(120,))
@@ -1648,7 +1648,7 @@ _inline_flush_budget_seconds = _measure_compat.bind(_measure_providers['lifecycl
 _dispatch_collect = _measure_compat.bind(_measure_providers['lifecycle']._dispatch_collect, __name__)
 
 
-_spawn_detached_dashboard_selfheal = _measure_compat.bind(_measure_providers['lifecycle']._spawn_detached_dashboard_selfheal, __name__, defaults=(30, False,), kwdefaults={'hook_timeout': True})
+_spawn_detached_dashboard_selfheal = _measure_compat.bind(_measure_providers['lifecycle']._spawn_detached_dashboard_selfheal, __name__, defaults=(None, False,), kwdefaults={'hook_timeout': True})
 
 
 # Thundering-herd guard for the version-bump dashboard self-heal. The marker is

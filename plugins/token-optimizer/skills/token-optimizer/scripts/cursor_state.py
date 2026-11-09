@@ -199,6 +199,14 @@ def state_vscdb_path() -> Path:
     return base / "User" / "globalStorage" / "state.vscdb"
 
 
+def state_vscdb_path_for_home(home: Path) -> Path:
+    """Use an explicitly selected Cursor home, otherwise the IDE default."""
+    home = Path(home).expanduser()
+    if not os.environ.get("TOKEN_OPTIMIZER_CURSOR_HOME") and home == _safe_home() / ".cursor":
+        return state_vscdb_path()
+    return home / "User" / "globalStorage" / "state.vscdb"
+
+
 def _ro_connect_vscdb(path: Path):
     """Open state.vscdb read-only. ``mode=ro`` only — not ``immutable=1``."""
     # Build the file: URI via Path.as_uri() rather than string interpolation

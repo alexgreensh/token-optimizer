@@ -1,6 +1,6 @@
 ---
 title: Cursor
-description: "Install Token Optimizer for Cursor via a shallow clone. It read-merges user-level hooks into ~/.cursor/hooks.json and runs a six-event hook bridge."
+description: "Install Token Optimizer for Cursor via a shallow clone. It read-merges user-level hooks into ~/.cursor/hooks.json and runs an eleven-event hook bridge."
 ---
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
@@ -58,7 +58,7 @@ On native Windows the installer writes hook commands that PowerShell and cmd.exe
 TOKEN_OPTIMIZER_RUNTIME=cursor python3 skills/token-optimizer/scripts/measure.py cursor-doctor --probe
 ```
 
-`cursor-doctor --probe` replays the documented payloads through the installed hook `command`, checking how the six installed commands handle synthetic payloads, not proving the host fires them, and names the active token source. To preview the install without writing anything:
+`cursor-doctor --probe` replays the documented payloads through the installed hook `command`, checking how the eleven installed commands handle synthetic payloads, not proving the host fires them, and names the active token source. To preview the install without writing anything:
 
 ```bash
 bash install.sh --cursor --dry-run
@@ -72,19 +72,22 @@ All require the `TOKEN_OPTIMIZER_RUNTIME=cursor` prefix.
 measure.py cursor-install     # read-merge hooks.json + copy the payload
 measure.py cursor-doctor      # readiness + hook-firing probe
 measure.py cursor-summary     # token/quality session summary
+measure.py cursor-coach       # coach data: sessions, quality, patterns (--json --days N --focus X)
+measure.py cursor-audit       # rules + hooks.json health audit (read-only)
 measure.py cursor-rollup      # ingest sessions into trends.db (auto on stop/sessionEnd)
 measure.py cursor-uninstall   # remove only what was installed
 ```
 
-## Six wired events
+## Eleven wired events
 
-The merged hooks file carries six events. Everything the adapter does on each, and the output shape, is on the [Cursor platform reference](/platforms/cursor/).
+The merged hooks file carries eleven events. Everything the adapter does on each, and the output shape, is on the [Cursor platform reference](/platforms/cursor/).
 
 ```text
-sessionStart  preToolUse(Shell)  postToolUse  preCompact  stop  sessionEnd
+sessionStart  preToolUse(Shell|Read)  postToolUse  preCompact  stop  sessionEnd
+afterAgentResponse  postToolUseFailure  afterShellExecution  subagentStart  subagentStop
 ```
 
-`preToolUse` carries a `Shell` matcher so every other tool stays off the bridge's hot path.
+`preToolUse` carries a `Shell|Read` matcher so every other tool stays off the bridge's hot path; Shell calls get output compression and Read calls get the opt-in read-cache interception.
 
 ## Cost and tokens
 

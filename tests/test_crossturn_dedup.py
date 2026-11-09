@@ -23,14 +23,18 @@ def hook(monkeypatch):
     tmp = tempfile.mkdtemp(prefix="to-xturn-")
     monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", tmp)
     monkeypatch.setenv("CLAUDE_SESSION_ID", "test-xturn-session")
-    sys.path.insert(0, str(SCRIPTS))
-    for m in ("bash_compress_hook", "session_store", "delta_diff",
-              "compression_log", "credential_patterns"):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    names = ("bash_compress_hook", "session_store", "delta_diff",
+             "compression_log", "credential_patterns")
+    saved = {name: sys.modules[name] for name in names if name in sys.modules}
+    for m in names:
         sys.modules.pop(m, None)
     mod = importlib.import_module("bash_compress_hook")
     importlib.reload(mod)
     yield mod
-    sys.modules.pop("bash_compress_hook", None)
+    for name in names:
+        sys.modules.pop(name, None)
+    sys.modules.update(saved)
 
 
 def _trends_db_path(hook) -> Path:

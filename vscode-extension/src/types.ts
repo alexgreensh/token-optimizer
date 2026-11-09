@@ -34,6 +34,8 @@ export interface ContextQ {
   stale: boolean;
 }
 
+export type RuntimeName = 'claude' | 'copilot' | 'cursor';
+
 export interface Warning {
   level: 'WARNING' | 'CRITICAL';
   value: number; // fill pct or tool count, depending on warning
@@ -51,6 +53,15 @@ export interface Snapshot {
   effort: string | null; // 'lo' | 'med' | 'hi'
   fillPct: number | null;
   fillSource: 'live-fill' | 'quality' | 'jsonl' | null;
+  // Which runtime produced this snapshot, and a one-line provenance note for
+  // surfaces whose data is thinner than Claude's (Cursor: hook tally only, no
+  // native token totals, no current context fill).
+  runtimeName: RuntimeName;
+  sourceLabel: string | null;
+  // Cursor-only: the occupancy recorded just BEFORE the most recent
+  // compaction (the peak that triggered it) with its own measurement time.
+  // Historical context, never the current fill.
+  lastCompaction: { pct: number; ts: number | null } | null;
   contextQ: ContextQ | null;
   eff: { score: number; grade: string } | null;
   fillWarning: Warning | null;
@@ -73,6 +84,9 @@ export function emptySnapshot(): Snapshot {
     effort: null,
     fillPct: null,
     fillSource: null,
+    runtimeName: 'claude',
+    sourceLabel: null,
+    lastCompaction: null,
     contextQ: null,
     eff: null,
     fillWarning: null,

@@ -214,7 +214,7 @@ def _monkeypatch_cursor_state_readers(monkeypatch, *, bubble_tokens=None):
     monkeypatch.setattr(cst, "read_tally", lambda p: _tally())
     monkeypatch.setattr(cst, "idle_finalise", lambda t: t)
     monkeypatch.setattr(
-        cst, "read_state_vscdb_tokens", lambda ids: bubble_tokens or {}
+        cst, "read_state_vscdb_tokens", lambda ids, **kwargs: bubble_tokens or {}
     )
     monkeypatch.setattr(cst, "transcript_estimate", lambda p, home: None)
     return cst
@@ -239,7 +239,8 @@ def test_collect_cursor_sessions_end_to_end(monkeypatch, tmp_path):
     restore_dir = cursor_home / "token-optimizer" / "restore-context"
     files = list(restore_dir.glob("*.md"))
     assert len(files) == 1
-    digest = hashlib.sha1(b"/Users/alex/repos/demo").hexdigest()
+    from cursor_bridge_checkpoint import normalize_workspace
+    digest = hashlib.sha1(normalize_workspace("/Users/alex/repos/demo").encode("utf-8", "replace")).hexdigest()
     assert files[0].name == f"{digest}.md"
     assert "previous Cursor session" in files[0].read_text(encoding="utf-8")
 
@@ -282,8 +283,12 @@ def test_collect_cursor_sessions_keys_restore_by_workspace_root(monkeypatch, tmp
     restore_dir = cursor_home / "token-optimizer" / "restore-context"
     files = list(restore_dir.glob("*.md"))
     assert len(files) == 1
-    digest = hashlib.sha1(b"/Users/alex/repos/demo").hexdigest()
+    from cursor_bridge_checkpoint import normalize_workspace, restore_for_workspace
+    digest = hashlib.sha1(normalize_workspace("/Users/alex/repos/demo").encode("utf-8", "replace")).hexdigest()
     assert files[0].name == f"{digest}.md"
+    restored = restore_for_workspace({}, tally["workspace_roots"][0], cursor_home / "token-optimizer",
+                                     None, lambda _path: None, 60)
+    assert restored and "previous Cursor session" in restored
 
 
 def test_dashboard_cursor_toggles_read_real_doctor_names(monkeypatch, tmp_path):
@@ -345,3 +350,56 @@ def test_dashboard_health_data_does_not_probe_claude_under_cursor(monkeypatch):
     health = m._collect_health_data()
     assert health["runtime"] == "cursor"
     assert health["running_sessions"] == []
+
+
+def test_restore_stamps_source_session_end(monkeypatch, tmp_path):
+    mod, _, _, cursor_home = _import_measure(monkeypatch, tmp_path, "cursor")
+    _monkeypatch_cursor_state_readers(monkeypatch)
+    assert mod._collect_cursor_sessions(days=90, quiet=True) == 1
+    path = next((cursor_home / "token-optimizer" / "restore-context").glob("*.md"))
+    marker = path.read_text().splitlines()[0]
+    assert marker.startswith("<!-- source-end: ")
+    assert abs(float(marker[len("<!-- source-end: "):-4]) - (time.time() - 60)) < 5
+
+
+# ---------------------------------------------------------------------------
+# cursor-summary token resolution (F10)
+# ---------------------------------------------------------------------------
+
+def test_cursor_summary_resolves_token_sources(monkeypatch, tmp_path, capsys):
+    """cursor-summary must resolve state.vscdb/transcript tokens like the
+    rollup collector. Raw tally JSON never carries bubble_tokens or
+    transcript_tokens, so without this step the summary always prints
+    '0 in / 0 out' and mislabels every session 'estimated'."""
+    mod, _snap, _ch, _cuh = _import_measure(monkeypatch, tmp_path, "cursor")
+    _monkeypatch_cursor_state_readers(
+        monkeypatch,
+        bubble_tokens={"composer-abc-123": {
+            "input_tokens": 5000, "output_tokens": 900, "model": "gpt-4o",
+        }},
+    )
+    mod._cursor_summary()
+    out = capsys.readouterr().out
+    assert "5,000 in / 900 out" in out
+    assert "cursor_state_vscdb" in out
+    assert "use estimated token counts" not in out
+
+
+def test_cursor_summary_reports_unknown_tokens_honestly(monkeypatch, tmp_path, capsys):
+    """With no token source at all, the summary must say the figures are
+    unknown (tally only) — not claim every session is 'estimated'."""
+    mod, _snap, _ch, _cuh = _import_measure(monkeypatch, tmp_path, "cursor")
+    _monkeypatch_cursor_state_readers(monkeypatch)  # bubble {}, transcript None
+    mod._cursor_summary()
+    out = capsys.readouterr().out
+    assert "no token figures" in out
+    assert "use estimated token counts" not in out
+
+
+def test_summary_marks_estimated_headline(monkeypatch, tmp_path, capsys):
+    mod, _, _, _ = _import_measure(monkeypatch, tmp_path, "cursor")
+    cst = _monkeypatch_cursor_state_readers(monkeypatch)
+    monkeypatch.setattr(cst, "transcript_estimate", lambda p, home: 200)
+    mod._cursor_summary()
+    headline = next(line for line in capsys.readouterr().out.splitlines() if "Tokens:" in line)
+    assert "includes 1 estimated" in headline

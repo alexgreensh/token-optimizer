@@ -2406,7 +2406,7 @@ function isNoInstructionHost(data) {
   return !!data && (data.runtime === 'cursor' || data.runtime === 'antigravity');
 }
 function hostRefreshHtml(data) {
-  return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard</span>');
+  return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard --user</span>');
 }
 function hermesComponentDetails(c) {
   function fileSub(x, missing) {
@@ -3653,7 +3653,9 @@ var DB = (function() {
       var collectNote = isCodex
         ? tcliHtml('Codex sessions can be collected manually for now: <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py collect</span>')
         : tcliHtml('Sessions are collected automatically via the SessionEnd hook. Run a few sessions first, or manually: <span class="update-cmd">python3 measure.py collect</span>');
-      html += '<div class="empty-state">No trends data yet. ' + collectNote + '</div>';
+      html += '<div class="empty-state">No trends data yet. ' + collectNote +
+        ' <button class="date-nav-btn" onclick="window.__TOKEN_LOAD_HISTORY(\'all\', document.getElementById(\'history-load-message\'))">Load full history</button>' +
+        '<span id="history-load-message" role="status"></span></div>';
       el.innerHTML = html;
       return;
     }
@@ -3757,21 +3759,32 @@ var DB = (function() {
     // Daily breakdown with date navigation
     var daily = t.daily || [];
     if (daily.length > 0) {
-      // Date nav: show 7 days by default, with picker to jump to a date
+      var selectedRange = '7';
+      try { selectedRange = localStorage.getItem('to-daily-range') || '7'; } catch (e) {}
+      if (['7', '14', '30', '90', '180', 'all'].indexOf(selectedRange) < 0) selectedRange = '7';
       html += '<div class="card wide" id="daily-breakdown-card">' +
         '<div class="card-header"><span>Daily Breakdown</span></div>' +
         '<div style="font-size:12px;color:var(--c-text-dim);padding:0 0 var(--s-2) 0;">Click any row to expand per-session details with cost, quality scores, and cache data. ' + (isCodex ? 'Codex cache write TTL is not exposed, so those fields are hidden.' : 'Claude cache TTL mix is shown when available.') + ' Click a session for per-turn token breakdown.</div>' +
         '<div class="date-nav">' +
-        '<button class="date-nav-btn active" data-range="7">7 days</button>' +
+        '<button class="date-nav-btn" data-range="7">7 days</button>' +
         '<button class="date-nav-btn" data-range="14">14 days</button>' +
         '<button class="date-nav-btn" data-range="30">30 days</button>' +
+        '<button class="date-nav-btn" data-range="90">90 days</button>' +
+        '<button class="date-nav-btn" data-range="180">180 days</button>' +
+        '<button class="date-nav-btn" data-range="all">All</button>' +
+        '<button class="date-nav-btn" id="load-full-history">Load full history</button>' +
+        '<span id="history-load-message" role="status"></span>' +
         '<span style="color:var(--c-text-dim);font-size:12px;margin:0 4px;">|</span>' +
         '<label style="font-size:12px;color:var(--c-text-dim);font-family:var(--font-mono);">Jump to:</label>' +
         '<input type="date" class="date-picker-input" id="daily-date-picker" value="' + esc(daily[0].date) + '">' +
         '</div>';
       html += '<div id="daily-table-container">';
-      html += buildDailyTable(daily, 7, null);
+      html += buildDailyTable(daily, selectedRange, null);
       html += '</div></div>';
+    } else {
+      html += '<div class="empty-state">No daily sessions in this window. ' +
+        '<button class="date-nav-btn" onclick="window.__TOKEN_LOAD_HISTORY(\'all\', document.getElementById(\'history-load-message\'))">Load full history</button>' +
+        '<span id="history-load-message" role="status"></span></div>';
     }
 
     // Skills usage bar chart with clickable skill details
@@ -3858,27 +3871,34 @@ var DB = (function() {
 
     el.innerHTML = html;
 
-    // Bind date range buttons + picker
+    // The table range is local to the browser; the embedded window is saved
+    // by the generator and can be expanded explicitly through the local server.
     if (daily.length > 0) {
       var container = document.getElementById('daily-table-container');
       var rangeBtns = document.querySelectorAll('.date-nav-btn[data-range]');
+      var historyMessage = document.getElementById('history-load-message');
+      function setRange(range) {
+        selectedRange = range;
+        try { localStorage.setItem('to-daily-range', range); } catch (e) {}
+        rangeBtns.forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-range') === range); });
+        container.innerHTML = buildDailyTable(daily, range, null);
+      }
+      setRange(selectedRange);
       rangeBtns.forEach(function(btn) {
         btn.addEventListener('click', function() {
-          rangeBtns.forEach(function(b) { b.classList.remove('active'); });
-          this.classList.add('active');
-          var range = parseInt(this.getAttribute('data-range'), 10);
-          container.innerHTML = buildDailyTable(daily, range, null);
+          var range = this.getAttribute('data-range');
+          setRange(range);
+          if (range !== 'all' && Number(range) > Number(t.period_days || 0)) window.__TOKEN_LOAD_HISTORY(Number(range), historyMessage);
         });
       });
+      document.getElementById('load-full-history').addEventListener('click', function() {
+        setRange('all');
+        window.__TOKEN_LOAD_HISTORY('all', historyMessage);
+      });
       var picker = document.getElementById('daily-date-picker');
-      if (picker) {
-        picker.addEventListener('change', function() {
-          var activeBtn = document.querySelector('.date-nav-btn[data-range].active');
-          var range = activeBtn ? parseInt(activeBtn.getAttribute('data-range'), 10) || 7 : 7;
-          rangeBtns.forEach(function(b) { b.classList.remove('active'); });
-          container.innerHTML = buildDailyTable(daily, range, this.value);
-        });
-      }
+      if (picker) picker.addEventListener('change', function() {
+        container.innerHTML = buildDailyTable(daily, selectedRange, this.value);
+      });
     }
 
     // Bind skill detail expand
@@ -3971,7 +3991,7 @@ var DB = (function() {
         names.forEach(function(name) {
           cmd += ' && mv "$HOME/.claude/skills/"' + shellQuote(name) + ' "$ARCHIVE_DIR/"';
         });
-        cmd += ' && echo "Archived ' + names.length + tcli(' skill(s). Regenerate dashboard: python3 measure.py dashboard"');
+        cmd += ' && echo "Archived ' + names.length + tcli(' skill(s). Regenerate dashboard: python3 measure.py dashboard --user"');
 
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
@@ -4001,20 +4021,18 @@ var DB = (function() {
     return 'avg ' + fmtGap(avgGap) + ' | max ' + fmtGap(maxGap);
   }
 
-  function buildDailyTable(daily, range, jumpToDate) {
+  function selectDailyRange(daily, range, jumpToDate) {
+    if (!daily.length) return [];
+    var start = jumpToDate || daily[0].date;
+    if (range === 'all') return daily.filter(function(d) { return d.date <= start; });
+    var end = new Date(start + 'T00:00:00Z');
+    end.setUTCDate(end.getUTCDate() - Number(range) + 1);
+    var cutoff = end.toISOString().slice(0, 10);
+    return daily.filter(function(d) { return d.date <= start && d.date >= cutoff; });
+  }
 
-    // Filter daily data based on range or jump-to date
-    var filtered;
-    if (jumpToDate) {
-      // Show 7 days starting from the selected date
-      var startDate = jumpToDate;
-      var endDate = new Date(jumpToDate);
-      endDate.setDate(endDate.getDate() - range + 1);
-      var endStr = endDate.toISOString().slice(0, 10);
-      filtered = daily.filter(function(d) { return d.date <= startDate && d.date >= endStr; });
-    } else {
-      filtered = daily.slice(0, range);
-    }
+  function buildDailyTable(daily, range, jumpToDate) {
+    var filtered = selectDailyRange(daily, range, jumpToDate);
 
     if (filtered.length === 0) {
       return '<div class="empty-state">No sessions found for this period.</div>';
@@ -4216,11 +4234,14 @@ var DB = (function() {
         var savedUsd = Number(w.saved_usd);
         var spanWord = w.key === 'five_hour' ? '5h' : 'week';
         var hasUsd = isFinite(savedUsd) && (w.key === 'five_hour' ? savedUsd > 0 : savedUsd >= 15);
-        var usdCaption = w.key === 'seven_day'
-          ? 'in API-equivalent savings this week' : 'in API-equivalent savings this 5h';
+        // Without a whole-week estimate the figure is only the event-by-event count, so say so.
+        var usdCaption = w.full_value
+          ? (w.key === 'seven_day' ? 'in API-equivalent savings this week' : 'in API-equivalent savings this 5h')
+          : (w.key === 'seven_day' ? 'in counted savings this week (partial)' : 'in counted savings this 5h (partial)');
         var usdExplainer = w.full_value
           ? 'Estimated additional cost at API prices for the same work without Token Optimizer. Includes lighter context, fewer repeat reads and working habits, counted once. Your plan may cover some or all of that usage.'
-          : 'API-equivalent value of the savings recorded in this window, including the available estimates.';
+          : 'Only the savings counted one event at a time, at API prices. This is a floor, not the whole saving. A whole-week estimate appears when your work measures consistently against your baseline; this window it did not.';
+        if (w.full_value && w.full_value.coverage && w.full_value.coverage.priced_sessions < w.full_value.coverage.total_sessions && Number(w.full_value.saved_usd) >= savedUsd) usdExplainer += ' Based on ' + Number(w.full_value.coverage.priced_sessions) + ' of ' + Number(w.full_value.coverage.total_sessions) + ' sessions; missing sessions are not estimated.';
         if (w.full_value && w.full_value.start) {
           usdExplainer += ' Since ' + esc(new Date(w.full_value.start).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'})) + '.';
         }
@@ -4260,7 +4281,7 @@ var DB = (function() {
         rwCards += '<div style="padding:var(--s-3);border:1px solid var(--c-border);border-radius:8px;">' +
           '<div class="label">Weekly savings</div><div style="font-size:22px;color:var(--c-savings-alt,#10b981);">&asymp;' +
           rwMoney(standaloneWeek.saved_usd) + ' in API-equivalent savings this week</div>' +
-          '<p>Full workload estimate since ' + esc(new Date(standaloneWeek.start).toLocaleString()) +
+          '<p>Full workload estimate' + (standaloneWeek.coverage && standaloneWeek.coverage.priced_sessions < standaloneWeek.coverage.total_sessions ? ' based on ' + Number(standaloneWeek.coverage.priced_sessions) + ' of ' + Number(standaloneWeek.coverage.total_sessions) + ' sessions, missing sessions are not estimated,' : '') + ' since ' + esc(new Date(standaloneWeek.start).toLocaleString()) +
           '. Your weekly limit reading is unavailable.</p></div>';
       }
       // USD-per-window headline: the dollar figure reuses the metered
@@ -4271,10 +4292,7 @@ var DB = (function() {
       (rw.windows || []).forEach(function (w) {
         var v = Number(w.saved_usd);
         if (!isFinite(v) || v <= 0) return;
-        // Honest label -- API-credit overage over the window's own real span, not
-        // a slice of a longer ledger. The weekly dollar is aligned to the
-        // subscription limit reset boundary (not a rolling 7-day lookback), so
-        // it does not drift down as heavy days age out.
+        // The weekly figure follows the subscription reset boundary.
         var span = w.key === 'five_hour' ? 'past 5h' : 'since your limit reset';
         usdParts.push('<em style="font-style:normal;color:var(--c-accent-cyan);">' + rwMoney(v) + '</em> ' + span);
       });
@@ -4725,14 +4743,14 @@ var DB = (function() {
       // is the net<=0 branch — parity with OpenClaw/OpenCode.
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
         '<div class="label" style="margin-bottom:var(--s-2);">At or above your baseline this period</div>' +
-        '<div class="lede">Your recent sessions cost about what your frozen baseline would have — est. <strong>' + money(ba.actual_monthly_usd) + '/mo</strong> now vs <strong>' + money(ba.counterfactual_monthly_usd) + '/mo</strong> the old way. There is no net saving to headline this period, so we are not showing one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
+        '<div class="lede">Your recent sessions cost about what your frozen baseline would have — est. <strong>' + money(ba.actual_monthly_usd) + '</strong> now vs <strong>' + money(ba.counterfactual_monthly_usd) + '</strong> the old way in the last ' + days + ' days. There is no net saving to headline this period, so we are not showing one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
       '</div>';
     } else if (ba.reason === 'flat') {
       // Both work-unit methods sit within a few percent of spend: no
       // measurable whole-workload change, so no headline and no scary number.
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
         '<div class="label" style="margin-bottom:var(--s-2);">No measurable change in cost per unit of work</div>' +
-        '<div class="plain-line">Your recent work costs about the same per request as before install (' + money(ba.actual_monthly_usd) + '/mo now vs ' + money(ba.counterfactual_monthly_usd) + '/mo the old way). The savings below are counted action by action.</div>' +
+        '<div class="plain-line">Your recent work costs about the same per request as before install (' + money(ba.actual_monthly_usd) + ' now vs ' + money(ba.counterfactual_monthly_usd) + ' the old way over ' + days + ' days). The savings below are counted action by action.</div>' +
       '</div>';
     } else if (ba.reason === 'methods_disagree') {
       // The two independent work-unit methods (per-API-call and per-message)
@@ -4752,8 +4770,8 @@ var DB = (function() {
       };
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
         '<div class="label" style="margin-bottom:var(--s-2);">Two estimates disagree this period</div>' +
-        '<div class="lede">The ' + mainUnit + ' estimate is <strong>' + signedMoney(mainUsd) + '/mo</strong> and the ' + crossUnit +
-          ' estimate is <strong>' + signedMoney(crossUsd) + '/mo</strong>. They are too far apart to headline either one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
+        '<div class="lede">The ' + mainUnit + ' estimate is <strong>' + signedMoney(mainUsd) + '</strong> and the ' + crossUnit +
+          ' estimate is <strong>' + signedMoney(crossUsd) + '</strong> over ' + days + ' days. They are too far apart to headline either one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
       '</div>';
     }
 
@@ -5801,8 +5819,8 @@ var DB = (function() {
     var isCodex = data.runtime === 'codex';
     var codexSetup = (data.manage && data.manage.codex) || {};
     var refreshCmd = isCodex
-      ? tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard')
-      : tcli('python3 measure.py dashboard');
+      ? tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard --user')
+      : tcli('python3 measure.py dashboard --user');
 
     var html = '<div class="section-header">' +
       '<div class="label">Configuration</div>' +
@@ -6064,7 +6082,7 @@ var DB = (function() {
           ? 'Your ' + esc(data.runtime_label || 'runtime') + ' skills and MCP servers, read from its own files. Token Optimizer feature toggles are below.'
           : window.__TOKEN_API_LIVE
           ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : isNoInstructionHost(data) ? esc(data.runtime_label || 'the runtime') : 'Claude') + '</strong> to activate changes.'
-          : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
+          : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --user --serve</code>')) +
       '</p>' +
       '</div>';
 
@@ -6442,7 +6460,7 @@ var DB = (function() {
             title: 'Toggling v5 features needs a terminal',
             body: 'The read-only dashboard server can\u2019t write config. Run this in a terminal:',
             cmd: cliCmd,
-            hint: tcli('Or re-open the dashboard with full API: python3 measure.py dashboard --serve')
+            hint: tcli('Or re-open the dashboard with full API: python3 measure.py dashboard --user --serve')
           });
           return;
         }
@@ -7480,7 +7498,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   var data = window.__TOKEN_DATA__;
   if (!data) {
-    document.body.innerHTML = '<div style="max-width:820px;margin:80px auto;padding:32px;border:1px solid var(--c-border);border-radius:14px;background:var(--c-surface);color:var(--c-text-main);font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p><strong>You opened the dashboard template.</strong> This file intentionally contains no local metrics. Generate the runtime dashboard first, then open the generated file.</p><p style="margin-bottom:8px;color:var(--c-text-dim);">From the Token Optimizer checkout:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard</code><p style="margin:18px 0 8px;color:var(--c-text-dim);">Generated Codex dashboard path:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">~/.codex/_backups/token-optimizer/dashboard.html</code></div>';
+    document.body.innerHTML = '<div style="max-width:820px;margin:80px auto;padding:32px;border:1px solid var(--c-border);border-radius:14px;background:var(--c-surface);color:var(--c-text-main);font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p><strong>You opened the dashboard template.</strong> This file intentionally contains no local metrics. Generate the runtime dashboard first, then open the generated file.</p><p style="margin-bottom:8px;color:var(--c-text-dim);">From the Token Optimizer checkout:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard --user</code><p style="margin:18px 0 8px;color:var(--c-text-dim);">Generated Codex dashboard path:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">~/.codex/_backups/token-optimizer/dashboard.html</code></div>';
     return;
   }
   var runtimeLabel = data.runtime_label || (data.runtime === 'codex' ? 'Codex' : 'Claude Code');
@@ -7498,7 +7516,15 @@ document.addEventListener('DOMContentLoaded', function() {
     brandMeta.textContent = brandParts.join(' \u00b7 ');
   }
 
-  function startApp() { DB.init(data); refreshSavingsLive(); }
+  function startApp() {
+    DB.init(data); refreshSavingsLive();
+    try {
+      if (sessionStorage.getItem('to-history-return')) {
+        sessionStorage.removeItem('to-history-return');
+        document.querySelector('.nav-item[data-view="trends"]').click();
+      }
+    } catch (e) {}
+  }
 
   // Pull fresh savings from the daemon and live-patch the Savings/Overview tiles.
   // No-op unless the custom API is live (served over http, health probe passed) —
@@ -7573,6 +7599,31 @@ document.addEventListener('DOMContentLoaded', function() {
       }
       return r;
     });
+  };
+
+  window.__TOKEN_LOAD_HISTORY = function(choice, message) {
+    if (choice === 'all') { try { localStorage.setItem('to-daily-range', 'all'); } catch (e) {} }
+    if (!window.__TOKEN_API_LIVE) {
+      message.textContent = 'Open the dashboard through the local server to load more history.';
+      return;
+    }
+    message.textContent = 'Loading history…';
+    function attempt(retried) {
+      window.__TOKEN_API_POST('/api/regenerate', {days: choice}).then(function(r) { return r.json(); })
+        .then(function(result) {
+          if (!result.ok) throw new Error(result.msg || 'Regeneration failed');
+          try { sessionStorage.setItem('to-history-return', '1'); } catch (e) {}
+          location.reload();
+        }).catch(function(err) {
+          if (err.authError && !retried) {
+            _fetchToken(window.__TOKEN_API_BASE || '').then(function() { attempt(true); })
+              .catch(function(e) { message.textContent = 'Could not load history: ' + e.message; });
+          } else message.textContent = 'Could not load history: ' + err.message;
+        });
+    }
+    if (window.__TOKEN_API_TOKEN) attempt(false);
+    else _fetchToken(window.__TOKEN_API_BASE || '').then(function() { attempt(false); })
+      .catch(function(e) { message.textContent = 'Could not load history: ' + e.message; });
   };
 
   // Manual regeneration. The background freshness regen is stale-while-revalidate:

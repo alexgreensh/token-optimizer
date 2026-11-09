@@ -88,7 +88,9 @@ def test_install_writes_merged_hooks_and_payload(home):
     assert result["hook_file"] == str(hooks_path)
     # every wired event is present
     assert set(data["hooks"]) == {
-        "sessionStart", "preToolUse", "postToolUse", "preCompact", "stop", "sessionEnd"
+        "sessionStart", "preToolUse", "postToolUse", "preCompact", "stop", "sessionEnd",
+        "afterAgentResponse", "postToolUseFailure", "afterShellExecution",
+        "subagentStart", "subagentStop"
     }
     # foreign entry preserved, stale ours replaced by exactly one fresh ours
     starts = data["hooks"]["sessionStart"]
@@ -193,6 +195,32 @@ def test_install_aborts_on_corrupt_hooks_json(home):
         ci.install(home=home)
     # The shared file must be left byte-for-byte intact, never clobbered.
     assert hooks_path.read_text(encoding="utf-8") == "{ not valid json"
+
+
+@needs_posix
+def test_install_aborts_on_non_dict_hooks_member(home):
+    """G4: a malformed 'hooks' member must fail closed, never be replaced."""
+    home.mkdir()
+    hooks_path = ci._host_hooks_path(home)
+    original = json.dumps({"version": 1, "hooks": ["foreign-tool-entry"]})
+    hooks_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="non-object 'hooks' member"):
+        ci.install(home=home)
+    assert hooks_path.read_text(encoding="utf-8") == original
+
+
+@needs_posix
+def test_install_aborts_on_non_list_event(home):
+    """G4: a malformed event entry must fail closed, never be replaced."""
+    home.mkdir()
+    hooks_path = ci._host_hooks_path(home)
+    original = json.dumps({"version": 1, "hooks": {"preToolUse": {"foreign": True}}})
+    hooks_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="not a list"):
+        ci.install(home=home)
+    assert hooks_path.read_text(encoding="utf-8") == original
 
 
 @needs_posix
@@ -305,7 +333,9 @@ def test_concurrent_installs_both_survive(tmp_path, monkeypatch):
     import json as _json
     data = _json.loads((cur / "hooks.json").read_text(encoding="utf-8"))
     assert set(data["hooks"]) == {"sessionStart", "preToolUse", "postToolUse",
-                                  "preCompact", "stop", "sessionEnd"}
+                                  "preCompact", "stop", "sessionEnd",
+                                  "afterAgentResponse", "postToolUseFailure",
+                                  "afterShellExecution", "subagentStart", "subagentStop"}
 
 
 @needs_posix
@@ -328,7 +358,7 @@ def test_payload_modules_ship_the_bridges_runtime_deps():
     (lease_lock) and utf8_io; every one absent from the payload means a silent
     degraded fallback in EVERY installed hook."""
     for required in ("spawn_utils.py", "hook_runtime.py", "utf8_io.py",
-                     "codex_io.py", "hermes_session.py"):
+                     "codex_io.py", "hermes_session.py", "cursor_quality.py"):
         assert required in ci._PAYLOAD_MODULES, required
         assert (SCRIPTS / required).is_file(), f"{required} missing from checkout"
 
@@ -460,3 +490,51 @@ def test_payload_parses_command_filters_without_stdlib_tomllib(home, tmp_path):
         )
         assert out.returncode == 0, out.stderr
         assert out.stdout.strip() == want, out.stdout + out.stderr
+
+
+def test_uninstall_removes_derived_caches_but_keeps_history(home):
+    for name in ("read-fingerprints", "checkpoints", "restore-context", "snapshot/checkpoints", "sessions"):
+        directory = home / "token-optimizer" / name
+        directory.mkdir(parents=True)
+        (directory / "data").write_text("data")
+    result = ci.uninstall(home=home)
+    for name in ("read-fingerprints", "checkpoints", "restore-context", "snapshot/checkpoints"):
+        assert not (home / "token-optimizer" / name).exists()
+    assert (home / "token-optimizer" / "sessions" / "data").is_file()
+    assert result["kept"]
+
+
+def test_payload_imports_and_read_interception_are_self_contained(tmp_path):
+    import shutil
+    import subprocess
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    for name in ci._PAYLOAD_MODULES:
+        shutil.copy2(SCRIPTS / name, payload / name)
+    target = tmp_path / "sample.py"
+    target.write_text("def sample():\n    return 1\n")
+    program = '''import importlib, pathlib, sys
+payload, target, home, names = sys.argv[1:]
+sys.path.insert(0, payload)
+for name in names.split(","):
+    importlib.import_module(name[:-3])
+import cursor_read_cache as cache
+cache._home = lambda: pathlib.Path(home)
+result = cache.evaluate({"tool_name": "Read", "tool_args": {"file_path": target},
+                         "conversation_id": "session-123", "agent_id": "parent", "tool_use_id": "call-1", "workspace_roots": []})
+assert result and result["observed"]["decision"] == "first_read", result
+fields = {"tool_name": "Read", "tool_args": {"file_path": target},
+          "conversation_id": "session-123", "agent_id": "parent", "tool_use_id": "call-1", "workspace_roots": []}
+cache.confirm_read(fields)
+assert cache.evaluate(fields)["observed"]["decision"] == "shadow_redundant"
+'''
+    result = subprocess.run([sys.executable, "-I", "-c", program, str(payload), str(target),
+                             str(tmp_path), ",".join(ci._PAYLOAD_MODULES)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_explicit_relative_home_becomes_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = ci.install(dry_run=True, home=Path('relative-cursor'))
+    assert Path(result['hook_file']).is_absolute()

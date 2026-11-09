@@ -45,10 +45,16 @@ HOOK_TIMEOUT_SEC = 10
 # hook never depends on the repo checkout location.
 _PAYLOAD_MODULES = (
     "cursor_hook_bridge.py",
+    "cursor_read_cache.py",
+    "structure_map.py",
+    "structure_map_ts.py",
+    "read_cache.py",
     "cursor_state.py",
     "cursor_session.py",
+    "cursor_quality.py",
     "bash_hook.py",
     "bash_compress.py",
+    "bash_search_results.py",
     # Dependency-free whitelist gate shared by bash_hook + bash_compress.
     "bash_whitelist.py",
     # command_filters + _tomli: user [filters.*] TOML config consulted by
@@ -75,6 +81,34 @@ _PAYLOAD_MODULES = (
     # credential_patterns: bash_compress's credential-preservation patterns
     # (the inline fallback misses e.g. ghp_/github_pat_ tokens, #171).
     "credential_patterns.py",
+    # credential_url_patterns: credential_patterns imports it at module import
+    # time (URL pattern family split under the 1,000-line ratchet) — without it
+    # EVERY payload consumer of credential_patterns breaks at import.
+    "credential_url_patterns.py",
+    # cursor_bridge_*: cursor_hook_bridge's helper modules (payload decode,
+    # rewrite staging, rollup spawn, checkpoint I/O) split under the ratchet.
+    # The bridge degrades to a no-op without them.
+    "cursor_bridge_payload.py",
+    "cursor_bridge_rewrite.py",
+    "cursor_bridge_rollup.py",
+    "cursor_bridge_checkpoint.py",
+    # cursor_thrash powers the Shell thrash nudge in postToolUse; its runtime
+    # dependency closure (empirically traced over the identical-output, burn
+    # and inline-script nudge paths) is thrash_guard -> session_store,
+    # delta_diff, archive_result -> recovery_output, refetch_fingerprint,
+    # reset_epoch, token_estimate. Without ANY of these the nudge silently
+    # no-ops in a real install (fail-open). cursor_transcript powers the
+    # transcript translation in the compact-checkpoint capture.
+    "cursor_thrash.py",
+    "thrash_guard.py",
+    "session_store.py",
+    "delta_diff.py",
+    "archive_result.py",
+    "recovery_output.py",
+    "refetch_fingerprint.py",
+    "reset_epoch.py",
+    "token_estimate.py",
+    "cursor_transcript.py",
 )
 
 # One-line locator written next to the bridge, naming the canonical measure.py
@@ -168,13 +202,21 @@ def _hook_entries(bridge_path: Path) -> dict:
 
     return {
         "sessionStart": [entry("sessionStart")],
-        # Only the Shell tool is rewritten; matcher keeps every other tool out
-        # of the bridge's hot path (Cursor matchers are JS regex over tool name).
-        "preToolUse": [entry("preToolUse", matcher="Shell")],
+        # Shell is rewritten; Read is intercepted by the U2 read cache
+        # (shadow by default, emitting nothing until explicitly armed).
+        # The matcher keeps every other tool out of the bridge's hot path
+        # (Cursor matchers are JS regex over tool name).
+        "preToolUse": [entry("preToolUse", matcher="Shell|Read")],
         "postToolUse": [entry("postToolUse")],
         "preCompact": [entry("preCompact")],
         "stop": [entry("stop")],
         "sessionEnd": [entry("sessionEnd")],
+        # U4 record-only events: accounting, failure/burn signals, corroboration.
+        "afterAgentResponse": [entry("afterAgentResponse")],
+        "postToolUseFailure": [entry("postToolUseFailure")],
+        "afterShellExecution": [entry("afterShellExecution")],
+        "subagentStart": [entry("subagentStart")],
+        "subagentStop": [entry("subagentStop")],
     }
 
 
@@ -242,7 +284,10 @@ def _hooks_lock(hooks_path: Path):
     # 120s lease: the critical section copies the payload and rewrites
     # hooks.json; a 30s lease could lapse mid-RMW on a slow disk and let a
     # concurrent installer reclaim it, reintroducing the clobber.
-    with lease_lock(lock_path, acquire_timeout=5.0, lease_seconds=120.0) as acquired:
+    # reclaim_released: a cleanly FINISHED install (release marker written)
+    # must not block a fast re-run (git pull + reinstall) for the rest of the
+    # lease window; a crashed install's tombstone still holds until expiry.
+    with lease_lock(lock_path, acquire_timeout=5.0, lease_seconds=120.0, reclaim_released=True) as acquired:
         if not acquired:
             raise RuntimeError(
                 "another Cursor install/uninstall is in progress "
@@ -274,9 +319,28 @@ def _copy_no_follow(src: Path, dest: Path) -> None:
         raise
 
 
+def _resolved_root(home):
+    if home is None:
+        return cursor_home()
+    raw = str(home)
+    if not raw or raw.startswith("-"):
+        raise ValueError("--home requires a directory path")
+    path = home.expanduser() if isinstance(home, Path) else Path(raw).expanduser()
+    if path.is_symlink():
+        raise ValueError("--home must not be a symlink")
+    root = path.resolve()
+    try:
+        different = root != cursor_home().resolve()
+    except (OSError, ValueError, NotImplementedError):
+        different = True
+    if different:
+        print("Warning: set TOKEN_OPTIMIZER_CURSOR_HOME to this home for Cursor hooks and doctor.", file=sys.stderr)
+    return root
+
+
 def install(*, dry_run: bool = False, home: Path = None) -> dict:
     """Install the adapter. Returns a summary dict of actions taken."""
-    root = home if home is not None else cursor_home()
+    root = _resolved_root(home)
     actions = {"copied": [], "hook_file": None, "skipped": [], "dry_run": dry_run}
     plugin_dir = _plugin_dir(root)
 
@@ -322,12 +386,24 @@ def install(*, dry_run: bool = False, home: Path = None) -> dict:
     with _hooks_lock(hooks_path):
         existing = _read_hooks(hooks_path)
         hooks = existing.get("hooks")
-        if not isinstance(hooks, dict):
+        if hooks is None:
             hooks = {}
+        elif not isinstance(hooks, dict):
+            # Fail closed like the non-object root: replacing a malformed
+            # member would silently destroy foreign configuration (G4).
+            raise RuntimeError(
+                f"{hooks_path} has a non-object 'hooks' member "
+                f"({type(hooks).__name__}); refusing to replace it. "
+                "Fix or remove the member and re-run."
+            )
         for event, new_entries in _hook_entries(bridge_path).items():
             old = hooks.get(event, [])
             if not isinstance(old, list):
-                old = []
+                raise RuntimeError(
+                    f"{hooks_path} event {event!r} is not a list "
+                    f"({type(old).__name__}); refusing to replace it. "
+                    "Fix or remove the entry and re-run."
+                )
             hooks[event] = [e for e in old if not _is_ours(e, bridge_path)] + new_entries
         existing["hooks"] = hooks
         existing.setdefault("version", 1)
@@ -342,13 +418,8 @@ def install(*, dry_run: bool = False, home: Path = None) -> dict:
 
 
 def uninstall(*, dry_run: bool = False, home: Path = None) -> dict:
-    """Remove only entries install() added, plus the payload dir.
-
-    Session data (``<cursor_home>/token-optimizer/sessions``,
-    ``restore-context``, ``observed-events.jsonl``) and trends are left in place
-    for the user to purge manually, matching the Copilot uninstall contract.
-    """
-    root = home if home is not None else cursor_home()
+    """Remove our hooks, payload and derived caches; retain session history."""
+    root = _resolved_root(home)
     actions = {"removed": [], "dry_run": dry_run}
 
     bridge_path = _plugin_dir(root) / "cursor_hook_bridge.py"
@@ -376,17 +447,27 @@ def uninstall(*, dry_run: bool = False, home: Path = None) -> dict:
                         raise RuntimeError(f"failed writing {hooks_path}: {exc}") from exc
                 actions["removed"].append(f"{hooks_path} (Cursor entries)")
 
-    plugin_dir = _plugin_dir(root)
-    if plugin_dir.exists():
+    data_dir = root / "token-optimizer"
+    if data_dir.is_symlink() or (data_dir / "snapshot").is_symlink():
+        raise RuntimeError("refusing to remove caches through a symlinked data directory")
+    for plugin_dir in (_plugin_dir(root), data_dir / "read-fingerprints",
+                       data_dir / "checkpoints", data_dir / "restore-context",
+                       data_dir / "snapshot" / "checkpoints"):
+        if not plugin_dir.exists() and not plugin_dir.is_symlink():
+            continue
         if not dry_run:
             try:
-                shutil.rmtree(plugin_dir)
+                if plugin_dir.is_symlink():
+                    plugin_dir.unlink()
+                else:
+                    shutil.rmtree(plugin_dir)
             except OSError as exc:
                 # main() only surfaces RuntimeError; a raw OSError would escape
                 # as a traceback and leave a half-uninstalled state unexplained.
                 raise RuntimeError(f"failed removing {plugin_dir}: {exc}") from exc
         actions["removed"].append(str(plugin_dir))
 
+    actions["kept"] = ["session tallies, observed events, trends and other session data"]
     return actions
 
 
@@ -394,6 +475,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "uninstall"))
     parser.add_argument("--dry-run", action="store_true")
+    # --home overrides the resolved Cursor home (install.sh forwards the
+    # WSL-aware resolved path so the install and its banner agree, mirroring
+    # grok_install --home / copilot_install --home).
+    parser.add_argument("--home", type=Path, default=None)
     return parser
 
 
@@ -401,7 +486,7 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.action == "install":
-            result = install(dry_run=args.dry_run)
+            result = install(dry_run=args.dry_run, home=args.home)
             verb = "Would install" if args.dry_run else "Installed"
             print(f"{verb} Token Optimizer for Cursor.")
             print(f"  Hooks merged into: {result['hook_file']}")
@@ -409,10 +494,12 @@ def main(argv=None) -> int:
                   + (f", {len(result['skipped'])} missing: {result['skipped']}" if result["skipped"] else ""))
             print(_hint("  Run `python3 measure.py cursor-doctor` to verify readiness."))
         else:
-            result = uninstall(dry_run=args.dry_run)
+            result = uninstall(dry_run=args.dry_run, home=args.home)
             verb = "Would remove" if args.dry_run else "Removed"
             for item in result["removed"] or ["(nothing installed)"]:
                 print(f"{verb}: {item}")
+            for item in result["kept"]:
+                print(f"Kept: {item}")
         return 0
     except RuntimeError as exc:
         print(f"[Token Optimizer] {exc}", file=sys.stderr)

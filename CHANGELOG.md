@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [5.13.69] - 2026-11-09
+
+- Weekly savings stay whole when a few old transcripts were cleaned up (coverage shown), a partial count is labelled as one, and the savings report names its real period instead of "/mo".
+- Cursor adds re-read warnings, checkpoints, quality, coaching and fleet audit (beta). Counts use Cursor data where available; estimates are labelled. Read blocking is off by default pending live verification.
+- Dashboard history is easier to explore with 90-day, 180-day and All ranges, a remembered choice and on-demand full history when served locally.
+- Dashboard opens reliably when Claude runs it and reports interrupted builds instead of silently skipping them.
+- Search keeps every match when a saved copy cannot be made, and previews say exactly what was omitted (#334).
+- Cursor hooks work on Windows by skipping a POSIX-only file call; `install.sh --cursor` honors `--home`.
+
 ## [5.13.68] - 2026-11-07
 
 - Your own hooks are safe: repair, cleanup and uninstall only touch hooks Token Optimizer can prove it wrote, even when yours share our script names.

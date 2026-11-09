@@ -244,7 +244,7 @@ _NUMERIC_ERROR_LINE_RE = re.compile(
 )
 
 
-def _text_has_failure(text: str) -> bool:
+def _text_has_failure(text: str, anchored: bool = False) -> bool:
     """True when any line of ``text`` matches a failure pattern.
 
     Per line, so a pattern can match anywhere in the line (gcc/clang
@@ -254,6 +254,8 @@ def _text_has_failure(text: str) -> bool:
     from bash_compress import _ERROR_STDERR_PATTERNS
     for line in text.splitlines():
         if _NUMERIC_ERROR_LINE_RE.match(line):
+            continue
+        if anchored and not re.match(r"^\s*(?:(?:error|fatal|traceback|failed|panic|fehler|erreur|errore)\b|[^\n]+:\d+(?::\d+)?:\s*(?:fatal\s+)?error\b)", line, re.IGNORECASE):
             continue
         for pat in _ERROR_STDERR_PATTERNS:
             if pat.search(line):
@@ -329,6 +331,7 @@ def _looks_like_failure(
     stderr: str,
     exit_code: int | None = None,
     redirected: bool = False,
+    combined_output: bool = False,
 ) -> bool:
     """Decide whether a Bash run failed.
 
@@ -340,8 +343,8 @@ def _looks_like_failure(
     When no exit code is available, fall back to text: stderr is always
     scanned; stdout is scanned only when the command redirected stderr into
     stdout (``2>&1``), because otherwise an error-looking line on stdout is
-    just data. Redirected stdout is scanned line by line, anchored to line
-    start, with purely numeric payloads after the colon excluded.
+    just data. Redirected stdout is scanned line by line; combined Cursor
+    output uses anchored matching. Numeric error metrics are excluded.
     """
     if exit_code is not None:
         return exit_code != 0
@@ -367,7 +370,7 @@ def _looks_like_failure(
         from bash_compress import _ERROR_STDERR_PATTERNS
         if stderr and _text_has_failure(stderr):
             return True
-        if stdout and redirected and _text_has_failure(stdout):
+        if stdout and redirected and _text_has_failure(stdout, anchored=combined_output):
             return True
     except Exception:
         pass
@@ -381,6 +384,7 @@ def check(
     stderr: str = "",
     exit_code: int | None = None,
     store_id: str | None = None,
+    combined_output: bool = False,
 ):
     """Record this Bash run and return a nudge line when the streak warrants it.
 
@@ -441,7 +445,8 @@ def check(
         now = time.time() if now is None else now
         is_fail = _looks_like_failure(
             output, stderr, exit_code=exit_code,
-            redirected="2>&1" in command,
+            redirected=combined_output or "2>&1" in command,
+            combined_output=combined_output,
         )
         body = _heredoc_body(command)
         has_inline_script = body is not None and len(body) >= INLINE_SCRIPT_MIN_CHARS

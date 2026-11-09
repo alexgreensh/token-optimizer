@@ -25,7 +25,6 @@ INTERPRETER = '/usr/bin/python3'
 ENTRY = '/home/u/.config/devin/token-optimizer/plugin/devin_compress.py'
 USER_HOOK = {'matcher': '^read$', 'hooks': [{'type': 'command', 'command': 'echo user-hook'}]}
 
-
 def _rules(allow=(), ask=(), deny=()):
     return {'allow': list(allow), 'ask': list(ask), 'deny': list(deny)}
 
@@ -523,12 +522,12 @@ def test_cell_upgrade_from_5_13_43_layout():
     _write_config({'permissions': {'allow': ['Exec(git)']}})
     _quiet(d.install)
     manifest = json.loads(d.manifest_path().read_text())
-    for leaf in ('plugin/devin_hooks.py', 'plugin/_tomli.py'):
+    for leaf in ('plugin/devin_hooks.py', 'plugin/_tomli.py', 'plugin/bash_search_results.py', 'plugin/credential_url_patterns.py'):
         (d.state.data_dir() / leaf).unlink()
         del manifest['files'][str(d.state.data_dir() / leaf)]
     d.manifest_path().write_text(json.dumps(manifest))
     _quiet(d.install, mode='auto')
-    assert all((d.state.data_dir() / leaf).is_file() for leaf in ('plugin/devin_hooks.py', 'plugin/_tomli.py'))
+    assert all((d.state.data_dir() / leaf).is_file() for leaf in ('plugin/devin_hooks.py', 'plugin/_tomli.py', 'plugin/bash_search_results.py', 'plugin/credential_url_patterns.py'))
     from devin_verify import verify_install
     assert verify_install()
 

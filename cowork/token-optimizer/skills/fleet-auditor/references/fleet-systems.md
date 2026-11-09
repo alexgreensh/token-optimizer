@@ -12,6 +12,7 @@ Reference file for Fleet Auditor. Loaded on demand for adapter development.
 - [Hermes](#hermes)
 - [OpenCode](#opencode)
 - [IronClaw](#ironclaw)
+- [Cursor](#cursor)
 
 ---
 
@@ -165,3 +166,40 @@ CREATE TABLE messages (
 - Requires database connection string from config
 - Detect only today, no scan
 - Scanning would need exported data files or a direct DB connection
+
+---
+
+## Cursor
+
+**Data Location**: `~/.cursor/token-optimizer/` plus `~/.cursor/_backups/token-optimizer/` (override: `TOKEN_OPTIMIZER_CURSOR_HOME`; snapshot override: `TOKEN_OPTIMIZER_SNAPSHOT_DIR`)
+**Format**: JSON hook tallies + SQLite trends rollup (both written by Token Optimizer's own Cursor adapter — the collector adds no new write paths)
+
+### Key Files
+- `token-optimizer/sessions/{conversation-id}.json` — hook tally, the authoritative session record (turns, tool calls, models, compactions, cwd, timestamps). Written by `cursor_hook_bridge.py`'s `_update_tally`.
+- `_backups/token-optimizer/trends.db` — rollup output (`measure.py cursor-rollup`); `session_log` rows with `platform='cursor'` carry the resolved token figures. Read-only for consumers (`mode=ro`).
+
+### Tally Fields (JSON)
+```json
+{
+  "conversation_id": "...",
+  "first_ts": 1762684800.0,
+  "updated_at": 1762686600.0,
+  "turns": 14,
+  "tool_calls": 22,
+  "models": {"gpt-5.1": 9},
+  "tool_names": {"Shell": 15},
+  "compactions": [],
+  "cursor_version": "2026.11.05-abc1234",
+  "cwd": "/work/project",
+  "final": true,
+  "end_reason": "sessionEnd"
+}
+```
+
+### Token Fields
+The tally carries **no token totals**. Tokens come from the rollup's `session_log` (`input_tokens`, `output_tokens`), resolved by the rollup from `state.vscdb` bubble `tokenCount` (best-effort per Cursor staff) or a chars-over-four transcript estimate. Cache read/write breakdown does not exist for Cursor — leave it 0, do not estimate.
+
+A tallied session with no rollup row yet has **unknown** token figures: collect it with `token_source = "cursor_tally_only"` and zero tokens, and say the figures are unknown (run `measure.py cursor-rollup`). A silent zero is a defect (#149 class).
+
+### Cost
+`cost_source` is `cursor_no_cost_data`: Cursor exposes no local billing data and Token Optimizer never derives dollar figures for Cursor — no pricing-table lookup, no $0.00-as-free. Fleet rows carry `cost_usd = 0` with an explicit "no cost data" surface; waste columns show token deltas only.

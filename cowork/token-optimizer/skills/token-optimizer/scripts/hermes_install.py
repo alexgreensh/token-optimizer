@@ -73,6 +73,9 @@ _ENGINE_SCRIPTS = (
     "read_cache.py",
     "refetch_guard.py",
     "credential_patterns.py",
+    # credential_patterns imports this at module import time (URL family split
+    # under the 1,000-line ratchet); missing = import failure in the payload.
+    "credential_url_patterns.py",
 )
 
 # Plain-text locator file written into the plugin dir: one line, the absolute
@@ -96,7 +99,7 @@ _MEASURE_PACKAGE_FILES = (
     "_measure/pricing.py", "_measure/audit.py", "_measure/dashboard.py",
     "_measure/lifecycle.py", "_measure/sessions.py", "_measure/trends.py",
     "_measure/cache_policy.py", "_measure/daemon.py", "_measure/quality_archive.py",
-    "_measure/continuity.py", "_measure/savings.py", "_measure/cli.py",
+    "_measure/continuity.py", "_measure/savings.py", "_measure/cli.py", "_measure/dashboard_history.py", "_measure/weekly_activity.py",
 )
 
 

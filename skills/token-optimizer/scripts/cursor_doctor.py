@@ -3,13 +3,15 @@
 
 Per-surface health report with fix-it hints, plus ``--probe`` which replays
 the documented payload for each wired event through the exact installed
-command string (POSIX ``/bin/sh -c``) so a live Cursor is not required to prove
-the hooks can fire.
+command: the persisted string is shape-parsed and executed as argv (no shell)
+on POSIX and Windows, so a live Cursor is not required to prove the installed
+commands can fire. The probe does NOT prove Cursor itself fires the hooks;
+that is what the observed-events ledger reports.
 
 Checks:
   P0  Cursor binary presence (CLI ``agent`` / ``cursor`` launcher)
   P0  ~/.cursor exists; hooks.json present + writable
-  P1  Token Optimizer hook entries installed (six events) + parseable
+  P1  Token Optimizer hook entries installed (all wired events) + parseable
   P1  installed payload integrity (bridge, atomic-writer, compress)
   P1  observed-events ledger (which events fired; rewrite_honoured vs ignored)
   P2  state.vscdb (IDE token plane) / transcript dir (CLI plane)
@@ -41,8 +43,12 @@ from cursor_install import _py_path_is_trusted  # noqa: E402
 DAEMON_PORT = 24846
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-# The six events the installer wires (order = probe order = docs order).
-_WIRED_EVENTS = ("sessionStart", "preToolUse", "postToolUse", "preCompact", "stop", "sessionEnd")
+# The events the installer wires (order = probe order = docs order).
+_WIRED_EVENTS = (
+    "sessionStart", "preToolUse", "postToolUse", "preCompact", "stop",
+    "sessionEnd", "afterAgentResponse", "postToolUseFailure",
+    "afterShellExecution", "subagentStart", "subagentStop",
+)
 
 
 def _check(status: str, name: str, detail: str, hint: str = "") -> dict:
@@ -157,7 +163,7 @@ def _hook_config_checks() -> list:
     if missing and wired:
         checks.append(
             _check("warn", "hook event coverage", f"Missing events: {', '.join(missing)}.",
-                   "Re-run install to restore the full six-event set.")
+                   f"Re-run install to restore the full {len(_WIRED_EVENTS)}-event set.")
         )
     return checks
 
@@ -294,7 +300,40 @@ def _observed_checks() -> list:
     if honoured or ignored:
         detail += f"; Shell rewrite: {honoured} honoured, {ignored} ignored"
     checks.append(_check("ok", "observed events", detail))
+    checks.append(_read_channel_check(entries))
     return checks
+
+
+def _read_channel_check(entries: list) -> dict:
+    """U2: report the Read channel state from config + the observed ledger.
+
+    States: unknown / shadow / armed-unverified, computed by
+    cursor_read_cache.channel_state. Shadow silence neither arms nor
+    confirms, and NO ledger pattern promotes to verified: absence of a
+    reread is negative evidence, not delivery proof. armed-verified needs
+    positive controlled native evidence no current source provides.
+    """
+    try:
+        import cursor_read_cache
+
+        info = cursor_read_cache.channel_state(entries)
+    except Exception as exc:
+        return _check("warn", "read channel", f"state unavailable ({type(exc).__name__})")
+    state = info["state"]
+    detail = (f"{state} (mode={info['mode']}; Claude import config "
+              f"{'present' if info['claude_import_config_present'] else 'absent'})")
+    if state == "shadow":
+        return _check("ok", "read channel", detail,
+                      _hint("Shadow records what would be injected. To arm: set "
+                            "{\"mode\": \"soft_block\"} in "
+                            "<cursor-home>/token-optimizer/read-cache.json."))
+    if state == "armed-unverified":
+        return _check("warn", "read channel", detail,
+                      _hint("Denies are emitted but delivery is unproven; silence is "
+                            "consistent with cancels, failures and dropped hooks."))
+    if state == "unknown":
+        return _check("ok", "read channel", detail)
+    return _check("ok", "read channel", detail)
 
 
 def _data_checks() -> list:
@@ -404,6 +443,44 @@ def _probe_payloads() -> dict:
             "reason": "probe",
             "cursor_version": cv or "3.18.9",
         },
+        "afterAgentResponse": {
+            "hook_event_name": "afterAgentResponse",
+            "conversation_id": "to-probe-conv",
+            "generation_id": "to-probe-gen",
+            "model": "to-probe-model",
+            "text": "probe",
+            # Synthetic: third-party-observed fields, flagged in the ledger.
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cursor_version": cv or "3.18.9",
+        },
+        "postToolUseFailure": {
+            "hook_event_name": "postToolUseFailure",
+            "tool_name": "Shell",
+            "tool_input": {"command": "false"},
+            "error": "exit 1 (synthetic probe)",
+            "conversation_id": "to-probe-conv",
+            "cursor_version": cv or "3.18.9",
+        },
+        "afterShellExecution": {
+            "hook_event_name": "afterShellExecution",
+            "command": "echo token-optimizer-probe",
+            "output": "token-optimizer-probe",
+            "conversation_id": "to-probe-conv",
+            "cursor_version": cv or "3.18.9",
+        },
+        "subagentStart": {
+            "hook_event_name": "subagentStart",
+            "conversation_id": "to-probe-conv",
+            "tool_use_id": "to-probe-tu",
+            "cursor_version": cv or "3.18.9",
+        },
+        "subagentStop": {
+            "hook_event_name": "subagentStop",
+            "conversation_id": "to-probe-conv",
+            "tool_use_id": "to-probe-tu",
+            "cursor_version": cv or "3.18.9",
+        },
     }
 
 
@@ -454,9 +531,12 @@ def _run_probe_command(command: str, payload: dict, probe_home: Path) -> dict:
     ``probe_home`` redirects the bridge's data writes (tallies, observed-events)
     to a throwaway dir so replaying the documented payloads proves the hooks can
     fire without contaminating real session data with synthetic probe rows.
+
+    Windows: the installer writes a direct ``"<python>" "<bridge>" <event>``
+    command (no POSIX env prefix), which ``_parse_hook_command`` already
+    accepts; ``subprocess.run(argv)`` executes it natively, so the probe is
+    not POSIX-only.
     """
-    if sys.platform == "win32":
-        return {"event": None, "status": "skip", "detail": "probe is POSIX-only"}
     argv = _parse_hook_command(command)
     if argv is None:
         return {"event": None, "status": "fail",
@@ -572,7 +652,7 @@ def main(argv=None) -> int:
             _print_probe(results)
         ran = [r for r in results if r.get("status") == "ok"]
         failed = [r for r in results if r.get("status") == "fail"]
-        # Skips are informational (not installed / Windows), not failures.
+        # Skips are informational (event not installed), not failures.
         return 1 if failed else 0
 
     checks = run_checks()

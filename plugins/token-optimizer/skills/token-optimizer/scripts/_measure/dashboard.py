@@ -1,7 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
-
+from . import _compat, dashboard_history
 
 def _daemon_is_running():
     """Return True iff the dashboard daemon identity probe passes.
@@ -25,7 +24,6 @@ def _daemon_is_running():
         except (urllib.error.URLError, OSError, ValueError):
             continue
     return False
-
 
 def _launch_opener(argv):
     """Run a browser opener detached from our terminal (#199).
@@ -57,7 +55,6 @@ def _launch_opener(argv):
     if rc != 0:
         raise _measure_facade.subprocess.CalledProcessError(rc, argv)
 
-
 def _open_in_browser(filepath):
     """Open a file in the default browser. Cross-platform.
 
@@ -81,7 +78,6 @@ def _open_in_browser(filepath):
         url = _measure_facade.Path(filepath).as_uri()
         print("\n  Could not auto-open browser. Open manually:")
         print(f"  {url}")
-
 
 def _open_dashboard(fallback_filepath):
     """Open the dashboard, preferring the bookmarkable URL.
@@ -117,7 +113,6 @@ def _open_dashboard(fallback_filepath):
     # Daemon down: open the file directly
     _measure_facade._open_in_browser(fallback_filepath)
 
-
 def _serve_dashboard(filepath, port=None, host=None):
     """Serve the dashboard over HTTP for headless/remote access."""
     _measure_facade = _compat.facade()
@@ -128,7 +123,7 @@ def _serve_dashboard(filepath, port=None, host=None):
     filepath = _measure_facade.Path(filepath).resolve()
     serve_dir = str(filepath.parent)
     filename = filepath.name
-
+    _measure_facade._get_or_create_daemon_token()
     # Find an available port if the default is taken
     for attempt_port in range(port, port + 20):
         try:
@@ -283,13 +278,28 @@ def _serve_dashboard(filepath, port=None, host=None):
                 self.send_error(413, "Request body too large")
                 return
 
-            # Read JSON body
             body = {}
             if content_len > 0:
                 try:
                     body = _measure_facade.json.loads(self.rfile.read(content_len))
                 except (_measure_facade.json.JSONDecodeError, ValueError):
                     pass
+
+            if not isinstance(body, dict): body = {}
+            if path == "/api/regenerate":
+                choice = body.get("days", dashboard_history.load(_measure_facade.RUNTIME_DIR))
+                if not dashboard_history.valid(choice):
+                    self._json_response(400, {"ok": False, "msg": "invalid history window"})
+                    return
+                try:
+                    days = dashboard_history.resolve_days(choice, _measure_facade.TRENDS_DB)
+                    out = _measure_facade.generate_standalone_dashboard(days=days, quiet=True, force=True)
+                    if out and "days" in body:
+                        dashboard_history.save(_measure_facade.RUNTIME_DIR, choice)
+                    self._json_response(200 if out else 500, {"ok": bool(out)})
+                except Exception:
+                    self._json_response(500, {"ok": False, "msg": "regeneration failed"})
+                return
 
             if path == "/api/session-turns":
                 raw_path = body.get("jsonl_path", "")
@@ -436,7 +446,6 @@ def _serve_dashboard(filepath, port=None, host=None):
         except KeyboardInterrupt:
             print("\n  Server stopped.")
 
-
 def _sanitize_dashboard_paths(data):
     """Redact home-directory prefixes from paths embedded in dashboard HTML.
 
@@ -468,7 +477,6 @@ def _sanitize_dashboard_paths(data):
             mr["target"] = _measure_facade._display_path(target)
 
     return data
-
 
 def _codex_state_summary():
     """Collect Codex runtime-state metrics for display, or None unless Codex.
@@ -541,7 +549,6 @@ def _codex_state_summary():
         pass
     return summary
 
-
 def codex_state_report(as_json=None):
     """Print the Codex runtime-state summary (subagents, memory, goals, signals)."""
     _measure_facade = _compat.facade()
@@ -611,7 +618,6 @@ def codex_state_report(as_json=None):
         print(f"Compaction: {comp['count']} this session, "
               f"avg compression to {comp['avg_ratio'] * 100:.0f}% of pre-compaction context")
     print()
-
 
 def generate_dashboard(coord_path):
     """Generate an interactive HTML dashboard from audit results."""
@@ -684,7 +690,7 @@ def generate_dashboard(coord_path):
     # Collect trends and health data
     print("  Collecting usage trends...")
     try:
-        trends = _measure_facade._collect_trends_data(days=30)
+        trends = _measure_facade._collect_trends_data(days=dashboard_history.selected_days(_measure_facade.RUNTIME_DIR, _measure_facade.TRENDS_DB))
     except Exception:
         trends = None
     print("  Checking session health...")
@@ -848,12 +854,10 @@ def generate_dashboard(coord_path):
     _measure_facade._open_dashboard(fallback_filepath=out_path)
     return str(out_path)
 
-
 def _shell_script_path():
     """This script's resolved path, quoted to paste into Bash, PowerShell and cmd.exe."""
     _measure_facade = _compat.facade()
     return _measure_facade.shell_path(_measure_facade.Path(_measure_facade.__file__).resolve())
-
 
 def _measure_cli(*args):
     """The command that runs this script, for hints a user will paste into a shell.
@@ -868,7 +872,6 @@ def _measure_cli(*args):
     parts = [_measure_facade.hint_python(), _measure_facade._shell_script_path()]
     parts.extend(args)
     return " ".join(parts)
-
 
 def _runtime_cli(runtime, *args):
     """`_measure_cli` pinned to a runtime for hints.
@@ -885,7 +888,6 @@ def _runtime_cli(runtime, *args):
     parts.extend(args)
     return " ".join(parts)
 
-
 def _hint(text):
     """Make a printed hint pasteable from any directory.
 
@@ -897,12 +899,10 @@ def _hint(text):
     text = _measure_facade._ENV_PREFIXED_BARE_HINT.sub(lambda m: ((_measure_facade := _compat.facade()), _measure_facade._runtime_cli(m.group(1)))[1], text)
     return text.replace("python3 measure.py", _measure_facade._measure_cli())
 
-
 def _subagent_cache_cmd(action=None):
     """The `subagent-cache [action]` command users are told to run (advice, enable, undo)."""
     _measure_facade = _compat.facade()
     return _measure_facade._measure_cli("subagent-cache", *([action] if action else []))
-
 
 def _display_path(absolute_path):
     """Replace the user's home directory with ~ for display purposes.
@@ -917,7 +917,6 @@ def _display_path(absolute_path):
     if s.startswith(home + _measure_facade.os.sep):
         return "~" + s[len(home):]
     return s
-
 
 def _collect_hook_status_for_dashboard():
     """Collect hook installation status for dashboard toggle panel."""
@@ -962,7 +961,6 @@ def _collect_hook_status_for_dashboard():
             "uninstall_cmd": f"{_measure_facade.hint_python()} {mp_cmd} setup-smart-compact --uninstall",
         },
     }
-
 
 def _collect_codex_hook_status_for_dashboard():
     """Collect Codex project hook status for dashboard toggle panel."""
@@ -1039,7 +1037,6 @@ def _collect_codex_hook_status_for_dashboard():
         },
     }
 
-
 def _collect_copilot_hook_status_for_dashboard():
     """Hook status for the dashboard toggle panel under the Copilot runtime.
 
@@ -1105,7 +1102,6 @@ def _collect_copilot_hook_status_for_dashboard():
         },
     }
 
-
 def _collect_cursor_hook_status_for_dashboard():
     """Hook status for the dashboard toggle panel under the Cursor runtime.
 
@@ -1160,7 +1156,6 @@ def _collect_cursor_hook_status_for_dashboard():
         },
     }
 
-
 def _collect_grok_hook_status_for_dashboard():
     """Hook status for the dashboard toggle panel under the Grok Build runtime.
 
@@ -1210,7 +1205,6 @@ def _collect_grok_hook_status_for_dashboard():
             "uninstall_cmd": "",
         },
     }
-
 
 def _collect_hermes_hook_status_for_dashboard():
     """Collect Hermes plugin hook status for dashboard toggle panel.
@@ -1265,7 +1259,6 @@ def _collect_hermes_hook_status_for_dashboard():
             "uninstall_cmd": "",
         },
     }
-
 
 def _collect_antigravity_hook_status_for_dashboard():
     """Antigravity plugin hook status for the dashboard toggle panel.
@@ -1325,7 +1318,6 @@ def _collect_antigravity_hook_status_for_dashboard():
         },
     }
 
-
 def _parse_skill_frontmatter(path: Path) -> dict:
     _measure_facade = _compat.facade()
     try:
@@ -1354,7 +1346,6 @@ def _parse_skill_frontmatter(path: Path) -> dict:
     meta["tokens"] = _measure_facade._estimate_tokens(discovery_text)
     meta["body_tokens"] = _measure_facade._estimate_tokens(text)
     return meta
-
 
 def _collect_codex_skill_inventory(cfg: dict, *, project: Path) -> dict[str, list[dict]]:
     _measure_facade = _compat.facade()
@@ -1469,7 +1460,6 @@ def _collect_codex_skill_inventory(cfg: dict, *, project: Path) -> dict[str, lis
     disabled.sort(key=lambda item: ((_measure_facade := _compat.facade()), (item["source"], item["name"]))[1])
     return {"active": active, "disabled": disabled}
 
-
 def _collect_codex_mcp_inventory(cfg: dict) -> list[dict]:
     _measure_facade = _compat.facade()
     servers = cfg.get("mcp_servers")
@@ -1494,7 +1484,6 @@ def _collect_codex_mcp_inventory(cfg: dict) -> list[dict]:
         })
     return sorted(items, key=lambda item: ((_measure_facade := _compat.facade()), item["name"])[1])
 
-
 def _collect_codex_plugin_inventory(cfg: dict) -> list[dict]:
     _measure_facade = _compat.facade()
     plugins = cfg.get("plugins")
@@ -1508,11 +1497,9 @@ def _collect_codex_plugin_inventory(cfg: dict) -> list[dict]:
         items.append({"name": name, "enabled": enabled})
     return sorted(items, key=lambda item: ((_measure_facade := _compat.facade()), item["name"])[1])
 
-
 def _codex_config_path() -> Path:
     _measure_facade = _compat.facade()
     return _measure_facade.runtime_home() / "config.toml"
-
 
 def _safe_codex_config_path() -> Path:
     _measure_facade = _compat.facade()
@@ -1530,7 +1517,6 @@ def _safe_codex_config_path() -> Path:
         parent.mkdir(mode=0o700)
     return path
 
-
 def _codex_config_lock():
     """Bounded portable lease for config.toml writes.
 
@@ -1546,7 +1532,6 @@ def _codex_config_lock():
         acquire_timeout=0.075,
     ) as acquired:
         yield acquired
-
 
 def _skill_mgmt_lock():
     """Bounded portable lease serializing skill archive/restore mutations.
@@ -2278,6 +2263,8 @@ def generate_standalone_dashboard(days=None, quiet=None, force=None):
     # version-mismatch regen path so a freshly-updated plugin always
     # wins over a recently-written stale file.
     _measure_facade = _compat.facade()
+    if days is None:
+        days = dashboard_history.resolve_days(dashboard_history.load(_measure_facade.RUNTIME_DIR), _measure_facade.TRENDS_DB)
     if quiet and not force and _measure_facade.DASHBOARD_PATH.exists():
         try:
             age = _measure_facade.time.time() - _measure_facade.DASHBOARD_PATH.stat().st_mtime
@@ -2659,8 +2646,32 @@ def _dispatch_dashboard(args):
                 print(f"[Error] Invalid --port value: {args[i + 1]}")
                 _measure_facade.sys.exit(1)
             serve = True
+
+    def _note_hook_bounded():
+        """One stderr line when this run is bounded as a hook.
+
+        A piped-stdin invocation (an agent's shell tool, a runner script) is
+        indistinguishable from a real hook, so the 20s budget can kill a heavy
+        rebuild and the run exits 1 with no explanation -- the "dashboard
+        quietly skips itself" report. Real hook launchers pass --quiet, so
+        gating on it keeps hook logs clean while every non-quiet bounded run
+        says why and names the --user escape hatch. stderr only: stdout stays
+        clean for the `Dashboard:` line consumers parse.
+        """
+        if "--quiet" in args or "-q" in args:
+            return
+        print(
+            "[Token Optimizer] dashboard: stdin is not a terminal, so this run "
+            "is treated as a hook and the rebuild is capped at a "
+            f"{_measure_facade._dashboard_hook_budget_seconds():g}s budget; it "
+            "may be killed before it finishes or opens. Pass --user to force "
+            "an interactive run.",
+            file=_measure_facade.sys.stderr,
+        )
+
     if not cp:
-        days = 30
+        choice = dashboard_history.load(_measure_facade.RUNTIME_DIR)
+        explicit = False
         quiet = "--quiet" in args or "-q" in args
         # --force bypasses the 60s write throttle. The detached version-bump
         # self-heal passes it so a stale file just written by a killed regen
@@ -2669,12 +2680,20 @@ def _dispatch_dashboard(args):
         for i, a in enumerate(args):
             if a == "--days" and i + 1 < len(args):
                 try:
-                    days = int(args[i + 1])
+                    choice = 'all' if args[i + 1] == 'all' else int(args[i + 1])
+                    if not dashboard_history.valid(choice):
+                        raise ValueError()
+                    explicit = True
                 except ValueError:
-                    pass
+                    print("[Error] --days must be a positive integer or all")
+                    _measure_facade.sys.exit(1)
+        days = dashboard_history.resolve_days(choice, _measure_facade.TRENDS_DB)
+        force = force or explicit
         deadline = (
             None if (serve or not _measure_facade._running_under_hook()) else _measure_facade._install_hook_budget(_measure_facade._dashboard_hook_budget_seconds())
         )
+        if deadline is not None:
+            _note_hook_bounded()
         timed_out = False
         try:
             lock = (_measure_facade._dashboard_selfheal_build_lock()
@@ -2698,6 +2717,11 @@ def _dispatch_dashboard(args):
         # applies, so a forced heal never clobbers a newer dashboard).
         if timed_out:
             _measure_facade._spawn_detached_dashboard_selfheal(days=days, force=force)
+        if out and explicit and not _measure_facade.os.environ.get("TOKEN_OPTIMIZER_DASHBOARD_SELFHEAL"):
+            try:
+                dashboard_history.save(_measure_facade.RUNTIME_DIR, choice)
+            except OSError:
+                pass
         if out and serve:
             _measure_facade._serve_dashboard(out, port=serve_port, host=serve_host)
         elif out and not quiet:
@@ -2706,6 +2730,8 @@ def _dispatch_dashboard(args):
     deadline = (
         None if (serve or not _measure_facade._running_under_hook()) else _measure_facade._install_hook_budget(_measure_facade._dashboard_hook_budget_seconds())
     )
+    if deadline is not None:
+        _note_hook_bounded()
     timed_out = False
     try:
         out = _measure_facade.generate_dashboard(cp)

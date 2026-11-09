@@ -109,7 +109,7 @@ First-time install prompt:
 
 After you run `setup-daemon`, the dashboard is served at:
   URL:   http://localhost:24842/token-optimizer
-Until then, open the file path `measure.py dashboard` prints on its `  Dashboard: ` line. The location is install-dependent, so read it from the output rather than assuming a literal path.
+Until then, open the file path `measure.py dashboard --user` prints on its `  Dashboard: ` line. The location is install-dependent, so read it from the output rather than assuming a literal path.
 
 What installing the URL does:
 - Runs a tiny web server on your machine (~2MB memory)

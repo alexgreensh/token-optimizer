@@ -272,6 +272,15 @@ def _rw(**over):
     return rw
 
 
+def test_weekly_card_discloses_missing_sessions():
+    value = {'saved_usd': 200, 'coverage': {'priced_sessions': 342, 'total_sessions': 344}}
+    window = {'key': 'seven_day', 'headroom_pct': 44, 'without_headroom_pct': 30,
+              'used_pct': 56, 'saved_usd': 200, 'full_value': value}
+    text = _card_text(_rw(windows=[window], weekly_full_value=value))
+    assert 'Based on 342 of 344 sessions' in text
+    assert 'missing sessions are not estimated' in text
+
+
 def test_factor_below_one_never_renders_lighter():
     text = _card_text(_rw())
     assert "lighter model" not in text.lower()

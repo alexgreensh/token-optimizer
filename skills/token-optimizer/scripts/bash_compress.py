@@ -1942,45 +1942,8 @@ def _compress_search_results(output):
     if not files:
         return output  # not file:line format, don't compress
 
-    _MAX_PER_FILE = 3
-    _MAX_FILES = 20
-    result: list[str] = []
-    file_count = 0
-    file_items = list(files.items())
-    for fname, file_lines in file_items:
-        if file_count >= _MAX_FILES:
-            break
-        if len(file_lines) <= _MAX_PER_FILE:
-            result.extend(file_lines)
-        else:
-            result.extend(file_lines[:_MAX_PER_FILE])
-            result.append(f"  ... {len(file_lines) - _MAX_PER_FILE} more matches in {fname} ...")
-        file_count += 1
-
-    # Keep EVERY matching filename (cheap) so "does file X match?" stays
-    # answerable; only per-line CONTENT past the top-N is dropped, never names.
-    if file_count < len(file_items):
-        result.append(f"... plus {len(file_items) - file_count} more files with matches "
-                       f"(filenames + counts, content omitted):")
-        for fname, file_lines in file_items[file_count:]:
-            result.append(f"  {fname}: {len(file_lines)} matches")
-
-    if no_file:
-        result.append("")
-        # "Binary file X matches" lines name a matching file; keep ALL of them so
-        # the banner's "a file not listed has NO matches" stays true for binaries.
-        binary = [ln for ln in no_file if ln.startswith("Binary file ") and " matches" in ln]
-        other = [ln for ln in no_file if not (ln.startswith("Binary file ") and " matches" in ln)]
-        result.extend(binary)
-        result.extend(other[:10])
-        if len(other) > 10:
-            result.append(f"... {len(other) - 10} more non-file lines omitted ...")
-
-    total_matches = sum(len(v) for v in files.values())
-    result.insert(0, f"[Search results: {total_matches} matches across {len(files)} files. "
-                     f"ALL matching filenames listed; per-line content shown for the top "
-                     f"{_MAX_FILES}. A file not listed here has NO matches.]")
-    return "\n".join(result)
+    from bash_search_results import render_search_results
+    return render_search_results(files, no_file)
 
 
 _PATTERN_HANDLERS = {
@@ -2385,7 +2348,7 @@ def main():
 
         # Progressive disclosure: archive the raw original BEFORE compression
         # so the model can retrieve it via `expand <key>` if needed. Fail-open:
-        # if archiving fails, compression proceeds without the pointer.
+        # if archiving fails, serve the original instead of a lossy preview.
         _archive_key = None
         if compressed != raw_output and len(raw_output) > 500:
             try:
@@ -2413,6 +2376,11 @@ def main():
                     _archive_key = None
             except Exception:
                 _archive_key = None
+
+        # Search matches must remain recoverable even below the archive floor
+        # or when the archive write fails. Other handlers keep their contracts.
+        if _archive_key is None and _detect_pattern(command_str) == "search_results":
+            compressed = raw_output
 
         # Record savings to trends.db if compression was meaningful
         try:

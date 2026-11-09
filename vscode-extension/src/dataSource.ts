@@ -6,9 +6,18 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ClaudePaths, detectPluginInstalled } from './paths';
-import { findActiveSession, findActiveCopilotSession, ActiveSession } from './sessionResolver';
+import {
+  findActiveSession,
+  findActiveCopilotSession,
+  findActiveCursorSession,
+  readTallyFile,
+  cursorTallyInWorkspace,
+  ActiveSession,
+  CursorActiveSession,
+} from './sessionResolver';
 import { JsonlTailer } from './jsonlTail';
 import { buildSnapshot, parseRateLimitsSidecar } from './cacheReader';
+import { buildCursorSnapshot } from './cursorReader';
 import { estimateRateLimitsFromTranscripts } from './usageEstimator';
 import { RateLimits, Snapshot, emptySnapshot } from './types';
 
@@ -29,6 +38,7 @@ export class DataSource {
   // project dir or re-read settings on each 5s tick — only when the cache dir
   // changes (a new session writes there) or on a periodic safety rescan.
   private cachedSession: ActiveSession | null = null;
+  private cachedCursorSession: CursorActiveSession | null = null;
   private cachedEffort: string | null = null;
   private cachedUsageEstimate: RateLimits | null = null;
   private needsRescan = true;
@@ -43,15 +53,21 @@ export class DataSource {
   start(): void {
     try {
       this.watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(vscode.Uri.file(this.paths.cacheDir), '*.json')
+        // Recursive: Cursor keeps its per-session tallies one level down in
+        // cacheDir/sessions/, while Claude/Copilot caches are flat.
+        new vscode.RelativePattern(vscode.Uri.file(this.paths.cacheDir), '**/*.json')
       );
       // Content changes (live-fill / rate-limits / quality-cache updates) belong
       // to the SAME session, so they must NOT trigger a session re-scan — those
       // writes fire several times a second and re-scanning stat-walks every
-      // project dir. Only a new or removed file can mean a session change.
-      this.watcher.onDidChange(() => this.scheduleRefresh(false));
-      this.watcher.onDidCreate(() => this.scheduleRefresh(true));
-      this.watcher.onDidDelete(() => this.scheduleRefresh(true));
+      // project dir. Only a new or removed file can mean a session change —
+      // plus, in Cursor mode, a tally update for a DIFFERENT conversation,
+      // which means the user switched chats inside the same window.
+      this.watcher.onDidChange((uri) => this.scheduleRefresh(this.cursorSessionSwitch(uri)));
+      this.watcher.onDidCreate((uri) => this.scheduleRefresh(
+        !this.paths.cursorSessionsDir || !this.cachedCursorSession || this.cursorSessionSwitch(uri)));
+      this.watcher.onDidDelete((uri) => this.scheduleRefresh(
+        !this.paths.cursorSessionsDir || !this.cachedCursorSession || path.resolve(uri.fsPath) === path.resolve(this.cachedCursorSession.tallyPath)));
     } catch {
       // Watching is best-effort; the timer below still keeps us current.
     }
@@ -107,6 +123,28 @@ export class DataSource {
     this.debounce = setTimeout(() => this.refresh(false), DEBOUNCE_MS);
   }
 
+  // True when a changed file is a Cursor tally for a DIFFERENT conversation
+  // than the cached active session — i.e. the user switched chats and the
+  // cached identity is stale. The bridge rewrites the SAME tally on every
+  // hook event, so same-file changes stay on the cheap path; only Cursor mode
+  // has per-session tally files under the watched dir, so other runtimes
+  // always return false here.
+  private cursorSessionSwitch(uri: vscode.Uri): boolean {
+    const sessionsDir = this.paths.cursorSessionsDir;
+    if (!sessionsDir || !this.cachedCursorSession) return false;
+    try {
+      const changed = path.resolve(uri.fsPath);
+      const dir = path.resolve(sessionsDir);
+      if (!changed.startsWith(dir + path.sep)) return false;
+      if (changed === path.resolve(this.cachedCursorSession.tallyPath)) return false;
+      const workspace = this.workspaceDir();
+      if (!workspace) return true;
+      return cursorTallyInWorkspace(changed, workspace);
+    } catch {
+      return false;
+    }
+  }
+
   refresh(recomputeUsageEstimate = false): void {
     if (this.disposed) return;
     let snap: Snapshot;
@@ -116,6 +154,12 @@ export class DataSource {
       // Log the error instead of swallowing it silently.
       console.error('[Token Optimizer] DataSource.refresh error:', e);
       snap = emptySnapshot();
+      // Keep the empty state's runtime honest even on a transient read error.
+      snap.runtimeName = this.paths.cursorSessionsDir
+        ? 'cursor'
+        : this.paths.sessionStateDir
+          ? 'copilot'
+          : 'claude';
     }
     // Overlay independently of the disk read so a transient parse error can't
     // flip an installed user into the funnel: detection is pure fs.statSync on
@@ -129,6 +173,29 @@ export class DataSource {
   }
 
   private buildFromDisk(recomputeUsageEstimate: boolean): Snapshot {
+    const isCursorMode = !!this.paths.cursorSessionsDir;
+    if (isCursorMode) {
+      // Cursor mode: resolve and render from hook tallies only. There are no
+      // Claude-shape transcripts to tail, no effort setting, and no rate-limit
+      // sidecars, so the generic readers are skipped entirely. Session IDENTITY
+      // is resolved on rescan, but the tally CONTENT is re-read on every
+      // refresh — the bridge rewrites it on every hook event, and a cached
+      // parse would freeze fill/grade at rescan time.
+      if (this.needsRescan) {
+        this.cachedCursorSession = findActiveCursorSession(this.paths.cursorSessionsDir!, {
+          workspaceDir: this.workspaceDir(),
+        });
+        this.needsRescan = false;
+      }
+      const tally = this.cachedCursorSession
+        ? readTallyFile(this.cachedCursorSession.tallyPath)
+        : null;
+      return buildCursorSnapshot(tally, {
+        nowMs: Date.now(),
+        scoped: this.workspaceDir() != null,
+      });
+    }
+
     if (this.needsRescan) {
       // Copilot mode: resolve via session-state dirs (by events.jsonl mtime).
       // Claude mode: resolve via projects transcript dirs (by .jsonl mtime).
@@ -180,7 +247,7 @@ export class DataSource {
       }
     }
 
-    return buildSnapshot({
+    const snap = buildSnapshot({
       qualityJson: session ? readIfExists(this.paths.qualityCache(session.sessionId)) : null,
       liveFillJson: readIfExists(this.paths.liveFill),
       rateLimitsJson,
@@ -193,6 +260,8 @@ export class DataSource {
       nowMs,
       staleAfterSeconds: this.getStaleAfterSeconds(),
     });
+    snap.runtimeName = isCopilotMode ? 'copilot' : 'claude';
+    return snap;
   }
 
   private readEffort(): string | null {

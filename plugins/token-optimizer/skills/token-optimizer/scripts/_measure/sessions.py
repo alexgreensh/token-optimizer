@@ -2377,7 +2377,7 @@ def _grok_summary():
         print(f"    Cost: ~${total_cost:,.2f} ({cost_known} session(s) with authoritative cost)")
     else:
         print("    Cost: no authoritative billing data recorded (costUsdTicks scrubbed)")
-    print(f"    Tokens: {total_in:,} in / {total_out:,} out")
+    print(f"    Tokens: {total_in:,} in / {total_out:,} out" + (f" (includes {estimated} estimated sessions)" if estimated else ""))
     if top_models:
         print("    Models: " + ", ".join(f"{_measure_facade._strip_ansi(str(m))} ({v:,})" for m, v in top_models))
     if incomplete:
@@ -2593,7 +2593,7 @@ def _copilot_summary():
             print(f"    Cost: ~${total_cost:,.2f} (premium requests)")
         else:
             print("    Cost: no billing data recorded by Copilot for these sessions")
-        print(f"    Tokens: {total_in:,} in / {total_out:,} out")
+        print(f"    Tokens: {total_in:,} in / {total_out:,} out" + (f" (includes {estimated} estimated sessions)" if estimated else ""))
         if top_models:
             print("    Models: " + ", ".join(f"{_measure_facade._strip_ansi(str(m))} ({v:,})" for m, v in top_models))
         if incomplete:
@@ -2819,13 +2819,9 @@ def _write_cursor_restore_context(sessions, quiet=None):
         import tempfile  # noqa: PLC0415
 
         from runtime_env import cursor_home as _ch  # noqa: PLC0415
-
-        # Group the most recent COMPLETE session per workspace root. The key
-        # must match what the sessionStart hook looks up: workspace_roots[0]
-        # (the repo root Cursor exports) first, then cwd as a fallback. Using
-        # cwd alone would key the file by a tool's working_directory (often a
-        # subdirectory) while sessionStart looks up the repo root — a silent
-        # never-match.
+        from cursor_bridge_checkpoint import normalize_workspace  # noqa: PLC0415
+        from datetime import datetime  # noqa: PLC0415
+        # Match sessionStart's workspace root and source-session end time.
         by_ws: dict = {}
         for s in sessions:
             if s.get("incomplete"):
@@ -2837,19 +2833,21 @@ def _write_cursor_restore_context(sessions, quiet=None):
                 root = str(s.get("cwd") or s.get("slug") or "")
             if not root:
                 continue
-            by_ws.setdefault(root, []).append(s)
-
+            by_ws.setdefault(normalize_workspace(root), []).append(s)
         def _clean(value):
             _measure_facade = _compat.facade()
             text = str(value or "")
             text = "".join(ch for ch in text if ch == " " or ch.isprintable())
             return text[:200]
-
         base = _ch() / "token-optimizer" / "restore-context"
         base.mkdir(parents=True, exist_ok=True)
         for root, group in by_ws.items():
-            latest = max(group, key=lambda s: ((_measure_facade := _compat.facade()), (s.get("first_ts") is not None, s.get("first_ts") or ""))[1])
-            lines = [f"[Token Optimizer] Continuity from your previous Cursor session in {_clean(root)}:"]
+            latest = max(group, key=lambda s: (s.get("last_ts") is not None, s.get("last_ts") or ""))
+            try:
+                end_ts = datetime.fromisoformat(str(latest.get("last_ts") or "").replace("Z", "+00:00")).timestamp()
+            except (ValueError, OverflowError):
+                continue
+            lines = [f"<!-- source-end: {end_ts} -->", f"[Token Optimizer] Continuity from your previous Cursor session in {_clean(root)}:"]
             if latest.get("model"):
                 lines.append(
                     f"- Model: {_clean(latest['model'])}; "
@@ -2884,8 +2882,34 @@ def _cursor_summary():
     import cursor_state as _cst  # noqa: PLC0415
 
     home = _ch() if _ch is not None else _measure_facade.Path.home() / ".cursor"
-    tallies = [t for p in _cst.find_tallies(home) if (t := _cst.read_tally(p)) is not None]
-    normalized = [s for t in tallies if (s := _measure_facade.cursor_session.normalize_session(t))]
+    tallies = []
+    for p in _cst.find_tallies(home):
+        t = _cst.read_tally(p)
+        if t is not None:
+            tallies.append(_cst.idle_finalise(t))
+
+    # Resolve the same token sources _collect_cursor_sessions uses: raw tally
+    # JSON never carries bubble_tokens/transcript_tokens, so without this the
+    # summary always reports 0 tokens and mislabels every session "estimated".
+    composer_ids = [
+        str(t.get("conversation_id") or t.get("session_id") or "") for t in tallies
+    ]
+    try:
+        bubble_tokens = _cst.read_state_vscdb_tokens(composer_ids, db_path=_cst.state_vscdb_path_for_home(home))
+    except Exception:
+        bubble_tokens = {}
+    normalized = []
+    for t in tallies:
+        t = dict(t)
+        cid = str(t.get("conversation_id") or t.get("session_id") or "")
+        t["bubble_tokens"] = bubble_tokens.get(cid)
+        try:
+            t["transcript_tokens"] = _cst.transcript_estimate(t.get("transcript_path"), home)
+        except Exception:
+            t["transcript_tokens"] = None
+        s = _measure_facade.cursor_session.normalize_session(t)
+        if s is not None:
+            normalized.append(s)
 
     print("Token Optimizer — Cursor summary")
     if not normalized:
@@ -2899,7 +2923,12 @@ def _cursor_summary():
     total_in = sum(s.get("total_input_tokens", 0) for s in normalized)
     total_out = sum(s.get("total_output_tokens", 0) for s in normalized)
     incomplete = sum(1 for s in normalized if s.get("incomplete"))
-    estimated = sum(1 for s in normalized if s.get("estimated"))
+    token_sources = {}
+    for s in normalized:
+        src = s.get("token_source") or "unknown"
+        token_sources[src] = token_sources.get(src, 0) + 1
+    estimated = token_sources.get("cursor_transcript_estimate", 0)
+    unknown_tokens = token_sources.get("cursor_tally_only", 0)
     compactions = sum(s.get("compactions", 0) for s in normalized)
     surfaces = {}
     for s in normalized:
@@ -2907,7 +2936,11 @@ def _cursor_summary():
         surfaces[sur] = surfaces.get(sur, 0) + 1
 
     print(f"  {len(normalized)} session(s)")
-    print(f"    Tokens: {total_in:,} in / {total_out:,} out")
+    print(f"    Tokens: {total_in:,} in / {total_out:,} out" + (f" (includes {estimated} estimated sessions)" if estimated else ""))
+    if token_sources:
+        print("    Token sources: " + ", ".join(
+            f"{k} ({v})" for k, v in sorted(token_sources.items())
+        ))
     if compactions:
         print(f"    Compactions captured: {compactions}")
     if surfaces:
@@ -2917,7 +2950,12 @@ def _cursor_summary():
     if estimated:
         print(
             f"    {estimated} session(s) use estimated token counts "
-            "(state.vscdb tokenCount is best-effort; transcripts carry no usage)"
+            "(transcript chars-over-four; state.vscdb tokenCount is best-effort)"
+        )
+    if unknown_tokens:
+        print(
+            f"    {unknown_tokens} session(s) have no token figures "
+            "(tally only) — unknown, not zero"
         )
     print()
     print("  Cost: Cursor stores no local billing data — no savings headline is")
@@ -2972,7 +3010,7 @@ def _collect_cursor_sessions(days=None, quiet=None, rebuild=None):
             str(t.get("conversation_id") or t.get("session_id") or "") for t in tallies
         ]
         try:
-            bubble_tokens = _cst.read_state_vscdb_tokens(composer_ids)
+            bubble_tokens = _cst.read_state_vscdb_tokens(composer_ids, db_path=_cst.state_vscdb_path_for_home(home))
         except Exception:
             bubble_tokens = {}
 

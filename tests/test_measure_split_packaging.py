@@ -56,7 +56,7 @@ def test_devin_closed_set_refuses_package_and_every_provider():
 
 @pytest.mark.parametrize('missing', ['__init__.py', '_compat.py', 'runtime.py', 'pricing.py',
     'audit.py', 'dashboard.py', 'lifecycle.py', 'sessions.py', 'trends.py', 'cache_policy.py',
-    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py'])
+    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py'])
 def test_native_completeness_refuses_each_missing_provider(tmp_path, monkeypatch, missing):
     import codex_doctor
     import hermes_doctor

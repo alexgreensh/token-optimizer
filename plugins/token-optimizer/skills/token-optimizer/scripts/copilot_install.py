@@ -48,6 +48,7 @@ _PAYLOAD_MODULES = (
     "copilot_vscode.py",
     "bash_hook.py",
     "bash_compress.py",
+    "bash_search_results.py",
     # Dependency-free whitelist gate shared by bash_hook + bash_compress.
     "bash_whitelist.py",
     # command_filters + _tomli: user [filters.*] TOML config consulted by
@@ -75,6 +76,9 @@ _PAYLOAD_MODULES = (
     # credential_patterns: bash_compress's credential-preservation patterns and
     # copilot_session's topic redaction (both fall back to less without it).
     "credential_patterns.py",
+    # credential_patterns imports this at module import time (URL family split
+    # under the 1,000-line ratchet); missing = import failure in the payload.
+    "credential_url_patterns.py",
 )
 
 

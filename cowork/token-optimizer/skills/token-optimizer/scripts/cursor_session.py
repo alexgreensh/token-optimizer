@@ -95,8 +95,22 @@ def _parse_ts(value: Any) -> Optional[str]:
         return None
 
 
-def _quality(input_tokens, output_tokens, message_count, model, ctx_window):
-    """Quality score from Cursor's session-level fields (mirrors copilot_session)."""
+def _quality(input_tokens, output_tokens, message_count, model, ctx_window, raw=None):
+    """Quality score from Cursor's session-level fields (mirrors copilot_session).
+
+    Slice D: delegates to cursor_quality.quality_for_session (multi-signal,
+    per-signal provenance, historical-only preCompact fill) whenever the raw
+    tally is available; the Hermes 3-signal scorer remains the fallback.
+    """
+    if isinstance(raw, dict):
+        try:
+            import cursor_quality
+
+            q = cursor_quality.quality_for_session(raw)
+            if q is not None:
+                return q
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.debug("[cursor_session] cursor_quality scorer unavailable: %s", exc)
     try:
         from hermes_session import compute_quality_score
 
@@ -173,12 +187,19 @@ def _base_canonical(slug: str, token_source: str) -> dict:
     }
 
 
-def resolve_token_source(bubble_tokens, transcript_tokens):
+def resolve_token_source(bubble_tokens, transcript_tokens, hook_measured=None):
     """R16 ordered token resolution.
 
     Returns ``(input_tokens, output_tokens, token_source, estimated)``.
     Bubble tokens win only when at least one of input/output is non-zero;
-    otherwise the transcript estimate; otherwise a zero-token tally-only row.
+    then the transcript estimate; otherwise a zero-token tally-only row.
+
+    ``hook_measured`` is accepted for signature stability but QUARANTINED:
+    afterAgentResponse usage numbers are stored in the tally's
+    ``hook_measured_tokens`` bucket for offline correlation only. Whether
+    they are per-response or cumulative is unproven, so they must never be
+    summed into resolved session tokens; claiming them as trusted fill
+    (``estimated = False``) would be a premature candidate claim.
     """
     if isinstance(bubble_tokens, dict) and (
         _safe_int(bubble_tokens.get("input_tokens")) > 0
@@ -268,7 +289,7 @@ def normalize_session(raw: dict) -> Optional[dict]:
     elif roots_list and isinstance(roots_list[0], str):
         root = roots_list[0]
 
-    quality = _quality(total_input, total_output, message_count, model, ctx_window)
+    quality = _quality(total_input, total_output, message_count, model, ctx_window, raw=raw)
 
     session = _base_canonical(conversation_id, token_source)
     session.update(

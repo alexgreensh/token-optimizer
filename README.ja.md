@@ -275,7 +275,7 @@ RTKとBoostは最初の面に到達します。Headroomは最初と3番目に到
 
 ![Token Optimizer ダッシュボード](skills/token-optimizer/assets/dashboard-demo.gif)
 
-1つのHTMLページ、SessionEndフック経由で毎セッション後に自動再生成、手動トリガー不要。ブックマーク可能なURL `http://localhost:24842/token-optimizer`はオプトインです: `python3 skills/token-optimizer/scripts/measure.py setup-daemon`を実行してローカルサーバーを起動した後にのみ動作します。それまでは、`measure.py dashboard`が`  Dashboard: `行に出力するファイルパスを開いてください。
+1つのHTMLページ、SessionEndフック経由で毎セッション後に自動再生成、手動トリガー不要。ブックマーク可能なURL `http://localhost:24842/token-optimizer`はオプトインです: `python3 skills/token-optimizer/scripts/measure.py setup-daemon`を実行してローカルサーバーを起動した後にのみ動作します。それまでは、`measure.py dashboard --user`が`  Dashboard: `行に出力するファイルパスを開いてください。
 
 ターンごとのトークン内訳、4つの価格ティアにわたるコスト、TTLミックスとヒット率を伴うキャッシュ分析、すべてのセッションに重ねられた品質スコア、サブエージェントコスト内訳、計測済みと推定を分けて保持する節約トラッカー。インストール後ゼロ設定。[完全なダッシュボードドキュメント →](https://alexgreensh.github.io/token-optimizer/features/dashboard/)
 

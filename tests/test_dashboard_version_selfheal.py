@@ -140,7 +140,7 @@ def test_dispatch_dashboard_defaults_to_no_force(m, monkeypatch):
 def test_ensure_health_hands_html_heal_to_detached_forced_child(m):
     src = _split_inspect_source(m.run_ensure_health)
     # The stale-HTML branch must hand off to the detached, forced child...
-    assert "_spawn_detached_dashboard_selfheal(days=30, force=True, hook_timeout=False)" in src, (
+    assert "_spawn_detached_dashboard_selfheal(force=True, hook_timeout=False)" in src, (
         "the stale-HTML self-heal must spawn the detached forced child, not run "
         "the ~9s rebuild in-process under the 8s hook budget"
     )
@@ -157,7 +157,7 @@ def test_ensure_health_daemon_update_runs_after_html_heal(m):
     reaches the daemon update -- the block that was stranded when the in-process
     regen blew the budget."""
     src = _split_inspect_source(m.run_ensure_health)
-    heal_at = src.index("_spawn_detached_dashboard_selfheal(days=30, force=True, hook_timeout=False)")
+    heal_at = src.index("_spawn_detached_dashboard_selfheal(force=True, hook_timeout=False)")
     daemon_at = src.index('TOKEN_OPTIMIZER_DAEMON_VERSION = "')
     assert heal_at < daemon_at, "HTML heal must precede the daemon-script update"
     # And the daemon update actually regenerates the script when the marker drifts.

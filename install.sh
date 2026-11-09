@@ -945,6 +945,20 @@ install_copilot() {
     exit 0
 }
 
+# Shared by install_cursor/uninstall_cursor: split "$@" into _CURSOR_FLAGS
+# (--dry-run) and _CURSOR_HOME_RESOLVED (explicit --home wins; else
+# measure.py cursor-home's validated resolution; else env/default fallback),
+# then run the WSL-root recovery + wrong-home warning.
+_cursor_prepare() {
+    _CURSOR_FLAGS=(); _CURSOR_HOME_RESOLVED=""
+    while [ $# -gt 0 ]; do case "$1" in --dry-run) _CURSOR_FLAGS+=("$1");; --home) [ $# -ge 2 ] || fail "--home requires a directory path"; _CURSOR_HOME_RESOLVED="$2"; case "$_CURSOR_HOME_RESOLVED" in ""|-*) fail "--home requires a directory path";; esac; shift;; --home=*) _CURSOR_HOME_RESOLVED="${1#--home=}"; case "$_CURSOR_HOME_RESOLVED" in ""|-*) fail "--home requires a directory path";; esac;; esac; shift; done
+    _recover_home_from_windows_env TOKEN_OPTIMIZER_CURSOR_HOME ".cursor"
+    _wsl_root_wrong_home_warning "Cursor" ".cursor" "TOKEN_OPTIMIZER_CURSOR_HOME" "--cursor"
+    _CURSOR_HOME_RESOLVED="${_CURSOR_HOME_RESOLVED:-$(TOKEN_OPTIMIZER_RUNTIME=cursor python3 "$measure_py" cursor-home 2>/dev/null || true)}"
+    _CURSOR_HOME_RESOLVED="${_CURSOR_HOME_RESOLVED:-${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}}"
+    _CURSOR_HOME_RESOLVED="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().absolute())' "$_CURSOR_HOME_RESOLVED")" || fail "Invalid Cursor home"
+}
+
 install_cursor() {
     command -v python3 &>/dev/null || fail "python3 not found. Token Optimizer for Cursor needs Python 3."
 
@@ -966,19 +980,10 @@ install_cursor() {
         warn "Not a git checkout — cannot verify source provenance."
     fi
 
-    # Forward only recognized flags after --cursor.
-    local extra=()
-    for a in "$@"; do
-        case "$a" in
-            --dry-run) extra+=("$a") ;;
-        esac
-    done
-
-    local resolved_cursor_home
-    resolved_cursor_home="${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}"
+    _cursor_prepare "$@"; local resolved_cursor_home="$_CURSOR_HOME_RESOLVED"
 
     info "Installing Token Optimizer into Cursor (${resolved_cursor_home}/hooks.json)..."
-    if ! python3 "$measure_py" cursor-install "${extra[@]+"${extra[@]}"}"; then
+    if ! TOKEN_OPTIMIZER_RUNTIME=cursor python3 "$measure_py" cursor-install --home "$resolved_cursor_home" "${_CURSOR_FLAGS[@]+"${_CURSOR_FLAGS[@]}"}"; then
         fail "Cursor install failed."
     fi
 
@@ -1003,22 +1008,17 @@ uninstall_cursor() {
     measure_py="${script_dir}/skills/token-optimizer/scripts/measure.py"
     [ -f "$measure_py" ] || fail "Run install.sh from inside a token-optimizer checkout."
 
-    local extra=()
-    for a in "$@"; do
-        case "$a" in
-            --dry-run) extra+=("$a") ;;
-        esac
-    done
+    _cursor_prepare "$@"; local resolved_cursor_home="$_CURSOR_HOME_RESOLVED"
 
-    info "Removing Token Optimizer from Cursor (~/.cursor/hooks.json)..."
-    if ! python3 "$measure_py" cursor-uninstall "${extra[@]+"${extra[@]}"}"; then
+    info "Removing Token Optimizer from Cursor (${resolved_cursor_home}/hooks.json)..."
+    if ! TOKEN_OPTIMIZER_RUNTIME=cursor python3 "$measure_py" cursor-uninstall --home "$resolved_cursor_home" "${_CURSOR_FLAGS[@]+"${_CURSOR_FLAGS[@]}"}"; then
         fail "Cursor uninstall failed."
     fi
 
     echo ""
     echo "Token Optimizer removed from Cursor. Session data (if any) remains at:"
-    echo "  ${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}/token-optimizer/"
-    echo "  Remove it manually with: rm -rf ${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}/token-optimizer"
+    echo "  ${resolved_cursor_home}/token-optimizer/"
+    echo "  Remove it manually with: rm -rf ${resolved_cursor_home}/token-optimizer"
     echo ""
     exit 0
 }

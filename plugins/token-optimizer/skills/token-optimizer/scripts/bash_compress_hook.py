@@ -302,6 +302,7 @@ def _run(payload: dict) -> None:
             _find_preserved_lines,
             _ERROR_STDERR_PATTERNS,
             _enforce_baseline_invariant,
+            _detect_pattern,
         )
 
         # --- check for failure (exit code or stderr patterns) ---
@@ -377,6 +378,11 @@ def _run(payload: dict) -> None:
                     _archive_key = None
             except Exception:
                 _archive_key = None
+
+        # Search matches must remain recoverable even below the archive floor
+        # or when the archive write fails. Other handlers keep their contracts.
+        if _archive_key is None and _detect_pattern(command) == "search_results":
+            compressed = stdout
 
         # --- enforce the baseline-size invariant ---
         # If our compressed preview + archive pointer would exceed what

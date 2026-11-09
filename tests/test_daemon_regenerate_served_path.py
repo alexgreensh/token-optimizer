@@ -36,8 +36,10 @@ def test_regenerate_advances_served_dashboard_mtime_and_uses_served_install(tmp_
     claude_measure = claude_marketplace / "skills" / "token-optimizer" / "scripts" / "measure.py"
     claude_measure.parent.mkdir(parents=True)
     claude_measure.write_text(
-        "import pathlib, sys\n"
+        "import pathlib, sys, json, time\n"
         "if sys.argv[1] == 'dashboard':\n"
+        "    time.sleep(0.5)\n"
+        "    pathlib.Path(" + repr(str(tmp_path / "regen-argv.json")) + ").write_text(json.dumps(sys.argv))\n"
         "    pathlib.Path(" + repr(str(tmp_path / ".claude" / "plugins" / "data" / "token-optimizer-alexgreensh-token-optimizer" / "data" / "dashboard.html")) + ").write_text('claude-refresh')\n",
         encoding="utf-8",
     )
@@ -62,6 +64,7 @@ def test_regenerate_advances_served_dashboard_mtime_and_uses_served_install(tmp_
     source = _replace_constant(source, "LOG_DIR", served / "logs")
     source = _replace_constant(source, "REGEN_LOG", served / "daemon-regen.log")
     source = _replace_constant(source, "PORT", 24991)
+    source = _replace_constant(source, "REGEN_STEP_TIMEOUT", 0.3)
     source = _replace_constant(source, "MEASURE_PY_FALLBACK", codex_measure)
     server = tmp_path / "dashboard-server.py"
     server.write_text(source, encoding="utf-8")
@@ -74,9 +77,9 @@ def test_regenerate_advances_served_dashboard_mtime_and_uses_served_install(tmp_
         while time.time() < deadline:
             try:
                 response = urllib.request.urlopen(
-                    urllib.request.Request("http://127.0.0.1:24991/api/regenerate", method="POST",
+                    urllib.request.Request("http://127.0.0.1:24991/api/regenerate", method="POST", data=b'{"days":"all"}',
                                             headers={"Host": "localhost:24991", "Origin": "http://localhost:24991",
-                                                     "X-TO-Token": "test-token", "Content-Length": "0"}),
+                                                     "X-TO-Token": "test-token", "Content-Type": "application/json"}),
                     # Connection refusal (daemon not up yet) is instant and retried
                     # below; this bounds the regenerate itself, which runs measure
                     # and can take several seconds on a cold Windows runner.
@@ -96,6 +99,8 @@ def test_regenerate_advances_served_dashboard_mtime_and_uses_served_install(tmp_
         assert payload["measure_py"] == str(claude_measure)
         assert dashboard.stat().st_mtime_ns > before
         assert dashboard.read_text(encoding="utf-8") == "claude-refresh"
+        argv = json.loads((tmp_path / "regen-argv.json").read_text())
+        assert argv[-2:] == ["--days", "all"]
     finally:
         proc.terminate()
         proc.wait(timeout=60)

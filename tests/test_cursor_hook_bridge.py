@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -157,10 +158,64 @@ def test_session_end_marks_tally_final(cursor_dir, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# G0: hostile payload envelope + hot-path bounds
+# ---------------------------------------------------------------------------
+
+
+def test_deeply_nested_stdin_payload_still_exits_zero():
+    """G0 P1: '['*2000 raises RecursionError inside json.loads; the bridge
+    must treat it as undecodable and still exit 0 (always-exit-0 invariant)."""
+    import subprocess as sp
+
+    proc = sp.run(
+        [sys.executable, str(SCRIPTS / "cursor_hook_bridge.py"), "preToolUse"],
+        input="[" * 2000 + "]" * 2000,
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr[-300:]
+
+
+def test_nested_tool_input_string_never_raises(cursor_dir, monkeypatch):
+    payload = _shell_payload("git status")
+    payload["tool_input"] = "[" * 1500 + "]" * 1500
+    bridge.handle_pre_tool_use(payload)  # must not raise
+
+
+def test_oversized_command_skips_rewrite_fast(cursor_dir, monkeypatch, capsys):
+    """G0 P1: shlex is quadratic on hostile lengths; commands past the cap
+    pass through uncompressed without touching the whitelist/parser."""
+    calls = []
+    monkeypatch.setattr(bridge, "_bash_hook", SimpleNamespace(
+        _is_auto_approvable=lambda c: calls.append(c) or True,
+    ))
+    monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
+    monkeypatch.setattr(bridge, "_COMPRESS_PATH", SCRIPTS / "bash_compress.py")
+
+    bridge.handle_pre_tool_use(_shell_payload("git status #" + "x" * 9000))
+
+    assert capsys.readouterr().out.strip() == ""
+    assert calls == []  # whitelist never invoked on an oversized command
+
+
+# ---------------------------------------------------------------------------
 # preToolUse output contract + rewrite
 # ---------------------------------------------------------------------------
 
 
+def test_pre_tool_use_no_rewrite_on_native_windows(cursor_dir, monkeypatch, capsys):
+    """G4: shlex single-quote quoting is POSIX-only; cmd.exe would break, and
+    the actual Windows Shell host is unverified - record-only there."""
+    _fake_bash(monkeypatch, whitelisted=True, dangerous=False)
+    monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
+    monkeypatch.setattr(bridge, "_COMPRESS_PATH", SCRIPTS / "bash_compress.py")
+    monkeypatch.setattr(bridge.os, "name", "nt")
+
+    bridge.handle_pre_tool_use(_shell_payload("git status"))
+
+    assert capsys.readouterr().out.strip() == ""  # no rewrite emitted
+
+
+@pytest.mark.skipif(os.name == "nt", reason="shell rewriting is disabled on native Windows")
 def test_pre_tool_use_rewrites_and_echoes_fields(cursor_dir, monkeypatch, capsys):
     _fake_bash(monkeypatch, whitelisted=True, dangerous=False)
     monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
@@ -206,19 +261,48 @@ def test_pre_tool_use_dangerous_command_emits_nothing(cursor_dir, monkeypatch, c
 # ---------------------------------------------------------------------------
 
 
-def test_post_tool_use_records_rewrite_honoured(cursor_dir, monkeypatch):
+def _run_rewrite_pair(cursor_dir, monkeypatch, capsys, executed_command):
+    """Drive preToolUse (stages the rewrite), then postToolUse as Cursor
+    would: same tool_use_id, the command actually executed."""
     _fake_bash(monkeypatch, whitelisted=True)
     monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
-    cmd = "python3 /tmp/bash_compress.py git status"
-    bridge.handle_post_tool_use(_shell_payload(cmd))
+    monkeypatch.setattr(bridge, "_COMPRESS_PATH", SCRIPTS / "bash_compress.py")
+    pre = _shell_payload("git status")
+    pre["hook_event_name"] = "preToolUse"
+    pre["tool_use_id"] = "toolu-pair-1"
+    bridge.handle_pre_tool_use(pre)
+    emitted = json.loads(capsys.readouterr().out)
+    rewritten = emitted["updated_input"]["command"]
+    post = _shell_payload(rewritten if executed_command is None else executed_command)
+    post["tool_use_id"] = "toolu-pair-1"
+    bridge.handle_post_tool_use(post)
+    return rewritten
+
+
+@pytest.mark.skipif(os.name == "nt", reason="shell rewriting is disabled on native Windows")
+def test_post_tool_use_records_rewrite_honoured(cursor_dir, monkeypatch, capsys):
+    rewritten = _run_rewrite_pair(cursor_dir, monkeypatch, capsys, None)
+    # honoured: the executed command is byte-identical to the staged rewrite.
+    assert "bash_compress.py" in rewritten
     assert _read_last_observed(cursor_dir)["rewrite"] == "honoured"
 
 
-def test_post_tool_use_records_rewrite_ignored(cursor_dir, monkeypatch):
+@pytest.mark.skipif(os.name == "nt", reason="shell rewriting is disabled on native Windows")
+def test_post_tool_use_records_rewrite_ignored(cursor_dir, monkeypatch, capsys):
+    _run_rewrite_pair(cursor_dir, monkeypatch, capsys, "git status")
+    # ignored: a rewrite was staged but the bare command actually ran.
+    assert _read_last_observed(cursor_dir)["rewrite"] == "ignored"
+
+
+def test_post_tool_use_no_attempt_is_unknown_not_proof(cursor_dir, monkeypatch):
+    # G0: no staged rewrite for this tool_use_id -> NO classification; a bare
+    # whitelisted command or an 'ls bash_compress.py' proves nothing.
     _fake_bash(monkeypatch, whitelisted=True)
     monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
     bridge.handle_post_tool_use(_shell_payload("git status"))
-    assert _read_last_observed(cursor_dir)["rewrite"] == "ignored"
+    assert "rewrite" not in _read_last_observed(cursor_dir)
+    bridge.handle_post_tool_use(_shell_payload("ls bash_compress.py"))
+    assert "rewrite" not in _read_last_observed(cursor_dir)
 
 
 def test_post_tool_use_skips_non_whitelisted_rewrite_ledger(cursor_dir, monkeypatch):
@@ -253,11 +337,11 @@ def test_post_tool_use_nudges_on_crossing_threshold(cursor_dir, monkeypatch, cap
 
 def test_session_start_injects_matching_workspace_restore(cursor_dir, capsys):
     root = "/Users/alex/repos/demo"
-    digest = hashlib.sha1(root.encode("utf-8", "replace")).hexdigest()
+    digest = hashlib.sha1(bridge.cursor_bridge_checkpoint.normalize_workspace(root).encode("utf-8", "replace")).hexdigest()
     restore_dir = _to_dir(cursor_dir) / "restore-context"
     restore_dir.mkdir(parents=True, exist_ok=True)
     (restore_dir / f"{digest}.md").write_text(
-        "[Token Optimizer] Continuity from your previous Cursor session", encoding="utf-8"
+        f"<!-- source-end: {time.time()} -->\n[Token Optimizer] Continuity from your previous Cursor session", encoding="utf-8"
     )
 
     bridge.handle_session_start({
@@ -272,10 +356,10 @@ def test_session_start_injects_matching_workspace_restore(cursor_dir, capsys):
 
 def test_session_start_skips_restore_when_sibling_active(cursor_dir, capsys):
     root = "/Users/alex/repos/demo"
-    digest = hashlib.sha1(root.encode("utf-8", "replace")).hexdigest()
+    digest = hashlib.sha1(bridge.cursor_bridge_checkpoint.normalize_workspace(root).encode("utf-8", "replace")).hexdigest()
     restore_dir = _to_dir(cursor_dir) / "restore-context"
     restore_dir.mkdir(parents=True, exist_ok=True)
-    (restore_dir / f"{digest}.md").write_text("should be skipped", encoding="utf-8")
+    (restore_dir / f"{digest}.md").write_text(f"<!-- source-end: {time.time()} -->\nshould be skipped", encoding="utf-8")
 
     sdir = _to_dir(cursor_dir) / "sessions"
     sdir.mkdir(parents=True, exist_ok=True)
@@ -458,14 +542,13 @@ def test_observed_append_failure_warns_once(monkeypatch, tmp_path, caplog):
     (first failure) instead of a traceback per hook event."""
     import logging
 
-    class ReadOnlyDir:
-        def open(self, *a, **k):
-            raise OSError(13, "read-only")
-        def __truediv__(self, name):
-            return self
-
+    ro = tmp_path / "ro-dir"
+    ro.mkdir()
     monkeypatch.setattr(bridge, "_observed_warned", False)
-    monkeypatch.setattr(bridge, "_to_dir", lambda: ReadOnlyDir())
+    monkeypatch.setattr(bridge, "_to_dir", lambda: ro)
+    def denied(*args, **kwargs):
+        raise PermissionError("ledger unavailable")
+    monkeypatch.setattr(bridge.os, "open", denied)
     with caplog.at_level(logging.WARNING, logger="cursor_hook_bridge"):
         bridge._record_observed("stop")
         bridge._record_observed("stop")
@@ -497,3 +580,27 @@ def test_pre_compact_persists_real_numbers_from_dict_payload(monkeypatch, tmp_pa
     comp = tally["compactions"][-1]
     assert comp["context_tokens"] == 0
     assert comp["context_window_size"] == 0
+
+
+def test_after_shell_filename_does_not_claim_rewrite(cursor_dir):
+    bridge.handle_after_shell_execution({"conversation_id": "composer-123", "command": "cat bash_compress.py"})
+    assert "rewrite" not in _read_last_observed(cursor_dir)
+
+
+def test_restore_rejects_stale_source_and_avoids_old_tally_reads(cursor_dir, monkeypatch):
+    root = "/workspace/example"
+    digest = hashlib.sha1(bridge.cursor_bridge_checkpoint.normalize_workspace(root).encode()).hexdigest()
+    folder = _to_dir(cursor_dir) / "restore-context"
+    folder.mkdir(parents=True)
+    restore = folder / f"{digest}.md"
+    restore.write_text(f"<!-- source-end: {time.time() - 8 * 86400} -->\nstale")
+    fields = {"workspace_roots": [root], "conversation_id": "current"}
+    assert bridge._restore_for_workspace(fields) is None
+    restore.write_text(f"<!-- source-end: {time.time()} -->\nrecent")
+    sessions = _to_dir(cursor_dir) / "sessions"
+    sessions.mkdir(exist_ok=True)
+    old = sessions / "old.json"
+    old.write_text("{}")
+    os.utime(old, (time.time() - 86400, time.time() - 86400))
+    monkeypatch.setattr(bridge, "_load_tally", lambda path: pytest.fail("old tally read"))
+    assert bridge._restore_for_workspace(fields) == "recent"

@@ -59,13 +59,17 @@ def test_hook_command_bakes_the_resolved_absolute_path(c, tmp_path):
     assert " python3 " not in f" {cmd} " and " python " not in f" {cmd} ", cmd
 
 
-def test_hook_entries_cover_all_six_events(c, tmp_path):
+def test_hook_entries_cover_all_events(c, tmp_path):
     entries = c._hook_entries(tmp_path / "cursor_hook_bridge.py")
     assert set(entries) == {
-        "sessionStart", "preToolUse", "postToolUse", "preCompact", "stop", "sessionEnd"
+        "sessionStart", "preToolUse", "postToolUse", "preCompact", "stop", "sessionEnd",
+        "afterAgentResponse", "postToolUseFailure", "afterShellExecution",
+        "subagentStart", "subagentStop",
     }
-    # The Shell matcher keeps non-Shell tool calls out of the hot path.
-    assert entries["preToolUse"][0]["matcher"] == "Shell"
+    # Shell is rewritten; Read is intercepted by the U2 read cache
+    # (shadow default, emits nothing unarmed). Other tools stay out of the
+    # bridge's hot path.
+    assert entries["preToolUse"][0]["matcher"] == "Shell|Read"
     assert all(e["timeout"] == c.HOOK_TIMEOUT_SEC for es in entries.values() for e in es)
 
 

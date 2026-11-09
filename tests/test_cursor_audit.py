@@ -506,3 +506,19 @@ def test_direct_import_without_measure_facade_exercises_claude_dir_fallback(tmp_
     assert proc.returncode == 0, proc.stderr
     resolved = json.loads(proc.stdout.strip())
     assert resolved.endswith(".claude") or ".claude" in resolved
+
+
+def test_rule_reached_through_directory_symlink_is_not_read(tmp_path):
+    proj = _project(tmp_path, {})
+    outside = tmp_path / "external"
+    outside.mkdir()
+    (outside / "secret.mdc").write_text("secret content")
+    rules = proj / ".cursor" / "rules"
+    rules.mkdir(parents=True)
+    try:
+        (rules / "link").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+    record, findings = audit._cursor_audit_rule_file(rules / "link" / "secret.mdc", "project_rule", proj)
+    assert record["bytes"] is None
+    assert any(f["category"] == "symlink_escape" for f in findings)

@@ -197,3 +197,18 @@ def test_questions_and_cursor_terminology(cursor_home):
     # Cursor surfaces only: .cursor/rules or AGENTS.md, never CLAUDE.md.
     assert "CLAUDE.md" not in blob
     assert ".cursor/rules" in blob or "AGENTS.md" in blob
+
+
+def test_skill_detects_default_cursor_install_before_fallback(tmp_path):
+    import os
+    import subprocess
+    skill = (REPO / "skills" / "token-coach" / "SKILL.md").read_text()
+    assert len(skill.splitlines()) < 150
+    detection = skill.split('RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"', 1)[1].split(
+        '# Resolve measure.py', 1)[0]
+    (tmp_path / ".cursor" / "token-optimizer").mkdir(parents=True)
+    (tmp_path / ".codex").mkdir()
+    env = {"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
+    result = subprocess.run(["bash", "-c", 'RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"' + detection + '\nprintf "%s" "$RUNTIME"'],
+                            env=env, text=True, capture_output=True, check=True)
+    assert result.stdout == "cursor"

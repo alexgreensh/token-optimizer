@@ -69,9 +69,8 @@ def _cursor_rule_targets(project_dir):
                               AGENTS.md instead)
       - "legacy_cursorrules": <project>/.cursorrules (legacy single file)
       - "agents_md":          <project>/AGENTS.md (documented alternative)
-    Directory symlinks are never recursed into (pathlib glob default); a
-    symlinked rule FILE is still read (Cursor reads it too) and flagged by
-    the caller.
+    Candidates reached through symlinks are checked against the resolved
+    project boundary before their contents are read.
     """
     root = Path(project_dir)
     targets = []
@@ -221,34 +220,21 @@ def _cursor_audit_rule_file(path, kind, project_root):
         record["symlink"] = path.is_symlink()
     except OSError:
         pass
-    if record["symlink"]:
-        try:
-            resolved = path.resolve()
+    try:
+        resolved = path.resolve()
+        root_resolved = Path(project_root).resolve()
+        if record["symlink"]:
             record["resolved"] = str(resolved)
-        except OSError:
-            resolved = None
-            record["resolved"] = None
-        # A symlink whose target escapes the project is flagged and NOT read:
-        # its content sits outside the audited boundary, and even a capped
-        # rule-line sample would cross it.
-        escapes = False
-        if resolved is not None:
-            try:
-                root_resolved = Path(project_root).resolve()
-                escapes = not str(resolved).startswith(str(root_resolved) + os.sep)
-            except OSError:
-                escapes = True
-        else:
-            escapes = True  # unresolvable link: prove nothing, read nothing
-        if escapes:
-            findings.append({
-                "category": "symlink_escape",
-                "severity": "low",
-                "detail": f"'{path.name}' is a symlink to {record['resolved'] or 'an unresolvable target'} outside the project directory; not audited (outside the project boundary)",
-                "fix": "Vendoring the rule into the project keeps it version-controlled with the repo and auditable.",
-                "savings": 0,
-            })
-            return record, findings
+        resolved.relative_to(root_resolved)
+    except (OSError, ValueError, RuntimeError):
+        findings.append({
+            "category": "symlink_escape",
+            "severity": "low",
+            "detail": f"'{path}' resolves outside the project directory or cannot be resolved; not audited (outside the project boundary)",
+            "fix": "Vendoring the rule into the project keeps it version-controlled with the repo and auditable.",
+            "savings": 0,
+        })
+        return record, findings
 
     try:
         size = path.stat().st_size

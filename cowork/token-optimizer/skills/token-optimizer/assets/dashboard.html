@@ -3653,7 +3653,9 @@ var DB = (function() {
       var collectNote = isCodex
         ? tcliHtml('Codex sessions can be collected manually for now: <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py collect</span>')
         : tcliHtml('Sessions are collected automatically via the SessionEnd hook. Run a few sessions first, or manually: <span class="update-cmd">python3 measure.py collect</span>');
-      html += '<div class="empty-state">No trends data yet. ' + collectNote + '</div>';
+      html += '<div class="empty-state">No trends data yet. ' + collectNote +
+        ' <button class="date-nav-btn" onclick="window.__TOKEN_LOAD_HISTORY(\'all\', document.getElementById(\'history-load-message\'))">Load full history</button>' +
+        '<span id="history-load-message" role="status"></span></div>';
       el.innerHTML = html;
       return;
     }
@@ -3757,21 +3759,32 @@ var DB = (function() {
     // Daily breakdown with date navigation
     var daily = t.daily || [];
     if (daily.length > 0) {
-      // Date nav: show 7 days by default, with picker to jump to a date
+      var selectedRange = '7';
+      try { selectedRange = localStorage.getItem('to-daily-range') || '7'; } catch (e) {}
+      if (['7', '14', '30', '90', '180', 'all'].indexOf(selectedRange) < 0) selectedRange = '7';
       html += '<div class="card wide" id="daily-breakdown-card">' +
         '<div class="card-header"><span>Daily Breakdown</span></div>' +
         '<div style="font-size:12px;color:var(--c-text-dim);padding:0 0 var(--s-2) 0;">Click any row to expand per-session details with cost, quality scores, and cache data. ' + (isCodex ? 'Codex cache write TTL is not exposed, so those fields are hidden.' : 'Claude cache TTL mix is shown when available.') + ' Click a session for per-turn token breakdown.</div>' +
         '<div class="date-nav">' +
-        '<button class="date-nav-btn active" data-range="7">7 days</button>' +
+        '<button class="date-nav-btn" data-range="7">7 days</button>' +
         '<button class="date-nav-btn" data-range="14">14 days</button>' +
         '<button class="date-nav-btn" data-range="30">30 days</button>' +
+        '<button class="date-nav-btn" data-range="90">90 days</button>' +
+        '<button class="date-nav-btn" data-range="180">180 days</button>' +
+        '<button class="date-nav-btn" data-range="all">All</button>' +
+        '<button class="date-nav-btn" id="load-full-history">Load full history</button>' +
+        '<span id="history-load-message" role="status"></span>' +
         '<span style="color:var(--c-text-dim);font-size:12px;margin:0 4px;">|</span>' +
         '<label style="font-size:12px;color:var(--c-text-dim);font-family:var(--font-mono);">Jump to:</label>' +
         '<input type="date" class="date-picker-input" id="daily-date-picker" value="' + esc(daily[0].date) + '">' +
         '</div>';
       html += '<div id="daily-table-container">';
-      html += buildDailyTable(daily, 7, null);
+      html += buildDailyTable(daily, selectedRange, null);
       html += '</div></div>';
+    } else {
+      html += '<div class="empty-state">No daily sessions in this window. ' +
+        '<button class="date-nav-btn" onclick="window.__TOKEN_LOAD_HISTORY(\'all\', document.getElementById(\'history-load-message\'))">Load full history</button>' +
+        '<span id="history-load-message" role="status"></span></div>';
     }
 
     // Skills usage bar chart with clickable skill details
@@ -3858,27 +3871,34 @@ var DB = (function() {
 
     el.innerHTML = html;
 
-    // Bind date range buttons + picker
+    // The table range is local to the browser; the embedded window is saved
+    // by the generator and can be expanded explicitly through the local server.
     if (daily.length > 0) {
       var container = document.getElementById('daily-table-container');
       var rangeBtns = document.querySelectorAll('.date-nav-btn[data-range]');
+      var historyMessage = document.getElementById('history-load-message');
+      function setRange(range) {
+        selectedRange = range;
+        try { localStorage.setItem('to-daily-range', range); } catch (e) {}
+        rangeBtns.forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-range') === range); });
+        container.innerHTML = buildDailyTable(daily, range, null);
+      }
+      setRange(selectedRange);
       rangeBtns.forEach(function(btn) {
         btn.addEventListener('click', function() {
-          rangeBtns.forEach(function(b) { b.classList.remove('active'); });
-          this.classList.add('active');
-          var range = parseInt(this.getAttribute('data-range'), 10);
-          container.innerHTML = buildDailyTable(daily, range, null);
+          var range = this.getAttribute('data-range');
+          setRange(range);
+          if (range !== 'all' && Number(range) > Number(t.period_days || 0)) window.__TOKEN_LOAD_HISTORY(Number(range), historyMessage);
         });
       });
+      document.getElementById('load-full-history').addEventListener('click', function() {
+        setRange('all');
+        window.__TOKEN_LOAD_HISTORY('all', historyMessage);
+      });
       var picker = document.getElementById('daily-date-picker');
-      if (picker) {
-        picker.addEventListener('change', function() {
-          var activeBtn = document.querySelector('.date-nav-btn[data-range].active');
-          var range = activeBtn ? parseInt(activeBtn.getAttribute('data-range'), 10) || 7 : 7;
-          rangeBtns.forEach(function(b) { b.classList.remove('active'); });
-          container.innerHTML = buildDailyTable(daily, range, this.value);
-        });
-      }
+      if (picker) picker.addEventListener('change', function() {
+        container.innerHTML = buildDailyTable(daily, selectedRange, this.value);
+      });
     }
 
     // Bind skill detail expand
@@ -4001,20 +4021,18 @@ var DB = (function() {
     return 'avg ' + fmtGap(avgGap) + ' | max ' + fmtGap(maxGap);
   }
 
-  function buildDailyTable(daily, range, jumpToDate) {
+  function selectDailyRange(daily, range, jumpToDate) {
+    if (!daily.length) return [];
+    var start = jumpToDate || daily[0].date;
+    if (range === 'all') return daily.filter(function(d) { return d.date <= start; });
+    var end = new Date(start + 'T00:00:00Z');
+    end.setUTCDate(end.getUTCDate() - Number(range) + 1);
+    var cutoff = end.toISOString().slice(0, 10);
+    return daily.filter(function(d) { return d.date <= start && d.date >= cutoff; });
+  }
 
-    // Filter daily data based on range or jump-to date
-    var filtered;
-    if (jumpToDate) {
-      // Show 7 days starting from the selected date
-      var startDate = jumpToDate;
-      var endDate = new Date(jumpToDate);
-      endDate.setDate(endDate.getDate() - range + 1);
-      var endStr = endDate.toISOString().slice(0, 10);
-      filtered = daily.filter(function(d) { return d.date <= startDate && d.date >= endStr; });
-    } else {
-      filtered = daily.slice(0, range);
-    }
+  function buildDailyTable(daily, range, jumpToDate) {
+    var filtered = selectDailyRange(daily, range, jumpToDate);
 
     if (filtered.length === 0) {
       return '<div class="empty-state">No sessions found for this period.</div>';
@@ -7498,7 +7516,15 @@ document.addEventListener('DOMContentLoaded', function() {
     brandMeta.textContent = brandParts.join(' \u00b7 ');
   }
 
-  function startApp() { DB.init(data); refreshSavingsLive(); }
+  function startApp() {
+    DB.init(data); refreshSavingsLive();
+    try {
+      if (sessionStorage.getItem('to-history-return')) {
+        sessionStorage.removeItem('to-history-return');
+        document.querySelector('.nav-item[data-view="trends"]').click();
+      }
+    } catch (e) {}
+  }
 
   // Pull fresh savings from the daemon and live-patch the Savings/Overview tiles.
   // No-op unless the custom API is live (served over http, health probe passed) —
@@ -7573,6 +7599,31 @@ document.addEventListener('DOMContentLoaded', function() {
       }
       return r;
     });
+  };
+
+  window.__TOKEN_LOAD_HISTORY = function(choice, message) {
+    if (choice === 'all') { try { localStorage.setItem('to-daily-range', 'all'); } catch (e) {} }
+    if (!window.__TOKEN_API_LIVE) {
+      message.textContent = 'Open the dashboard through the local server to load more history.';
+      return;
+    }
+    message.textContent = 'Loading history…';
+    function attempt(retried) {
+      window.__TOKEN_API_POST('/api/regenerate', {days: choice}).then(function(r) { return r.json(); })
+        .then(function(result) {
+          if (!result.ok) throw new Error(result.msg || 'Regeneration failed');
+          try { sessionStorage.setItem('to-history-return', '1'); } catch (e) {}
+          location.reload();
+        }).catch(function(err) {
+          if (err.authError && !retried) {
+            _fetchToken(window.__TOKEN_API_BASE || '').then(function() { attempt(true); })
+              .catch(function(e) { message.textContent = 'Could not load history: ' + e.message; });
+          } else message.textContent = 'Could not load history: ' + err.message;
+        });
+    }
+    if (window.__TOKEN_API_TOKEN) attempt(false);
+    else _fetchToken(window.__TOKEN_API_BASE || '').then(function() { attempt(false); })
+      .catch(function(e) { message.textContent = 'Could not load history: ' + e.message; });
   };
 
   // Manual regeneration. The background freshness regen is stale-while-revalidate:

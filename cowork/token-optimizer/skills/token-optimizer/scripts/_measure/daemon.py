@@ -2,7 +2,6 @@
 from __future__ import annotations
 from . import _compat
 
-
 def _parse_elapsed_time(elapsed_str):
     """Parse ps elapsed time format (dd-HH:MM:SS or HH:MM:SS or MM:SS) to seconds."""
     _measure_facade = _compat.facade()
@@ -24,7 +23,6 @@ def _parse_elapsed_time(elapsed_str):
 
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
-
 def _format_elapsed(seconds):
     """Format seconds into a human-readable elapsed string."""
     _measure_facade = _compat.facade()
@@ -37,7 +35,6 @@ def _format_elapsed(seconds):
     d = hours // 24
     h = hours % 24
     return f"{d}d {h}h"
-
 
 def _scan_project_jsonl_stats():
     """Return [(path, birth_time, mtime), ...] for every project JSONL, cached.
@@ -76,7 +73,6 @@ def _scan_project_jsonl_stats():
     # is a no-op in exactly the cold-cache case this exists to fix.
     _measure_facade._PROJECT_JSONL_STAT_CACHE_TS = _measure_facade.time.monotonic()
     return out
-
 
 def _find_session_version_for_pid(pid):
     """Try to find the Claude Code version for a running process by matching its session JSONL.
@@ -154,7 +150,6 @@ def _find_session_version_for_pid(pid):
         return best_match
     return None  # No confident match; don't guess (causes false OUTDATED flags)
 
-
 def _command_matches_process(command, process_name):
     """True if a `ps` COMMAND field denotes a `process_name` CLI session.
 
@@ -198,7 +193,6 @@ def _command_matches_process(command, process_name):
         exe_base = exe_base[:-4]
     return exe_base == process_name
 
-
 def _posix_comm_name(comm):
     """Lower-case executable name from a ps COMM field ("-zsh" -> "zsh",
     "tmux: server" -> "tmux", "/bin/bash" -> "bash"). Never raises."""
@@ -208,7 +202,6 @@ def _posix_comm_name(comm):
         return ""
     text = text.split(": ", 1)[0].rsplit("/", 1)[-1]
     return text.lstrip("-").strip().lower()
-
 
 def _posix_comm_is_claude(comm):
     """True when a COMM field names a claude CLI executable (basename `claude`,
@@ -224,7 +217,6 @@ def _posix_comm_is_claude(comm):
         base = base[:-4]
     return base == "claude" or bool(_measure_facade._CCD_CLI_LAUNCHER_RE.search(text))
 
-
 def _posix_is_claude_host(comm, args):
     """True when a process is the Claude desktop app (main, helper, disclaimer
     wrapper, Electron build) or another claude process: a claude below it is hosted."""
@@ -238,13 +230,11 @@ def _posix_is_claude_host(comm, args):
         return True
     return _measure_facade._command_matches_process(args or "", "claude")
 
-
 def _posix_option_args(argv):
     """Arguments that can be options: everything after argv[0] up to a bare --."""
     _measure_facade = _compat.facade()
     args = list(argv[1:])
     return args[:args.index("--")] if "--" in args else args
-
 
 def _posix_is_headless(options):
     """True for SDK/headless/IDE switches and for subcommand processes."""
@@ -258,7 +248,6 @@ def _posix_is_headless(options):
         if a in _measure_facade._WIN_HEADLESS_SUBCOMMANDS:
             return True
     return False
-
 
 def _posix_read_argv(pid):
     """Exact argv of a process, or None when the OS will not say.
@@ -3134,6 +3123,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json_response(200 if payload.get("ok") else 500, payload)
             return
         if clean == "api/regenerate":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if length < 0 or length > 4096: raise ValueError()
+                body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {{}}
+                days = body.get("days")
+                if days is not None and not (days == "all" or type(days) is int and 1 <= days <= 365000): raise ValueError()
+            except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
+                self._json_response(400, {{"ok": False, "msg": "invalid history window"}})
+                return
             # Synchronous, unlike the background freshness regen: the caller is a
             # human who pressed a button and needs a real success/failure answer,
             # not a fire-and-forget that looks identical whether it worked or not.
@@ -3167,6 +3165,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     argv = [sys.executable, target, step, "--quiet"]
                     if step == "dashboard":
                         argv.append("--force")
+                        if days is not None: argv.extend(["--days", str(days)])
                     # retry cap: retry ONLY the "dashboard" step -- the
                     # one with the observed intermittent hang (lock contention
                     # makes the normally-~9s build blow past a single

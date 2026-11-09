@@ -1,7 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
-
+from . import _compat, dashboard_history
 
 def _settings_lock(user_initiated=None):
     """Bounded portable lease for settings.json writes.
@@ -24,7 +23,6 @@ def _settings_lock(user_initiated=None):
         reclaim_released=user_initiated,
     ) as acquired:
         yield acquired
-
 
 def _acquire_session_end_flush_lock(max_age_seconds=None):
     """Return a lock directory path, or None if another worker is active."""
@@ -49,7 +47,6 @@ def _acquire_session_end_flush_lock(max_age_seconds=None):
         return None
     except OSError:
         return None
-
 
 def _release_session_end_flush_lock(lock_dir):
     _measure_facade = _compat.facade()
@@ -259,7 +256,7 @@ def _run_session_end_flush_worker(args, budget_seconds=None):
                 # No browser in a cloud VM: the 4 MB dashboard rebuild is skipped
                 # there (an explicit /token-dashboard still builds it on demand).
                 if not _lean and not (_measure_facade._dashboard_hook_backoff_active() or _measure_facade._dashboard_selfheal_inflight()):
-                    _measure_facade.generate_standalone_dashboard(days=30, quiet=True)
+                    _measure_facade.generate_standalone_dashboard(quiet=True)
             except _measure_facade._HookTimeout:
                 # Gap 4: the bounded SessionEnd regen was killed by the 20s budget
                 # (a large history's 4 MB build does not fit), so it may have left
@@ -268,7 +265,7 @@ def _run_session_end_flush_worker(args, budget_seconds=None):
                 # file catches up off the hot path instead of waiting for the user
                 # to re-open. Re-raised so the outer handler still runs cleanup.
                 try:
-                    _measure_facade._spawn_detached_dashboard_selfheal(days=30)
+                    _measure_facade._spawn_detached_dashboard_selfheal()
                 except Exception:
                     pass
                 raise
@@ -667,6 +664,8 @@ def _spawn_detached_dashboard_selfheal(days=None, force=None, *, hook_timeout=No
         # Detach so the child outlives the killed hook: POSIX new session, or
         # (on Windows) DETACHED_PROCESS. start_new_session is POSIX-only.
         popen_kw = {} if _measure_facade.os.name == "nt" else {"start_new_session": True}
+        if days is None:
+            days = dashboard_history.selected_days(_measure_facade.RUNTIME_DIR, _measure_facade.TRENDS_DB)
         argv = [_measure_facade.sys.executable, _measure_facade.os.path.abspath(_measure_facade.__file__),
                 "dashboard", "--quiet", "--days", str(int(days))]
         if force:
@@ -5092,7 +5091,7 @@ def run_ensure_health():
                 # already uses; _dashboard_heal_spawn_due() fails OPEN so a lock
                 # glitch never skips the heal.
                 try:
-                    _measure_facade._spawn_detached_dashboard_selfheal(days=30, force=True, hook_timeout=False)
+                    _measure_facade._spawn_detached_dashboard_selfheal(force=True, hook_timeout=False)
                     print(f"  [Token Optimizer] Refreshing dashboard to v{_measure_facade.TOKEN_OPTIMIZER_VERSION} (background)", file=_measure_facade.sys.stderr)
                 except Exception as _e:
                     print(f"  [Token Optimizer] dashboard refresh failed: {_e}", file=_measure_facade.sys.stderr)

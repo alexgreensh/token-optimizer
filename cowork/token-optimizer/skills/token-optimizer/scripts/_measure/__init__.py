@@ -10,7 +10,7 @@ DOMAIN_MODULES = (
 # HOOK_IMPORT. No module-level facade code and no UserPromptSubmit handler
 # uses them (perf attribution, 2026-11-06).
 DEFERRED_MODULES = ('audit', 'dashboard', 'sessions', 'savings', 'cli')
-RUNTIME_SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAIN_MODULES)
+RUNTIME_SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAIN_MODULES) + ('dashboard_history.py',)
 # Set True by hooks/userpromptsubmit_runner.py right before `import measure`,
 # which consumes it. That process never patches or enumerates the facade.
 HOOK_IMPORT = False

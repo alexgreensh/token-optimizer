@@ -106,7 +106,7 @@ TOKEN_OPTIMIZER_INTERACTIVE=1 "$PY" "$MEASURE_PY" collect --quiet --user && \
   TOKEN_OPTIMIZER_INTERACTIVE=1 "$PY" "$MEASURE_PY" dashboard --user
 ```
 
-This collects the latest session data into the trends database, regenerates the dashboard HTML, and opens it in your default browser.
+This collects the latest session data into the trends database, regenerates the dashboard HTML using the last selected history window (90 days until changed), and opens it in your default browser. If the user asks for a different window, add `--days N` or `--days all` to the dashboard command; later refreshes retain that choice.
 
 4. **Tell the user** the dashboard is open. Probe the daemon before mentioning any URL:
    - Probe daemon: `"$PY" "$MEASURE_PY" daemon-status 2>/dev/null`

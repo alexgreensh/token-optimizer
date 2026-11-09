@@ -9,7 +9,7 @@ The dashboard turns the audit and your session history into a browsable HTML pag
 
 ## What it does
 
-The dashboard renders one self-contained HTML file with four panels: Overview (a current context snapshot from the setup audit), Context Quality (your rolling quality score), Trends (per-session token usage from history), and Manage (toggle skills and MCP servers on or off). It either opens once in your browser or serves over HTTP so you can refresh it as you work.
+The dashboard renders one self-contained HTML file with navigation for Overview, Savings, Quick Wins, Medium, Deep, Habits, Trends, Health, Coach, Hooks, and Manage. Open it in your browser or serve it over HTTP so you can refresh it as you work.
 
 After every session, the SessionEnd hook regenerates the dashboard data so the page is current the next time you open it. You do not have to rerun the audit by hand.
 
@@ -47,8 +47,11 @@ python3 measure.py dashboard --user
 # Serve it over HTTP instead of opening a file
 python3 measure.py dashboard --user --serve --port 8080
 
-# Quiet mode, custom history window
-python3 measure.py dashboard --user --serve --quiet --days 30
+# Embed one year of history, retaining this choice for future refreshes
+python3 measure.py dashboard --user --days 365
+
+# Embed all available history (a larger file may take longer to build)
+python3 measure.py dashboard --user --days all
 
 # Diagnose an empty or broken panel (validates the data shape)
 python3 measure.py dashboard-diagnose
@@ -57,7 +60,9 @@ python3 measure.py dashboard-diagnose
 python3 measure.py daemon-status
 ```
 
-The convenience skill `/token-dashboard` collects the latest session data, regenerates the page, and opens it for you.
+The convenience skill `/token-dashboard` collects the latest session data, regenerates the page, and opens it for you. New installations embed **90 days** by default. In Trends, choose 7, 14, 30, 90, or 180 days, or All to display everything embedded in the current file. The selected display range stays selected in that browser.
+
+When the dashboard is served locally, choosing a range longer than the embedded window loads it on demand. **Load full history** explicitly embeds all available history. These choices and `--days` persist across regeneration, session refreshes, and `/token-dashboard`. In a file-only view, start the local server or regenerate with `--days` to load more data. Larger windows produce larger files and can take longer to build.
 
 ## Serve versus daemon
 
@@ -98,7 +103,7 @@ The chosen host persists per-runtime across upgrades. Accepted values are `127.0
 | Default bind host | `127.0.0.1` |
 | Daemon port | `24842` |
 | `--serve` default port | `8080` (overridable with `--port`) |
-| History window | Recent days; tune with `--days N` |
+| History window | 90 days initially; saved choice via `--days N`, `--days all`, or the local dashboard |
 | Data refresh | Automatic on SessionEnd |
 
 ## Risk rating

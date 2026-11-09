@@ -193,9 +193,10 @@ def test_savings_tab_one_row_of_folds_and_quality_moves_to_health():
     html = render_savings(s, extra=extra)
     row = html.split('class="st-morerow"')[1]
     assert html.index('class="st"') < html.index('class="st-morerow"')
-    assert re.findall(r'<summary>([^<:]+)', row)[:3] == ['Room to save more', 'Where your sessions ran', 'Full ledger and history']
+    assert re.findall(r'<summary>([^<]+)', row)[:3] == ['Room to save more', 'Where your sessions ran', 'Full ledger and history']
     assert 'Whole-workload' not in html and 'Context quality' not in html and 'legacy-runway' not in html
     assert '<div class="label">Value</div>' not in html and 'still on the table' not in html
+    assert 'per 30 days. None of this is in any total above' in row  # amount inside, summary stays quiet
     health = call('healthNotesHtml(data)', dict(extra, savings=s))
     assert 'Context quality' in health and 'scored <span class="st-num">60</span> out of 100' in health
 

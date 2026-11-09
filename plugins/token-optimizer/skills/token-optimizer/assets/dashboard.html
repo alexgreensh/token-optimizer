@@ -5034,9 +5034,10 @@ var DB = (function() {
       // cards and diagnostics sit in one row of folds at the bottom; the
       // whole-workload comparison is no longer shown here.
       if (parts.length > 0) {
-        moreFolds.push('<details class="fold"><summary>Room to save more' +
-          (opportunityMo > 0 ? ': about ' + money(oppCents.total / 100) + (runRate ? ' per 30 days' : ' so far') : '') + '</summary><div class="fold__body">' +
-          '<p>Changes you could make to your setup or habits. None of this is in any total above.</p>' +
+        moreFolds.push('<details class="fold"><summary>Room to save more</summary><div class="fold__body">' +
+          '<p>Changes you could make to your setup or habits' +
+          (opportunityMo > 0 ? ', worth about ' + money(oppCents.total / 100) + (runRate ? ' per 30 days' : ' so far') : '') +
+          '. None of this is in any total above.</p>' +
           parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
           (routingPotentialMo > 0 ? '<p>If about ' + routingFracPct + '% of your Opus work ran on ' + esc(routingTarget) +
             ', about ' + money(routingPotentialMo) + esc(per) + ' at API rates. This is an assumption about your own work.</p>' : '') +

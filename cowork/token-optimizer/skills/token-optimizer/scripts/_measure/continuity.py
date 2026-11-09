@@ -3812,6 +3812,16 @@ def _log_resume_lean_savings(target_session_id, lean_block):
         rates = tier_data["claude_models"].get(
             model_norm, tier_data["claude_models"].get("sonnet", {}))
         per_mtok = float(rates.get(rate_key) or rates.get("input", 3.0))
+        try:  # the session's exact model card, not its family card
+            conn = _measure_facade._open_trends_db_readonly(timeout=1.0)
+            try:
+                per_mtok = _measure_facade._counted_pricing_v5.resume_lean_log_rate(
+                    conn, sid_safe, model_norm, rate_key,
+                    lambda m: _measure_facade._counted_exact_card(m, tier_data)) or per_mtok
+            finally:
+                conn.close()
+        except Exception:
+            pass
         _measure_facade._log_savings_event("resume_lean", saved, session_id=sid_safe,
                            detail=f"lean resume vs --resume reload of last-turn context "
                                   f"({basis}, ${per_mtok}/MTok)",

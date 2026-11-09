@@ -4599,7 +4599,7 @@ var DB = (function() {
     // retain the component calculation above until their next regeneration.
     var actionSavings = s.action_savings;
     if (actionSavings) {
-      measuredMo = mo(actionSavings.logged_usd) + mo(actionSavings.routing_measured_usd);
+      measuredMo = mo(actionSavings.logged_usd) + mo(actionSavings.routing_measured_usd) + mo(actionSavings.class_premium_usd || 0);
       rereadMo = mo(actionSavings.reread_usd);
       estimatedMo = mo(actionSavings.estimated_usd) + mo(actionSavings.routing_estimated_usd);
       gettingMo = mo(actionSavings.total_usd);
@@ -4613,7 +4613,9 @@ var DB = (function() {
       var estSumCents = Object.keys(de).reduce(function(a, k) { return a + de[k]; }, 0);
       exactCents = {
         total: dispCents.total_cents,
-        logged: dc.logged + dc.routing_measured,
+        // The write-class premium is measured and joins Logged actions (older payloads have none).
+        logged: dc.logged + dc.routing_measured + (Number(dc.class_premium) || 0),
+        premium: Number(dc.class_premium) || 0,
         reread: dc.reread,
         other: estSumCents + dc.routing_estimated,
         est: de,
@@ -4830,10 +4832,16 @@ var DB = (function() {
             Math.round(Number(s.reprice_detail.unpriced_tokens)).toLocaleString() +
             ' logged tokens ran on models with no known rate; their dollar value is not included.' : '',
           op.removal_events > 0 ? 'Initial removals above are priced at the input rate, a minimum.' +
-            (Number(op.class_premium_usd) >= 0.005
-              ? ' The next call billed new context at a cache-write rate for ' +
-                Math.round(Number(op.class_events) || 0).toLocaleString() + ' removals: about ' +
-                money(Number(op.class_premium_usd)) + ' more, not in the total.' : '') : '',
+            (actionSavings && 'class_premium_usd' in actionSavings
+              ? (Number(actionSavings.class_premium_usd) >= 0.005
+                ? ' The next call billed new context at a cache-write rate for ' +
+                  Math.round(Number(op.class_events) || 0).toLocaleString() + ' removals. That write-class premium, ' +
+                  (exactCents ? moneyCents(exactCents.premium) : money(periodValue(mo(actionSavings.class_premium_usd)))) +
+                  ', is measured and included in Logged actions.' : '')
+              : (Number(op.class_premium_usd) >= 0.005
+                ? ' The next call billed new context at a cache-write rate for ' +
+                  Math.round(Number(op.class_events) || 0).toLocaleString() + ' removals: about ' +
+                  money(Number(op.class_premium_usd)) + ' more, not in the total.' : '')) : '',
           !cp.available ? 'Repeat-read coverage is unavailable here; logged actions are still included.' : ''
         ]) +
         '<p>Logged actions include output trims, context reductions, setup changes and, when your earlier model mix is priced from your own usage, routing savings. ' +
@@ -4895,7 +4903,7 @@ var DB = (function() {
             ? '<p>' + Number(sia.routing_unsplit_tokens).toLocaleString() +
               ' tokens without a token-class split are left out of model routing.</p>' : '') +
           '<p>Repeat reads avoided: <strong>' + money(siaParts.reread) + '</strong> (modeled).</p>' +
-          '<p>Logged actions: <strong>' + money(siaParts.logged) + '</strong>.</p>' +
+          '<p>Logged actions: <strong>' + money((Number(siaParts.logged) || 0) + (Number(siaParts.class_premium) || 0)) + '</strong>.</p>' +
           '<p>Other estimates: <strong>' + money(sia.estimated_usd) + '</strong>.</p>' +
           ((Number(cc.total_usd) > 0 || cc.available) ?
             '<p>Context trimming on its own (initial removals + repeat reads): ' +

@@ -137,7 +137,7 @@ _COLD_COMPILE_TAG = "token-optimizer-bytecode-warmup"
 _MEASURE_PACKAGE_SOURCES = (
     '__init__.py', '_compat.py', 'runtime.py', 'pricing.py', 'audit.py',
     'dashboard.py', 'lifecycle.py', 'sessions.py', 'trends.py', 'cache_policy.py',
-    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py',
+    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py', 'counted_pricing_v5.py',
 )
 
 

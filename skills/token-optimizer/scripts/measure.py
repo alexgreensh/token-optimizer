@@ -161,7 +161,7 @@ if __name__ in ("__main__",):
     from runtime_env import consume_runtime_flag as _consume_runtime_flag_early
     sys.argv[:] = _consume_runtime_flag_early(sys.argv, os.environ)
 
-from _measure import _compat as _measure_compat
+from _measure import _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5
 _measure_providers = _measure_compat.prepare(sys.modules[__name__])
 
 from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared
@@ -3698,7 +3698,7 @@ _counted_session_path = _measure_compat.bind(_measure_providers['savings']._coun
 
 
 # Eligibility is per row. A global migration flag never certifies old prices.
-_COUNTED_PRICING_VERSION = "4"
+_COUNTED_PRICING_VERSION = "5"
 _COUNTED_META_PRICING = "counted_pricing_version"
 
 

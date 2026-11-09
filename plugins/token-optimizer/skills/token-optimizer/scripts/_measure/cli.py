@@ -262,6 +262,17 @@ def main():
     elif _measure_facade.args[0] == "cursor-uninstall":
         import cursor_install as _measure_import_24; _measure_facade.cursor_install = _measure_import_24; del _measure_import_24
         _measure_facade.sys.exit(_measure_facade.cursor_install.main(["uninstall"] + _measure_facade.args[1:]))
+    elif _measure_facade.args[0] == "cursor-home":
+        # Print the resolved Cursor home directory (honors
+        # TOKEN_OPTIMIZER_CURSOR_HOME via runtime_env.cursor_home() → the
+        # safe-home guard plus the WSL-root /mnt opt-in). Used by install.sh
+        # to show the TRUE hook destination in its banner instead of a
+        # hardcoded ~/.cursor path (WSL-root installs wrote to /root/.cursor
+        # which the Windows Cursor never reads).
+        from runtime_env import cursor_home as _measure_import_ch; _measure_facade._clh = _measure_import_ch; del _measure_import_ch  # noqa: PLC0415
+
+        print(str(_measure_facade._clh()))
+        _measure_facade.sys.exit(0)
     elif _measure_facade.args[0] == "cursor-rollup":
         # The bridge always pins TOKEN_OPTIMIZER_RUNTIME=cursor. A bare manual
         # run must refuse (not silently collect under the default runtime).
@@ -338,7 +349,27 @@ def main():
         import cursor_coach as _measure_import_cc
         _measure_facade.cursor_coach = _measure_import_cc
         del _measure_import_cc
-        _measure_facade._cc_data = _measure_facade.cursor_coach.generate_cursor_coach_data()
+        # Forward --days/--focus like `coach` does; the generator accepts both
+        # (window_days / focus_area in the snapshot).
+        _measure_facade._cc_days = 30
+        _measure_facade._cc_focus = None
+        _measure_facade._i = 1
+        while _measure_facade._i < len(_measure_facade.args):
+            _measure_facade._a = _measure_facade.args[_measure_facade._i]
+            if _measure_facade._a == "--days" and _measure_facade._i + 1 < len(_measure_facade.args):
+                try:
+                    _measure_facade._cc_days = int(_measure_facade.args[_measure_facade._i + 1])
+                except ValueError:
+                    pass
+                _measure_facade._i += 2
+            elif _measure_facade._a == "--focus" and _measure_facade._i + 1 < len(_measure_facade.args):
+                _measure_facade._cc_focus = _measure_facade.args[_measure_facade._i + 1]
+                _measure_facade._i += 2
+            else:
+                _measure_facade._i += 1
+        _measure_facade._cc_data = _measure_facade.cursor_coach.generate_cursor_coach_data(
+            days=_measure_facade._cc_days, focus=_measure_facade._cc_focus
+        )
         if "--json" in _measure_facade.args:
             print(_measure_facade.json.dumps(_measure_facade._cc_data, indent=2))
         else:
@@ -2653,7 +2684,7 @@ def main():
         print("  python3 measure.py cursor-doctor         # Cursor adapter readiness check")
         print("  python3 measure.py cursor-install        # Install Cursor hooks (merged into ~/.cursor/hooks.json)")
         print("  python3 measure.py cursor-summary        # Token/quality Cursor session summary")
-        print("  python3 measure.py cursor-coach          # Cursor coach data (sessions, quality, patterns; --json)")
+        print("  python3 measure.py cursor-coach          # Cursor coach data (sessions, quality, patterns; --json --days N --focus X)")
         print("  python3 measure.py cursor-rollup         # Ingest Cursor sessions into trends DB")
         print("  python3 measure.py cursor-audit          # Audit Cursor rules (.cursor/rules, AGENTS.md) + hooks.json health")
         print("  python3 measure.py antigravity-doctor    # Google Antigravity adapter readiness check")

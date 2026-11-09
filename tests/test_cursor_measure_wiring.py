@@ -355,3 +355,37 @@ def test_restore_stamps_source_session_end(monkeypatch, tmp_path):
     marker = path.read_text().splitlines()[0]
     assert marker.startswith("<!-- source-end: ")
     assert abs(float(marker[len("<!-- source-end: "):-4]) - (time.time() - 60)) < 5
+
+
+# ---------------------------------------------------------------------------
+# cursor-summary token resolution (F10)
+# ---------------------------------------------------------------------------
+
+def test_cursor_summary_resolves_token_sources(monkeypatch, tmp_path, capsys):
+    """cursor-summary must resolve state.vscdb/transcript tokens like the
+    rollup collector. Raw tally JSON never carries bubble_tokens or
+    transcript_tokens, so without this step the summary always prints
+    '0 in / 0 out' and mislabels every session 'estimated'."""
+    mod, _snap, _ch, _cuh = _import_measure(monkeypatch, tmp_path, "cursor")
+    _monkeypatch_cursor_state_readers(
+        monkeypatch,
+        bubble_tokens={"composer-abc-123": {
+            "input_tokens": 5000, "output_tokens": 900, "model": "gpt-4o",
+        }},
+    )
+    mod._cursor_summary()
+    out = capsys.readouterr().out
+    assert "5,000 in / 900 out" in out
+    assert "cursor_state_vscdb" in out
+    assert "use estimated token counts" not in out
+
+
+def test_cursor_summary_reports_unknown_tokens_honestly(monkeypatch, tmp_path, capsys):
+    """With no token source at all, the summary must say the figures are
+    unknown (tally only) — not claim every session is 'estimated'."""
+    mod, _snap, _ch, _cuh = _import_measure(monkeypatch, tmp_path, "cursor")
+    _monkeypatch_cursor_state_readers(monkeypatch)  # bubble {}, transcript None
+    mod._cursor_summary()
+    out = capsys.readouterr().out
+    assert "no token figures" in out
+    assert "use estimated token counts" not in out

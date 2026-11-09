@@ -199,6 +199,62 @@ def test_questions_and_cursor_terminology(cursor_home):
     assert ".cursor/rules" in blob or "AGENTS.md" in blob
 
 
+def test_coach_resolves_token_provenance_live(cursor_home, monkeypatch):
+    """F11: the coach must resolve state.vscdb/transcript tokens itself — raw
+    tallies never carry them, so without resolution every session scored
+    cursor_tally_only and output_input_ratio could never activate."""
+    import cursor_state as cst
+
+    _write_tally(cursor_home, _tally("conv-tokens"))
+    monkeypatch.setattr(
+        cst, "read_state_vscdb_tokens",
+        lambda ids: {"conv-tokens": {"input_tokens": 8000, "output_tokens": 1200,
+                                     "model": "claude-sonnet"}},
+    )
+    monkeypatch.setattr(cst, "transcript_estimate", lambda p, home: None)
+    data = cursor_coach.generate_cursor_coach_data(cursor_home=cursor_home)
+    prov = data["snapshot"]["token_provenance"]
+    assert prov.get("cursor_state_vscdb", 0) == 1
+    assert prov.get("cursor_tally_only", 0) == 0
+
+
+def test_fallback_snapshot_has_all_cli_keys(monkeypatch):
+    """F14: when _generate fails, the fallback snapshot must still carry every
+    key the human-readable CLI path reads (it crashed with KeyError)."""
+    def _boom(*a, **k):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(cursor_coach, "_generate", _boom)
+    data = cursor_coach.generate_cursor_coach_data()
+    snap = data["snapshot"]
+    for key in ("sessions_analyzed", "window_days", "total_turns",
+                "total_tool_calls", "total_compactions", "token_provenance",
+                "quality", "cost"):
+        assert key in snap, f"fallback snapshot missing {key}"
+
+
+def test_default_cursor_home_validates_override(tmp_path, monkeypatch):
+    """F16: TOKEN_OPTIMIZER_CURSOR_HOME gets the same safe-home validation the
+    hook bridge applies — an override outside $HOME is rejected, not read."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    safe = home / ".cursor-alt"
+    safe.mkdir()
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CURSOR_HOME", str(safe))
+    assert cursor_coach._default_cursor_home().resolve() == safe.resolve()
+    assert cursor_quality._default_cursor_home().resolve() == safe.resolve()
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CURSOR_HOME", str(outside))
+    expected = (home / ".cursor").resolve()
+    assert cursor_coach._default_cursor_home().resolve() == expected
+    assert cursor_quality._default_cursor_home().resolve() == expected
+
+
 def test_skill_detects_default_cursor_install_before_fallback(tmp_path):
     import os
     import subprocess

@@ -2882,8 +2882,34 @@ def _cursor_summary():
     import cursor_state as _cst  # noqa: PLC0415
 
     home = _ch() if _ch is not None else _measure_facade.Path.home() / ".cursor"
-    tallies = [t for p in _cst.find_tallies(home) if (t := _cst.read_tally(p)) is not None]
-    normalized = [s for t in tallies if (s := _measure_facade.cursor_session.normalize_session(t))]
+    tallies = []
+    for p in _cst.find_tallies(home):
+        t = _cst.read_tally(p)
+        if t is not None:
+            tallies.append(_cst.idle_finalise(t))
+
+    # Resolve the same token sources _collect_cursor_sessions uses: raw tally
+    # JSON never carries bubble_tokens/transcript_tokens, so without this the
+    # summary always reports 0 tokens and mislabels every session "estimated".
+    composer_ids = [
+        str(t.get("conversation_id") or t.get("session_id") or "") for t in tallies
+    ]
+    try:
+        bubble_tokens = _cst.read_state_vscdb_tokens(composer_ids)
+    except Exception:
+        bubble_tokens = {}
+    normalized = []
+    for t in tallies:
+        t = dict(t)
+        cid = str(t.get("conversation_id") or t.get("session_id") or "")
+        t["bubble_tokens"] = bubble_tokens.get(cid)
+        try:
+            t["transcript_tokens"] = _cst.transcript_estimate(t.get("transcript_path"), home)
+        except Exception:
+            t["transcript_tokens"] = None
+        s = _measure_facade.cursor_session.normalize_session(t)
+        if s is not None:
+            normalized.append(s)
 
     print("Token Optimizer — Cursor summary")
     if not normalized:
@@ -2897,7 +2923,12 @@ def _cursor_summary():
     total_in = sum(s.get("total_input_tokens", 0) for s in normalized)
     total_out = sum(s.get("total_output_tokens", 0) for s in normalized)
     incomplete = sum(1 for s in normalized if s.get("incomplete"))
-    estimated = sum(1 for s in normalized if s.get("estimated"))
+    token_sources = {}
+    for s in normalized:
+        src = s.get("token_source") or "unknown"
+        token_sources[src] = token_sources.get(src, 0) + 1
+    estimated = token_sources.get("cursor_transcript_estimate", 0)
+    unknown_tokens = token_sources.get("cursor_tally_only", 0)
     compactions = sum(s.get("compactions", 0) for s in normalized)
     surfaces = {}
     for s in normalized:
@@ -2906,6 +2937,10 @@ def _cursor_summary():
 
     print(f"  {len(normalized)} session(s)")
     print(f"    Tokens: {total_in:,} in / {total_out:,} out")
+    if token_sources:
+        print("    Token sources: " + ", ".join(
+            f"{k} ({v})" for k, v in sorted(token_sources.items())
+        ))
     if compactions:
         print(f"    Compactions captured: {compactions}")
     if surfaces:
@@ -2915,7 +2950,12 @@ def _cursor_summary():
     if estimated:
         print(
             f"    {estimated} session(s) use estimated token counts "
-            "(state.vscdb tokenCount is best-effort; transcripts carry no usage)"
+            "(transcript chars-over-four; state.vscdb tokenCount is best-effort)"
+        )
+    if unknown_tokens:
+        print(
+            f"    {unknown_tokens} session(s) have no token figures "
+            "(tally only) — unknown, not zero"
         )
     print()
     print("  Cost: Cursor stores no local billing data — no savings headline is")

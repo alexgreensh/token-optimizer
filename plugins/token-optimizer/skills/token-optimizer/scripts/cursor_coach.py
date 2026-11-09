@@ -10,8 +10,11 @@ Token Optimizer's OWN Cursor data planes, read-only:
   (turns, tool calls, models, recorded failures, preCompact snapshots);
 - session quality from ``cursor_quality.compute_cursor_quality`` (the single
   Cursor scorer - per-signal provenance included);
+- token figures resolved live through ``cursor_state`` (state.vscdb bubble
+  ``tokenCount``, else the transcript chars-over-four estimate - the same
+  sources and ordering ``cursor-rollup`` uses);
 - the rollup's ``trends.db`` ``session_log`` rows (``platform='cursor'``) for
-  token figures the rollup already resolved;
+  aggregate history;
 - disk transcripts only through the tally's ``transcript_path`` (via
   cursor_quality, which confines reads under ``<cursor_home>/projects``).
 
@@ -55,10 +58,17 @@ _NO_COST_DETAIL = (
 
 
 def _default_cursor_home() -> Path:
-    override = os.environ.get("TOKEN_OPTIMIZER_CURSOR_HOME", "").strip()
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".cursor"
+    # Delegate to runtime_env.cursor_home() so the TOKEN_OPTIMIZER_CURSOR_HOME
+    # override gets the same validation the hook bridge applies (absolute,
+    # existing, non-symlink, confined under $HOME / WSL /mnt opt-in). A bare
+    # Path(override) here let coach/audit read a different home than the
+    # bridge writes to.
+    try:
+        from runtime_env import cursor_home
+
+        return cursor_home()
+    except Exception:
+        return Path.home() / ".cursor"
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -247,8 +257,9 @@ def _detect_patterns(session_view: list[dict]) -> tuple[list[dict], list[dict]]:
             f"{len(unknown_tokens)} of {len(session_view)} session(s) have no "
             "resolved token figures (no state.vscdb read, no transcript "
             "estimate) - their usage is unknown, not zero.",
-            "Run measure.py cursor-rollup so resolved figures land in "
-            "trends.db, and measure.py cursor-doctor to check hook coverage.",
+            "Check that IDE chats exist (state.vscdb) or CLI transcripts are "
+            "present under <cursor_home>/projects; measure.py cursor-doctor "
+            "names both data planes.",
         ))
 
     marathon = [s for s in session_view if s["turns"] > 100]
@@ -314,6 +325,12 @@ def generate_cursor_coach_data(
             "snapshot": {
                 "sessions_analyzed": 0,
                 "window_days": days,
+                "total_turns": 0,
+                "total_tool_calls": 0,
+                "total_compactions": 0,
+                "token_provenance": {},
+                "quality": {"scored_sessions": 0, "average_score": None,
+                            "signals_note": "data generation failed; see logs"},
                 "cost": {"status": "cursor_no_cost_data", "detail": _NO_COST_DETAIL},
             },
             "patterns_good": [],
@@ -337,6 +354,34 @@ def _generate(cursor_home: Any = None, *, days: int = 30, focus: Any = None) -> 
         if updated is not None and updated < cutoff:
             continue  # outside the window; missing timestamps stay included
         in_window.append(tally)
+
+    # Resolve token provenance before scoring. Raw tally JSON never carries
+    # bubble_tokens/transcript_tokens, so without this every session scores
+    # cursor_tally_only and output_input_ratio / the "real figures" pattern
+    # are unreachable on real installs. Same sources and ordering as
+    # _collect_cursor_sessions, bounded to the analysis window.
+    import cursor_state as _cst
+
+    composer_ids = [
+        str(t.get("conversation_id") or t.get("session_id") or "") for t in in_window
+    ]
+    try:
+        bubble = _cst.read_state_vscdb_tokens(composer_ids)
+    except Exception:
+        bubble = {}
+    resolved_tallies: list[dict] = []
+    for tally in in_window:
+        enriched = dict(tally)
+        cid = str(tally.get("conversation_id") or tally.get("session_id") or "")
+        enriched["bubble_tokens"] = bubble.get(cid)
+        try:
+            enriched["transcript_tokens"] = _cst.transcript_estimate(
+                tally.get("transcript_path"), home
+            )
+        except Exception:
+            enriched["transcript_tokens"] = None
+        resolved_tallies.append(enriched)
+    in_window = resolved_tallies
 
     import cursor_quality
 

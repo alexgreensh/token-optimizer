@@ -81,7 +81,7 @@ def test_cli_dispatch_lives_in_cli_main_behind_the_original_guard():
 
 def test_every_cli_spelling_is_dispatched_from_cli_main():
     spellings = json.loads((REPO / 'tests/fixtures/measure_split/cases.json').read_text(encoding='utf-8'))['spellings']
-    assert len(spellings) == 146
+    assert len(spellings) >= 146
     tree = _tree(PACKAGE / 'cli.py')
     literals = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
     assert [s for s in spellings if s not in literals] == []

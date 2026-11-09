@@ -337,7 +337,7 @@ def test_post_tool_use_nudges_on_crossing_threshold(cursor_dir, monkeypatch, cap
 
 def test_session_start_injects_matching_workspace_restore(cursor_dir, capsys):
     root = "/Users/alex/repos/demo"
-    digest = hashlib.sha1(root.encode("utf-8", "replace")).hexdigest()
+    digest = hashlib.sha1(bridge.cursor_bridge_checkpoint.normalize_workspace(root).encode("utf-8", "replace")).hexdigest()
     restore_dir = _to_dir(cursor_dir) / "restore-context"
     restore_dir.mkdir(parents=True, exist_ok=True)
     (restore_dir / f"{digest}.md").write_text(
@@ -356,7 +356,7 @@ def test_session_start_injects_matching_workspace_restore(cursor_dir, capsys):
 
 def test_session_start_skips_restore_when_sibling_active(cursor_dir, capsys):
     root = "/Users/alex/repos/demo"
-    digest = hashlib.sha1(root.encode("utf-8", "replace")).hexdigest()
+    digest = hashlib.sha1(bridge.cursor_bridge_checkpoint.normalize_workspace(root).encode("utf-8", "replace")).hexdigest()
     restore_dir = _to_dir(cursor_dir) / "restore-context"
     restore_dir.mkdir(parents=True, exist_ok=True)
     (restore_dir / f"{digest}.md").write_text(f"<!-- source-end: {time.time()} -->\nshould be skipped", encoding="utf-8")
@@ -589,7 +589,7 @@ def test_after_shell_filename_does_not_claim_rewrite(cursor_dir):
 
 def test_restore_rejects_stale_source_and_avoids_old_tally_reads(cursor_dir, monkeypatch):
     root = "/workspace/example"
-    digest = hashlib.sha1(root.encode()).hexdigest()
+    digest = hashlib.sha1(bridge.cursor_bridge_checkpoint.normalize_workspace(root).encode()).hexdigest()
     folder = _to_dir(cursor_dir) / "restore-context"
     folder.mkdir(parents=True)
     restore = folder / f"{digest}.md"

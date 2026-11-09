@@ -118,7 +118,7 @@ def test_compaction_epoch_rejects_inflight_stale_store(monkeypatch, tmp_path):
 def test_normalized_workspace_suppresses_active_sibling(tmp_path):
     root = tmp_path / 'project'; root.mkdir()
     to_dir = tmp_path / 'to'; folder = to_dir / 'restore-context'; folder.mkdir(parents=True)
-    digest = hashlib.sha1(str(root).encode()).hexdigest()
+    digest = hashlib.sha1(checkpoint.normalize_workspace(str(root)).encode()).hexdigest()
     (folder / (digest + '.md')).write_text('<!-- source-end: %s -->\ncontinuity' % time.time())
     sessions = tmp_path / 'sessions'; sessions.mkdir()
     tally_path = sessions / 'sibling.json'; tally_path.write_text('{}')

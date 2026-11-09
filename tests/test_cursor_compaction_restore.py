@@ -55,7 +55,7 @@ def env(monkeypatch, tmp_path, capsys):
     # Checkpoints live under the confined data dir, matching production
     # (SNAPSHOT_DIR is pinned to <cursor_home>/token-optimizer): the G1
     # confinement in _read_checkpoint_bounded refuses anything outside it.
-    cp_dir = cur / "token-optimizer" / "snapshot" / "checkpoints"
+    cp_dir = cur / "token-optimizer" / "checkpoints"
     cp_dir.mkdir(parents=True, exist_ok=True)
     for name, value in (
         ("CHECKPOINT_DIR", cp_dir),

@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import fnmatch
+import uuid
 import os
 import tempfile
 import time
@@ -146,15 +148,44 @@ def _file_key(file_path: str) -> str:
     return "sha256:" + hashlib.sha256(file_path.encode("utf-8", "surrogatepass")).hexdigest()
 
 
+def clear_session_reads(sid):
+    """Advance the compaction epoch before any later read can be suppressed."""
+    if not sid or sid == "unknown":
+        return
+    path = _store_path(sid).with_suffix(".epoch")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".epoch-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(uuid.uuid4().hex)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _epoch(sid):
+    path = _store_path(sid).with_suffix(".epoch")
+    if path.is_symlink():
+        raise ValueError("invalid epoch")
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
 def _load_store(sid: str) -> dict:
     try:
         path = _store_path(sid)
         if path.is_symlink() or path.stat().st_size > _MAX_STORE_BYTES:
             return {}
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        epoch = _epoch(sid)
+        return data if isinstance(data, dict) and data.get("epoch", "") == epoch else {"epoch": epoch}
+    except FileNotFoundError:
+        return {"epoch": _epoch(sid)}
     except (OSError, ValueError):
-        return {}
+        raise
 
 
 @contextmanager
@@ -177,6 +208,7 @@ def _save_store(sid: str, store: dict) -> None:
             os.chmod(path.parent, 0o700)
         except OSError:
             pass
+        store.setdefault("epoch", _epoch(sid))
         entries = store.setdefault("files", {})
         while entries:
             encoded = json.dumps(store).encode("utf-8")
@@ -257,7 +289,7 @@ def _structure_message(file_path: str) -> str | None:
         from structure_map import summarize_code_file
 
         summary = summarize_code_file(file_path)
-        if summary is None or not getattr(summary, "replacement_text", ""):
+        if summary is None or not getattr(summary, "eligible", False) or not getattr(summary, "replacement_text", ""):
             return None
         text = summary.replacement_text
         if len(text) > 2000:
@@ -284,20 +316,44 @@ def _reason_message(file_path: str) -> str:
 
 def _eligible(file_path: str) -> bool:
     try:
-        from structure_map import is_structure_supported_file
+        from structure_map import NON_CODE_SUFFIXES, is_structure_supported_file
 
-        if not is_structure_supported_file(file_path):
+        if Path(file_path).suffix.lower() in NON_CODE_SUFFIXES or not is_structure_supported_file(file_path):
             return False
     except Exception:
         return False
-    try:
-        import read_cache
-
-        if read_cache._is_contextignored(file_path):
-            return False
-    except Exception:
-        pass  # contextignore unavailable: eligibility stands on file type
     return True
+
+
+
+def _resolve_read_path(fields, file_path):
+    roots = fields.get("workspace_roots") or []
+    root = fields.get("cwd") or (roots[0] if roots else None)
+    path = Path(file_path).expanduser()
+    if not path.is_absolute():
+        if not root or not Path(root).is_absolute():
+            return None
+        path = Path(root) / path
+    if path.is_symlink():
+        return None
+    return os.path.normcase(str(path.resolve()))
+
+
+def _contextignored(path, fields):
+    roots = fields.get("workspace_roots") or []
+    root = roots[0] if roots else fields.get("cwd")
+    from runtime_env import runtime_home
+    candidates = ([Path(root) / ".contextignore"] if root else []) + [runtime_home() / ".contextignore"]
+    for ignore in candidates:
+        if not ignore.is_file() or ignore.is_symlink():
+            continue
+        for line in ignore.read_text(encoding="utf-8").splitlines()[:1000]:
+            pattern = line.strip()
+            if pattern and not pattern.startswith("#"):
+                relative = os.path.relpath(path, root) if root else path
+                if any(fnmatch.fnmatch(value, pattern) for value in (path, relative, Path(path).name)):
+                    return True
+    return False
 
 
 def evaluate(fields) -> dict | None:
@@ -326,7 +382,8 @@ def _evaluate(fields) -> dict | None:
         value = args.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value:
             return None
-    if not _eligible(file_path):
+    file_path = _resolve_read_path(fields, file_path)
+    if not file_path or not _eligible(file_path) or _contextignored(file_path, fields):
         return None
 
     sid = fields.get("conversation_id")
@@ -377,7 +434,10 @@ def _evaluate_locked(fields, sid, file_path, digest, size, current, mode, owner)
 
     # Unchanged redundant read. Shadow/warn do no store write: the ts
     # refresh would be a per-Read-hook disk write for pruning metadata only.
-    msg = _structure_message(file_path) or _reason_message(file_path)
+    msg = _structure_message(file_path)
+    if not msg:
+        return _decide("warn" if mode in ("soft_block", "block") else mode,
+                       _reason_message(file_path), base, "redundant")
     return _soft_block_decide(mode, msg, base, "redundant", store, sid, key, entry)
 
 
@@ -387,6 +447,9 @@ def confirm_read(fields):
         sid = fields.get("conversation_id")
         path = fields.get("tool_args", {}).get("file_path")
         if not sid or sid == "unknown" or not isinstance(path, str):
+            return
+        path = _resolve_read_path(fields, path)
+        if not path:
             return
         key = _file_key(path)
         with _store_lock(sid) as acquired:

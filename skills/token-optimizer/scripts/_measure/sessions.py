@@ -2819,7 +2819,7 @@ def _write_cursor_restore_context(sessions, quiet=None):
         import tempfile  # noqa: PLC0415
 
         from runtime_env import cursor_home as _ch  # noqa: PLC0415
-
+        from cursor_bridge_checkpoint import normalize_workspace  # noqa: PLC0415
         from datetime import datetime  # noqa: PLC0415
         # Match sessionStart's workspace root and source-session end time.
         by_ws: dict = {}
@@ -2833,8 +2833,7 @@ def _write_cursor_restore_context(sessions, quiet=None):
                 root = str(s.get("cwd") or s.get("slug") or "")
             if not root:
                 continue
-            by_ws.setdefault(root, []).append(s)
-
+            by_ws.setdefault(normalize_workspace(root), []).append(s)
         def _clean(value):
             _measure_facade = _compat.facade()
             text = str(value or "")

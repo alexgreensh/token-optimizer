@@ -54,6 +54,8 @@ class Greeter:
         return f"hello {name}"
 '''
 
+CODE += "\n".join(f"def extra_{i}(value):\n    return value + {i}\n" for i in range(300))
+
 CODE_V2 = CODE + "\n\ndef gamma(z):\n    return beta(z) - 1\n"
 
 
@@ -402,7 +404,9 @@ def test_long_paths_confirm_without_aliasing(env, monkeypatch):
     seen = []
     monkeypatch.setattr(rc, "_eligible", lambda path: path.endswith(".py"))
     monkeypatch.setattr(rc, "_read_fingerprint", lambda path: (seen.append(str(path)) or ("hash", 1, None)))
-    monkeypatch.setattr(rc, "_structure_message", lambda path: None)
+    monkeypatch.setattr(rc, "_contextignored", lambda path, fields: False)
+    monkeypatch.setattr(rc, "_resolve_read_path", lambda fields, path: path)
+    monkeypatch.setattr(rc, "_structure_message", lambda path: "valid structure")
     fields = _fields(first)
     assert len(str(first)) > 1100
     assert rc.evaluate(fields)["observed"]["decision"] == "first_read"

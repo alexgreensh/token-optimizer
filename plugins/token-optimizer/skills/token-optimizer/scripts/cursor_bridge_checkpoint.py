@@ -11,6 +11,7 @@ leaf symlinks refused, and the restore payload stays within its byte budget.
 from __future__ import annotations
 
 import sys
+import os
 import hashlib
 import time
 from pathlib import Path
@@ -94,13 +95,19 @@ def _capture_compact_checkpoint(fields, home, locate_measure_py=None):
                 fill_pct = float(fill_pct) if fill_pct is not None else None
             except (TypeError, ValueError):
                 fill_pct = None
-            checkpoint = measure.compact_capture(
-                session_id=sid,
-                trigger=fields.get("trigger") or "precompact",
-                cwd=fields.get("cwd") or None,
-                fill_pct=fill_pct,
-                _trusted_transcript=translated,
-            )
+            old_dir, old_log = measure.CHECKPOINT_DIR, measure.CHECKPOINT_EVENT_LOG
+            measure.CHECKPOINT_DIR = home / "token-optimizer" / "checkpoints"
+            measure.CHECKPOINT_EVENT_LOG = home / "token-optimizer" / "checkpoint-events.jsonl"
+            try:
+                checkpoint = measure.compact_capture(
+                    session_id=sid,
+                    trigger=fields.get("trigger") or "precompact",
+                    cwd=fields.get("cwd") or None,
+                    fill_pct=fill_pct,
+                    _trusted_transcript=translated,
+                )
+            finally:
+                measure.CHECKPOINT_DIR, measure.CHECKPOINT_EVENT_LOG = old_dir, old_log
         finally:
             _restore_env("TOKEN_OPTIMIZER_SNAPSHOT_DIR", old_snapshot)
         return str(checkpoint) if checkpoint else None
@@ -160,10 +167,15 @@ def _read_checkpoint_bounded(path_str, home):
 _RESTORE_MAX_AGE = 7 * 24 * 3600
 
 
+def normalize_workspace(root):
+    return os.path.normcase(os.path.realpath(os.path.normpath(root)))
+
+
 def restore_for_workspace(fields, root, to_dir, sessions_dir, load_tally, active_seconds):
     """Inject recent workspace continuity unless a recent sibling is active."""
     if to_dir is None or not root:
         return None
+    root = normalize_workspace(root)
     now = time.time()
     own_id = fields.get("conversation_id") or ""
     try:
@@ -180,13 +192,15 @@ def restore_for_workspace(fields, root, to_dir, sessions_dir, load_tally, active
                 roots = tally.get("workspace_roots")
                 sibling_root = roots[0] if isinstance(roots, list) and roots else tally.get("cwd")
                 try:
-                    if str(sibling_root) == str(root) and now - float(tally.get("updated_at") or 0) < active_seconds:
+                    if sibling_root and normalize_workspace(str(sibling_root)) == root and now - float(tally.get("updated_at") or 0) < active_seconds:
                         return None
                 except (TypeError, ValueError):
                     continue
         digest = hashlib.sha1(root.encode("utf-8", "replace")).hexdigest()
         path = to_dir / "restore-context" / (digest + ".md")
-        if path.is_symlink() or path.stat().st_size > _RESTORE_MAX_BYTES:
+        if (path.is_symlink() or path.parent.is_symlink()
+                or to_dir.resolve() not in path.resolve().parents
+                or path.stat().st_size > _RESTORE_MAX_BYTES):
             return None
         stamp, text = path.read_text(encoding="utf-8").split("\n", 1)
         if not stamp.startswith("<!-- source-end: ") or not stamp.endswith(" -->"):

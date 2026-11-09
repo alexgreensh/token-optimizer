@@ -358,7 +358,7 @@ def test_payload_modules_ship_the_bridges_runtime_deps():
     (lease_lock) and utf8_io; every one absent from the payload means a silent
     degraded fallback in EVERY installed hook."""
     for required in ("spawn_utils.py", "hook_runtime.py", "utf8_io.py",
-                     "codex_io.py", "hermes_session.py"):
+                     "codex_io.py", "hermes_session.py", "cursor_quality.py"):
         assert required in ci._PAYLOAD_MODULES, required
         assert (SCRIPTS / required).is_file(), f"{required} missing from checkout"
 

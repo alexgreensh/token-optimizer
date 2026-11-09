@@ -51,6 +51,7 @@ _PAYLOAD_MODULES = (
     "read_cache.py",
     "cursor_state.py",
     "cursor_session.py",
+    "cursor_quality.py",
     "bash_hook.py",
     "bash_compress.py",
     "bash_search_results.py",

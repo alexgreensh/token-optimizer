@@ -64,7 +64,13 @@ def shell_thrash_nudge(fields, now=None):
         try:
             from thrash_guard import check as _thrash_check
 
-            return _thrash_check(command, output, now=now)
+            import session_store
+            old_dir = session_store.SNAPSHOT_DIR
+            session_store.SNAPSHOT_DIR = cursor_home() / "token-optimizer" / "snapshot"
+            try:
+                return _thrash_check(command, output, stderr=output, now=now)
+            finally:
+                session_store.SNAPSHOT_DIR = old_dir
         finally:
             _restore_env(_SESSION_ENV, old_session)
             _restore_env(_SNAPSHOT_ENV, old_snapshot)

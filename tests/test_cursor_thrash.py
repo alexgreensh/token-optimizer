@@ -74,7 +74,7 @@ def test_identical_output_streak_nudges_once(adapter):
 
 def test_burn_streak_nudges(adapter):
     mod, _ = adapter
-    cmd = "gcc -o image image.c -lm && ./image 2>&1"
+    cmd = "gcc -o image image.c -lm && ./image"
     t0 = 2_000_000.0
     f1 = _fields(cmd, "Error: undefined symbol foo\nline 1\n")
     f2 = _fields(cmd, "Error: type mismatch bar\nline 2\n")

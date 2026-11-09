@@ -692,9 +692,11 @@ def handle_post_tool_use(payload):
     # U5 thrash guard: same streak/burn/inline-script logic as Claude,
     # nudge-only, fail-open (cursor_thrash owns the env bridging).
     if fields["tool_name"] == "Shell":
-        import cursor_thrash
-
-        thrash = cursor_thrash.shell_thrash_nudge(fields)
+        try:
+            import cursor_thrash
+            thrash = cursor_thrash.shell_thrash_nudge(fields)
+        except Exception:
+            thrash = None
         if thrash:
             nudges.append(thrash)
             _record_observed("thrashNudge", nudge="thrash")
@@ -745,6 +747,11 @@ def handle_pre_compact(payload):
     into Cursor's UI is claimed only with positive native evidence.
     """
     fields = decode_payload(payload)
+    try:
+        import cursor_read_cache
+        cursor_read_cache.clear_session_reads(fields["conversation_id"])
+    except Exception:
+        pass
     _record_observed("preCompact", conversation_id=fields["conversation_id"] or None)
     _update_tally(
         fields,

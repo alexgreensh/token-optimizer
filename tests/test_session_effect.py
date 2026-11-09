@@ -181,10 +181,44 @@ def test_cli_lines_render(tmp_path):
     db = _db(tmp_path)
     _session(db, 'a', None, 900, 1000)
     _counted(db, 'a', 50, 50)
-    text = '\n'.join(se.cli_lines(se.compute(db, START, END)))
-    assert 'In a typical session, 10.0% of your context never gets sent' in text
-    assert 'Token Optimizer ran in 100.0% of your traffic' in text and 'Your limits (estimated' in text
+    lines = se.cli_lines(se.compute(db, START, END))
+    text = '\n'.join(lines)
+    assert lines[0] == '  Token Optimizer ran in 1 of your 1 sessions.'  # absolute first
+    assert "share of that session's own context" in text and 'this Mac: typical 10.0%' in text
+    assert 'traffic' not in text and 'Your limits' not in text  # never a share of all traffic
     assert se.cli_lines({'available': False}) == []
+
+
+def test_per_session_split_by_where_it_ran(tmp_path):
+    db = sqlite3.connect(str(tmp_path / 'trends.db'))
+    db.executescript('''
+        CREATE TABLE counted_reread(event_key TEXT PRIMARY KEY, source TEXT, session_uuid TEXT,
+            event_ts TEXT, tokens INTEGER, oneshot_usd REAL, reread_tokens INTEGER, reread_usd REAL);
+        CREATE TABLE session_log(session_uuid TEXT, jsonl_path TEXT, input_tokens INTEGER,
+            parent_daily_usage_json TEXT, daily_usage_json TEXT, is_sidechain INTEGER);
+        CREATE TABLE savings_events(timestamp TEXT, session_uuid TEXT, origin TEXT);
+        CREATE TABLE compression_events(timestamp TEXT, session_uuid TEXT, origin TEXT);
+    ''')
+    for su, inp in (('l1', 900), ('l2', 400), ('c1', 100)):
+        _session(db, su, None, inp, 1000)
+        _counted(db, su, 50, 50)
+    db.execute("INSERT INTO compression_events VALUES ('2026-10-05', 'l1', NULL)")
+    db.execute("INSERT INTO compression_events VALUES ('2026-10-05', 'c1', 'transcript_backfill')")
+    bp = se.compute(db, START, END)['per_session']['by_place']
+    assert bp['local']['sessions'] == 2 and bp['cloud']['sessions'] == 1
+    assert bp['cloud']['median'] == pytest.approx(0.5)
+    assert bp['local']['median'] == pytest.approx(100 / 500.0) and bp['local']['p75'] == pytest.approx(0.2)
+    # No origin column (older ledger): every session is local, nothing guessed.
+    assert se.compute(_old(tmp_path), START, END)['per_session']['by_place']['cloud']['sessions'] == 0
+
+
+def _old(tmp_path):
+    d = tmp_path / 'old'
+    d.mkdir()
+    db = _db(d)
+    _session(db, 'a', None, 900, 1000)
+    _counted(db, 'a', 50, 50)
+    return db
 
 
 def test_headline_splits_the_removed_pool_by_what_it_is():

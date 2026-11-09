@@ -281,6 +281,16 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
             logged.update(r[0] for r in conn.execute(
                 'SELECT DISTINCT session_uuid FROM {} WHERE timestamp >= ? AND timestamp <= ? '
                 'AND session_uuid IS NOT NULL'.format(table), (start_ts, end_ts)))
+    # Where a session ran: cloud when its ledger rows were rebuilt from the
+    # transcript (transcript_backfill only writes for sessions whose hooks ran
+    # elsewhere and logged nothing here); local otherwise. Evidence, never a
+    # directory name. Absent origin column: every session counts as local.
+    cloud = set()
+    for table in ('savings_events', 'compression_events'):
+        if table in names and 'origin' in {r[1] for r in conn.execute('PRAGMA table_info({})'.format(table))}:
+            cloud.update(r[0] for r in conn.execute(
+                "SELECT DISTINCT session_uuid FROM {} WHERE origin = 'transcript_backfill' "
+                'AND session_uuid IS NOT NULL'.format(table)))
     cols = {row[1] for row in conn.execute('PRAGMA table_info(session_log)')}
     parent = 'parent_daily_usage_json' if 'parent_daily_usage_json' in cols else 'NULL'
     daily = 'daily_usage_json' if 'daily_usage_json' in cols else 'NULL'
@@ -358,6 +368,7 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
     # Per session: every session with counted rows and input, sidechains included
     # (a sub-agent session is a session); overhead nets only where scanned.
     weighted = [0, 0]
+    place = {'local': ([], []), 'cloud': ([], [])}
     for su, (tok, rr, _usd) in saved.items():
         inp = sessions.get(su, {}).get('input', 0)
         if inp <= 0:
@@ -365,10 +376,21 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
         s = tok + rr
         gross.append(s / float(inp + s))
         net.append((s - session_overhead.get(su, 0)) / float(inp + s))
+        bucket = place['cloud' if su in cloud else 'local']
+        bucket[0].append(gross[-1])
+        bucket[1].append(net[-1])
         weighted[0] += s
         weighted[1] += inp + s
     gross.sort()
     net.sort()
+    by_place = {}
+    for key, (g, n) in place.items():
+        g.sort()
+        n.sort()
+        by_place[key] = {'sessions': len(g), 'median': _percentile(g, 1, 2), 'p75': _percentile(g, 3, 4),
+                         'net_median': _percentile(n, 1, 2), 'net_p75': _percentile(n, 3, 4)}
+    by_place['basis'] = ("cloud = the session's ledger rows were rebuilt from its transcript "
+                         "(origin transcript_backfill: hooks ran elsewhere); local = logged on this machine")
     one_rate = rate[1] / rate[0] if rate[0] > 0 else 0.0
     rr_rate = rate[3] / rate[2] if rate[2] > 0 else 0.0
     oh_usd = oh['injected_tokens'] * one_rate + oh['reread_tokens'] * rr_rate
@@ -391,6 +413,7 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
             'p90': _percentile(gross, 9, 10), 'max': gross[-1] if gross else None,
             'net_median': _percentile(net, 1, 2), 'net_p75': _percentile(net, 3, 4),
             'net_p90': _percentile(net, 9, 10),
+            'by_place': by_place,
             'basis': 'per session: (removed + rereads) / (session input incl. cache + removed + rereads), '
                      'counted ledger rows in the window; net subtracts TO injections and their rereads',
             'tier': 'measured',
@@ -460,20 +483,25 @@ def cli_lines(effect):
     """Plain CLI lines; empty when unavailable."""
     if not isinstance(effect, dict) or not effect.get('available'):
         return []
-    ps, cov, fl = effect['per_session'], effect['coverage'], effect['fleet']
+    ps, cov = effect['per_session'], effect['coverage']
     lines = []
-    # Same wording as the dashboard's savings story (assets/savings_story.js).
-    if ps.get('sessions'):
-        lines.append('  In a typical session, {} of your context never gets sent; in your top quarter of sessions, '
-                     '{} or more ({:,} sessions, net of Token Optimizer\'s own notes).'.format(
-                         _pct(ps['net_median']), _pct(ps['net_p75']), ps['sessions']))
-    lines.append('  Token Optimizer ran in {} of your traffic ({:,} of {:,} sessions).'.format(
-        _pct(cov['ran_traffic_share']), cov['ran_sessions'], cov['sessions']))
+    # Same order as the dashboard's savings story (assets/savings_story.js):
+    # absolute counts first; percentages only after them, each named with its
+    # base (that session's own context), never a share of all traffic.
+    lines.append('  Token Optimizer ran in {:,} of your {:,} sessions.'.format(cov['ran_sessions'], cov['sessions']))
     if cov['ran_no_ledger_sessions']:
         lines.append('  {:,} sessions ran Token Optimizer but are missing from the ledger; the total understates.'.format(
             cov['ran_no_ledger_sessions']))
     if cov['unknown_sessions']:
         lines.append('  {:,} sessions not scanned yet (transcript missing).'.format(cov['unknown_sessions']))
-    lines.append('  Your limits (estimated, weighted by API price): {} of what this work would have cost never got spent, '
-                 'counted ledger alone where Token Optimizer ran.'.format(_pct(fl['cost_share_net'])))
+    places = ps.get('by_place') or {}
+    rows = [(label, places.get(key) or {}) for key, label in (('local', 'this Mac'), ('cloud', 'cloud'))]
+    rows = [(label, v) for label, v in rows if v.get('sessions')]
+    if not rows and ps.get('sessions'):
+        rows = [('all', ps)]
+    if rows:
+        lines.append("  Per session, share of that session's own context never sent (net of Token Optimizer's own notes):")
+        for label, v in rows:
+            lines.append('    {}: typical {}, top quarter {}+ ({:,} sessions)'.format(
+                label, _pct(v['net_median']), _pct(v['net_p75']), v['sessions']))
     return lines

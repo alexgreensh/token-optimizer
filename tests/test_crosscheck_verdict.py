@@ -293,8 +293,8 @@ def test_cli_prints_the_real_crosscheck_figure_when_agreeing(
                         lambda days=30: _cli_summary(ba))
     mod.savings_report(days=30)
     out = capsys.readouterr().out
-    assert "YOUR TRANSFORMATION: ~$1,200/mo" in out
-    assert "Cross-check on messages: $1,150/mo" in out
+    assert "YOUR TRANSFORMATION: ~$1,200 over 30 days" in out
+    assert "Cross-check on messages: $1,150 this period" in out
     assert "agrees" in out
     assert "does not agree" not in out
 
@@ -350,7 +350,7 @@ def test_cli_methods_disagree_branch_shows_both_figures(
     assert "not headlined this period" in out
     assert "$1,200" in out
     assert "-$8,400" in out
-    assert "~$1,200/mo" not in out  # no hero claim
+    assert "YOUR TRANSFORMATION: ~$1,200" not in out  # no hero claim
     assert "agrees within ~10%" not in out
 
 

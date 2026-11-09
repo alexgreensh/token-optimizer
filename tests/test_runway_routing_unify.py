@@ -45,8 +45,11 @@ def m(monkeypatch, tmp_path):
         "five_hour_pct": 20.0, "seven_day_pct": 40.0})
     monkeypatch.setattr(mod, "_dashboard_spent_token_basis",
                         lambda conn, days=30: {"tokens": 1_000_000, "basis": "test", "complete": True})
+    from _measure import headline
+    monkeypatch.setattr(headline, "input_traffic", lambda *args: {"tokens": 1_000_000, "basis": "including cache", "complete": True})
     monkeypatch.setattr(mod, "_get_merged_savings", lambda days=30, since=None: {
-        "total_cost_usd": 0.0, "model_routing": {"realized_cost_usd": 0.0}})
+        "total_tokens": 100_000, "total_cost_usd": 0.0, "model_routing": {"realized_cost_usd": 0.0}})
+    monkeypatch.setattr(mod, "_counted_cumulative_summary", lambda **kw: {"available": False})
     monkeypatch.setattr(mod, "_counted_window_summary", lambda conn, s, e: {"available": False})
     monkeypatch.setattr(mod, "_weekly_full_savings", lambda **kw: None)
     monkeypatch.setattr(mod, "_routing_pending_sessions", lambda days=30, since=None: 0)
@@ -215,6 +218,7 @@ def test_unsplit_usage_is_outside_the_shared_comparison(m, monkeypatch, split_to
 @pytest.mark.parametrize("context_factor,routing_factor", [(1.01, 1.0096), (1.0106, 1.0094)])
 def test_visibility_gate_uses_unrounded_routing(m, monkeypatch, context_factor, routing_factor):
     monkeypatch.setattr(m, "_runway_saved_tokens", lambda *a, **kw: (context_factor - 1) * 1_000_000)
+    monkeypatch.setattr(m, "_get_merged_savings", lambda **kw: {"total_tokens": (context_factor - 1) * 1_000_000})
     monkeypatch.setattr(m, "_runway_routing_lever", lambda **kw: {
         "state": "estimated", "factor": routing_factor})
     rw = m.runway_snapshot(days=30)
@@ -228,6 +232,7 @@ def test_visibility_gate_uses_unrounded_routing(m, monkeypatch, context_factor, 
 @pytest.mark.parametrize("saved_tokens", [10_000, 10_400])
 def test_headline_and_bars_use_unrounded_routing(m, monkeypatch, saved_tokens):
     monkeypatch.setattr(m, "_runway_saved_tokens", lambda *a, **kw: saved_tokens)
+    monkeypatch.setattr(m, "_get_merged_savings", lambda **kw: {"total_tokens": saved_tokens})
     monkeypatch.setattr(m, "_runway_routing_lever", lambda **kw: {
         "state": "estimated", "factor": 1.0096})
     monkeypatch.setattr(m, "_weekly_full_savings", lambda **kw: {

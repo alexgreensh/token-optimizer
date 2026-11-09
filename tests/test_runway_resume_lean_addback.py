@@ -55,6 +55,8 @@ def _wire(measure, monkeypatch, resume_lean_usd):
         "five_hour_pct": 20.0, "seven_day_pct": 56.0,
         "seven_day_resets_at": resets_at,
     })
+    from _measure import headline
+    monkeypatch.setattr(headline, "input_traffic", lambda *args: {"tokens": 1_000_000, "basis": "including cache", "complete": True})
     # consumed > 0 so the card is not suppressed; multiplier kept material.
     monkeypatch.setattr(measure, "_dashboard_spent_token_basis",
                         lambda conn, days=30: {"tokens": 1_000_000,

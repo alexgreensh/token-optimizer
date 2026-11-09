@@ -10,7 +10,7 @@ import sys
 
 from measure_split import REPO, DOMAINS
 
-SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS) + ('dashboard_history.py', 'weekly_activity.py')
+SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS) + ('dashboard_history.py', 'weekly_activity.py', 'headline.py')
 
 
 def verify(payload, canonical=REPO):

@@ -1,7 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
-
+from . import _compat, headline
 
 def _counted_event_utc(ts):
     """Savings-event timestamps are naive LOCAL time (datetime.now()); transcript
@@ -1336,6 +1335,7 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
         savings_data["counted_period"] = _measure_facade._counted_cumulative_summary(days=days)
     except Exception:
         savings_data["counted_period"] = {"available": False}
+    savings_data["token_headline"] = headline.token_headline(savings_data)
     _measure_facade._apply_counted_oneshot_pricing(savings_data, savings_data["counted_period"])
     savings_data["action_savings"] = _measure_facade._action_savings_components(
         savings_data, savings_data["counted_period"])
@@ -2423,37 +2423,39 @@ def runway_snapshot(days=None, now=None):
         weekly_full = _measure_facade._weekly_full_savings(
             resets_at=meters.get("seven_day_resets_at"), now=now)
 
-        # --- context lever: measured, never estimated ---
+        # Context uses dated input and output, including cache.
         consumed = saved = context_saved = 0
-        spent_basis = None
+        traffic = None
         try:
             conn = _measure_facade._init_trends_db()
             try:
                 cutoff = (_measure_facade.datetime.now() - _measure_facade.timedelta(days=days)).isoformat()
-                spent_basis = _measure_facade._dashboard_spent_token_basis(conn, days=days)
-                consumed = spent_basis["tokens"]
+                traffic = headline.input_traffic(conn, cutoff[:10], _measure_facade.datetime.now().date().isoformat())
+                consumed = traffic["tokens"]
                 saved = _measure_facade._runway_saved_tokens(conn, cutoff)
-                # The multiplier is an estimate (the card says so), so it keeps
-                # the estimated tiers; the measured floor line uses `saved`.
-                context_saved = _measure_facade._runway_saved_tokens(conn, cutoff, include_estimated=True)
             finally:
                 conn.close()
         except Exception:
             return None
         if consumed <= 0 and not weekly_full:
             return None
+        try:
+            token_source = _measure_facade._get_merged_savings(days=days)
+            token_source["counted_period"] = _measure_facade._counted_cumulative_summary(days=days)
+            token_parts = headline.token_headline(token_source)
+        except Exception:
+            token_parts = headline.token_headline({})
+        context_saved = token_parts["total_tokens"]
         context_mult = (consumed + context_saved) / consumed if consumed > 0 else 1.0
 
         # --- routing lever: the model-routing recipe's own standardized ratio ---
-        # Pending or unavailable routing is left out of the product and the
-        # state is returned, never replaced by a silent 1.0.
+        # Pending or unavailable routing remains explicit.
         routing = _measure_facade._runway_routing_lever(days=days)
         routing_state = routing.get("state")
         routing_mult = routing.get("factor")
 
         mult = context_mult * (routing_mult if routing_mult is not None else 1.0)
-        # Below ~1.02 there is no story worth telling and rounding noise would
-        # dominate; say nothing rather than dress up a rounding artefact.
+        # Hide immaterial changes unless weekly savings are available.
         if mult < 1.02 and not weekly_full:
             return None
 
@@ -2712,10 +2714,10 @@ def runway_snapshot(days=None, now=None):
             "routing_standardized_actual_cost_usd": routing.get("standardized_actual_cost_usd"),
             "extra_work_pct": round((mult - 1) * 100, 1),
             "tokens_consumed": int(consumed),
-            "tokens_consumed_basis": spent_basis["basis"] if spent_basis else None,
-            "tokens_consumed_basis_complete": bool(spent_basis and spent_basis["complete"]),
+            "tokens_consumed_basis": traffic["basis"] if traffic else None,
+            "tokens_consumed_basis_complete": bool(traffic and traffic["complete"]),
             "tokens_saved": int(saved),
-            "context_tokens_saved": int(context_saved),
+            "context_tokens_saved": int(context_saved), "token_headline": token_parts,
             "windows": windows,
             # USD spine: metered context $ + estimated routing $ over the WEEKLY
             # (7d) ledger -- the same span the weekly card shows. Exposed at the top
@@ -6930,14 +6932,7 @@ def _reread_savings_for_window(days):
 
 
 def savings_report(days=None, as_json=None):
-    """Display cumulative savings from Token Optimizer actions.
-
-    Merges the legacy savings_events table (setup optimization, tool digests,
-    checkpoint restores, etc.) with v5 Active Compression entries written to
-    compression_events (delta reads, quality nudges, loop prevention, bash
-    output compression). Dedup rule: legacy categories authoritative in
-    savings_events; v5 categories authoritative in compression_events.
-    """
+    """Display savings from logged actions and the counted repeat-read cohort."""
     _measure_facade = _compat.facade()
     summary = _measure_facade._get_merged_savings(days=days)
     # Use the same stored removal cohort as the dashboard. Its counted benefit
@@ -6947,6 +6942,7 @@ def savings_report(days=None, as_json=None):
     except Exception:
         summary["counted_period"] = {"available": False}
     summary["reread_avoided"] = summary["counted_period"]
+    summary["token_headline"] = headline.token_headline(summary)
     _measure_facade._apply_counted_oneshot_pricing(summary, summary["counted_period"])
     summary["action_savings"] = _measure_facade._action_savings_components(
         summary, summary["reread_avoided"])
@@ -6993,6 +6989,7 @@ def savings_report(days=None, as_json=None):
     print("\n  Token Optimizer Savings Report")
     print(f"  {'=' * 58}")
     print(f"  Period: Last {days} days ({start} to {end})")
+    print(headline.cli_headline(summary["token_headline"], days))
 
     # Headline transformation. With the session-weight pool live it is the
     # work-normalized (per-API-call, constant-price) figure; otherwise the legacy

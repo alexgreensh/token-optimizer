@@ -4302,9 +4302,9 @@ var DB = (function() {
       var rwCostCut = Number(rw.per_session_cost_reduction_pct);
       var rwCostCutDisplay = isFinite(rwCostCut) ? Math.round(rwCostCut / 5) * 5 : null;
       var rwSpentTokens = Number(rw.tokens_consumed);
-      var rwSavedTokens = Number(rw.tokens_saved);
+      var rwSavedTokens = Number(rw.context_tokens_saved);
       var rwTokenFloorPct = (isFinite(rwSpentTokens) && rwSpentTokens > 0 && isFinite(rwSavedTokens) && rwSavedTokens > 0)
-        ? Math.round(rwSavedTokens / (rwSpentTokens + rwSavedTokens) * 100)
+        ? Math.round((1 - 1 / Number(rw.context_multiplier)) * 1000) / 10
         : null;
       var rwEfficiencyHeadline = rwHasCostEfficiency
         ? '<div class="metric-large" style="text-wrap:balance;text-shadow:none;"><em style="font-style:normal;color:var(--c-accent-cyan);">&asymp;' + rwEfficiencyMult.toFixed(1) + '&times;</em> work per dollar</div>'
@@ -4365,10 +4365,10 @@ var DB = (function() {
         : 'Context &times;' + rw.context_multiplier + ' and ' + rwRoutingMethod + ' give a per-token throughput multiplier, shown separately from the window headroom and dollar figures.';
       rwEfficiencyMethod += rwRoutingScope;
       var rwTokenFloorDetail = (rwTokenFloorPct !== null)
-        ? '<div class="plain-line">About <strong>' + fn(rwSavedTokens) + '</strong> tokens never had to be sent, roughly ' + rwTokenFloorPct + '% of what would have been.</div>'
+        ? '<div class="plain-line">Estimated <strong>~' + fn(rwSavedTokens) + '</strong> tokens kept out of context &middot; ~' + fn((rw.token_headline || {}).removed_tokens || 0) + ' fresh &middot; ' + ((rw.token_headline || {}).reread_available ? '~' + fn(rw.token_headline.reread_tokens) + ' cached' : 'cached unavailable') + ', roughly ' + rwTokenFloorPct + '% of would-be input and output including cache.' + (rw.tokens_consumed_basis_complete === false ? ' Traffic coverage is incomplete.' : '') + '</div>'
         : '';
       var rwTokenFloorMethod = (rwTokenFloorPct !== null)
-        ? 'Separate measured token floor: ' + fn(rwSavedTokens) + ' never sent on ' + fn(rwSpentTokens) + ' <code>/stats</code>-compatible spent, &asymp;' + rwTokenFloorPct + '% of the would-be token load.'
+        ? 'Estimated savings on ' + fn(rwSpentTokens) + ' input and output tokens, including cache reads and writes; repeat reads assume the same trajectory until compaction.'
         : '';
       // Tier chip reflects the USD spine's measured-vs-estimated boundary:
       // context $ is metered, routing $ is an estimated counterfactual.
@@ -4530,7 +4530,6 @@ var DB = (function() {
       if (v >= 1e3) return Math.round(v / 1e3) + 'K';
       return String(Math.round(v));
     }
-    // Foldable "read more". Pass body as ready HTML (wrap prose in <p>...</p>).
     // Native <details> means click-to-unfold works with no event wiring.
     function fold(summary, bodyHtml) {
       // summary is escaped (it is always plain label text); bodyHtml is trusted
@@ -4788,8 +4787,7 @@ var DB = (function() {
     html += '<div style="display:flex;gap:var(--s-3);flex-wrap:wrap;margin-bottom:var(--s-3);">';
     var periodLabel = runRate ? 'last ' + days + ' days' : trackedDays + ' days tracked';
     var heroAmt = gettingMo;
-    // One plain visible line only when some of the total could not be priced; every
-    // other counting note lives in the card's "Breakdown and method" fold.
+    // Incomplete pricing is disclosed here; the full method is in the fold.
     var actionPricingIncomplete = !!(cp.reread_pricing_note ||
       (actionSavings && actionSavings.reread_prices_available === false) || cp.reread_prices_available === false ||
       Number(s.compression_unpriced_tokens) > 0 ||
@@ -4797,6 +4795,7 @@ var DB = (function() {
     html += '<div class="card savings-actions" style="flex:2;min-width:min(100%,320px);padding:var(--s-4);">' +
       '<div class="label">Action savings &middot; ' + periodLabel + '</div>' +
       '<div class="savings-amount">' + (exactCents ? moneyCents(exactCents.total) : money(periodValue(heroAmt))) + '<span class="savings-unit"> logged + estimated</span></div>' +
+      (s.token_headline ? '<p class="plain-line">~' + fmtTok(s.token_headline.total_tokens) + ' tokens kept out of context &middot; ~' + fmtTok(s.token_headline.removed_tokens) + ' fresh &middot; ' + (s.token_headline.reread_available ? '~' + fmtTok(s.token_headline.reread_tokens) + ' cached' : 'cached unavailable') + ' (estimated)' + (s.token_headline.refresh_incomplete_events || s.token_headline.unmeasured_events ? ', incomplete coverage' : '') + '.</p>' : '') +
       '<div class="savings-split"><span>Logged actions <strong>' + (exactCents ? moneyCents(exactCents.logged) : money(periodValue(measuredMo))) + '</strong></span>' +
         '<span>Repeat reads avoided <strong>' +
           (actionSavings && actionSavings.reread_available === false ? 'Unavailable' :

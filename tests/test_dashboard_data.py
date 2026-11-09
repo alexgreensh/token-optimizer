@@ -62,8 +62,8 @@ def test_sidechain_marker_is_first_prompt_only_and_nested_paths_are_explicit(mea
     assert parsed["sidechain_reason"] == "nested_path"
 
 
-def test_runway_denominator_excludes_cache_read_and_cache_write(measure, tmp_path, monkeypatch):
-    """The throughput denominator must use the same non-cache basis as saved tokens."""
+def test_runway_denominator_includes_cache_read_and_cache_write(measure, tmp_path, monkeypatch):
+    """The context multiplier includes cache traffic in its denominator."""
     db = tmp_path / "runway.db"
     conn = sqlite3.connect(db)
     conn.executescript(
@@ -83,7 +83,7 @@ def test_runway_denominator_excludes_cache_read_and_cache_write(measure, tmp_pat
     now = datetime.now().isoformat()
     conn.execute(
         "INSERT INTO session_log VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (datetime.now().date().isoformat(), 10_000, 100, 100, 0, 0.8, 1_900, 100, json.dumps({datetime.now().date().isoformat(): {"claude-opus-5-5": {"fresh_input": 1900, "output": 100}}})),
+        (datetime.now().date().isoformat(), 10_000, 100, 100, 0, 0.8, 1_900, 100, json.dumps({datetime.now().date().isoformat(): {"claude-opus-5-5": {"fresh_input": 1900, "cache_read": 8000, "cache_create": 100, "output": 100}}})),
     )
     conn.execute("INSERT INTO savings_events VALUES (?, ?, ?)", (now, "archive", 1_000))
     conn.commit()
@@ -94,13 +94,13 @@ def test_runway_denominator_excludes_cache_read_and_cache_write(measure, tmp_pat
     monkeypatch.setattr(measure, "_keepwarm_read_meters", lambda **_: {"available": False})
     monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.0})
     monkeypatch.setattr(measure, "_get_merged_savings", lambda **_: {
-        "total_cost_usd": 0.0,
+        "total_tokens": 1_000, "total_cost_usd": 0.0,
         "model_routing": {"realized_cost_usd": 0.0},
     })
 
     result = measure.runway_snapshot(days=30)
-    assert result["tokens_consumed"] == 2_000
-    assert result["context_multiplier"] == pytest.approx(1.5)
+    assert result["tokens_consumed"] == 10_100
+    assert result["context_multiplier"] == pytest.approx(1.099, abs=0.0001)
 
 
 def test_spent_basis_uses_deduplicated_activity_usage(measure, tmp_path):

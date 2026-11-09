@@ -214,7 +214,8 @@ def _record_observed(event, **extra):
             flags |= os.O_NOFOLLOW
         fd = os.open(str(ledger), flags, 0o600)
         try:
-            os.fchmod(fd, 0o600)  # tighten a pre-existing 0o644 ledger
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)  # tighten a pre-existing 0o644 ledger
         except OSError:
             pass
         with os.fdopen(fd, "a", encoding="utf-8") as fh:

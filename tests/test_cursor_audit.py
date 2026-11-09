@@ -369,7 +369,7 @@ def test_project_claude_settings_coexistence_detected(tmp_path, monkeypatch):
     result = audit.cursor_audit(project_dir=proj, cursor_home=home, as_json=True)
     assert result["hooks"]["claude_import_coexistence"] is True
     f = next(f for f in result["findings"] if f["category"] == "claude_import_coexistence")
-    assert ".claude/settings.json" in f["detail"]
+    assert str(proj / ".claude" / "settings.json") in f["detail"]
 
 
 def test_project_claude_settings_local_coexistence_detected(tmp_path, monkeypatch):

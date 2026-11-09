@@ -175,6 +175,12 @@ class TestRewriteClassificationUnknown:
 
 
 class TestLedgerHardening:
+    def test_ledger_records_without_fchmod(self, home, monkeypatch):
+        monkeypatch.delattr(os, "fchmod", raising=False)
+        bridge._record_observed("stop", conversation_id="windows")
+        ledger = home / "token-optimizer" / "observed-events.jsonl"
+        assert json.loads(ledger.read_text())["conversation_id"] == "windows"
+
     def test_ledger_created_0600_and_dir_0700(self, home):
         bridge._record_observed("stop", conversation_id="conv-perms")
         ledger = home / "token-optimizer" / "observed-events.jsonl"

@@ -10,13 +10,48 @@ leaf symlinks refused, and the restore payload stays within its byte budget.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 _RESTORE_MAX_BYTES = 16_384        # restore-context files above this are ignored
 _COMPACT_RESTORE_MAX_BYTES = 8_000  # restore payload cap (bounded inject)
 
 
-def _capture_compact_checkpoint(fields, home):
+def _import_measure_via_locator(locate_measure_py):
+    """Resolve ``import measure`` for an installed bridge (no copied measure).
+
+    The payload deliberately ships no measure.py (a plugin-dir copy is never
+    refreshed, so it would drift from the checkout); the installer-written
+    one-line locator names the canonical measure.py. Appending its validated
+    parent dir lets the normal import machinery load measure + its _measure
+    package from that single source of truth, registering sys.modules
+    ['measure'] so the provider facade resolves. Trust boundary is unchanged:
+    _locate_measure_py already gates the fire-and-forget rollup/dashboard
+    spawns of the same file - a crafted locator could already execute code as
+    the user. Fail-open: any error returns None and the capture degrades to
+    numbers-only recording.
+    """
+    try:
+        try:
+            import measure
+            return measure
+        except ImportError:
+            pass
+        if locate_measure_py is None:
+            return None
+        located = locate_measure_py()
+        if located is None:
+            return None
+        parent = str(Path(located).parent)
+        if parent not in sys.path:
+            sys.path.append(parent)  # append: payload modules keep precedence
+        import measure
+        return measure
+    except Exception:
+        return None
+
+
+def _capture_compact_checkpoint(fields, home, locate_measure_py=None):
     """U3: translate the Cursor disk transcript and capture a checkpoint.
 
     Returns the checkpoint path (str) or None. Uses the U1 adapter's
@@ -48,7 +83,9 @@ def _capture_compact_checkpoint(fields, home):
             str(home / "token-optimizer" / "snapshot"),
         )
         try:
-            import measure
+            measure = _import_measure_via_locator(locate_measure_py)
+            if measure is None:
+                return None
 
             fill_pct = fields.get("context_usage_percent")
             try:

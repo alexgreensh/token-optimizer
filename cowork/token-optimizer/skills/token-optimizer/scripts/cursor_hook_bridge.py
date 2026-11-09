@@ -763,9 +763,11 @@ def _classify_rewrite(fields):
 
 
 def _capture_compact_checkpoint(fields):
-    # seam wrapper: cursor_home resolved from bridge globals at call time
+    # seam wrapper: cursor_home + _locate_measure_py resolved from bridge
+    # globals at call time (tests monkeypatch both)
     home = cursor_home() if cursor_home is not None else None
-    return cursor_bridge_checkpoint._capture_compact_checkpoint(fields, home)
+    return cursor_bridge_checkpoint._capture_compact_checkpoint(
+        fields, home, _locate_measure_py)
 
 
 def _read_checkpoint_bounded(path_str):

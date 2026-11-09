@@ -46,7 +46,8 @@ def test_actual_dashboard_renderer():
     s = fixture(); s.update(sample()); s['token_headline'] = token_headline(s)
     out = render(s).split('savings-actions')[1].split('savings-history')[0]
     assert '~6K tokens kept out of context' in out
-    assert '~1K fresh' in out and '~5K cached' in out
+    assert '~1K context removed' in out and '~5K re-reads avoided' in out
+    assert 'reload avoided' in out and ' fresh' not in out
     assert 'incomplete coverage' in out and 'estimated' in out
 
 
@@ -59,7 +60,8 @@ def test_cli_json_and_text_show_same_components(m, monkeypatch, capsys):
     assert data['token_headline']['total_tokens'] == 6200
     m.savings_report(days=30, as_json=False)
     text = capsys.readouterr().out
-    assert '6,200' in text and '1,200 fresh' in text and '5,000 cached' in text
+    assert '6,200' in text and '1,000 context removed' in text and '200 reload avoided' in text
+    assert '5,000 re-reads avoided' in text and ' fresh' not in text
 
 
 def test_opus_55_uses_its_exact_cache_read_rate(m):
@@ -88,6 +90,6 @@ def test_runway_token_line_matches_multiplier():
              context_multiplier=1.4, token_headline={'removed_tokens': 100_000,
                                                        'reread_tokens': 300_000, 'reread_available': True})
     text = _card_text(rw)
-    assert '~400000' in text and '~100000 fresh' in text and '~300000 cached' in text
+    assert '~400000' in text and '~100000 removed' in text and '~300000 re-reads avoided' in text
     assert '28.6% of would-be input and output including cache' in text
     assert 28.6 == pytest.approx(100 * (1 - 1 / rw['context_multiplier']), abs=0.05)

@@ -263,6 +263,7 @@ def _card_text(rw):
         "const data = {runway: JSON.parse(process.argv[2]), runtime_label: 'Claude Code'};\n"
         "function esc(s) { return s == null ? '' : String(s); }\n"
         "function fn(n) { return String(n); }\n"
+        + html[html.index("function tokenSplitText("):html.index("function hostRefreshHtml(")]
         + html[start:end] + "\nprocess.stdout.write(runwayCardHtml());\n")
     out = subprocess.run([node, "-", json.dumps(rw)], input=script, capture_output=True,
                          text=True, encoding="utf-8", check=True, timeout=30).stdout

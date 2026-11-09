@@ -723,6 +723,16 @@ def generate_dashboard(coord_path):
     print("  Collecting savings data...")
     savings_data = _measure_facade._dashboard_savings_data(days=30)
 
+    # Savings-truth U6: lean-resume carry is a SHADOW diagnostic. It is emitted
+    # for review only and is never summed into any savings total.
+    try:
+        import lean_resume_carry as _lean_resume_carry
+        if isinstance(savings_data, dict):
+            savings_data["lean_resume_carry"] = _lean_resume_carry.summary(days=30)
+    except Exception:
+        if isinstance(savings_data, dict):
+            savings_data["lean_resume_carry"] = {"available": False, "evidence": "shadow"}
+
     # U6: tiered compression-coverage diagnostic (kept separate from savings;
     # shadow/opportunity ratios never feed the headline). Fail-open to empty.
     try:

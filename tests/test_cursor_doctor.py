@@ -1,9 +1,9 @@
 """Cursor doctor: hook-config recognition, payload/observed checks, and --probe.
 
-The probe is the live-firing substitute for a headless Cursor: it replays the
-documented payload for every wired event through the exact installed command
-string under /bin/sh -c and asserts exit 0. Everything else is pinned without a
-live Cursor by monkeypatching the home dir.
+The probe is the live-firing substitute for a headless Cursor: it shape-parses
+the installed command and replays the documented payload for every wired
+event as argv (no shell; POSIX and Windows) and asserts exit 0. Everything
+else is pinned without a live Cursor by monkeypatching the home dir.
 """
 
 from __future__ import annotations
@@ -97,7 +97,8 @@ def test_run_checks_includes_daemon_and_data(monkeypatch, cur):
     assert "CLI transcript plane" in names
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="probe is POSIX-only")
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="fixture writes unquoted POSIX-shaped commands; breaks when paths contain spaces")
 def test_probe_fires_all_installed_events(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
@@ -151,7 +152,8 @@ def test_parse_hook_command_rejects_malformed(cmd):
     assert cd._parse_hook_command(cmd) is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="probe is POSIX-only")
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="fixture writes unquoted POSIX-shaped commands; breaks when paths contain spaces")
 def test_probe_refuses_to_execute_injected_command(monkeypatch, tmp_path):
     """P0-2: a corrupted/malicious hooks.json entry must be reported, never run."""
     home = tmp_path / "home"
@@ -182,7 +184,26 @@ def test_parse_hook_command_handles_platform_native_paths():
     assert cd._parse_hook_command(cmd) == [sys.executable, bridge, "stop"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="probe is POSIX-only")
+def test_probe_command_not_skipped_on_windows(monkeypatch, tmp_path):
+    """F13 regression: _run_probe_command must not return the POSIX-only skip
+    on win32 — the installed Windows shape parses to argv and runs natively."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(cd, "_py_path_is_trusted", lambda p: True)
+    probe_home = home / ".cursor-to-probe-test"
+    probe_home.mkdir()
+    bridge = str(SCRIPTS / "cursor_hook_bridge.py")
+    cmd = f"TOKEN_OPTIMIZER_RUNTIME=cursor {sys.executable} {bridge} stop"
+    result = cd._run_probe_command(cmd, {"hook_event_name": "stop"}, probe_home)
+    assert result.get("detail") != "probe is POSIX-only"
+    assert result["status"] != "skip"
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX trust-gate semantics; on Windows _py_path_is_trusted only requires a real file")
 def test_probe_refuses_untrusted_python(monkeypatch, tmp_path):
     """B2-P2-1: a hooks.json entry with our bridge path but an untrusted python
     (world-writable) must be reported as fail, never executed."""

@@ -3,13 +3,15 @@
 
 Per-surface health report with fix-it hints, plus ``--probe`` which replays
 the documented payload for each wired event through the exact installed
-command string (POSIX ``/bin/sh -c``) so a live Cursor is not required to prove
-the hooks can fire.
+command: the persisted string is shape-parsed and executed as argv (no shell)
+on POSIX and Windows, so a live Cursor is not required to prove the installed
+commands can fire. The probe does NOT prove Cursor itself fires the hooks;
+that is what the observed-events ledger reports.
 
 Checks:
   P0  Cursor binary presence (CLI ``agent`` / ``cursor`` launcher)
   P0  ~/.cursor exists; hooks.json present + writable
-  P1  Token Optimizer hook entries installed (six events) + parseable
+  P1  Token Optimizer hook entries installed (all wired events) + parseable
   P1  installed payload integrity (bridge, atomic-writer, compress)
   P1  observed-events ledger (which events fired; rewrite_honoured vs ignored)
   P2  state.vscdb (IDE token plane) / transcript dir (CLI plane)
@@ -161,7 +163,7 @@ def _hook_config_checks() -> list:
     if missing and wired:
         checks.append(
             _check("warn", "hook event coverage", f"Missing events: {', '.join(missing)}.",
-                   "Re-run install to restore the full six-event set.")
+                   f"Re-run install to restore the full {len(_WIRED_EVENTS)}-event set.")
         )
     return checks
 
@@ -529,9 +531,12 @@ def _run_probe_command(command: str, payload: dict, probe_home: Path) -> dict:
     ``probe_home`` redirects the bridge's data writes (tallies, observed-events)
     to a throwaway dir so replaying the documented payloads proves the hooks can
     fire without contaminating real session data with synthetic probe rows.
+
+    Windows: the installer writes a direct ``"<python>" "<bridge>" <event>``
+    command (no POSIX env prefix), which ``_parse_hook_command`` already
+    accepts; ``subprocess.run(argv)`` executes it natively, so the probe is
+    not POSIX-only.
     """
-    if sys.platform == "win32":
-        return {"event": None, "status": "skip", "detail": "probe is POSIX-only"}
     argv = _parse_hook_command(command)
     if argv is None:
         return {"event": None, "status": "fail",
@@ -647,7 +652,7 @@ def main(argv=None) -> int:
             _print_probe(results)
         ran = [r for r in results if r.get("status") == "ok"]
         failed = [r for r in results if r.get("status") == "fail"]
-        # Skips are informational (not installed / Windows), not failures.
+        # Skips are informational (event not installed), not failures.
         return 1 if failed else 0
 
     checks = run_checks()

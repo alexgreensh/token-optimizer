@@ -104,6 +104,33 @@ def test_full_week_uses_shared_baseline_and_real_activity(measure, monkeypatch, 
     assert datetime.fromisoformat(value['start'])==start
 
 
+@pytest.mark.parametrize('missing,expected,high_cost', [(1, True, False), (2, False, False), (20, False, False), (1, False, True)])
+def test_weekly_full_reports_missing_transcript_coverage(measure, monkeypatch, tmp_path, missing, expected, high_cost):
+    monkeypatch.setattr(measure, 'detect_runtime', lambda: 'claude')
+    monkeypatch.setattr(measure, '_SESSION_WEIGHT_MIN_ANCHOR_SESSIONS', 2)
+    monkeypatch.setattr(measure, '_AFTER_MIN_SESSIONS', 1)
+    monkeypatch.setattr(measure, '_find_subagent_jsonl_files', lambda p: [])
+    c = measure._init_trends_db()
+    for i in range(2):
+        c.execute('INSERT INTO session_log (jsonl_path,date,input_tokens,output_tokens,api_calls,cache_hit_rate,model_usage_json) VALUES (?,?,?,?,?,?,?)',
+                  (str(tmp_path / f'anchor{i}'), '2026-06-01', 10000, 10, 1, 0, '{"opus":10010}'))
+    for i in range(21):
+        p = tmp_path / f'week{i}.jsonl'
+        if i >= missing:
+            p.write_text(json.dumps(_turn(f'week{i}', '2026-09-04T00:00:00Z')))
+        c.execute('INSERT INTO session_log (jsonl_path,date,input_tokens,output_tokens,api_calls,cost_usd) VALUES (?,?,?,?,?,?)',
+                  (str(p), '2026-09-04', 1000, 10, 1, (100 if i == 0 else 1) if high_cost else None))
+    stamp_activity(c)
+    c.commit(); c.close()
+    start = datetime(2026, 9, 3, 17, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 5, tzinfo=timezone.utc)
+    value = measure._weekly_full_savings(resets_at=(start + timedelta(days=7)).timestamp(), now=end.timestamp())
+    assert bool(value) is expected
+    if expected:
+        assert value['coverage']['priced_sessions'] == 20
+        assert value['coverage']['total_sessions'] == 21
+
+
 def test_full_savings_survives_flat_throughput_multiplier(measure, monkeypatch):
     _wire(measure, monkeypatch, resume_lean_usd=0)
     monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.0})

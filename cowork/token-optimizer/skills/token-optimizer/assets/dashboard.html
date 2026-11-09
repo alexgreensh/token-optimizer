@@ -4239,6 +4239,7 @@ var DB = (function() {
         var usdExplainer = w.full_value
           ? 'Estimated additional cost at API prices for the same work without Token Optimizer. Includes lighter context, fewer repeat reads and working habits, counted once. Your plan may cover some or all of that usage.'
           : 'API-equivalent value of the savings recorded in this window, including the available estimates.';
+        if (w.full_value && w.full_value.coverage && w.full_value.coverage.priced_sessions < w.full_value.coverage.total_sessions && Number(w.full_value.saved_usd) >= savedUsd) usdExplainer += ' Based on ' + Number(w.full_value.coverage.priced_sessions) + ' of ' + Number(w.full_value.coverage.total_sessions) + ' sessions; missing sessions are not estimated.';
         if (w.full_value && w.full_value.start) {
           usdExplainer += ' Since ' + esc(new Date(w.full_value.start).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'})) + '.';
         }
@@ -4278,7 +4279,7 @@ var DB = (function() {
         rwCards += '<div style="padding:var(--s-3);border:1px solid var(--c-border);border-radius:8px;">' +
           '<div class="label">Weekly savings</div><div style="font-size:22px;color:var(--c-savings-alt,#10b981);">&asymp;' +
           rwMoney(standaloneWeek.saved_usd) + ' in API-equivalent savings this week</div>' +
-          '<p>Full workload estimate since ' + esc(new Date(standaloneWeek.start).toLocaleString()) +
+          '<p>Full workload estimate' + (standaloneWeek.coverage && standaloneWeek.coverage.priced_sessions < standaloneWeek.coverage.total_sessions ? ' based on ' + Number(standaloneWeek.coverage.priced_sessions) + ' of ' + Number(standaloneWeek.coverage.total_sessions) + ' sessions, missing sessions are not estimated,' : '') + ' since ' + esc(new Date(standaloneWeek.start).toLocaleString()) +
           '. Your weekly limit reading is unavailable.</p></div>';
       }
       // USD-per-window headline: the dollar figure reuses the metered
@@ -4289,10 +4290,7 @@ var DB = (function() {
       (rw.windows || []).forEach(function (w) {
         var v = Number(w.saved_usd);
         if (!isFinite(v) || v <= 0) return;
-        // Honest label -- API-credit overage over the window's own real span, not
-        // a slice of a longer ledger. The weekly dollar is aligned to the
-        // subscription limit reset boundary (not a rolling 7-day lookback), so
-        // it does not drift down as heavy days age out.
+        // The weekly figure follows the subscription reset boundary.
         var span = w.key === 'five_hour' ? 'past 5h' : 'since your limit reset';
         usdParts.push('<em style="font-style:normal;color:var(--c-accent-cyan);">' + rwMoney(v) + '</em> ' + span);
       });
@@ -4743,14 +4741,14 @@ var DB = (function() {
       // is the net<=0 branch — parity with OpenClaw/OpenCode.
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
         '<div class="label" style="margin-bottom:var(--s-2);">At or above your baseline this period</div>' +
-        '<div class="lede">Your recent sessions cost about what your frozen baseline would have — est. <strong>' + money(ba.actual_monthly_usd) + '/mo</strong> now vs <strong>' + money(ba.counterfactual_monthly_usd) + '/mo</strong> the old way. There is no net saving to headline this period, so we are not showing one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
+        '<div class="lede">Your recent sessions cost about what your frozen baseline would have — est. <strong>' + money(ba.actual_monthly_usd) + '</strong> now vs <strong>' + money(ba.counterfactual_monthly_usd) + '</strong> the old way in the last ' + days + ' days. There is no net saving to headline this period, so we are not showing one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
       '</div>';
     } else if (ba.reason === 'flat') {
       // Both work-unit methods sit within a few percent of spend: no
       // measurable whole-workload change, so no headline and no scary number.
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
         '<div class="label" style="margin-bottom:var(--s-2);">No measurable change in cost per unit of work</div>' +
-        '<div class="plain-line">Your recent work costs about the same per request as before install (' + money(ba.actual_monthly_usd) + '/mo now vs ' + money(ba.counterfactual_monthly_usd) + '/mo the old way). The savings below are counted action by action.</div>' +
+        '<div class="plain-line">Your recent work costs about the same per request as before install (' + money(ba.actual_monthly_usd) + ' now vs ' + money(ba.counterfactual_monthly_usd) + ' the old way over ' + days + ' days). The savings below are counted action by action.</div>' +
       '</div>';
     } else if (ba.reason === 'methods_disagree') {
       // The two independent work-unit methods (per-API-call and per-message)
@@ -4770,8 +4768,8 @@ var DB = (function() {
       };
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
         '<div class="label" style="margin-bottom:var(--s-2);">Two estimates disagree this period</div>' +
-        '<div class="lede">The ' + mainUnit + ' estimate is <strong>' + signedMoney(mainUsd) + '/mo</strong> and the ' + crossUnit +
-          ' estimate is <strong>' + signedMoney(crossUsd) + '/mo</strong>. They are too far apart to headline either one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
+        '<div class="lede">The ' + mainUnit + ' estimate is <strong>' + signedMoney(mainUsd) + '</strong> and the ' + crossUnit +
+          ' estimate is <strong>' + signedMoney(crossUsd) + '</strong> over ' + days + ' days. They are too far apart to headline either one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
       '</div>';
     }
 

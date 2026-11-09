@@ -5223,7 +5223,7 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
             "{then_n:,} in {month}, {growth:.1f}x, at about the same total spend) -- "
             "that extra capacity is real, but it is capacity gained, not dollars saved, "
             "so it is not in the headline. Model price/mix drift worth about "
-            "${drift:,.0f}/mo is also excluded: it would have happened without Token "
+            "${drift:,.0f} this period is also excluded: it would have happened without Token "
             "Optimizer."
             + ("" if pinned else " The anchor month already had partial Token Optimizer "
                "coverage, so if anything this understates the full pre-tool gap.")
@@ -5249,6 +5249,7 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
             "counterfactual_usd": counterfactual,
             "transformation_usd": transformation,
             "crosscheck": crosscheck,
+            "coverage": now.get("coverage"),
             "engine_priced_transformation_usd": engine_transformation,
             "engine_priced_actual_usd": n_usd,
             "price_mix_drift_usd": price_mix_drift,
@@ -5265,61 +5266,9 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
 
 
 def _price_parent_activity_window(conn, start, end, tier):
-    """Use real in-window activity with the standard parent/child pricing rules.
-
-    Reading transcripts here also keeps a weekly report correct while bounded
-    background collection catches up. Missing files produce an unavailable
-    estimate instead of silently treating missing work as zero cost.
-    """
-    _measure_facade = _compat.facade()
-    paths = conn.execute(
-        "SELECT jsonl_path, date FROM session_log WHERE input_tokens IS NOT NULL "
-        "AND COALESCE(is_sidechain,0)=0").fetchall()
-    # Include new sessions before bounded collection reaches them.
-    known = {str(name) for name, _ in paths}
-    for path, _mtime, _ in _measure_facade._find_all_jsonl_files(None):
-        if str(path) not in known:
-            paths.append((str(path), ""))
-            known.add(str(path))
-    rows = []
-    request_ledger = {}  # a request repeated in another transcript counts once (largest usage)
-    for name, recorded_date in paths:
-        path = _measure_facade.Path(name)
-        if not path.exists():
-            if recorded_date and str(recorded_date) < start.date().isoformat():
-                continue
-            return None
-        children = _measure_facade._find_subagent_jsonl_files(path)
-        parsed = _measure_facade._parse_session_jsonl(path, window_start=start, window_end=end)
-        if parsed and parsed.get("is_sidechain"):
-            continue
-        if parsed:
-            parsed = _measure_facade._parsed_net_of_ledger(parsed, request_ledger)
-        if not parsed:
-            parsed = {"total_input_tokens": 0, "total_output_tokens": 0,
-                      "total_cache_create_1h": 0, "total_cache_create_5m": 0,
-                      "cache_hit_rate": 0, "model_usage": {}, "api_calls": 0,
-                      "message_count": 0}
-        inp, out = parsed["total_input_tokens"], parsed["total_output_tokens"]
-        cw1, cw5 = parsed["total_cache_create_1h"], parsed["total_cache_create_5m"]
-        child_cache_read = 0
-        for child in children:
-            cp = _measure_facade._parse_session_jsonl(child, window_start=start, window_end=end)
-            if cp:
-                cp = _measure_facade._parsed_net_of_ledger(cp, request_ledger)
-                inp += cp["total_input_tokens"]
-                out += cp["total_output_tokens"]
-                cw1 += cp["total_cache_create_1h"]
-                cw5 += cp["total_cache_create_5m"]
-                child_cache_read += cp["total_cache_read"]
-        if not parsed["api_calls"] and inp + out == 0:
-            continue
-        usage = _measure_facade.json.dumps(parsed["model_usage"])
-        hit = (parsed["cache_hit_rate"] if parsed["api_calls"] else
-               child_cache_read / inp if inp else 0)
-        rows.append((inp, out, cw5, cw1, hit, usage, usage,
-                     parsed["api_calls"], parsed["message_count"]))
-    return _measure_facade._price_parent_rows(rows, tier)
+    """Price in-window activity and disclose incomplete transcript coverage."""
+    from . import weekly_activity
+    return weekly_activity.price(_compat.facade(), conn, start, end, tier)
 
 
 def _weekly_full_savings(resets_at=None, now=None):
@@ -5348,7 +5297,7 @@ def _weekly_full_savings(resets_at=None, now=None):
                 age = end.timestamp() - float(cached["computed_at"])
                 if (0 <= age < 60 and cached["start"] == start.isoformat()
                         and cached["anchor_stamp"] == anchor_stamp
-                        and cached.get("activity_basis") == 1
+                        and cached.get("activity_basis") == 2
                         and cached["version"] == _measure_facade.TOKEN_OPTIMIZER_VERSION):
                     return _measure_facade._positive_full_value(cached["value"])
             except (OSError, ValueError, TypeError, KeyError):
@@ -5369,13 +5318,14 @@ def _weekly_full_savings(resets_at=None, now=None):
                 "uncapped_usd": round(pool["transformation_usd"], 2),
                 "actual_usd": round(pool["actual_usd"], 2),
                 "counterfactual_usd": round(pool["counterfactual_usd"], 2),
-                "api_calls": pool["now_units"], "anchor_month": pool["anchor_month"]}
+                "api_calls": pool["now_units"], "anchor_month": pool["anchor_month"],
+                "coverage": pool.get("coverage")}
         if now is None:
             try:
                 _measure_facade._write_baseline_state(cache_path, {
                     "computed_at": end.timestamp(), "start": start.isoformat(),
                     "anchor_stamp": anchor_path.stat().st_mtime_ns if anchor_path.exists() else None,
-                    "activity_basis": 1,
+                    "activity_basis": 2,
                     "version": _measure_facade.TOKEN_OPTIMIZER_VERSION, "value": value})
             except OSError:
                 pass
@@ -7051,7 +7001,7 @@ def savings_report(days=None, as_json=None):
     if float(ba.get("monthly_savings_usd", 0.0) or 0.0) > 0:
         wp = ba.get("session_weight_pool") or None
         print()
-        print(f"  YOUR TRANSFORMATION: ~${ba['monthly_savings_usd']:,.0f}/mo")
+        print(f"  YOUR TRANSFORMATION: ~${ba['monthly_savings_usd']:,.0f} over {days} days")
         # Spend cap disclosure: when the counterfactual exceeds actual spend,
         # the headline is capped and the user must see why, not wonder why the
         # number stopped moving.
@@ -7080,7 +7030,7 @@ def savings_report(days=None, as_json=None):
                   f"the old way) [estimated]")
             drift = float(wp.get("price_mix_drift_usd", 0.0) or 0.0)
             if abs(drift) >= 1.0:
-                print(f"    Not claimed: ~${abs(drift):,.0f}/mo of model price/mix drift "
+                print(f"    Not claimed: ~${abs(drift):,.0f} this period of model price/mix drift "
                       f"({'cheaper' if drift >= 0 else 'costlier'} models would have moved "
                       f"your bill without Token Optimizer).")
             cross = wp.get("crosscheck") or {}
@@ -7092,11 +7042,11 @@ def savings_report(days=None, as_json=None):
                            if isinstance(gap, (int, float)) else "")
                 if _measure_facade._crosscheck_verdict(wp):
                     print(f"    Cross-check on {cross_unit}: "
-                          f"{_measure_facade._signed_usd(cross_usd)}/mo "
+                          f"{_measure_facade._signed_usd(cross_usd)} this period "
                           f"(independent unit, agrees within ~10%{gap_txt}).")
                 else:
                     print(f"    Cross-check on {cross_unit}: "
-                          f"{_measure_facade._signed_usd(cross_usd)}/mo "
+                          f"{_measure_facade._signed_usd(cross_usd)} this period "
                           f"(independent unit, does not agree{gap_txt}).")
         else:
             print(f"    Had you worked the way you did before Token Optimizer "
@@ -7111,7 +7061,7 @@ def savings_report(days=None, as_json=None):
             for lev in ba_breakdown:
                 amt = float(lev.get("monthly_usd", 0) or 0)
                 sign = "-" if amt < 0 else " "
-                print(f"      {sign}${abs(amt):>8,.0f}/mo  {lev.get('label', lev.get('key', ''))}")
+                print(f"      {sign}${abs(amt):>8,.0f} this period  {lev.get('label', lev.get('key', ''))}")
             caveat = ba.get("breakdown_caveat") or ""
             if caveat:
                 # Wrap the caveat so the CLI surfaces the same disclosure as the dashboard.
@@ -7122,7 +7072,7 @@ def savings_report(days=None, as_json=None):
         # session-weight pool delegated work is excluded from the headline entirely.
         prem = float(ba.get("premium_delegation_cost_usd", 0.0) or 0.0)
         if prem > 0:
-            print(f"    Costlier delegation: ${prem:,.0f}/mo of premium-model "
+            print(f"    Costlier delegation: ${prem:,.0f} this period of premium-model "
                   f"subagent spend. "
                   + ("Not in the headline above (delegated work is measured separately)."
                      if wp else "Included in the sidechain net above."))
@@ -7132,16 +7082,16 @@ def savings_report(days=None, as_json=None):
         print()
         print("  YOUR TRANSFORMATION: none to headline this period")
         print(f"    Each request now carries more context than at your baseline "
-              f"(est. ${ba.get('actual_monthly_usd', 0):,.0f}/mo now vs "
-              f"${ba.get('counterfactual_monthly_usd', 0):,.0f}/mo at the baseline's cost "
+              f"(est. ${ba.get('actual_monthly_usd', 0):,.0f} now vs "
+              f"${ba.get('counterfactual_monthly_usd', 0):,.0f} this period at the baseline's cost "
               f"per request), so there is no whole-workload saving to headline. "
               f"The measured savings below are real and counted.")
     elif ba.get("reason") == "flat":
         print()
         print("  YOUR TRANSFORMATION: no measurable change this period")
         print(f"    Cost per unit of work is about the same as before install "
-              f"(est. ${ba.get('actual_monthly_usd', 0):,.0f}/mo now vs "
-              f"${ba.get('counterfactual_monthly_usd', 0):,.0f}/mo the old way). "
+              f"(est. ${ba.get('actual_monthly_usd', 0):,.0f} now vs "
+              f"${ba.get('counterfactual_monthly_usd', 0):,.0f} this period the old way). "
               f"The savings below are counted action by action.")
     elif ba.get("reason") == "methods_disagree":
         # The two independent work-unit methods could not be reconciled, so the
@@ -7157,7 +7107,7 @@ def savings_report(days=None, as_json=None):
         print()
         print("  YOUR TRANSFORMATION: not headlined this period")
         print(f"    The {main_unit} and {cross_unit} methods disagree "
-              f"({_measure_facade._signed_usd(main_usd)}/mo vs {_measure_facade._signed_usd(cross_usd)}/mo), "
+              f"({_measure_facade._signed_usd(main_usd)} vs {_measure_facade._signed_usd(cross_usd)} this period), "
               f"so neither is headlined. The measured savings below are real "
               f"and counted.")
 

@@ -18,7 +18,7 @@ def check(root=split.REPO):
     records = {row['name']: row for row in manifest['symbols']}
     if 'dispatch' in manifest:
         records['__main__'] = manifest['dispatch']
-    expected_files = {'__init__.py', '_compat.py', 'dashboard_history.py'} | {name + '.py' for name in split.DOMAINS}
+    expected_files = {'__init__.py', '_compat.py', 'dashboard_history.py', 'weekly_activity.py'} | {name + '.py' for name in split.DOMAINS}
     actual_files = {path.name for path in package.glob('*.py')}
     errors = []
     if actual_files != expected_files:
@@ -52,14 +52,14 @@ def check(root=split.REPO):
         limit = 200 if path.name == '_compat.py' else PASS1_PROVIDER_CEILING
         if len(text.splitlines()) > limit:
             errors.append(f'{path.name}: exceeds {limit} lines')
-        if path.name.startswith('_') or path.name == 'dashboard_history.py':
+        if path.name.startswith('_') or path.name in ('dashboard_history.py', 'weekly_activity.py'):
             continue
         domain_tree = ast.parse(text)
         for node in ast.walk(domain_tree):
             if isinstance(node, ast.Import) and any(alias.name == 'measure' or alias.name.startswith('_measure.') for alias in node.names):
                 errors.append(f'{path.name}: direct domain/facade import at line {node.lineno}')
             if isinstance(node, ast.ImportFrom) and (node.module == 'measure' or node.module and node.module.startswith('_measure') or
-                    node.level and (node.module not in (None, '_compat') or any(alias.name not in ('_compat', 'dashboard_history') for alias in node.names))):
+                    node.level and (node.module not in (None, '_compat') or any(alias.name not in ('_compat', 'dashboard_history', 'weekly_activity') for alias in node.names))):
                 errors.append(f'{path.name}: direct domain/facade import at line {node.lineno}')
         for node in domain_tree.body:
             if isinstance(node, split.DEFINITION):
@@ -71,7 +71,7 @@ def check(root=split.REPO):
             elif isinstance(node, ast.ImportFrom):
                 allowed = (node.module == '__future__' or
                            node.level == 1 and node.module is None and
-                           all(a.name in ('_compat', 'dashboard_history') for a in node.names))
+                           all(a.name in ('_compat', 'dashboard_history', 'weekly_activity') for a in node.names))
                 if not allowed or any(a.name == '*' for a in node.names):
                     errors.append(f'{path.name}: direct domain/facade import')
             elif not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):

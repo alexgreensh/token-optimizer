@@ -6,7 +6,7 @@ Contracts guarded here:
    nothing; first reads are never intercepted; no config file means shadow.
 2. soft_block (explicit opt-in): a second unchanged Read of a supported
    code file emits deny + user_message with a bounded structure map; a
-   changed file emits deny + delta text, not a full map.
+   changed file is allowed until a successful read confirms its new hash.
 3. First-ever read is never denied; non-code files are never denied;
    partial reads (offset/limit) are never intercepted; a file last read in
    a different session is a first read (no cross-session delta base).
@@ -81,6 +81,7 @@ def _fields(target: Path, sid: str = "conv-1", extra=None) -> dict:
         "tool_name": "Read",
         "tool_args": args,
         "conversation_id": sid,
+        "tool_use_id": "read-call-1",
         "workspace_roots": [str(target.parent)],
     }
 
@@ -96,6 +97,7 @@ def test_shadow_default_records_and_emits_nothing(env):
     assert rc.configured_mode() == "shadow"
     first = rc.evaluate(_fields(target))
     assert first["emit"] is None and first["observed"]["decision"] == "first_read"
+    rc.confirm_read(_fields(target))
     second = rc.evaluate(_fields(target))
     assert second["emit"] is None
     assert second["observed"]["decision"] == "shadow_redundant"
@@ -105,6 +107,7 @@ def test_soft_block_second_read_denies_with_structure_map(env):
     cur, _, target, _ = env
     _arm(cur)
     rc.evaluate(_fields(target))
+    rc.confirm_read(_fields(target))
     decision = rc.evaluate(_fields(target))
     assert decision["emit"]["permission"] == "deny"
     msg = decision["emit"]["user_message"]
@@ -115,24 +118,35 @@ def test_soft_block_second_read_denies_with_structure_map(env):
     assert "agent_message" not in decision["emit"]  # dropped by Cursor (known bug)
 
 
-def test_soft_block_changed_file_denies_with_delta(env):
+def test_changed_file_is_allowed_until_successful_read(env):
     cur, _, target, _ = env
-    _arm(cur)
+    _arm(cur, "block")
     rc.evaluate(_fields(target))
+    rc.confirm_read(_fields(target))
     target.write_text(CODE_V2, encoding="utf-8")
     decision = rc.evaluate(_fields(target))
-    assert decision["emit"]["permission"] == "deny"
-    msg = decision["emit"]["user_message"]
-    assert "changed since" in msg
-    assert "gamma" in msg
-    assert decision["observed"]["decision"] == "deny_delta"
+    assert decision["emit"] is None
+    assert rc.evaluate(_fields(target))["emit"] is None
+    rc.confirm_read(_fields(target))
+    assert rc.evaluate(_fields(target))["emit"]["permission"] == "deny"
+
+
+def test_missing_session_never_persists_or_denies(env):
+    cur, _, target, _ = env
+    _arm(cur, "block")
+    for sid in ("", "unknown"):
+        for _ in range(2):
+            result = rc.evaluate(_fields(target, sid=sid))
+            assert result is None or result["emit"] is None
+    assert not (cur / "token-optimizer" / "read-fingerprints").exists()
 
 
 def test_soft_block_degrades_to_warn_after_bounded_denies(env):
     """G0: soft_block is not a trap - 3 real denials, then warn-and-allow."""
     cur, _, target, _ = env
     _arm(cur)
-    rc.evaluate(_fields(target))  # first read
+    rc.evaluate(_fields(target))
+    rc.confirm_read(_fields(target))  # first read
     for i in range(3):
         d = rc.evaluate(_fields(target))
         assert d["emit"]["permission"] == "deny", f"denial {i + 1} expected"
@@ -149,6 +163,7 @@ def test_block_mode_never_degrades(env):
     cur, _, target, _ = env
     _arm(cur, "block")
     rc.evaluate(_fields(target))
+    rc.confirm_read(_fields(target))
     for _ in range(5):
         d = rc.evaluate(_fields(target))
         assert d["emit"]["permission"] == "deny"
@@ -192,6 +207,7 @@ def test_ktd9_claude_hooks_force_record_only(env, monkeypatch, tmp_path):
                                   "hooks": [{"command": "python3 /x/token-optimizer/read_cache.py"}]}]}
     }), encoding="utf-8")
     rc.evaluate(_fields(target))
+    rc.confirm_read(_fields(target))
     decision = rc.evaluate(_fields(target))
     assert decision["emit"] is None
     assert decision["observed"]["owner"] == "claude-import"
@@ -220,6 +236,7 @@ def _bridge_payload(target: Path, sid: str = "conv-1") -> dict:
     f = _fields(target, sid)
     return {"hook_event_name": "preToolUse", "tool_name": f["tool_name"],
             "tool_input": f["tool_args"], "conversation_id": sid,
+            "tool_use_id": f["tool_use_id"],
             "workspace_roots": f["workspace_roots"]}
 
 
@@ -227,6 +244,7 @@ def test_bridge_emits_deny_on_armed_redundant_read(env):
     cur, _, target, capsys = env
     _arm(cur)
     bridge.handle_pre_tool_use(_bridge_payload(target))
+    bridge.handle_post_tool_use(_bridge_payload(target))
     capsys.readouterr()
     bridge.handle_pre_tool_use(_bridge_payload(target))
     out = capsys.readouterr().out
@@ -242,8 +260,9 @@ def test_bridge_emits_deny_on_armed_redundant_read(env):
 
 def test_bridge_shadow_read_emits_nothing_but_records(env):
     cur, _, target, capsys = env
-    for _ in range(2):
-        bridge.handle_pre_tool_use(_bridge_payload(target))
+    bridge.handle_pre_tool_use(_bridge_payload(target))
+    bridge.handle_post_tool_use(_bridge_payload(target))
+    bridge.handle_pre_tool_use(_bridge_payload(target))
     assert capsys.readouterr().out.strip() == ""
     ledger = (cur / "token-optimizer" / "observed-events.jsonl").read_text().splitlines()
     decisions = [json.loads(l).get("decision") for l in ledger
@@ -289,3 +308,82 @@ def test_store_permissions(env):
     import stat as stat_module
 
     assert stat_module.S_IMODE(store.stat().st_mode) == 0o600
+
+
+def test_store_evicts_oldest_to_byte_budget(env, monkeypatch):
+    monkeypatch.setattr(rc, "_MAX_STORE_BYTES", 500)
+    store = {"files": {str(i): {"ts": i, "content": "x" * 150} for i in range(6)}}
+    rc._save_store("conv-1", store)
+    path = rc._store_path("conv-1")
+    assert path.stat().st_size <= 500
+    files = rc._load_store("conv-1")["files"]
+    assert "5" in files and "0" not in files
+
+
+def test_store_atomic_temp_is_private_and_unique(env, monkeypatch):
+    import stat
+    original = rc.os.replace
+    seen = []
+    def checked(source, destination):
+        path = Path(source)
+        seen.append(path.name)
+        if rc.os.name == "posix":
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        return original(source, destination)
+    monkeypatch.setattr(rc.os, "replace", checked)
+    rc._save_store("conv-1", {"files": {}})
+    rc._save_store("conv-1", {"files": {}})
+    assert len(set(seen)) == 2
+
+
+def test_successful_post_tool_use_confirms_changed_read(env):
+    cur, _, target, _ = env
+    _arm(cur, "block")
+    fields = _fields(target)
+    rc.evaluate(fields)
+    rc.confirm_read(fields)
+    target.write_text(CODE_V2, encoding="utf-8")
+    assert rc.evaluate(fields)["emit"] is None
+    bridge.handle_post_tool_use({"tool_name": "Read", "tool_input": fields["tool_args"],
+                                 "conversation_id": "conv-1", "tool_use_id": fields["tool_use_id"]})
+    assert rc.evaluate(fields)["emit"]["permission"] == "deny"
+
+
+def test_locked_store_preserves_concurrent_read_updates(env):
+    import concurrent.futures
+    cur, repo, _, _ = env
+    targets = []
+    for i in range(8):
+        target = repo / f"file{i}.py"
+        target.write_text(CODE, encoding="utf-8")
+        targets.append(target)
+    def read(target):
+        # Retry fail-open lock contention as real later reads do.
+        for _ in range(30):
+            result = rc.evaluate(_fields(target))
+            if result:
+                return
+        pytest.fail("could not acquire store lease")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(read, targets))
+    files = rc._load_store("conv-1")["files"]
+    assert all(str(target) in files for target in targets)
+
+
+def test_unconfirmed_first_read_is_never_denied(env):
+    cur, _, target, _ = env
+    _arm(cur, "block")
+    assert rc.evaluate(_fields(target))["emit"] is None
+    assert rc.evaluate(_fields(target))["emit"] is None
+    rc.confirm_read(_fields(target))
+    assert rc.evaluate(_fields(target))["emit"]["permission"] == "deny"
+
+
+def test_missing_tool_use_id_cannot_confirm_a_read(env):
+    cur, _, target, _ = env
+    _arm(cur, "block")
+    fields = _fields(target)
+    fields["tool_use_id"] = ""
+    rc.evaluate(fields)
+    rc.confirm_read(fields)
+    assert rc.evaluate(fields)["emit"] is None

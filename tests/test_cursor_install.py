@@ -490,3 +490,45 @@ def test_payload_parses_command_filters_without_stdlib_tomllib(home, tmp_path):
         )
         assert out.returncode == 0, out.stderr
         assert out.stdout.strip() == want, out.stdout + out.stderr
+
+
+def test_uninstall_removes_derived_caches_but_keeps_history(home):
+    for name in ("read-fingerprints", "checkpoints", "restore-context", "snapshot/checkpoints", "sessions"):
+        directory = home / "token-optimizer" / name
+        directory.mkdir(parents=True)
+        (directory / "data").write_text("data")
+    result = ci.uninstall(home=home)
+    for name in ("read-fingerprints", "checkpoints", "restore-context", "snapshot/checkpoints"):
+        assert not (home / "token-optimizer" / name).exists()
+    assert (home / "token-optimizer" / "sessions" / "data").is_file()
+    assert result["kept"]
+
+
+def test_payload_imports_and_read_interception_are_self_contained(tmp_path):
+    import shutil
+    import subprocess
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    for name in ci._PAYLOAD_MODULES:
+        shutil.copy2(SCRIPTS / name, payload / name)
+    target = tmp_path / "sample.py"
+    target.write_text("def sample():\n    return 1\n")
+    program = '''import importlib, pathlib, sys
+payload, target, home, names = sys.argv[1:]
+sys.path.insert(0, payload)
+for name in names.split(","):
+    importlib.import_module(name[:-3])
+import cursor_read_cache as cache
+cache._home = lambda: pathlib.Path(home)
+result = cache.evaluate({"tool_name": "Read", "tool_args": {"file_path": target},
+                         "conversation_id": "session-123", "tool_use_id": "call-1", "workspace_roots": []})
+assert result and result["observed"]["decision"] == "first_read", result
+fields = {"tool_name": "Read", "tool_args": {"file_path": target},
+          "conversation_id": "session-123", "tool_use_id": "call-1", "workspace_roots": []}
+cache.confirm_read(fields)
+assert cache.evaluate(fields)["observed"]["decision"] == "shadow_redundant"
+'''
+    result = subprocess.run([sys.executable, "-I", "-c", program, str(payload), str(target),
+                             str(tmp_path), ",".join(ci._PAYLOAD_MODULES)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

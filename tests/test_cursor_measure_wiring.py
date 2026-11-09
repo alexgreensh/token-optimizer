@@ -345,3 +345,13 @@ def test_dashboard_health_data_does_not_probe_claude_under_cursor(monkeypatch):
     health = m._collect_health_data()
     assert health["runtime"] == "cursor"
     assert health["running_sessions"] == []
+
+
+def test_restore_stamps_source_session_end(monkeypatch, tmp_path):
+    mod, _, _, cursor_home = _import_measure(monkeypatch, tmp_path, "cursor")
+    _monkeypatch_cursor_state_readers(monkeypatch)
+    assert mod._collect_cursor_sessions(days=90, quiet=True) == 1
+    path = next((cursor_home / "token-optimizer" / "restore-context").glob("*.md"))
+    marker = path.read_text().splitlines()[0]
+    assert marker.startswith("<!-- source-end: ")
+    assert abs(float(marker[len("<!-- source-end: "):-4]) - (time.time() - 60)) < 5

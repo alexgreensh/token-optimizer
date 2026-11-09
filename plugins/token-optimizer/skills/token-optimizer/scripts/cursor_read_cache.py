@@ -1,15 +1,14 @@
 """Cursor read-path parity (U2): shadow-first redundant-read interception.
 
-Reuses the Claude path's pure machinery unchanged - ``structure_map``
-(eligibility + structure maps), ``delta_diff`` (fingerprints + deltas),
-``read_cache``'s message builders and contextignore eligibility - and owns
+Reuses the Claude path's ``structure_map`` eligibility and structure maps,
+and ``read_cache``'s message builders and contextignore eligibility, and owns
 only the Cursor-specific parts: payload shape (the bridge's decoded
 ``fields``), the per-session fingerprint store under the Cursor home, the
 mode gate, and the deny + ``user_message`` emit contract.
 
 Modes (same names as Claude, one deliberate difference): ``shadow``
 (default: record what would be injected, emit nothing), ``soft_block``
-(deny + injected map/delta - BOUNDED here: after 3 denies for the same
+(deny + injected map - BOUNDED here: after 3 denies for the same
 session+file it degrades to ``warn`` so work always proceeds; Claude's
 ``soft_block`` denies without a bound), ``warn`` (allow + note), ``block``
 (deny, reason only - never degrades). Arming is NEVER automatic:
@@ -21,9 +20,9 @@ neither arms nor confirms anything, and no ledger pattern verifies -
 ``armed-verified`` needs positive controlled native evidence no current
 source provides.
 
-Delta bases come only from fingerprints observed in THIS session: the
-store is keyed by conversation id, so a file last read in another session
-is a first read here. KTD9 coexistence: when Claude Token Optimizer hooks
+Fingerprints are scoped to the conversation and promoted only after a
+matching successful Read hook. Changed files are always allowed. KTD9
+coexistence: when Claude Token Optimizer hooks
 are configured (the 4 Claude settings files, read-only) and no explicit
 mode is set, the Read channel defers to record-only - the imported Claude
 hook may own the channel; Cursor's import toggle itself has no verified
@@ -38,7 +37,9 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 _MAX_STORE_ENTRIES = 200
@@ -149,27 +150,49 @@ def _load_store(sid: str) -> dict:
         return {}
 
 
+@contextmanager
+def _store_lock(sid):
+    from hook_runtime import lease_lock
+    directory = _store_path(sid).parent
+    directory.mkdir(parents=True, exist_ok=True)
+    with lease_lock(directory / ("." + _store_path(sid).stem + ".lock"),
+                    acquire_timeout=0.075, cohort_throttle=False,
+                    reclaim_released=True) as acquired:
+        yield acquired
+
+
 def _save_store(sid: str, store: dict) -> None:
+    tmp = None
     try:
-        d = _store_path(sid).parent
-        d.mkdir(parents=True, exist_ok=True)
+        path = _store_path(sid)
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.chmod(d, 0o700)
+            os.chmod(path.parent, 0o700)
         except OSError:
             pass
-        entries = store.get("files", {})
-        if len(entries) > _MAX_STORE_ENTRIES:
-            entries = dict(
-                sorted(entries.items(), key=lambda kv: kv[1].get("ts", 0))[-_MAX_STORE_ENTRIES:]
-            )
-            store["files"] = entries
-        path = _store_path(sid)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(store), encoding="utf-8")
-        os.chmod(tmp, 0o600)
+        entries = store.setdefault("files", {})
+        while entries:
+            encoded = json.dumps(store).encode("utf-8")
+            if len(entries) <= _MAX_STORE_ENTRIES and len(encoded) <= _MAX_STORE_BYTES:
+                break
+            oldest = min(entries, key=lambda key: entries[key].get("ts", 0))
+            del entries[oldest]
+        encoded = json.dumps(store).encode("utf-8")
+        if len(encoded) > _MAX_STORE_BYTES:
+            return
+        fd, tmp = tempfile.mkstemp(prefix=".fingerprint-", suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(encoded)
         os.replace(tmp, path)
+        tmp = None
     except OSError:
         pass
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +204,7 @@ def _redact_for_storage(text: str) -> str | None:
     """Redact file text before it reaches the persisted fingerprint store.
 
     Fail CLOSED: a redactor failure degrades the entry to hash-only (the
-    delta path just never engages) rather than persisting raw file content
+    cached content is omitted) rather than persisting raw file content
     (G1). Change detection is unaffected - the sha1 is over the raw bytes.
     """
     try:
@@ -196,8 +219,8 @@ def _redact_for_storage(text: str) -> str | None:
 def _read_fingerprint(path: Path) -> tuple[str, int, str | None] | None:
     """One read of the target: (sha1, size, redacted-text-if-delta-cacheable).
 
-    The text is retained only within delta_diff's content-cache cap so the
-    delta path never re-reads the file. Symlinks, unreadable and oversized
+    The text is retained only within delta_diff's content-cache cap.
+    Symlinks, unreadable and oversized
     files return None (fail open).
     """
     try:
@@ -302,7 +325,9 @@ def _evaluate(fields) -> dict | None:
     if not _eligible(file_path):
         return None
 
-    sid = fields.get("conversation_id") or "unknown"
+    sid = fields.get("conversation_id")
+    if not sid or sid == "unknown":
+        return None
     path = Path(file_path)
     fp = _read_fingerprint(path)
     if fp is None:
@@ -315,47 +340,34 @@ def _evaluate(fields) -> dict | None:
     if owner != "cursor":
         mode = "shadow"  # KTD9 defer: record-only while the import may own it
 
+    with _store_lock(sid) as acquired:
+        if not acquired:
+            return None
+        return _evaluate_locked(fields, sid, file_path, digest, size, current, mode, owner)
+
+
+def _evaluate_locked(fields, sid, file_path, digest, size, current, mode, owner):
     store = _load_store(sid)
     files = store.setdefault("files", {})
     entry = files.get(file_path)
     base = {"mode": mode, "owner": owner, "path": Path(file_path).name}
 
-    if entry is None:
-        # First read THIS session: record the fingerprint, never deny.
+    if entry is None or not entry.get("hash"):
+        # A pre-hook cannot prove the model received a first read either.
         new_entry = {"hash": digest, "size": size, "ts": time.time()}
         if current is not None:
             new_entry["content"] = current
-        files[file_path] = new_entry
+        new_entry["tool_use_id"] = fields.get("tool_use_id") or ""
+        files[file_path] = {"ts": new_entry["ts"], "pending": new_entry}
         _save_store(sid, store)
         return {"emit": None, "observed": {**base, "decision": "first_read"}}
 
     if entry.get("hash") != digest:
-        # Changed since the observed read: serve a delta when we hold the
-        # base content and the file is delta-eligible, else treat as new.
-        old_content = entry.get("content")
-        new_entry = {
-            "hash": digest, "size": size, "ts": time.time(),
-            **({"content": current} if current is not None else {}),
-        }
-        files[file_path] = new_entry
+        # Stage only: a postToolUse success confirms that the new bytes arrived.
+        entry["pending"] = {"hash": digest, "size": size, "ts": time.time(),
+                            "tool_use_id": fields.get("tool_use_id") or "",
+                            **({"content": current} if current is not None else {})}
         _save_store(sid, store)
-        if old_content and current:
-            try:
-                from delta_diff import compute_delta, is_delta_eligible
-
-                if is_delta_eligible(file_path):
-                    delta_text, _stats = compute_delta(old_content, current,
-                                                       filename=Path(file_path).name)
-                    if delta_text:
-                        from credential_patterns import redact_credentials
-
-                        delta_text = redact_credentials(delta_text) or delta_text
-                        msg = (f"[Token Optimizer] {Path(file_path).name} changed since "
-                               f"your last read this session. Delta:\n\n{delta_text}")
-                        return _soft_block_decide(mode, msg, base, "delta",
-                                                  store, sid, file_path, new_entry)
-            except Exception:
-                pass
         return {"emit": None, "observed": {**base, "decision": "changed_reread"}}
 
     # Unchanged redundant read. Shadow/warn do no store write: the ts
@@ -364,11 +376,39 @@ def _evaluate(fields) -> dict | None:
     return _soft_block_decide(mode, msg, base, "redundant", store, sid, file_path, entry)
 
 
+def confirm_read(fields):
+    """Promote a staged changed fingerprint only after a successful Read hook."""
+    try:
+        sid = fields.get("conversation_id")
+        path = fields.get("tool_args", {}).get("file_path")
+        if not sid or sid == "unknown" or not isinstance(path, str):
+            return
+        with _store_lock(sid) as acquired:
+            if not acquired:
+                return
+            store = _load_store(sid)
+            entry = store.get("files", {}).get(path)
+            pending = entry.get("pending") if isinstance(entry, dict) else None
+            if not isinstance(pending, dict):
+                return
+            expected_id = pending.get("tool_use_id")
+            if not expected_id or expected_id != fields.get("tool_use_id"):
+                return
+            fp = _read_fingerprint(Path(path))
+            if fp is None or fp[0] != pending.get("hash"):
+                return
+            pending.pop("tool_use_id", None)
+            store["files"][path] = pending
+            _save_store(sid, store)
+    except Exception:
+        return
+
+
 def _soft_block_decide(mode, msg, base, kind, store, sid, file_path, entry):
     """_decide with a bounded soft_block: deny loops degrade to warn (G0).
 
     The model gets _SOFT_BLOCK_MAX_DENIES real denials (each carrying the
-    injected map/delta), then soft_block degrades to warn so work can always
+    injected map), then soft_block degrades to warn so work can always
     proceed. Explicit block mode never degrades. The counter costs one store
     write per DENIED read only; other modes keep the write-free hot path.
     """

@@ -11,6 +11,8 @@ leaf symlinks refused, and the restore payload stays within its byte budget.
 from __future__ import annotations
 
 import sys
+import hashlib
+import time
 from pathlib import Path
 
 _RESTORE_MAX_BYTES = 16_384        # restore-context files above this are ignored
@@ -153,3 +155,45 @@ def _read_checkpoint_bounded(path_str, home):
         ].decode("utf-8", errors="ignore")
         body = cut + marker
     return prefix + body
+
+
+_RESTORE_MAX_AGE = 7 * 24 * 3600
+
+
+def restore_for_workspace(fields, root, to_dir, sessions_dir, load_tally, active_seconds):
+    """Inject recent workspace continuity unless a recent sibling is active."""
+    if to_dir is None or not root:
+        return None
+    now = time.time()
+    own_id = fields.get("conversation_id") or ""
+    try:
+        if sessions_dir is not None:
+            for path in sessions_dir.glob("*.json"):
+                try:
+                    if now - path.stat().st_mtime >= active_seconds:
+                        continue
+                except OSError:
+                    continue
+                tally = load_tally(path)
+                if not tally or tally.get("final") or (own_id and tally.get("conversation_id") == own_id):
+                    continue
+                roots = tally.get("workspace_roots")
+                sibling_root = roots[0] if isinstance(roots, list) and roots else tally.get("cwd")
+                try:
+                    if str(sibling_root) == str(root) and now - float(tally.get("updated_at") or 0) < active_seconds:
+                        return None
+                except (TypeError, ValueError):
+                    continue
+        digest = hashlib.sha1(root.encode("utf-8", "replace")).hexdigest()
+        path = to_dir / "restore-context" / (digest + ".md")
+        if path.is_symlink() or path.stat().st_size > _RESTORE_MAX_BYTES:
+            return None
+        stamp, text = path.read_text(encoding="utf-8").split("\n", 1)
+        if not stamp.startswith("<!-- source-end: ") or not stamp.endswith(" -->"):
+            return None
+        ended = float(stamp[len("<!-- source-end: "):-4])
+        if not 0 <= now - ended <= _RESTORE_MAX_AGE:
+            return None
+        return text.strip() or None
+    except (OSError, ValueError, OverflowError):
+        return None

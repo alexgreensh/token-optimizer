@@ -437,56 +437,9 @@ def _workspace_root(fields):
 
 
 def _restore_for_workspace(fields):
-    """Return the restore-context for THIS workspace, or None.
-
-    Cursor IDE runs many concurrent chats across repos, so a single global
-    restore file would seed every new chat with whichever conversation rolled
-    up last. Files are keyed by ``sha1(workspace_root)`` and injected only for
-    the matching root. Injection is skipped while a non-final sibling tally in
-    that workspace has activity in the last 10 minutes.
-    """
-    root = _workspace_root(fields)
-    to_dir = _to_dir()
-    if to_dir is None or not root:
-        return None
-
-    sdir = _sessions_dir()
-    now = time.time()
-    own_id = fields.get("conversation_id") or ""
-    if sdir is not None:
-        try:
-            for p in sdir.glob("*.json"):
-                t = _load_tally(p)
-                if not t or t.get("final"):
-                    continue
-                # Exclude the session being started: its own freshly-written
-                # tally is active by definition and must not suppress restore.
-                if own_id and str(t.get("conversation_id") or "") == own_id:
-                    continue
-                troot = None
-                wroots = t.get("workspace_roots")
-                if isinstance(wroots, list) and wroots and isinstance(wroots[0], str):
-                    troot = wroots[0]
-                else:
-                    troot = t.get("cwd")
-                if str(troot) == str(root):
-                    try:
-                        if now - float(t.get("updated_at") or 0) < _ACTIVE_WORKSPACE_SECS:
-                            return None
-                    except (TypeError, ValueError):
-                        pass
-        except OSError:
-            pass
-
-    digest = hashlib.sha1(root.encode("utf-8", "replace")).hexdigest()
-    path = to_dir / "restore-context" / f"{digest}.md"
-    try:
-        if path.exists() and path.stat().st_size <= _RESTORE_MAX_BYTES:
-            text = path.read_text(encoding="utf-8").strip()
-            return text or None
-    except OSError:
-        return None
-    return None
+    return cursor_bridge_checkpoint.restore_for_workspace(
+        fields, _workspace_root(fields), _to_dir(), _sessions_dir(), _load_tally,
+        _ACTIVE_WORKSPACE_SECS)
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +658,11 @@ def handle_post_tool_use(payload):
         rewrite = _classify_rewrite(fields)
     read_path = None
     if fields["tool_name"] == "Read":
+        try:
+            import cursor_read_cache
+            cursor_read_cache.confirm_read(fields)
+        except Exception:
+            pass
         rp = fields["tool_args"].get("file_path")
         if isinstance(rp, str) and rp:
             read_path = Path(rp).name
@@ -919,16 +877,12 @@ def handle_post_tool_use_failure(payload):
 
 
 def handle_after_shell_execution(payload):
-    """Corroborate rewrite-honoured evidence. NEVER counts a tool call: the
-    matching postToolUse already did (a Shell call fires both events)."""
+    """Record shell completion; postToolUse owns rewrite classification."""
     fields = decode_payload(payload)
-    command = payload.get("command") if isinstance(payload, dict) else None
     output = payload.get("output") if isinstance(payload, dict) else None
     _record_observed("afterShellExecution",
                      conversation_id=fields["conversation_id"] or None,
                      tool_use_id=fields["tool_use_id"] or None,
-                     rewrite=("honoured" if isinstance(command, str)
-                              and "bash_compress.py" in command else None),
                      output_len=len(output) if isinstance(output, str) else None)
 
 

@@ -78,7 +78,7 @@ If a hook field upstream changes, the evidence is on disk, and
 | `sessionEnd` | finalise tally + unthrottled rollup/dashboard | none |
 | `afterAgentResponse` | hook-measured token accounting when Cursor carries token fields (`cursor_hook_measured` provenance, cache-inclusive input; absent/implausible values change nothing) | none |
 | `postToolUseFailure` | per-tool failure counts for the burn signal | none |
-| `afterShellExecution` | corroborates rewrite-honoured evidence (never double-counted) | none |
+| `afterShellExecution` | records shell completion; rewrite evidence comes from paired `postToolUse` | none |
 | `subagentStart` / `subagentStop` | subagent fan-out counts for fleet rows | none |
 
 The bridge always exits 0 and never blocks a Cursor session. The `Shell`
@@ -95,7 +95,7 @@ closed** (emits nothing) on any uncertainty.
 | Compaction steering | Capture + restore shipped: `preCompact` captures a redacted checkpoint (U1 disk-transcript adapter -> `compact_capture`) and the next `postToolUse` offers exactly one bounded restore. Steering the compaction itself remains observational — Cursor compacts server-side/model-side, and the restore's delivery into the rebuilt context is claimed only with positive native evidence (ledgered `emitted` otherwise) | native validation open |
 | Database parity surfaces | Cursor moves token fields across `state.vscdb` releases; the reader maps the known shapes and falls back instead of guessing | read-only, never writes |
 | Native IDE Memories | Settings > Memories have no verified local file surface and the IDE state DB schema is unverified; `cursor-audit` performs no IDE DB reads and does not audit them. User Rules and Team Rules are also not file-backed and not audited | marked not-covered in audit output |
-| Read interception (structure maps / delta reads) | Shipped shadow-first: the `preToolUse` `Read` channel records redundant-read decisions by default and emits nothing. `soft_block`/`block` are a manual per-install opt-in (`read-cache.json`); `cursor-doctor` reports the channel as `unknown`/`shadow`/`armed-unverified` from observed evidence; absence of a re-read after a deny is negative evidence, never delivery proof, so `armed-verified` requires positive controlled native evidence no current source provides. Silence arms nothing. `soft_block` is bounded: after 3 denies for the same session+file it degrades to `warn` so work always proceeds (unlike Claude's `soft_block`, which denies without a bound); `block` never degrades | native delivery validation open |
+| Read interception (structure maps) | Shipped shadow-first: `preToolUse` records redundant-read decisions by default and emits nothing. Changed files are allowed; fingerprints are confirmed by matching successful Read events. `soft_block`/`block` are manual per-install opt-ins (`read-cache.json`); `cursor-doctor` reports `unknown`/`shadow`/`armed-unverified`, and `armed-verified` requires positive native evidence. `soft_block` degrades to `warn` after 3 denies for a session and file; `block` never degrades | native delivery validation open |
 
 Consequences and mitigations:
 
@@ -178,14 +178,14 @@ catches a stray manual run.
 TOKEN_OPTIMIZER_RUNTIME=cursor python3 skills/token-optimizer/scripts/measure.py cursor-uninstall
 ```
 
-Removes only the Token Optimizer hook entries from `~/.cursor/hooks.json` and
-the payload directory `~/.cursor/token-optimizer/plugin/`. Other tools' hooks
+Removes the Token Optimizer hook entries from `~/.cursor/hooks.json`, the
+payload, read fingerprints, checkpoints and restore-context caches. Other tools' hooks
 are left intact. The uninstall is idempotent; running it on a clean config is a
 no-op.
 
 **Cursor session data is left in place by design.** Token Optimizer reads
 Cursor's state and transcript files read-only and never moves or owns them. To
-purge Token Optimizer's own data (tallies, restore context, the observed-events
+purge Token Optimizer's remaining data (tallies, the observed-events
 ledger, and the trends rows) too:
 
 ```bash

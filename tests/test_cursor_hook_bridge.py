@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -337,7 +338,7 @@ def test_session_start_injects_matching_workspace_restore(cursor_dir, capsys):
     restore_dir = _to_dir(cursor_dir) / "restore-context"
     restore_dir.mkdir(parents=True, exist_ok=True)
     (restore_dir / f"{digest}.md").write_text(
-        "[Token Optimizer] Continuity from your previous Cursor session", encoding="utf-8"
+        f"<!-- source-end: {time.time()} -->\n[Token Optimizer] Continuity from your previous Cursor session", encoding="utf-8"
     )
 
     bridge.handle_session_start({
@@ -355,7 +356,7 @@ def test_session_start_skips_restore_when_sibling_active(cursor_dir, capsys):
     digest = hashlib.sha1(root.encode("utf-8", "replace")).hexdigest()
     restore_dir = _to_dir(cursor_dir) / "restore-context"
     restore_dir.mkdir(parents=True, exist_ok=True)
-    (restore_dir / f"{digest}.md").write_text("should be skipped", encoding="utf-8")
+    (restore_dir / f"{digest}.md").write_text(f"<!-- source-end: {time.time()} -->\nshould be skipped", encoding="utf-8")
 
     sdir = _to_dir(cursor_dir) / "sessions"
     sdir.mkdir(parents=True, exist_ok=True)
@@ -580,3 +581,27 @@ def test_pre_compact_persists_real_numbers_from_dict_payload(monkeypatch, tmp_pa
     comp = tally["compactions"][-1]
     assert comp["context_tokens"] == 0
     assert comp["context_window_size"] == 0
+
+
+def test_after_shell_filename_does_not_claim_rewrite(cursor_dir):
+    bridge.handle_after_shell_execution({"conversation_id": "composer-123", "command": "cat bash_compress.py"})
+    assert "rewrite" not in _read_last_observed(cursor_dir)
+
+
+def test_restore_rejects_stale_source_and_avoids_old_tally_reads(cursor_dir, monkeypatch):
+    root = "/workspace/example"
+    digest = hashlib.sha1(root.encode()).hexdigest()
+    folder = _to_dir(cursor_dir) / "restore-context"
+    folder.mkdir(parents=True)
+    restore = folder / f"{digest}.md"
+    restore.write_text(f"<!-- source-end: {time.time() - 8 * 86400} -->\nstale")
+    fields = {"workspace_roots": [root], "conversation_id": "current"}
+    assert bridge._restore_for_workspace(fields) is None
+    restore.write_text(f"<!-- source-end: {time.time()} -->\nrecent")
+    sessions = _to_dir(cursor_dir) / "sessions"
+    sessions.mkdir(exist_ok=True)
+    old = sessions / "old.json"
+    old.write_text("{}")
+    os.utime(old, (time.time() - 86400, time.time() - 86400))
+    monkeypatch.setattr(bridge, "_load_tally", lambda path: pytest.fail("old tally read"))
+    assert bridge._restore_for_workspace(fields) == "recent"

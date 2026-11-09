@@ -2820,12 +2820,8 @@ def _write_cursor_restore_context(sessions, quiet=None):
 
         from runtime_env import cursor_home as _ch  # noqa: PLC0415
 
-        # Group the most recent COMPLETE session per workspace root. The key
-        # must match what the sessionStart hook looks up: workspace_roots[0]
-        # (the repo root Cursor exports) first, then cwd as a fallback. Using
-        # cwd alone would key the file by a tool's working_directory (often a
-        # subdirectory) while sessionStart looks up the repo root — a silent
-        # never-match.
+        from datetime import datetime  # noqa: PLC0415
+        # Match sessionStart's workspace root and source-session end time.
         by_ws: dict = {}
         for s in sessions:
             if s.get("incomplete"):
@@ -2844,12 +2840,15 @@ def _write_cursor_restore_context(sessions, quiet=None):
             text = str(value or "")
             text = "".join(ch for ch in text if ch == " " or ch.isprintable())
             return text[:200]
-
         base = _ch() / "token-optimizer" / "restore-context"
         base.mkdir(parents=True, exist_ok=True)
         for root, group in by_ws.items():
-            latest = max(group, key=lambda s: ((_measure_facade := _compat.facade()), (s.get("first_ts") is not None, s.get("first_ts") or ""))[1])
-            lines = [f"[Token Optimizer] Continuity from your previous Cursor session in {_clean(root)}:"]
+            latest = max(group, key=lambda s: (s.get("last_ts") is not None, s.get("last_ts") or ""))
+            try:
+                end_ts = datetime.fromisoformat(str(latest.get("last_ts") or "").replace("Z", "+00:00")).timestamp()
+            except (ValueError, OverflowError):
+                continue
+            lines = [f"<!-- source-end: {end_ts} -->", f"[Token Optimizer] Continuity from your previous Cursor session in {_clean(root)}:"]
             if latest.get("model"):
                 lines.append(
                     f"- Model: {_clean(latest['model'])}; "

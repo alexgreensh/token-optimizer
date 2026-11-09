@@ -45,6 +45,10 @@ HOOK_TIMEOUT_SEC = 10
 # hook never depends on the repo checkout location.
 _PAYLOAD_MODULES = (
     "cursor_hook_bridge.py",
+    "cursor_read_cache.py",
+    "structure_map.py",
+    "structure_map_ts.py",
+    "read_cache.py",
     "cursor_state.py",
     "cursor_session.py",
     "bash_hook.py",
@@ -393,12 +397,7 @@ def install(*, dry_run: bool = False, home: Path = None) -> dict:
 
 
 def uninstall(*, dry_run: bool = False, home: Path = None) -> dict:
-    """Remove only entries install() added, plus the payload dir.
-
-    Session data (``<cursor_home>/token-optimizer/sessions``,
-    ``restore-context``, ``observed-events.jsonl``) and trends are left in place
-    for the user to purge manually, matching the Copilot uninstall contract.
-    """
+    """Remove our hooks, payload and derived caches; retain session history."""
     root = home if home is not None else cursor_home()
     actions = {"removed": [], "dry_run": dry_run}
 
@@ -427,17 +426,27 @@ def uninstall(*, dry_run: bool = False, home: Path = None) -> dict:
                         raise RuntimeError(f"failed writing {hooks_path}: {exc}") from exc
                 actions["removed"].append(f"{hooks_path} (Cursor entries)")
 
-    plugin_dir = _plugin_dir(root)
-    if plugin_dir.exists():
+    data_dir = root / "token-optimizer"
+    if data_dir.is_symlink() or (data_dir / "snapshot").is_symlink():
+        raise RuntimeError("refusing to remove caches through a symlinked data directory")
+    for plugin_dir in (_plugin_dir(root), data_dir / "read-fingerprints",
+                       data_dir / "checkpoints", data_dir / "restore-context",
+                       data_dir / "snapshot" / "checkpoints"):
+        if not plugin_dir.exists() and not plugin_dir.is_symlink():
+            continue
         if not dry_run:
             try:
-                shutil.rmtree(plugin_dir)
+                if plugin_dir.is_symlink():
+                    plugin_dir.unlink()
+                else:
+                    shutil.rmtree(plugin_dir)
             except OSError as exc:
                 # main() only surfaces RuntimeError; a raw OSError would escape
                 # as a traceback and leave a half-uninstalled state unexplained.
                 raise RuntimeError(f"failed removing {plugin_dir}: {exc}") from exc
         actions["removed"].append(str(plugin_dir))
 
+    actions["kept"] = ["session tallies, observed events, trends and other session data"]
     return actions
 
 
@@ -464,6 +473,8 @@ def main(argv=None) -> int:
             verb = "Would remove" if args.dry_run else "Removed"
             for item in result["removed"] or ["(nothing installed)"]:
                 print(f"{verb}: {item}")
+            for item in result["kept"]:
+                print(f"Kept: {item}")
         return 0
     except RuntimeError as exc:
         print(f"[Token Optimizer] {exc}", file=sys.stderr)

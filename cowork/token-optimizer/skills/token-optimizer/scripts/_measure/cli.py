@@ -353,13 +353,13 @@ def main():
             print(f"  Cost: {_measure_facade._csnap['cost']['detail']}")
             if _measure_facade._cc_data["patterns_bad"]:
                 print("  Issues detected:")
-                for _p in _measure_facade._cc_data["patterns_bad"]:
-                    _sev = {"high": "!!!", "medium": "!!", "low": "!"}.get(_p["severity"], "!")
-                    print(f"    [{_sev}] {_p['name']}: {_p['detail']}")
+                for _measure_facade._p in _measure_facade._cc_data["patterns_bad"]:
+                    _measure_facade._sev = {"high": "!!!", "medium": "!!", "low": "!"}.get(_measure_facade._p["severity"], "!")
+                    print(f"    [{_measure_facade._sev}] {_measure_facade._p['name']}: {_measure_facade._p['detail']}")
             if _measure_facade._cc_data["patterns_good"]:
                 print("  Good practices:")
-                for _p in _measure_facade._cc_data["patterns_good"]:
-                    print(f"    [OK] {_p['name']}: {_p['detail']}")
+                for _measure_facade._p in _measure_facade._cc_data["patterns_good"]:
+                    print(f"    [OK] {_measure_facade._p['name']}: {_measure_facade._p['detail']}")
         _measure_facade.sys.exit(0)
     elif _measure_facade.args[0] == "grok-summary":
         _measure_facade._grok_summary()

@@ -86,9 +86,14 @@ def test_compaction_temp_creation_failure_invalidates_store(ready, monkeypatch):
 
 def test_shell_home_flag_cannot_consume_dry_run(tmp_path):
     import subprocess
+    from helpers.install_sparse import install_bash
+    try:
+        bash = install_bash()
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
     repo = Path(__file__).resolve().parents[1]
     script = 'source ./install.sh; measure_py=skills/token-optimizer/scripts/measure.py; _cursor_prepare --home --dry-run'
-    result = subprocess.run(['bash', '-c', script], cwd=repo, env={**os.environ, '_TO_INSTALL_SH_TEST_MODE':'1'}, capture_output=True, text=True)
+    result = subprocess.run([bash, '-c', script], cwd=repo, env={**os.environ, '_TO_INSTALL_SH_TEST_MODE':'1'}, capture_output=True, text=True)
     assert result.returncode != 0
     assert '--home requires a directory path' in result.stderr + result.stdout
     assert not (repo / '--dry-run').exists()

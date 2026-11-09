@@ -25,6 +25,7 @@ Run: python3 -m pytest tests/test_cursor_read_cache.py -v
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -373,7 +374,8 @@ def test_locked_store_preserves_concurrent_read_updates(env):
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(read, targets))
     files = rc._load_store("conv-1")["files"]
-    assert all(any(k.endswith(str(target)) for k in files) for target in targets)
+    expected_paths = {os.path.normcase(os.path.realpath(str(target))) for target in targets}
+    assert all(any(k.endswith(path) for k in files) for path in expected_paths)
 
 
 def test_unconfirmed_first_read_is_never_denied(env):

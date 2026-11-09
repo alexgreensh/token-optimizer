@@ -239,7 +239,8 @@ def test_collect_cursor_sessions_end_to_end(monkeypatch, tmp_path):
     restore_dir = cursor_home / "token-optimizer" / "restore-context"
     files = list(restore_dir.glob("*.md"))
     assert len(files) == 1
-    digest = hashlib.sha1(b"/Users/alex/repos/demo").hexdigest()
+    from cursor_bridge_checkpoint import normalize_workspace
+    digest = hashlib.sha1(normalize_workspace("/Users/alex/repos/demo").encode("utf-8", "replace")).hexdigest()
     assert files[0].name == f"{digest}.md"
     assert "previous Cursor session" in files[0].read_text(encoding="utf-8")
 
@@ -282,8 +283,12 @@ def test_collect_cursor_sessions_keys_restore_by_workspace_root(monkeypatch, tmp
     restore_dir = cursor_home / "token-optimizer" / "restore-context"
     files = list(restore_dir.glob("*.md"))
     assert len(files) == 1
-    digest = hashlib.sha1(b"/Users/alex/repos/demo").hexdigest()
+    from cursor_bridge_checkpoint import normalize_workspace, restore_for_workspace
+    digest = hashlib.sha1(normalize_workspace("/Users/alex/repos/demo").encode("utf-8", "replace")).hexdigest()
     assert files[0].name == f"{digest}.md"
+    restored = restore_for_workspace({}, tally["workspace_roots"][0], cursor_home / "token-optimizer",
+                                     None, lambda _path: None, 60)
+    assert restored and "previous Cursor session" in restored
 
 
 def test_dashboard_cursor_toggles_read_real_doctor_names(monkeypatch, tmp_path):

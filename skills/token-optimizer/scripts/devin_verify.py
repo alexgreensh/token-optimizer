@@ -78,6 +78,7 @@ def payload_key_shapes(plugin, names, skill_md):
     search=str(plugin/'bash_search_results.py')
     urls=str(plugin/'credential_url_patterns.py')
     variants=(expected,expected-{search},expected-{urls},expected-{search,urls})
-    previous=expected-{search,urls,str(plugin/'devin_hooks.py'),tomli}
+    before_both=expected-{search,urls}
+    previous=before_both-{str(plugin/'devin_hooks.py'),tomli}
     legacy=previous-{str(plugin/name) for name in ('plugin_env.py','refetch_fingerprint.py')}
-    return expected,tuple(sorted(keys) for keys in (*variants,*(v-{tomli} for v in variants),previous,legacy))
+    return expected,tuple(sorted(keys) for keys in (*variants,before_both-{tomli},previous,legacy))

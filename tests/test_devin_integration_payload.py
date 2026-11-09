@@ -44,3 +44,4 @@ def test_payload_shapes_reject_unrelated_missing_module(tmp_path):
     plugin = tmp_path / "plugin"
     expected, shapes = payload_key_shapes(plugin, PAYLOAD, tmp_path / "SKILL.md")
     assert sorted(expected - {str(plugin / "bash_compress.py")}) not in shapes
+    assert sorted(expected - {str(plugin / "_tomli.py")}) not in shapes

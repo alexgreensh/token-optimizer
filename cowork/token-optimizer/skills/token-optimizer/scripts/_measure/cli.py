@@ -2530,7 +2530,10 @@ def main():
         for _measure_facade.i, _measure_facade.a in enumerate(_measure_facade.args):
             if _measure_facade.a == "--project-dir" and _measure_facade.i + 1 < len(_measure_facade.args):
                 _measure_facade.proj_dir = _measure_facade.args[_measure_facade.i + 1]
-        _measure_facade.result = _measure_facade.cursor_audit(project_dir=_measure_facade.proj_dir, as_json=_measure_facade.output_json)
+        import cursor_audit as _measure_import_ca
+        _measure_facade.cursor_audit_mod = _measure_import_ca
+        del _measure_import_ca
+        _measure_facade.result = _measure_facade.cursor_audit_mod.cursor_audit(project_dir=_measure_facade.proj_dir, as_json=_measure_facade.output_json)
         if _measure_facade.output_json and _measure_facade.result:
             print(_measure_facade.json.dumps(_measure_facade.result, indent=2, default=str))
     elif _measure_facade.args[0] == "archive-result":

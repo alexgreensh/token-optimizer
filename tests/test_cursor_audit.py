@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for the Cursor rules + memory audit (U9, Slice E).
 
-The audit lives in the _measure audit provider (skills/token-optimizer/
-scripts/_measure/audit.py) as ``cursor_audit``. Tests reach the provider
-through ``measure._measure_providers['audit']`` so they pass before Slice A
-wires the ``cursor-audit`` subcommand into measure.py/cli.py.
+The audit lives in the standalone module skills/token-optimizer/scripts/
+cursor_audit.py (extracted from the frozen _measure audit provider after
+independent review - the u5 tooling has no post-freeze extension path).
+Tests import the module directly.
 
 Contract under test:
   - .cursor/rules/*.mdc are scored against the attention curve, with
@@ -34,9 +34,8 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import measure  # noqa: E402  (importing measure installs the provider facade)
-
-audit = measure._measure_providers["audit"]  # noqa: E402
+import measure  # noqa: E402  (installs the facade the frozen provider resolves)
+import cursor_audit as audit  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

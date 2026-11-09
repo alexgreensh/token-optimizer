@@ -95,7 +95,7 @@ PINNED_FOUNDATION = {
 PINNED_OUTPUTS = {
     'skills/token-optimizer/scripts/measure.py': '757f3d33888e7dc6e50702fabd3cf52d1aca7271d499d8b1ea95cae2fec30a85',
     'skills/token-optimizer/scripts/_measure/sessions.py': 'e958f4462d03b2448b55dab8b286daa5e6c89380cdac44040e90295df8c0f2c3',
-    'skills/token-optimizer/scripts/_measure/cli.py': '13efa8227ca3a3e68260da5bb61f069f2a208da05b6d8920598d77f332f51501',  # cursor-coach/cursor-audit dispatch added post-freeze (feat/cursor-parity); re-pinned for intentional evolution
+    'skills/token-optimizer/scripts/_measure/cli.py': '473e77b280035ec34d1ae2eec1f474c08e4f207f698749e68a5ba54f183cb8b7',  # cursor-coach dispatch + cursor-audit module import added post-freeze (feat/cursor-parity); re-pinned for intentional evolution
     'scripts/mutations/_measure_lane2.json': '8575771aa875f7ea96ee651a5361721e238710c624dc49fea218ed3fa1e256ac',
     'scripts/split_lanes/u2_frozen.json': 'fff3c038830fcf85431facaa25ca8e465b21875f890d906c3915e7e8a160caac',
 }

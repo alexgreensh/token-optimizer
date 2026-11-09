@@ -3,7 +3,7 @@
 Token Optimizer's Cursor adapter. One adapter, two surfaces:
 
 - **Cursor IDE** — the Composer and its per-request token fields in `state.vscdb`
-- **Cursor CLI (`agent`)** — the same six-event hooks plus a transcript path
+- **Cursor CLI (`agent`)** — the same eleven wired hook events plus a transcript path
 
 The value prop is **token accounting and continuity without a second dashboard
 to watch**: Cursor shows context usage natively but does not persist per-request
@@ -71,9 +71,9 @@ If a hook field upstream changes, the evidence is on disk, and
 | Event | TO uses it for | Output shape |
 |---|---|---|
 | `sessionStart` | per-workspace continuity restore (`additional_context`) | `{"additional_context": "..."}` |
-| `preToolUse` (Shell matcher) | bash output compression (`updated_input`) | `{"permission": "allow", "updated_input": {...}}` |
+| `preToolUse` (Shell\|Read matcher) | Shell: bash output compression (`updated_input`); Read: read-cache interception (structure map / unchanged note; shadow by default, `soft_block`/`block` opt-in) | Shell: `{"permission": "allow", "updated_input": {...}}`; Read: `{"permission": "deny", "user_message": "..."}` under an armed mode, else nothing |
 | `postToolUse` | tally update + Shell rewrite-honoured evidence + context nudge + thrash loop nudge (identical-output streak, burn streak, inline-script repeat — same thresholds as Claude) | `{"additional_context": "..."}` |
-| `preCompact` | record real `context_tokens` / `context_window_size` / `context_usage_percent` | none |
+| `preCompact` | record real `context_tokens` / `context_window_size` / `context_usage_percent` + capture a redacted compact checkpoint (one bounded restore rides the next `postToolUse`) | `{"user_message": "..."}` when a checkpoint is captured, else none |
 | `stop` | per-turn tally + throttled rollup/dashboard refresh | none |
 | `sessionEnd` | finalise tally + unthrottled rollup/dashboard | none |
 | `afterAgentResponse` | hook-measured token accounting when Cursor carries token fields (`cursor_hook_measured` provenance, cache-inclusive input; absent/implausible values change nothing) | none |
@@ -196,7 +196,7 @@ rm -rf ~/.cursor/token-optimizer
 
 1. Install Cursor (`agent` CLI or the IDE) and open a project.
 2. `bash install.sh --cursor`
-3. `measure.py cursor-doctor --probe` — expect the six wired events to replay
+3. `measure.py cursor-doctor --probe` — expect the eleven wired events to replay
    green, and the data-source check to name what this install can read.
 4. Run one short Cursor session that executes a whitelisted shell command
    (e.g. `git status`).

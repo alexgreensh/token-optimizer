@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, dashboard_history
+from . import _compat, dashboard_history, structural_ledger
 
 def _daemon_is_running():
     """Return True iff the dashboard daemon identity probe passes.
@@ -2032,6 +2032,7 @@ def plugin_cleanup(dry_run=None, quiet=None):
                         shutil.move(str(item), str(dest))
                     if not quiet:
                         print(f"    archived: {item.name} -> {archive_dir.name}/")
+                    structural_ledger.record_skill_action("archive", item.name, dest)
                     actions_taken.append(f"archived duplicate local skill: {item.name}")
                 except OSError as e:
                     if not quiet:
@@ -2117,6 +2118,7 @@ def _manage_skill_locked(action, name):
         except OSError as e:
             print(f"  [!] Failed to archive '{name}': {e}")
             return False
+        structural_ledger.record_skill_action("archive", name, dst)
         print(f"  Archived: {name} -> {archive_dir.name}/")
         return True
 
@@ -2160,6 +2162,7 @@ def _manage_skill_locked(action, name):
                 except OSError as e:
                     print(f"  [!] Failed to restore '{name}': {e}")
                     return False
+                structural_ledger.record_skill_action("restore", name, dst)
                 print(f"  Restored: {name} from {ad.name}/")
                 # Clean up empty archive dir
                 try:

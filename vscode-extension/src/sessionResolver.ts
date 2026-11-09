@@ -119,8 +119,12 @@ export interface CursorActiveSession {
 }
 
 // Cap on tally reads per rescan and per-file bytes: a pathological sessions
-// dir must never stall the extension host.
+// dir must never stall the extension host. When a workspace is open we scan
+// deeper (CURSOR_MAX_SCAN_FILES) because the newest tallies may all belong to
+// other windows; the workspace filter runs BEFORE the candidate cap so an
+// in-workspace session can never be starved out by foreign ones.
 const CURSOR_MAX_CANDIDATES = 8;
+const CURSOR_MAX_SCAN_FILES = 200;
 const CURSOR_MAX_TALLY_BYTES = 4 * 1024 * 1024;
 
 export function readTallyFile(filePath: string): any | null {
@@ -134,17 +138,29 @@ export function readTallyFile(filePath: string): any | null {
   }
 }
 
-function tallyMatchesWorkspace(tally: any, workspaceDir: string): boolean {
-  const normalize = (p: any) =>
-    typeof p === 'string' && p ? p.replace(/[/\\]+$/, '') : '';
+// Does the tally belong to the window's workspace folder? True when tally.cwd
+// or a workspace_roots entry IS the workspace or sits UNDER it (the agent may
+// run in a subfolder). Separators normalize to '/', and comparison is
+// case-insensitive on Windows (drive-letter case differs between Cursor's
+// records and VS Code's workspace path). The '/' boundary keeps '/repo' from
+// matching '/repo-other'. Ancestor matches (workspace inside the tally's root)
+// deliberately return false: showing a different window's session is worse
+// than showing none.
+function tallyInWorkspace(tally: any, workspaceDir: string): boolean {
+  const normalize = (p: any): string => {
+    if (typeof p !== 'string' || !p) return '';
+    let s = p.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (process.platform === 'win32') s = s.toLowerCase();
+    return s;
+  };
   const want = normalize(workspaceDir);
   if (!want) return false;
-  if (normalize(tally.cwd) === want) return true;
-  const roots = tally.workspace_roots;
-  if (Array.isArray(roots)) {
-    for (const root of roots) {
-      if (normalize(root) === want) return true;
-    }
+  const paths: any[] = [tally && tally.cwd];
+  const roots = tally && tally.workspace_roots;
+  if (Array.isArray(roots)) paths.push(...roots);
+  for (const raw of paths) {
+    const n = normalize(raw);
+    if (n && (n === want || n.startsWith(want + '/'))) return true;
   }
   return false;
 }
@@ -162,7 +178,10 @@ export function findActiveCursorSession(
 
   // Candidates: newest few tally files by mtime (reading every tally in a huge
   // sessions dir on every rescan is wasteful; staleness beyond the newest few
-  // can never be the active session).
+  // can never be the active session). With a workspace open we scan deeper and
+  // filter by workspace BEFORE the candidate cap: eight newer foreign-window
+  // tallies must not push this window's active session out of the candidate
+  // set entirely.
   const files: { path: string; mtimeMs: number }[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
@@ -175,10 +194,13 @@ export function findActiveCursorSession(
   }
   files.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
+  const workspaceDir = opts.workspaceDir || null;
+  const scanLimit = workspaceDir ? CURSOR_MAX_SCAN_FILES : CURSOR_MAX_CANDIDATES;
   const candidates: CursorActiveSession[] = [];
-  for (const file of files.slice(0, CURSOR_MAX_CANDIDATES)) {
+  for (const file of files.slice(0, scanLimit)) {
     const tally = readTallyFile(file.path);
     if (!tally) continue;
+    if (workspaceDir && !tallyInWorkspace(tally, workspaceDir)) continue;
     const id = typeof tally.conversation_id === 'string' && tally.conversation_id
       ? tally.conversation_id
       : path.basename(file.path, '.json');
@@ -188,6 +210,7 @@ export function findActiveCursorSession(
       mtimeMs: file.mtimeMs,
       tally,
     });
+    if (candidates.length >= CURSOR_MAX_CANDIDATES) break;
   }
   if (candidates.length === 0) return null;
 
@@ -195,16 +218,11 @@ export function findActiveCursorSession(
     const t = Number(c.tally.updated_at);
     return Number.isFinite(t) ? t : 0;
   };
-  const newest = (list: CursorActiveSession[]): CursorActiveSession =>
-    list.reduce((best, c) => (updatedAt(c) > updatedAt(best) ? c : best));
 
-  if (opts.workspaceDir) {
-    const matches = candidates.filter((c) => tallyMatchesWorkspace(c.tally, opts.workspaceDir!));
-    // A workspace IS open: only show its session. If none matches, report no
-    // session rather than a different window's — that wrong data is the bug.
-    return matches.length ? newest(matches) : null;
-  }
-  return newest(candidates);
+  // Candidates are already workspace-filtered when a folder is open (and the
+  // empty case returned null above), so the most recently updated tally is
+  // this window's active session — never a different window's.
+  return candidates.reduce((best, c) => (updatedAt(c) > updatedAt(best) ? c : best));
 }
 
 function newestSessionIn(projectsDir: string, dirs: fs.Dirent[]): ActiveSession | null {

@@ -59,8 +59,10 @@ export class DataSource {
       // Content changes (live-fill / rate-limits / quality-cache updates) belong
       // to the SAME session, so they must NOT trigger a session re-scan — those
       // writes fire several times a second and re-scanning stat-walks every
-      // project dir. Only a new or removed file can mean a session change.
-      this.watcher.onDidChange(() => this.scheduleRefresh(false));
+      // project dir. Only a new or removed file can mean a session change —
+      // plus, in Cursor mode, a tally update for a DIFFERENT conversation,
+      // which means the user switched chats inside the same window.
+      this.watcher.onDidChange((uri) => this.scheduleRefresh(this.cursorSessionSwitch(uri)));
       this.watcher.onDidCreate(() => this.scheduleRefresh(true));
       this.watcher.onDidDelete(() => this.scheduleRefresh(true));
     } catch {
@@ -116,6 +118,25 @@ export class DataSource {
     if (rescan) this.needsRescan = true;
     if (this.debounce) clearTimeout(this.debounce);
     this.debounce = setTimeout(() => this.refresh(false), DEBOUNCE_MS);
+  }
+
+  // True when a changed file is a Cursor tally for a DIFFERENT conversation
+  // than the cached active session — i.e. the user switched chats and the
+  // cached identity is stale. The bridge rewrites the SAME tally on every
+  // hook event, so same-file changes stay on the cheap path; only Cursor mode
+  // has per-session tally files under the watched dir, so other runtimes
+  // always return false here.
+  private cursorSessionSwitch(uri: vscode.Uri): boolean {
+    const sessionsDir = this.paths.cursorSessionsDir;
+    if (!sessionsDir || !this.cachedCursorSession) return false;
+    try {
+      const changed = path.resolve(uri.fsPath);
+      const dir = path.resolve(sessionsDir);
+      if (!changed.startsWith(dir + path.sep)) return false;
+      return changed !== path.resolve(this.cachedCursorSession.tallyPath);
+    } catch {
+      return false;
+    }
   }
 
   refresh(recomputeUsageEstimate = false): void {

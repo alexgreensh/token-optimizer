@@ -181,4 +181,77 @@ describe('findActiveCursorSession', () => {
     const found = findActiveCursorSession(dir());
     expect(found?.sessionId).toBe('evil');
   });
+
+  it('matches a tally cwd nested under the workspace (subfolder agent run)', () => {
+    writeTally(dir(), 'conv-b', {
+      ...base,
+      conversation_id: 'conv-b',
+      updated_at: 2000,
+      cwd: '/repo/demo/src/deep',
+    });
+    const found = findActiveCursorSession(dir(), { workspaceDir: '/repo/demo' });
+    expect(found?.sessionId).toBe('conv-b');
+  });
+
+  it('does not match a sibling path that only shares a prefix', () => {
+    writeTally(dir(), 'conv-a', { ...base, updated_at: 3000, cwd: '/repo/demo-other' });
+    expect(findActiveCursorSession(dir(), { workspaceDir: '/repo/demo' })).toBeNull();
+  });
+
+  it('does not match when the workspace is nested inside the tally root', () => {
+    // workspace=/repo/demo/sub but the agent worked at /repo/demo — that tally
+    // may belong to a different window, so it must not match.
+    writeTally(dir(), 'conv-a', { ...base, updated_at: 3000, cwd: '/repo/demo' });
+    expect(findActiveCursorSession(dir(), { workspaceDir: '/repo/demo/sub' })).toBeNull();
+  });
+
+  it('normalizes separator direction between tally and workspace', () => {
+    writeTally(dir(), 'conv-b', {
+      ...base,
+      conversation_id: 'conv-b',
+      updated_at: 2000,
+      cwd: 'C:\\repo\\demo',
+    });
+    const found = findActiveCursorSession(dir(), { workspaceDir: 'C:/repo/demo' });
+    expect(found?.sessionId).toBe('conv-b');
+  });
+
+  it('compares case-insensitively on Windows (drive-letter case)', () => {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      writeTally(dir(), 'conv-b', {
+        ...base,
+        conversation_id: 'conv-b',
+        updated_at: 2000,
+        cwd: 'c:\\Repo\\Demo',
+      });
+      const found = findActiveCursorSession(dir(), { workspaceDir: 'C:/Repo/Demo' });
+      expect(found?.sessionId).toBe('conv-b');
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    }
+  });
+
+  it('finds the workspace session even when 8+ newer foreign tallies exist', () => {
+    // Regression: the candidate cap used to apply BEFORE the workspace filter,
+    // so eight newer other-window tallies starved this window's session out.
+    const now = Date.now();
+    for (let i = 0; i < 9; i++) {
+      writeTally(dir(), `foreign-${i}`, {
+        ...base,
+        conversation_id: `foreign-${i}`,
+        updated_at: now / 1000 + i,
+        cwd: '/other/window',
+      }, now + i);
+    }
+    writeTally(dir(), 'conv-mine', {
+      ...base,
+      conversation_id: 'conv-mine',
+      updated_at: now / 1000 - 100,
+      cwd: '/repo/demo',
+    }, now - 60_000);
+    const found = findActiveCursorSession(dir(), { workspaceDir: '/repo/demo' });
+    expect(found?.sessionId).toBe('conv-mine');
+  });
 });

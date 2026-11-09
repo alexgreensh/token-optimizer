@@ -302,7 +302,7 @@ function healthNotesHtml(data) {
     if (vals.length >= 6) {
       var h = Math.floor(vals.length / 2);
       var d = vals.slice(-h).reduce(function(a, b) { return a + b; }, 0) / h - vals.slice(0, h).reduce(function(a, b) { return a + b; }, 0) / h;
-      trend = d > 3 ? 'and rising' : (d < -3 ? 'and falling' : 'and steady');
+      trend = d > 3 ? 'up over the period' : (d < -3 ? 'down over the period' : 'steady over the period');
     }
     out += '<div class="card wide st-health">' +
       '<h2 class="st-h">Context quality</h2>' +

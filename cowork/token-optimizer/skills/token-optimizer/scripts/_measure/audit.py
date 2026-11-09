@@ -7333,6 +7333,7 @@ def _cursor_hook_commands_from_settings(settings):
 
 
 def _cursor_audit_hooks(cursor_home, project_dir=None):
+    from runtime_env import with_measure_cli as _hint  # noqa: PLC0415
     """Health-check ~/.cursor/hooks.json and note import coexistence.
 
     Presence-level only: per-channel OWNERSHIP between imported Claude hooks
@@ -7374,7 +7375,7 @@ def _cursor_audit_hooks(cursor_home, project_dir=None):
             "category": "hooks_json_missing",
             "severity": "info",
             "detail": f"No hooks.json at {hooks_path}; the Token Optimizer Cursor bridge is not wired here",
-            "fix": "Run: python3 measure.py cursor-install (merged, never overwriting other entries).",
+            "fix": _hint("Run: python3 measure.py cursor-install (merged, never overwriting other entries)."),
             "savings": 0,
         })
         # Coexistence is still worth reporting below.
@@ -7445,7 +7446,7 @@ def _cursor_audit_hooks(cursor_home, project_dir=None):
                         "category": "bridge_not_wired",
                         "severity": "info",
                         "detail": "hooks.json exists but wires no Token Optimizer cursor_hook_bridge entries",
-                        "fix": "Run: python3 measure.py cursor-install (merged, never overwriting other entries).",
+                        "fix": _hint("Run: python3 measure.py cursor-install (merged, never overwriting other entries)."),
                         "savings": 0,
                     })
                 if result["third_party_entry_count"]:

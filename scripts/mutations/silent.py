@@ -12,6 +12,7 @@ HOOK_RUNTIME = "skills/token-optimizer/scripts/hook_runtime.py"
 MODULE_RUNNER = "hooks/module_runner.py"
 UPS_RUNNER = "hooks/userpromptsubmit_runner.py"
 FLEET = "skills/fleet-auditor/scripts/fleet.py"
+FLEET_BASE = "skills/fleet-auditor/scripts/fleet_base.py"
 
 SWALLOWED = "tests/test_swallowed_errors.py"
 FALSE_SUCCESS = "tests/test_false_success.py"
@@ -42,7 +43,7 @@ MUTATIONS = [
     ("#149 detected fleet system reports a silent zero",
      [FALSE_SUCCESS + "::test_fleet_scan_never_reports_a_silent_zero_for_a_detected_system[opencode]",
       FALSE_SUCCESS + "::test_fleet_scan_never_reports_a_silent_zero_for_a_detected_system[nanoclaw]"],
-     FLEET,
+     FLEET_BASE,
      [('        return [], [f"{self.display_name} fleet collection is not implemented yet, "\n'
        '                    f"so its runs are not counted here (0 is not a measurement)."]\n',
        "        return [], []\n")]),

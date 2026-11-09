@@ -86,6 +86,23 @@ _PAYLOAD_MODULES = (
     "cursor_bridge_rewrite.py",
     "cursor_bridge_rollup.py",
     "cursor_bridge_checkpoint.py",
+    # cursor_thrash powers the Shell thrash nudge in postToolUse; its runtime
+    # dependency closure (empirically traced over the identical-output, burn
+    # and inline-script nudge paths) is thrash_guard -> session_store,
+    # delta_diff, archive_result -> recovery_output, refetch_fingerprint,
+    # reset_epoch, token_estimate. Without ANY of these the nudge silently
+    # no-ops in a real install (fail-open). cursor_transcript powers the
+    # transcript translation in the compact-checkpoint capture.
+    "cursor_thrash.py",
+    "thrash_guard.py",
+    "session_store.py",
+    "delta_diff.py",
+    "archive_result.py",
+    "recovery_output.py",
+    "refetch_fingerprint.py",
+    "reset_epoch.py",
+    "token_estimate.py",
+    "cursor_transcript.py",
 )
 
 # One-line locator written next to the bridge, naming the canonical measure.py

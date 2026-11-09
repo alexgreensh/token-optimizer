@@ -3,7 +3,8 @@
 For every ``resume_lean`` savings event this walks the resumed session's
 transcript and credits the avoided context once per real API turn up to the
 first real compaction, capped when the session's own context growth passes the
-avoided size. The result is a SHADOW field only: it is never added to
+avoided size or the counterfactual reaches its auto-compaction threshold. The
+result is a SHADOW field only: it is never added to
 ``total_tokens``, ``total_cost_usd``, counted ledger summaries, action savings,
 or any dashboard headline total.
 
@@ -18,6 +19,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
+from _measure import lean_resume_threshold
 
 _EVENT_TYPE = "resume_lean"
 _TURN_CAP = 20000
@@ -109,8 +111,8 @@ def _prompt_tokens(m, usage):
         return 0
 
 
-def _walk(path, ev_floor, avoided, m):
-    """Post-event turns until first compaction or the growth cap.
+def _walk(path, ev_floor, avoided, m, threshold):
+    """Post-event turns until real or counterfactual compaction or the growth cap.
 
     Returns (turns, stopped_by) where turns is a list of
     (utc-naive datetime, raw model, context tokens). Never raises; returns
@@ -159,8 +161,15 @@ def _walk(path, ev_floor, avoided, m):
                 if rid is not None and rid in seen:
                     index = seen[rid]
                     if ctx > turns[index][2]:
+                        if ctx + avoided >= threshold:
+                            del turns[index:]
+                            stopped_by = "counterfactual_compaction"
+                            break
                         turns[index] = (dt, model or turns[index][1], ctx)
                     continue
+                if ctx + avoided >= threshold:
+                    stopped_by = "counterfactual_compaction"
+                    break
                 if first_prompt is None:
                     first_prompt = ctx
                 elif ctx - first_prompt > avoided:
@@ -212,6 +221,7 @@ def _score_event(row, m, tier_data):
         "carry_cost_usd": 0.0,
         "stopped_by": "no_transcript",
         "priced": False,
+        "threshold_source": None,
     }
     if not sid or avoided <= 0:
         out["stopped_by"] = "no_avoided_context"
@@ -224,7 +234,12 @@ def _score_event(row, m, tier_data):
         out["stopped_by"] = "bad_timestamp"
         return out
     ev_floor = ev_dt.replace(microsecond=0)
-    turns, stopped_by = _walk(path, ev_floor, avoided, m)
+    threshold, source = lean_resume_threshold.threshold(path, lambda usage: _prompt_tokens(m, usage))
+    if threshold is None:
+        out["stopped_by"] = "unreadable"
+        return out
+    out["threshold_source"] = source
+    turns, stopped_by = _walk(path, ev_floor, avoided, m, threshold)
     if turns is None:
         out["stopped_by"] = "unreadable"
         return out
@@ -256,9 +271,11 @@ def summary(days=30, since=None, db_path=None, include_events=True):
         "no_post_event_turns": 0,
         "carry_tokens": 0,
         "carry_cost_usd": 0.0,
+        "threshold_source_counts": {"observed_auto": 0, "fallback": 0},
         "method": "avoided context x real parent API turns to first "
                   "compact_boundary, capped when context growth exceeds the "
-                  "avoided size; priced per turn at that turn's exact "
+                  "avoided size or counterfactual context reaches the session's "
+                  "auto-compaction threshold; priced per turn at that turn's exact "
                   "cache-read card",
         "weaknesses": [
             "resume_lean rows name the target session, not the session that "
@@ -271,7 +288,9 @@ def summary(days=30, since=None, db_path=None, include_events=True):
             "be missed",
             "the growth cap uses first-post-event context as the baseline, "
             "so sessions that compact without a compact_boundary line are "
-            "truncated only by the cap or EOF",
+            "truncated only by the caps or EOF",
+            "the auto-compaction threshold is inferred from this session's "
+            "observed auto compactions or a context-window fallback",
         ],
     }
     try:
@@ -293,6 +312,9 @@ def summary(days=30, since=None, db_path=None, include_events=True):
         except Exception:
             continue
         details.append(item)
+        source = item.get("threshold_source")
+        if source in empty["threshold_source_counts"]:
+            empty["threshold_source_counts"][source] += 1
         carry_tokens += int(item.get("carry_tokens") or 0)
         carry_cost += float(item.get("carry_cost_usd") or 0.0)
         stopped = item.get("stopped_by")

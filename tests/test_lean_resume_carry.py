@@ -193,3 +193,51 @@ def test_shadow_field_never_writes_or_enters_savings_totals(m, tmp_path, monkeyp
     assert out["included_in_totals"] is False
     assert "total_cost_usd" not in out and "total_tokens" not in out
     assert dbp.read_bytes() == before
+
+
+def test_counterfactual_compaction_uses_lowest_observed_auto_threshold(m, tmp_path, monkeypatch):
+    mod, carry = m
+    _db(mod, tmp_path, monkeypatch, [_event_row(tokens=1000)])
+    auto = lambda ts, n: json.dumps({"type": "system", "subtype": "compact_boundary",
+                                     "timestamp": ts, "compactMetadata": {"trigger": "auto", "preTokens": n}})
+    _transcript(mod, tmp_path, monkeypatch, [
+        auto("2026-01-01T09:00:00Z", 7000), auto("2026-01-01T09:30:00Z", 6000),
+        _turn("2026-01-01T10:00:05Z", "r1", 4900),
+        _turn("2026-01-01T10:00:10Z", "r2", 5000),
+        _turn("2026-01-01T10:00:15Z", "r3", 5100),
+    ])
+    result = carry.summary(days=30, since="2020-01-01")
+    assert result["carry_tokens"] == 1000
+    assert result["event_details"][0]["stopped_by"] == "counterfactual_compaction"
+    assert result["event_details"][0]["threshold_source"] == "observed_auto"
+    assert result["threshold_source_counts"]["observed_auto"] == 1
+
+
+@pytest.mark.parametrize("context,threshold", [(100000, 167000), (201000, 967000)])
+def test_counterfactual_fallback_depends_on_session_context(m, tmp_path, monkeypatch, context, threshold):
+    mod, carry = m
+    _db(mod, tmp_path, monkeypatch, [_event_row(tokens=1000)])
+    _transcript(mod, tmp_path, monkeypatch, [
+        _turn("2026-01-01T09:00:00Z", "before", context),
+        _turn("2026-01-01T10:00:05Z", "r1", threshold - 1001),
+        _turn("2026-01-01T10:00:10Z", "r2", threshold - 1000),
+    ])
+    result = carry.summary(days=30, since="2020-01-01")
+    item = result["event_details"][0]
+    assert item["turns"] == 1
+    assert item["stopped_by"] == "counterfactual_compaction"
+    assert item["threshold_source"] == "fallback"
+    assert result["threshold_source_counts"]["fallback"] == 1
+
+
+def test_larger_streamed_chunk_retracts_turn_at_compaction_boundary(m, tmp_path, monkeypatch):
+    mod, carry = m
+    _db(mod, tmp_path, monkeypatch, [_event_row(tokens=1000)])
+    _transcript(mod, tmp_path, monkeypatch, [
+        _turn("2026-01-01T10:00:05Z", "r1", 165000),
+        _turn("2026-01-01T10:00:10Z", "r2", 165999),
+        _turn("2026-01-01T10:00:10Z", "r2", 166000),
+    ])
+    item = carry.summary(days=30, since="2020-01-01")["event_details"][0]
+    assert item["turns"] == 1
+    assert item["stopped_by"] == "counterfactual_compaction"

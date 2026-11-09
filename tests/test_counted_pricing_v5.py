@@ -72,7 +72,7 @@ def test_miss_turn_5m_write_uses_5m_rate(m):
 
 
 def test_pricing_version_is_5_so_old_rows_rescore(m):
-    assert m._COUNTED_PRICING_VERSION == "5"
+    assert int(m._COUNTED_PRICING_VERSION) >= 5  # v6 (U12) moved sub-agent removals onto their own turns
 
 
 def test_rollup_sums_miss_fields_from_current_rows(m):

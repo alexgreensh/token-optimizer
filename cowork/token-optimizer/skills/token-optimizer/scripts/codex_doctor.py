@@ -64,7 +64,7 @@ _MEASURE_PACKAGE_FILES = (
     "_measure/pricing.py", "_measure/audit.py", "_measure/dashboard.py",
     "_measure/lifecycle.py", "_measure/sessions.py", "_measure/trends.py",
     "_measure/cache_policy.py", "_measure/daemon.py", "_measure/quality_archive.py",
-    "_measure/continuity.py", "_measure/savings.py", "_measure/cli.py", "_measure/dashboard_history.py", "_measure/weekly_activity.py", "_measure/headline.py", "_measure/counted_pricing_v5.py", "_measure/transcript_backfill.py",
+    "_measure/continuity.py", "_measure/savings.py", "_measure/cli.py", "_measure/dashboard_history.py", "_measure/weekly_activity.py", "_measure/headline.py", "_measure/counted_pricing_v5.py", "_measure/transcript_backfill.py", "_measure/counted_subagents.py", "_measure/lean_resume_threshold.py",
 )
 
 

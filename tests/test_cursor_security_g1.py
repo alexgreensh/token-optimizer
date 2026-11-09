@@ -129,6 +129,7 @@ def _stage_rewrite(home, monkeypatch, conv, tuid, command):
     return out
 
 
+@pytest.mark.skipif(os.name == "nt", reason="shell rewriting is disabled on native Windows")
 class TestPendingRewriteSecretFree:
     def test_staged_rewrite_stores_hash_only(self, home, monkeypatch):
         """The rewritten command text never touches disk: a whitelisted
@@ -156,6 +157,7 @@ class TestPendingRewriteSecretFree:
         assert any(n.startswith("convpaireb--") for n in names)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="shell rewriting is disabled on native Windows")
 class TestRewriteClassificationUnknown:
     def test_missing_executed_command_is_unknown_not_ignored(self, home, monkeypatch):
         """A staged rewrite plus absent/invalid postToolUse command data says
@@ -184,8 +186,10 @@ class TestLedgerHardening:
     def test_ledger_created_0600_and_dir_0700(self, home):
         bridge._record_observed("stop", conversation_id="conv-perms")
         ledger = home / "token-optimizer" / "observed-events.jsonl"
-        assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
-        assert stat.S_IMODE((home / "token-optimizer").stat().st_mode) == 0o700
+        assert ledger.is_file()
+        if os.name == "posix":
+            assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
+            assert stat.S_IMODE((home / "token-optimizer").stat().st_mode) == 0o700
 
     @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="platform lacks O_NOFOLLOW")
     def test_symlinked_ledger_not_followed(self, home, tmp_path):

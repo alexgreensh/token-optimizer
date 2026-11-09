@@ -215,6 +215,7 @@ def test_pre_tool_use_no_rewrite_on_native_windows(cursor_dir, monkeypatch, caps
     assert capsys.readouterr().out.strip() == ""  # no rewrite emitted
 
 
+@pytest.mark.skipif(os.name == "nt", reason="shell rewriting is disabled on native Windows")
 def test_pre_tool_use_rewrites_and_echoes_fields(cursor_dir, monkeypatch, capsys):
     _fake_bash(monkeypatch, whitelisted=True, dangerous=False)
     monkeypatch.setattr(bridge, "_COMPRESS_AVAILABLE", True)
@@ -278,6 +279,7 @@ def _run_rewrite_pair(cursor_dir, monkeypatch, capsys, executed_command):
     return rewritten
 
 
+@pytest.mark.skipif(os.name == "nt", reason="shell rewriting is disabled on native Windows")
 def test_post_tool_use_records_rewrite_honoured(cursor_dir, monkeypatch, capsys):
     rewritten = _run_rewrite_pair(cursor_dir, monkeypatch, capsys, None)
     # honoured: the executed command is byte-identical to the staged rewrite.
@@ -285,6 +287,7 @@ def test_post_tool_use_records_rewrite_honoured(cursor_dir, monkeypatch, capsys)
     assert _read_last_observed(cursor_dir)["rewrite"] == "honoured"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="shell rewriting is disabled on native Windows")
 def test_post_tool_use_records_rewrite_ignored(cursor_dir, monkeypatch, capsys):
     _run_rewrite_pair(cursor_dir, monkeypatch, capsys, "git status")
     # ignored: a rewrite was staged but the bare command actually ran.
@@ -539,20 +542,16 @@ def test_observed_append_failure_warns_once(monkeypatch, tmp_path, caplog):
     (first failure) instead of a traceback per hook event."""
     import logging
 
-    # A genuinely unwritable data dir (mode 0o500): os.open O_CREAT fails
-    # with EACCES. The earlier ReadOnlyDir mock only intercepted .open();
-    # the ledger now appends via os.open (O_NOFOLLOW, 0o600) instead.
     ro = tmp_path / "ro-dir"
     ro.mkdir()
     monkeypatch.setattr(bridge, "_observed_warned", False)
     monkeypatch.setattr(bridge, "_to_dir", lambda: ro)
-    ro.chmod(0o500)
-    try:
-        with caplog.at_level(logging.WARNING, logger="cursor_hook_bridge"):
-            bridge._record_observed("stop")
-            bridge._record_observed("stop")
-    finally:
-        ro.chmod(0o700)
+    def denied(*args, **kwargs):
+        raise PermissionError("ledger unavailable")
+    monkeypatch.setattr(bridge.os, "open", denied)
+    with caplog.at_level(logging.WARNING, logger="cursor_hook_bridge"):
+        bridge._record_observed("stop")
+        bridge._record_observed("stop")
     warns = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warns) == 1
 

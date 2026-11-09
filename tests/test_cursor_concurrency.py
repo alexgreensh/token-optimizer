@@ -44,6 +44,7 @@ def _run_hook(home: Path, sid: str, fp: str = "/tmp/some-file.py") -> subprocess
     env = dict(os.environ)
     # runtime_env only honors TOKEN_OPTIMIZER_CURSOR_HOME under $HOME.
     env["HOME"] = str(home.parent)
+    env["USERPROFILE"] = str(home.parent)
     env["TOKEN_OPTIMIZER_CURSOR_HOME"] = str(home)
     env["PYTHONPATH"] = str(SCRIPTS)
     return subprocess.run(

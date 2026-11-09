@@ -354,7 +354,14 @@ def main() -> int:
                             _payload_conversation_id(payload))
         lines = build_lines(payload, tally)
         if lines:
-            sys.stdout.write("\n".join(lines) + "\n")
+            stream = sys.stdout
+            encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+            if encoding and encoding not in ("utf8", "cp65001"):
+                try:
+                    stream.reconfigure(encoding="utf-8", errors="replace")
+                except (AttributeError, OSError, ValueError):
+                    lines = [line.encode("ascii", "replace").decode("ascii") for line in lines]
+            stream.write("\n".join(lines) + "\n")
             sys.stdout.flush()
     except Exception:  # never break the footer; fail silent per docstring
         pass

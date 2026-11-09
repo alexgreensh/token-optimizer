@@ -56,6 +56,7 @@ def cursor_home(tmp_path, monkeypatch):
     home = tmp_path / ".cursor"
     (home / "token-optimizer" / "sessions").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("TOKEN_OPTIMIZER_CURSOR_HOME", str(home))
     return home
 
@@ -376,3 +377,13 @@ def test_unexpected_exception_still_exits_zero(cursor_home, monkeypatch):
     out, code = _run_main(monkeypatch, json.dumps(payload).encode())
     assert code == 0
     assert out == ""
+
+
+def test_statusline_writes_utf8_to_non_utf8_pipe(monkeypatch, tmp_path):
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252", write_through=True)
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": io.BytesIO(b'{}')})())
+    monkeypatch.setattr(cursor_statusline, "_cursor_home", lambda: tmp_path)
+    assert cursor_statusline.main() == 0
+    assert "TO · no session data" in raw.getvalue().decode("utf-8")

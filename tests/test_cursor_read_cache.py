@@ -291,10 +291,11 @@ class TestChannelState:
         assert rc.channel_state(events)["state"] == "armed-unverified"
 
 
-def test_installer_wires_read_matcher():
+def test_installer_wires_read_matcher(monkeypatch):
     sys.path.insert(0, str(SCRIPTS))
     import cursor_install
 
+    monkeypatch.setattr(cursor_install, "_resolve_safe_python", lambda: sys.executable)
     entries = cursor_install._hook_entries(Path("/tmp/bridge/cursor_hook_bridge.py"))
     pre = entries["preToolUse"]
     assert len(pre) == 1
@@ -307,7 +308,9 @@ def test_store_permissions(env):
     store = cur / "token-optimizer" / "read-fingerprints" / "conv-1.json"
     import stat as stat_module
 
-    assert stat_module.S_IMODE(store.stat().st_mode) == 0o600
+    assert store.is_file()
+    if sys.platform != "win32":
+        assert stat_module.S_IMODE(store.stat().st_mode) == 0o600
 
 
 def test_store_evicts_oldest_to_byte_budget(env, monkeypatch):

@@ -36,6 +36,7 @@ def _purge():
 @pytest.fixture()
 def adapter(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))  # the override is honored only under $HOME
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     (tmp_path / "cursor-home").mkdir()  # the safe-dir guard rejects missing dirs
     monkeypatch.setenv("TOKEN_OPTIMIZER_CURSOR_HOME", str(tmp_path / "cursor-home"))
     monkeypatch.delenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", raising=False)
@@ -129,6 +130,7 @@ def test_env_restored_and_state_under_cursor_home(adapter, monkeypatch):
 def test_bridge_emits_thrash_nudge_and_ledgers(tmp_path, monkeypatch, capsys):
     """Integration: postToolUse Shell through the real bridge handler."""
     monkeypatch.setenv("HOME", str(tmp_path))  # the override is honored only under $HOME
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     (tmp_path / "cursor-home").mkdir()  # the safe-dir guard rejects missing dirs
     monkeypatch.setenv("TOKEN_OPTIMIZER_CURSOR_HOME", str(tmp_path / "cursor-home"))
     monkeypatch.delenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", raising=False)

@@ -192,8 +192,10 @@ class TestTranslateTranscript:
         out = cursor_transcript.translate_transcript(path, home, "conv-1")
         assert out is not None
         try:
-            mode = stat.S_IMODE(os.stat(out).st_mode)
-            assert mode == 0o600, oct(mode)
+            assert out.resolve().is_relative_to(home.resolve())
+            if os.name == "posix":
+                mode = stat.S_IMODE(os.stat(out).st_mode)
+                assert mode == 0o600, oct(mode)
         finally:
             out.unlink(missing_ok=True)
 

@@ -50,32 +50,13 @@ function savingsStoryFmt() {
   };
 }
 
-function savingsStoryHtml(data) {
-  if (!savingsStoryOn(data)) return '';
-  var f = savingsStoryFmt(), num = f.num, has = f.has, usd = f.usd, tok = f.tok, pct = f.pct, count = f.count;
-  var s = data.savings || {};
-  var se = s.session_effect || {};
-  var ps = se.per_session || {};
-  var cov = se.coverage || {};
-  var fleet = se.fleet || {};
-  var as = s.action_savings || {};
-  var th = s.token_headline || {};
-  var cp = s.counted_period || {};
-  var sd = s.structural_detail || {};
-  var orr = s.output_reread || {};
-  var mr = s.model_routing || {};
-  var days = Number(s.period_days) || 30;
-  // Pools whose ledger is still being built show "Measuring", never a number:
-  // per-item setup cleanup (trim ledger), output re-reads, and the routing line
-  // with its measured alternative.
+// The hero rows: measured and estimated, each {key,label,usd,tok,why}. Shared
+// by the hero card and the ledger fold so the two can never disagree.
+function savingsStoryBands(data) {
+  var f = savingsStoryFmt(), num = f.num, has = f.has;
+  var s = (data && data.savings) || {};
+  var as = s.action_savings || {}, th = s.token_headline || {}, sd = s.structural_detail || {}, orr = s.output_reread || {};
   var measuringNames = [];
-
-  var out = '';
-
-  // ---- 1. Hero: one total, one bar, one sentence ----
-  // Setup cleanup recorded by the trim ledger sits inside logged_usd (the
-  // structural pool always has), so it is its own row, taken out of
-  // "Context removed" once.
   var trimLedger = sd.method === 'trim_ledger';
   var trims = trimLedger ? (sd.trims || []).filter(function(t) { return t && !t.closed_at && num(t.tokens_per_call) > 0; }) : [];
   function trimName(tier) {
@@ -124,6 +105,41 @@ function savingsStoryHtml(data) {
   function sum(rows, k) { return rows.reduce(function(a, r) { return a + num(r[k]); }, 0); }
   var mUsd = sum(measured, 'usd'), eUsd = sum(estimated, 'usd');
   var totalUsd = mUsd + eUsd, totalTok = sum(measured, 'tok') + sum(estimated, 'tok');
+  return { measured: measured, estimated: estimated, measuringNames: measuringNames, trimLedger: trimLedger, trims: trims,
+           mUsd: mUsd, eUsd: eUsd, totalUsd: totalUsd, totalTok: totalTok };
+}
+
+function savingsStoryHtml(data) {
+  if (!savingsStoryOn(data)) return '';
+  var f = savingsStoryFmt(), num = f.num, has = f.has, usd = f.usd, tok = f.tok, pct = f.pct, count = f.count;
+  var s = data.savings || {};
+  var se = s.session_effect || {};
+  var ps = se.per_session || {};
+  var cov = se.coverage || {};
+  var fleet = se.fleet || {};
+  var as = s.action_savings || {};
+  var th = s.token_headline || {};
+  var cp = s.counted_period || {};
+  var sd = s.structural_detail || {};
+  var orr = s.output_reread || {};
+  var mr = s.model_routing || {};
+  var days = Number(s.period_days) || 30;
+  // Pools whose ledger is still being built show "Measuring", never a number:
+  // per-item setup cleanup (trim ledger), output re-reads, and the routing line
+  // with its measured alternative.
+  var measuringNames = [];
+
+  var out = '';
+
+  // ---- 1. Hero: one total, one bar, one sentence ----
+  // Setup cleanup recorded by the trim ledger sits inside logged_usd (the
+  // structural pool always has), so it is its own row, taken out of
+  // "Context removed" once.
+  var B = savingsStoryBands(data);
+  var trimLedger = B.trimLedger, trims = B.trims, measured = B.measured, estimated = B.estimated;
+  var mUsd = B.mUsd, eUsd = B.eUsd, totalUsd = B.totalUsd, totalTok = B.totalTok;
+  measuringNames = B.measuringNames;
+  function sum(rows, k) { return rows.reduce(function(a, r) { return a + num(r[k]); }, 0); }
   var med = has(ps.net_median) ? ps.net_median : ps.median;
   var p75 = has(ps.net_p75) ? ps.net_p75 : ps.p75;
   if (measured.length || estimated.length) {
@@ -321,5 +337,44 @@ function healthNotesHtml(data) {
         '.</p>' +
       '</div>';
   }
+  return out;
+}
+
+// "Full ledger and history" fold body in story mode: the hero's own rows to
+// the cent, then the since-install sums from the same components. Model
+// routing is never added to either total.
+function savingsLedgerHtml(data) {
+  if (!savingsStoryOn(data)) return '';
+  var f = savingsStoryFmt(), num = f.num;
+  var s = data.savings || {};
+  var B = savingsStoryBands(data);
+  var days = Number(s.period_days) || 30;
+  function cents(v) {
+    v = num(v);
+    return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function row(label, v, tokens) {
+    return '<li><span>' + esc(label) + (num(tokens) > 0 ? '<span class="st-sub">' + f.tok(tokens) + ' tokens</span>' : '') +
+      '</span><span class="st-v">' + cents(v) + '</span></li>';
+  }
+  var out = '<h3 class="ts-section-label">Last ' + days + ' days, to the cent</h3><ul class="st-rows">' +
+    B.measured.map(function(r) { return row(r.label + ' (measured)', r.usd, r.tok); }).join('') +
+    B.estimated.map(function(r) { return row(r.label + ' (estimated)', r.usd, r.tok); }).join('') +
+    '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(B.totalUsd) + '</strong></span></li></ul>';
+  var si = s.since_install || {};
+  var ai = si.all_in || {};
+  var c = ai.components_usd || {};
+  if (num(si.days) > 0 && (num(c.logged) || num(c.reread) || num(ai.estimated_usd))) {
+    var parts = [['Context removed', c.logged], ['Cheaper cache writes', c.class_premium], ['Re-reads avoided', c.reread], ['Estimates', ai.estimated_usd]]
+      .filter(function(p) { return num(p[1]) !== 0; });
+    var total = parts.reduce(function(a, p) { return a + num(p[1]); }, 0);
+    var since = si.install_date ? new Date(si.install_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    out += '<h3 class="ts-section-label st-gap">Since you installed' + (since ? ' on ' + esc(since) : '') + ' (' + f.count(si.days) + ' days)</h3><ul class="st-rows">' +
+      parts.map(function(p) { return row(p[0], p[1], 0); }).join('') +
+      '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(total) + '</strong></span></li></ul>';
+  }
+  out += '<p class="st-lead">Model routing is not part of either total; it is still being measured.</p>';
+  var cp = s.counted_period || {};
+  if (cp.pricing_note) out += '<p>' + esc(cp.pricing_note) + '</p>';
   return out;
 }

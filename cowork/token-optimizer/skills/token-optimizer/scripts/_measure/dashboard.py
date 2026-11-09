@@ -2659,6 +2659,29 @@ def _dispatch_dashboard(args):
                 print(f"[Error] Invalid --port value: {args[i + 1]}")
                 _measure_facade.sys.exit(1)
             serve = True
+
+    def _note_hook_bounded():
+        """One stderr line when this run is bounded as a hook.
+
+        A piped-stdin invocation (an agent's shell tool, a runner script) is
+        indistinguishable from a real hook, so the 20s budget can kill a heavy
+        rebuild and the run exits 1 with no explanation -- the "dashboard
+        quietly skips itself" report. Real hook launchers pass --quiet, so
+        gating on it keeps hook logs clean while every non-quiet bounded run
+        says why and names the --user escape hatch. stderr only: stdout stays
+        clean for the `Dashboard:` line consumers parse.
+        """
+        if "--quiet" in args or "-q" in args:
+            return
+        print(
+            "[Token Optimizer] dashboard: stdin is not a terminal, so this run "
+            "is treated as a hook and the rebuild is capped at a "
+            f"{_measure_facade._dashboard_hook_budget_seconds():g}s budget; it "
+            "may be killed before it finishes or opens. Pass --user to force "
+            "an interactive run.",
+            file=_measure_facade.sys.stderr,
+        )
+
     if not cp:
         days = 30
         quiet = "--quiet" in args or "-q" in args
@@ -2675,6 +2698,8 @@ def _dispatch_dashboard(args):
         deadline = (
             None if (serve or not _measure_facade._running_under_hook()) else _measure_facade._install_hook_budget(_measure_facade._dashboard_hook_budget_seconds())
         )
+        if deadline is not None:
+            _note_hook_bounded()
         timed_out = False
         try:
             lock = (_measure_facade._dashboard_selfheal_build_lock()
@@ -2706,6 +2731,8 @@ def _dispatch_dashboard(args):
     deadline = (
         None if (serve or not _measure_facade._running_under_hook()) else _measure_facade._install_hook_budget(_measure_facade._dashboard_hook_budget_seconds())
     )
+    if deadline is not None:
+        _note_hook_bounded()
     timed_out = False
     try:
         out = _measure_facade.generate_dashboard(cp)

@@ -113,7 +113,7 @@ Work through these in order and tick each off; a skipped phase stays in the list
 
 **2. Synthesis.** One agent on the strongest available model reads every audit file and writes `{COORD_PATH}/analysis/optimization-plan.md`. If it fails, present the raw audit files.
 
-**3. Present.** Generate the dashboard and show the findings as the presentation workflow describes, then wait: `"$PY" "$MEASURE_PY" dashboard --coord-path "$COORD_PATH"`
+**3. Present.** Generate the dashboard and show the findings as the presentation workflow describes, then wait: `"$PY" "$MEASURE_PY" dashboard --user --coord-path "$COORD_PATH"`
 
 **4. Implement.** Only what the user approved, one change at a time, following the playbook (actions 4A-4P: CLAUDE.md, MEMORY.md, skills, file exclusion, MCP, hooks, cache, rules, settings, descriptions, compact instructions, model routing, smart compaction, quality check, version-aware optimizations, smart routing). Templates are in `examples/`. Also offer, with the measured numbers:
 

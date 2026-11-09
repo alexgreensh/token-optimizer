@@ -275,7 +275,7 @@ RTK 和 Boost 到达第一个面。Headroom 到达第一个和第三个。Token 
 
 ![Token Optimizer 仪表盘](skills/token-optimizer/assets/dashboard-demo.gif)
 
-一个 HTML 页面,通过 SessionEnd hook 在每个会话后自动重新生成,无需手动触发。可书签的 URL `http://localhost:24842/token-optimizer` 是 opt-in:只有在运行 `python3 skills/token-optimizer/scripts/measure.py setup-daemon` 启动本地服务器后才工作。在那之前,打开 `measure.py dashboard` 在 `  Dashboard: ` 行打印的文件路径。
+一个 HTML 页面,通过 SessionEnd hook 在每个会话后自动重新生成,无需手动触发。可书签的 URL `http://localhost:24842/token-optimizer` 是 opt-in:只有在运行 `python3 skills/token-optimizer/scripts/measure.py setup-daemon` 启动本地服务器后才工作。在那之前,打开 `measure.py dashboard --user` 在 `  Dashboard: ` 行打印的文件路径。
 
 每轮 token 分解、跨四个定价层级的成本、带 TTL 混合和命中率的缓存分析、叠加在每个会话上的质量评分、子代理成本分解、已计量与估算分开的节省追踪器。安装后零设置。[完整仪表盘文档 →](https://alexgreensh.github.io/token-optimizer/features/dashboard/)
 

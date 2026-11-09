@@ -127,14 +127,14 @@ rm -rf ~/.codex/token-optimizer
 TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py report
 TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py coach
 TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py quality current
-TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard --user
 TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-doctor --project "$PWD"
 ```
 
 ## Dashboard
 
 ```bash
-TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard --user
 ```
 
 ### Bookmarkable URL (recommended)
@@ -155,7 +155,7 @@ For LAN access on a headless box, set `TOKEN_OPTIMIZER_DASHBOARD_HOST=0.0.0.0` b
 
 ### File fallback
 
-The dashboard file location is install-dependent. Run `TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard` and read the path on the `  Dashboard: ` line; that is the file to open. A common Codex location is `~/.codex/_backups/token-optimizer/dashboard.html` (legacy non-plugin layout), but do not assume it, read it from the command output.
+The dashboard file location is install-dependent. Run `TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard --user` and read the path on the `  Dashboard: ` line; that is the file to open. A common Codex location is `~/.codex/_backups/token-optimizer/dashboard.html` (legacy non-plugin layout), but do not assume it, read it from the command output.
 
 Auto-refreshes via the balanced Stop hook after each session. Works without the daemon, just harder to reach.
 
@@ -231,7 +231,7 @@ After installing or upgrading Codex support:
 
 ```bash
 TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py report
-TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard --quiet
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard --user --quiet
 TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-doctor --project "$PWD"
 ```
 

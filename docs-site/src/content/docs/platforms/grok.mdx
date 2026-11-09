@@ -32,7 +32,7 @@ Follow [Grok Build install](/install/grok/). Every Python command uses the Grok 
 ```bash
 TOKEN_OPTIMIZER_RUNTIME=grok python3 skills/token-optimizer/scripts/measure.py grok-doctor --probe
 TOKEN_OPTIMIZER_RUNTIME=grok python3 skills/token-optimizer/scripts/measure.py grok-summary
-TOKEN_OPTIMIZER_RUNTIME=grok python3 skills/token-optimizer/scripts/measure.py dashboard --serve
+TOKEN_OPTIMIZER_RUNTIME=grok python3 skills/token-optimizer/scripts/measure.py dashboard --user --serve
 ```
 
 The shared dashboard serves at `http://localhost:24848/token-optimizer`. The home defaults to `~/.grok`; `TOKEN_OPTIMIZER_GROK_HOME` overrides only Token Optimizer's view, ahead of host `GROK_HOME`. See [Configuration](/reference/configuration/) and the [CLI reference](/reference/cli/#grok-build).

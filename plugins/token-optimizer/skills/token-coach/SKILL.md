@@ -141,7 +141,7 @@ Close with three to five actions ordered by impact. Each has a bold name, one li
 - Quality under 50: `/compact` or `/clear` before more work.
 - Steps to move from a model to a script, each with the mechanism (hook, script, scheduled job).
 Then check the plan against the data: every figure traces to a command output or the quick reference, and no action touches Token Optimizer's own skills. Fix what fails and check again before sending.
-Offer `/token-optimizer` when they want the changes made for them, and the dashboard (`"$PY" "$MEASURE_PY" dashboard`; on Codex quote the `Dashboard:` line it prints, never a remembered path) when they want to watch the trend.
+Offer `/token-optimizer` when they want the changes made for them, and the dashboard (`"$PY" "$MEASURE_PY" dashboard --user`; on Codex quote the `Dashboard:` line it prints, never a remembered path) when they want to watch the trend.
 
 ## Keep-Warm (Claude Code, asked once)
 After the plan, run `"$PY" "$MEASURE_PY" keepwarm-consent-status`. Only when `should_ask` is true, follow [references/keepwarm-consent.md](references/keepwarm-consent.md) exactly: it spends the user's money, so the wording and the order of commands are fixed.

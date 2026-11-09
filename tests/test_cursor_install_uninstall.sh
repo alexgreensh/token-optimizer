@@ -28,7 +28,7 @@ fail=0
 ok() { printf '  PASS  %s\n' "$1"; pass=$((pass+1)); }
 nok() { printf '  FAIL  %s: %s\n' "$1" "$2"; fail=$((fail+1)); }
 
-# --- 1. install writes the six-event merged hooks.json ----------------------
+# --- 1. install writes the eleven-event merged hooks.json ------------------
 tmp1="$(mktemp -d)"
 mkdir -p "${tmp1}/home/.cursor"
 cat > "${tmp1}/home/.cursor/hooks.json" <<'JSON'

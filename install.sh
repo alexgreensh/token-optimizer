@@ -966,19 +966,42 @@ install_cursor() {
         warn "Not a git checkout — cannot verify source provenance."
     fi
 
-    # Forward only recognized flags after --cursor.
-    local extra=()
-    for a in "$@"; do
-        case "$a" in
-            --dry-run) extra+=("$a") ;;
+    # Forward only recognized flags after --cursor. --home takes a value, so
+    # it is captured separately (an explicit --home wins over the WSL-aware
+    # resolution below) instead of being silently dropped.
+    local extra=() user_home=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run) extra+=("$1") ;;
+            --home)
+                if [ $# -ge 2 ]; then user_home="$2"; shift; fi
+                ;;
+            --home=*) user_home="${1#--home=}" ;;
         esac
+        shift
     done
 
+    # WSL-root wrong-home recovery + warning (same as Copilot/Grok). Cursor
+    # has no native home env var of its own, so TOKEN_OPTIMIZER_CURSOR_HOME is
+    # ours end to end; recovery exports it and the warning self-suppresses.
+    _recover_home_from_windows_env TOKEN_OPTIMIZER_CURSOR_HOME ".cursor"
+    _wsl_root_wrong_home_warning "Cursor" ".cursor" "TOKEN_OPTIMIZER_CURSOR_HOME" "--cursor"
+
+    # Resolve the Cursor home via measure.py so the banner shows the TRUE hook
+    # destination (runtime_env's safe-home guard + the WSL-root /mnt opt-in).
+    # The resolved path is forwarded to cursor-install via --home so the
+    # install and the banner agree — otherwise a WSL-root run would write to
+    # /root/.cursor while the banner showed the Windows profile's home.
     local resolved_cursor_home
-    resolved_cursor_home="${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}"
+    if [ -n "$user_home" ]; then
+        resolved_cursor_home="$user_home"
+    else
+        resolved_cursor_home="$(TOKEN_OPTIMIZER_RUNTIME=cursor python3 "$measure_py" cursor-home 2>/dev/null || true)"
+        [ -n "$resolved_cursor_home" ] || resolved_cursor_home="${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}"
+    fi
 
     info "Installing Token Optimizer into Cursor (${resolved_cursor_home}/hooks.json)..."
-    if ! python3 "$measure_py" cursor-install "${extra[@]+"${extra[@]}"}"; then
+    if ! TOKEN_OPTIMIZER_RUNTIME=cursor python3 "$measure_py" cursor-install --home "$resolved_cursor_home" "${extra[@]+"${extra[@]}"}"; then
         fail "Cursor install failed."
     fi
 
@@ -1003,22 +1026,41 @@ uninstall_cursor() {
     measure_py="${script_dir}/skills/token-optimizer/scripts/measure.py"
     [ -f "$measure_py" ] || fail "Run install.sh from inside a token-optimizer checkout."
 
-    local extra=()
-    for a in "$@"; do
-        case "$a" in
-            --dry-run) extra+=("$a") ;;
+    # Same flag handling as install_cursor: --dry-run passes through, an
+    # explicit --home wins, and the WSL-aware resolved home is forwarded so
+    # uninstall removes from the same place install wrote to.
+    local extra=() user_home=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run) extra+=("$1") ;;
+            --home)
+                if [ $# -ge 2 ]; then user_home="$2"; shift; fi
+                ;;
+            --home=*) user_home="${1#--home=}" ;;
         esac
+        shift
     done
 
-    info "Removing Token Optimizer from Cursor (~/.cursor/hooks.json)..."
-    if ! python3 "$measure_py" cursor-uninstall "${extra[@]+"${extra[@]}"}"; then
+    _recover_home_from_windows_env TOKEN_OPTIMIZER_CURSOR_HOME ".cursor"
+    _wsl_root_wrong_home_warning "Cursor" ".cursor" "TOKEN_OPTIMIZER_CURSOR_HOME" "--cursor"
+
+    local resolved_cursor_home
+    if [ -n "$user_home" ]; then
+        resolved_cursor_home="$user_home"
+    else
+        resolved_cursor_home="$(TOKEN_OPTIMIZER_RUNTIME=cursor python3 "$measure_py" cursor-home 2>/dev/null || true)"
+        [ -n "$resolved_cursor_home" ] || resolved_cursor_home="${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}"
+    fi
+
+    info "Removing Token Optimizer from Cursor (${resolved_cursor_home}/hooks.json)..."
+    if ! TOKEN_OPTIMIZER_RUNTIME=cursor python3 "$measure_py" cursor-uninstall --home "$resolved_cursor_home" "${extra[@]+"${extra[@]}"}"; then
         fail "Cursor uninstall failed."
     fi
 
     echo ""
     echo "Token Optimizer removed from Cursor. Session data (if any) remains at:"
-    echo "  ${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}/token-optimizer/"
-    echo "  Remove it manually with: rm -rf ${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}/token-optimizer"
+    echo "  ${resolved_cursor_home}/token-optimizer/"
+    echo "  Remove it manually with: rm -rf ${resolved_cursor_home}/token-optimizer"
     echo ""
     exit 0
 }

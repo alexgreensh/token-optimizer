@@ -456,6 +456,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "uninstall"))
     parser.add_argument("--dry-run", action="store_true")
+    # --home overrides the resolved Cursor home (install.sh forwards the
+    # WSL-aware resolved path so the install and its banner agree, mirroring
+    # grok_install --home / copilot_install --home).
+    parser.add_argument("--home", type=Path, default=None)
     return parser
 
 
@@ -463,7 +467,7 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.action == "install":
-            result = install(dry_run=args.dry_run)
+            result = install(dry_run=args.dry_run, home=args.home)
             verb = "Would install" if args.dry_run else "Installed"
             print(f"{verb} Token Optimizer for Cursor.")
             print(f"  Hooks merged into: {result['hook_file']}")
@@ -471,7 +475,7 @@ def main(argv=None) -> int:
                   + (f", {len(result['skipped'])} missing: {result['skipped']}" if result["skipped"] else ""))
             print(_hint("  Run `python3 measure.py cursor-doctor` to verify readiness."))
         else:
-            result = uninstall(dry_run=args.dry_run)
+            result = uninstall(dry_run=args.dry_run, home=args.home)
             verb = "Would remove" if args.dry_run else "Removed"
             for item in result["removed"] or ["(nothing installed)"]:
                 print(f"{verb}: {item}")

@@ -233,10 +233,17 @@ def _grade_and_band(score: int) -> tuple[str, str]:
 
 
 def _default_cursor_home() -> Path:
-    override = os.environ.get("TOKEN_OPTIMIZER_CURSOR_HOME", "").strip()
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".cursor"
+    # Delegate to runtime_env.cursor_home() so TOKEN_OPTIMIZER_CURSOR_HOME gets
+    # the same validation the hook bridge applies (absolute, existing,
+    # non-symlink, confined under $HOME / the WSL /mnt opt-in). A bare
+    # Path(override) here let scoring read a different home than the bridge
+    # writes to.
+    try:
+        from runtime_env import cursor_home
+
+        return cursor_home()
+    except Exception:
+        return Path.home() / ".cursor"
 
 
 def _safe_int(value: Any, default: int = 0) -> int:

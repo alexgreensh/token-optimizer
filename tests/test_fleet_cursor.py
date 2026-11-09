@@ -184,6 +184,22 @@ def test_cursor_home_env_override(tmp_path, monkeypatch):
     assert confidence == 1.0
 
 
+def test_cursor_home_env_override_outside_home_rejected(tmp_path, monkeypatch):
+    """F16: an override outside fleet's HOME root must be rejected like
+    runtime_env._safe_home_from_env does, not blindly trusted."""
+    outside = tmp_path / "outside"
+    _write_tally(outside, "conv-x")
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CURSOR_HOME", str(outside))
+    fleet_home = tmp_path / "fleet-home"
+    fleet_home.mkdir()
+    monkeypatch.setattr(fleet, "HOME", fleet_home)
+    # Default <fleet_home>/.cursor does not exist -> detect reports not found
+    # instead of silently scanning the foreign override.
+    found, confidence, _ = fleet.CursorAdapter().detect()
+    assert found is False
+    assert confidence == 0.0
+
+
 # ---------------------------------------------------------------------------
 # Scan
 # ---------------------------------------------------------------------------

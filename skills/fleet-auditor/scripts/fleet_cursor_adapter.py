@@ -36,15 +36,47 @@ _HOME_RESOLVER = None  # injected by fleet.py at import: lambda reading fleet's 
 def _cursor_home() -> Path:
     """Cursor's home directory for the fleet collector.
 
-    TOKEN_OPTIMIZER_CURSOR_HOME wins (the same override the rest of Token
-    Optimizer's Cursor support honors); otherwise ~/.cursor. Cursor has no
-    documented CURSOR_HOME of its own.
+    TOKEN_OPTIMIZER_CURSOR_HOME wins when it passes the same confinement
+    runtime_env.cursor_home() applies to the hook bridge (absolute, existing,
+    non-symlink dir, confined under the home root, plus the WSL /mnt opt-in);
+    a rejected override falls back to the default so the reader and the bridge
+    agree on one home. Cursor has no documented CURSOR_HOME of its own.
     """
+    root = _HOME_RESOLVER() if _HOME_RESOLVER is not None else Path.home()
     override = os.environ.get("TOKEN_OPTIMIZER_CURSOR_HOME", "").strip()
     if override:
-        return Path(override).expanduser()
-    root = _HOME_RESOLVER() if _HOME_RESOLVER is not None else Path.home()
+        candidate = Path(override).expanduser()
+        if _cursor_home_override_safe(candidate, root):
+            return candidate
     return root / ".cursor"
+
+
+def _cursor_home_override_safe(candidate: Path, root: Path) -> bool:
+    """Mirror runtime_env's safe-home checks, scoped to fleet's HOME root.
+
+    runtime_env._is_safe_home_dir confines overrides under runtime_env's own
+    home root; fleet's root is _HOME_RESOLVER() (== Path.home() in production,
+    a tmp dir in tests), so the containment check is re-implemented here.
+    runtime_env is imported lazily only for the WSL /mnt opt-in and may be
+    absent in standalone copies of this adapter.
+    """
+    try:
+        home = Path(root).resolve(strict=False)
+        resolved = candidate.resolve(strict=False)
+        if (candidate.is_absolute()
+                and resolved != home
+                and resolved.is_relative_to(home)
+                and candidate.is_dir()
+                and not candidate.is_symlink()):
+            return True
+    except (OSError, RuntimeError, ValueError):
+        pass
+    try:
+        import runtime_env as _re  # noqa: PLC0415
+
+        return _re._wsl_mnt_safe_home(candidate) is not None
+    except Exception:
+        return False
 
 
 def _cursor_trends_db_candidates(home: Path) -> list[Path]:

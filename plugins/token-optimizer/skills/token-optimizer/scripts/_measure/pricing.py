@@ -1803,6 +1803,10 @@ def _compute_model_routing_savings(days=None, since=None):
         "standardized_baseline_cost_usd": 0.0, "standardized_actual_cost_usd": 0.0,
         "actual_cost_usd": 0.0, "generation_price_delta_usd": 0.0,
         "baseline_opus_share": 0.0, "current_opus_share": 0.0,
+        "measured_baseline_opus_share": None,
+        "measured_baseline_realized_cost_usd": None,
+        "measured_baseline_source": None,
+        "measured_baseline_first_date": None,
         "baseline_source": None, "evidence": "unavailable",
     }
     try:
@@ -1817,6 +1821,7 @@ def _compute_model_routing_savings(days=None, since=None):
         # snapshot capture, else earliest measured history.
         baseline_shares = None
         baseline_source = None
+        early_mix = None
         explicit = _measure_facade._pretool_baseline_mix()
         if explicit:
             baseline_shares = explicit
@@ -1833,9 +1838,9 @@ def _compute_model_routing_savings(days=None, since=None):
             except (_measure_facade.json.JSONDecodeError, OSError, ValueError):
                 pass
         if not baseline_shares:
-            early = _measure_facade._earliest_model_mix()
-            if early:
-                baseline_shares = early["shares"]
+            early_mix = _measure_facade._earliest_model_mix()
+            if early_mix:
+                baseline_shares = early_mix["shares"]
                 baseline_source = "history"
         if not baseline_shares:
             return zero
@@ -2022,6 +2027,59 @@ def _compute_model_routing_savings(days=None, since=None):
             priced_usage[m].get(k, 0) * _rates(m)[k] for m in kept_models for k in _measure_facade._ROUTING_CLASSES
         ) / 1_000_000
         realized_cost = max(0.0, standardized_baseline - standardized_actual) if base_priced and kept_models else 0.0
+
+        def _realized_for_baseline(shares):
+            base = _renormalized(shares or {})
+            if not base or not kept_models:
+                return 0.0
+            baseline_cost = sum(
+                kept_totals[k] * sum(s * _fixed_family_rates(f)[k] for f, s in base.items())
+                for k in _measure_facade._ROUTING_CLASSES
+            ) / 1_000_000
+            return max(0.0, baseline_cost - standardized_actual)
+
+        measured_baseline = {}
+        if baseline_source == "pretool_baseline":
+            # The pre-activity migration retains the previously frozen baseline
+            # as baseline_state.json.pre-activity-v1[.N] beside the live file;
+            # its model_shares are the earliest measured mix, the honest
+            # measured alternative to a hand-entered pre-TO baseline.
+            archived = None
+            try:
+                for _ap in sorted(_measure_facade.SNAPSHOT_DIR.glob("baseline_state.json.pre-activity-v1*")):
+                    try:
+                        _ad = _measure_facade.json.loads(_ap.read_text(encoding="utf-8"))
+                    except (_measure_facade.json.JSONDecodeError, OSError, ValueError):
+                        continue
+                    _ashares = _ad.get("model_shares") if isinstance(_ad, dict) else None
+                    if isinstance(_ashares, dict) and _ashares.get("opus"):
+                        archived = {"shares": _ashares,
+                                    "first_date": (_ad.get("window") or {}).get("start")}
+                        break
+            except OSError:
+                archived = None
+            if archived:
+                measured_baseline = {
+                    "opus_share": round(float(archived["shares"].get("opus") or 0.0), 4),
+                    "source": "baseline_state_pre_activity",
+                    "first_date": archived.get("first_date"),
+                    "realized_cost_usd": round(_realized_for_baseline(archived["shares"]), 4),
+                }
+            else:
+                if early_mix is None:
+                    try:
+                        early_mix = _measure_facade._earliest_model_mix(
+                            lookback_days=_measure_facade._BASELINE_EARLY_WINDOW_DAYS)
+                    except Exception:
+                        early_mix = None
+                early_shares = (early_mix or {}).get("shares") or {}
+                if early_shares:
+                    measured_baseline = {
+                        "opus_share": round(float(early_shares.get("opus", 0.0) or 0.0), 4),
+                        "source": "history",
+                        "first_date": (early_mix or {}).get("first_date"),
+                        "realized_cost_usd": round(_realized_for_baseline(early_shares), 4),
+                    }
         compared_tokens = sum(kept_totals.values())
         window_tokens = unpriced_tokens + free_tokens + pooled + unsplit_tokens
 
@@ -2077,6 +2135,10 @@ def _compute_model_routing_savings(days=None, since=None):
             **_coverage_fields(),
             "baseline_opus_share": round(baseline_shares.get("opus", 0.0), 4),
             "current_opus_share": round(opus_share, 4),
+            "measured_baseline_opus_share": measured_baseline.get("opus_share"),
+            "measured_baseline_realized_cost_usd": measured_baseline.get("realized_cost_usd"),
+            "measured_baseline_source": measured_baseline.get("source"),
+            "measured_baseline_first_date": measured_baseline.get("first_date"),
             "baseline_source": baseline_source,
             "routable_fraction": _measure_facade._ROUTABLE_OPUS_FRACTION,
             # Realized routing is a standardized comparison on a fixed price

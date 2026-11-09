@@ -1,8 +1,9 @@
 """Since-install all-in total, the window-weighted estimate rate, and the
 one-time drain window.
 
-The since-install figure must use the monthly headline's own four parts
-(logged + routing + repeat reads + estimates), the update's one-time drain must
+The since-install figure must use the monthly headline's own parts
+(logged + repeat reads + estimates, with routing disclosed separately), the
+update's one-time drain must
 re-read all history so older months can be priced, and estimates must be priced
 at the window's model mix rather than the latest session's model.
 
@@ -106,9 +107,10 @@ def test_since_install_all_in_uses_the_headline_parts(m, monkeypatch):
     assert calls == {"merged": days, "counted": days}
     all_in = out["all_in"]
     parts = all_in["components_usd"]
-    assert parts["logged"] == 12.5 and parts["routing_estimated"] == 300.25 and parts["reread"] == pytest.approx(80.13, abs=0.011)
+    assert parts["logged"] == 12.5 and parts["routing_estimated"] == 0.0 and parts["reread"] == pytest.approx(80.13, abs=0.011)
+    assert all_in["routing_usd"] == pytest.approx(300.25)
     assert all_in["estimated_usd"] == pytest.approx(4.01)
-    assert all_in["total_usd"] == pytest.approx(round(12.5 + 300.25 + 80.125 + 4.01, 2), abs=0.011)
+    assert all_in["total_usd"] == pytest.approx(12.5 + 80.125 + 4.01, abs=0.011)
     total_cents = round(all_in["total_usd"] * 100)
     assert total_cents == round(sum(parts.values()) * 100) + round(all_in["estimated_usd"] * 100)
     assert all_in["routing_pending"] is False

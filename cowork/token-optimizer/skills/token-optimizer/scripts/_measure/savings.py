@@ -4865,7 +4865,7 @@ def _pinned_workload_anchor():
                         for k in ("sessions", "usd", "tokens", "flat_usd", "api_calls", "messages"))
                 and m["sessions"] >= _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS
                 and m["api_calls"] > 0 and m["flat_usd"] > 0):
-            return {"metrics": m, "label": str(data.get("label") or "your pre-install baseline")}
+            return {"metrics": m, "label": str(data.get("label") or "your earliest tracked month").replace("your pre-install baseline", "your earliest tracked month")}
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     return None
@@ -4938,7 +4938,7 @@ def _pretool_anchor_step(budget_seconds=None, tier=None):
             ok = m["sessions"] >= _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS and m["api_calls"] > 0 and m["flat_usd"] > 0
             state = {"status": "pinned" if ok else "unavailable", "window": [start, end],
                      "rates": _measure_facade._WEIGHT_POOL_FLAT_RATES, "activity_basis": 1, "metrics": m,
-                     "label": f"your pre-install baseline ({start} to {end})",
+                     "label": f"your earliest tracked month ({start} to {end})",
                      "pinned_at": _measure_facade.datetime.now().isoformat()}
         _measure_facade._write_baseline_state(path, state)
         return state["status"]
@@ -6520,7 +6520,7 @@ def _action_savings_components(summary, reread=None):
     reread_available = bool((reread or {}).get("available"))
     repeat_reads = float(reread.get("reread_usd", 0) or 0) if reread_available else 0.0
     estimated = sum(estimates.values())
-    net_total = logged + routing + repeat_reads + estimated
+    net_total = logged + repeat_reads + estimated
     return {
         "logged_usd": logged,
         "routing_usd": routing,
@@ -6539,8 +6539,8 @@ def _action_savings_components(summary, reread=None):
         "total_usd": max(0.0, net_total),
         "total_clamped": net_total < 0,
         "display": _measure_facade._action_savings_display(
-            logged, routing_measured, routing - routing_measured, repeat_reads,
-            estimates, total_clamped=net_total < 0),
+            logged, 0.0, 0.0, repeat_reads, estimates,
+            total_clamped=net_total < 0),
     }
 
 
@@ -6750,15 +6750,10 @@ def _savings_since_install():
         days = (_measure_facade.datetime.now() - _measure_facade.datetime.fromisoformat(d)).days + 1
         days = max(1, min(days, 3650))
         full = _measure_facade._get_merged_savings(days=days)
-        # Measured = logged runtime + realized structural + realized routing
-        # (routing only when its baseline is measured).
+        # Measured = logged runtime + realized structural. Model routing is an
+        # assumption and stays out of every savings total.
         measured = float(full.get("total_cost_usd", 0) or 0)
-        # Routing that leans on a reference-priced baseline is an estimate, not measured.
         full_routing = full.get("model_routing") or {}
-        full_routing_usd = float(full_routing.get("realized_cost_usd", 0) or 0)
-        routing_is_estimate = full_routing.get("evidence") == "estimated"
-        if not routing_is_estimate:
-            measured += full_routing_usd
         # Estimated = genuine TO-realized counterfactuals only — the same
         # categories the dashboard's estimated tier (estItems) sums, so the two
         # cards agree about what "estimated" contains. cache_drop and
@@ -6785,11 +6780,8 @@ def _savings_since_install():
         rs = full.get("retrieval_serve") or {}
         avoided = hf if int(hf.get("events") or 0) > 0 else rs
         estimated += float(avoided.get("cost_saved_usd", 0) or 0)
-        if routing_is_estimate:
-            estimated += full_routing_usd
         # The all-in since install uses the monthly headline's own recipe
-        # (logged + routing + repeat reads + estimates) over the install window,
-        # so the two figures always mean the same thing.
+        # (logged + repeat reads + estimates); routing stays out of both.
         all_in = None
         try:
             counted = _measure_facade._counted_cumulative_summary(days=days)
@@ -6799,6 +6791,9 @@ def _savings_since_install():
                 "total_usd": components["display"]["total_usd"],
                 "components_usd": components["display"]["components_usd"],
                 "estimated_usd": round(sum(components["display"]["estimates_usd"].values()), 2),
+                "routing_usd": round(float(components.get("routing_usd", 0) or 0), 2),
+                "routing_baseline_opus_share": full_routing.get("baseline_opus_share"), "routing_baseline_source": full_routing.get("baseline_source"),
+                "routing_measured_baseline_opus_share": full_routing.get("measured_baseline_opus_share"), "routing_measured_baseline_realized_cost_usd": full_routing.get("measured_baseline_realized_cost_usd"),
                 "routing_pending": full_routing.get("evidence") == "pending",
                 "routing_pending_sessions": int(full_routing.get("pending_sessions") or 0),
                 "routing_unsplit_tokens": int(full_routing.get("unsplit_tokens") or 0),
@@ -6978,8 +6973,7 @@ def savings_report(days=None, as_json=None):
     # printed parts add up to the printed ALL IN.
     _act = summary["action_savings"]
     _shown = _measure_facade._action_savings_display(
-        _mo(_act["logged_usd"]), _mo(_act["routing_measured_usd"]),
-        _mo(_act["routing_estimated_usd"]), _mo(_act["reread_usd"]),
+        _mo(_act["logged_usd"]), 0.0, 0.0, _mo(_act["reread_usd"]),
         {k: _mo(v) for k, v in _act["estimates_usd"].items()},
         total_clamped=_act["total_clamped"])
     _cents = _shown["components_cents"]
@@ -7211,20 +7205,26 @@ def savings_report(days=None, as_json=None):
     else:
         print(f"  Total so far ({tracked} day{'' if tracked == 1 else 's'} tracked): ${_money(_cents['logged'])} (measured)")
 
-    # Realized tier — model routing you already did (mix shift vs install baseline).
+    # Model routing is an assumption, shown on its own line and kept out of ALL IN.
     routing = summary.get("model_routing") or {}
     routing_realized = float(routing.get("realized_cost_usd", 0.0) or 0.0)
     routing_pending = int(routing.get("pending_sessions", 0) or 0) if routing.get("evidence") == "pending" else 0
     if routing_pending:
-        print(f"  + model routing (realized): re-measuring ({routing_pending:,} "
-              f"session{'' if routing_pending == 1 else 's'} left), not in ALL IN yet")
+        print(f"  i  model routing: re-measuring ({routing_pending:,} "
+              f"session{'' if routing_pending == 1 else 's'} left), not in ALL IN")
     if routing_realized > 0:
-        r_monthly = _money(_cents["routing_measured"] + _cents["routing_estimated"])
+        r_cents, _ = _measure_facade._allocate_cents([_mo(routing_realized)])
+        r_monthly = _money(r_cents[0])
         b_share = routing.get("baseline_opus_share", 0.0) * 100
         c_share = routing.get("current_opus_share", 0.0) * 100
         routing_label = "estimated" if routing.get("evidence") == "estimated" else "measured"
-        print(f"  + model routing (realized): ~${r_monthly}{per} "
-              f"(Opus {b_share:.0f}% -> {c_share:.0f}% vs baseline) [{routing_label}]")
+        basis = "assuming" if routing.get("baseline_source") == "pretool_baseline" else "with measured baseline"
+        print(f"  i  Model routing (not in ALL IN): ~${r_monthly}{per} "
+              f"{basis} {b_share:.0f}% Opus before Token Optimizer (now {c_share:.0f}%) [{routing_label}]")
+        mb_share = routing.get("measured_baseline_opus_share")
+        if mb_share is not None:
+            mb_cents, _ = _measure_facade._allocate_cents([_mo(float(routing.get("measured_baseline_realized_cost_usd") or 0.0))])
+            print(f"  i    measured alternative: your earliest tracked month had {float(mb_share) * 100:.1f}% Opus -> ~${_money(mb_cents[0])}{per}")
         ref_priced = [str(f)[:1].upper() + str(f)[1:] for f in routing.get("baseline_reference_priced") or []]
         if ref_priced:
             print(f"  i  routing compares your earlier and current mix on one price list, the newest card of each "
@@ -7348,7 +7348,7 @@ def savings_report(days=None, as_json=None):
 
     print(f"  = ALL IN: ~${all_in}{per} (measured + modeled + estimated)")
     if routing_pending:
-        print("  i  ALL IN leaves out model routing until its re-measurement finishes.")
+        print("  i  ALL IN leaves out model routing; the assumption stays separate.")
     if summary["action_savings"].get("reread_pricing_complete") is False:
         print("  i  ALL IN is a priced subtotal; unpriced repeat-read credits and debits are not included.")
     if summary["action_savings"]["total_clamped"]:
@@ -7363,7 +7363,7 @@ def savings_report(days=None, as_json=None):
     if float(since_all_in.get("total_usd") or 0) > 0:
         so_far = " so far" if since_all_in.get("routing_pending") or since_all_in.get("remeasuring") else ""
         print(f"  = SINCE INSTALL ({since['install_date']}, {since['days']} days): "
-              f"~${since_all_in['total_usd']:,.2f}{so_far} (same four parts, added up)")
+              f"~${since_all_in['total_usd']:,.2f}{so_far} (same parts, added up)")
 
     # Informational (not summed): one-time first-trim + progressive disclosure.
     one_time = summary.get("one_time_setup") or {}

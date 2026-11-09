@@ -279,8 +279,8 @@ def test_text_report_says_routing_is_remeasuring(measure, monkeypatch, capsys):
     monkeypatch.setattr(measure, "_get_merged_savings", lambda **kw: _pending_snapshot())
     measure.savings_report()
     out = capsys.readouterr().out
-    assert "model routing (realized): re-measuring (5 sessions left), not in ALL IN yet" in out
-    assert "ALL IN leaves out model routing until its re-measurement finishes." in out
+    assert "model routing: re-measuring (5 sessions left), not in ALL IN" in out
+    assert "ALL IN leaves out model routing; the assumption stays separate." in out
 
 
 def test_dashboard_says_routing_is_remeasuring(measure, monkeypatch):

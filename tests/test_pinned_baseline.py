@@ -67,9 +67,24 @@ def test_pre_install_anchor_is_built_from_this_users_own_window(tmp_path, monkey
     pinned = measure._pinned_workload_anchor()
     assert pinned["metrics"]["sessions"] == 3
     assert pinned["metrics"]["api_calls"] == 3
+    assert "your earliest tracked month" in pinned["label"]
     assert start in pinned["label"] and end in pinned["label"]
     # Pinned once: later calls do no work and keep the same anchor.
     assert measure._pretool_anchor_step(budget_seconds=30) == "pinned"
+
+
+def test_pinned_anchor_label_names_earliest_tracked_month(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    measure.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    # A label persisted before the rename is normalized on read; the tracked
+    # window starts after install, so "pre-install" was never accurate.
+    (measure.SNAPSHOT_DIR / "workload_anchor_pretool.json").write_text(json.dumps({
+        "status": "pinned", "activity_basis": 1,
+        "rates": measure._WEIGHT_POOL_FLAT_RATES,
+        "metrics": METRICS,
+        "label": "your pre-install baseline (2026-03-17 to 2026-04-16)"}))
+    pinned = measure._pinned_workload_anchor()
+    assert pinned["label"] == "your earliest tracked month (2026-03-17 to 2026-04-16)"
 
 
 def test_pre_install_anchor_without_surviving_transcripts_stops_trying(tmp_path, monkeypatch):

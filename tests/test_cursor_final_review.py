@@ -100,3 +100,11 @@ def test_installer_rejects_symlinked_home(tmp_path):
     alias = tmp_path / 'alias'; alias.symlink_to(target, target_is_directory=True)
     with pytest.raises(ValueError, match='symlink'):
         cursor_install.install(home=alias, dry_run=True)
+
+
+def test_oversized_ignore_file_and_blank_agent_fail_open(ready, tmp_path):
+    _, _, fields = ready
+    assert cache.evaluate(dict(fields, agent_id='  ')) is None
+    (tmp_path / '.contextignore').write_text('# comment\n' * 1001)
+    assert cache.evaluate(fields) is None
+    assert payload.decode_payload({'agent_id': '  '})['agent_id'] == ''

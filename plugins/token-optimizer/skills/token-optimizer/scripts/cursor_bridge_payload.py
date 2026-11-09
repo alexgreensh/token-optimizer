@@ -116,7 +116,7 @@ def decode_payload(payload):
         out["transcript_path"] = tp[:1024]
 
     agent = payload.get("agent_id") or payload.get("subagent_id")
-    if isinstance(agent, str) and 0 < len(agent) <= 128:
+    if isinstance(agent, str) and agent.strip() and len(agent) <= 128:
         out["agent_id"] = agent
     for key in ("generation_id", "tool_use_id", "parent_tool_call_id"):
         v = payload.get(key)

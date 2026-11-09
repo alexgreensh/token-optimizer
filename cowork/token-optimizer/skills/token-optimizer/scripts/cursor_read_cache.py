@@ -366,7 +366,10 @@ def _contextignored(path, fields):
             continue
         if ignore.stat().st_size > 256 * 1024:
             return True
-        for line in ignore.read_text(encoding="utf-8").splitlines()[:1000]:
+        lines = ignore.read_text(encoding="utf-8").splitlines()
+        if len(lines) > 1000:
+            return True
+        for line in lines:
             pattern = line.strip()
             if pattern and not pattern.startswith("#"):
                 relative = os.path.relpath(path, root) if root else path
@@ -410,7 +413,7 @@ def _evaluate(fields) -> dict | None:
 
     sid = fields.get("cache_conversation_id") or fields.get("conversation_id")
     agent = fields.get("agent_id")
-    if not sid or sid == "unknown" or not isinstance(agent, str) or not agent:
+    if not sid or sid == "unknown" or not isinstance(agent, str) or not agent.strip():
         return None
     path = Path(file_path)
     fp = _read_fingerprint(path)
@@ -470,7 +473,7 @@ def confirm_read(fields):
         sid = fields.get("cache_conversation_id") or fields.get("conversation_id")
         agent = fields.get("agent_id")
         path = fields.get("tool_args", {}).get("file_path")
-        if not sid or sid == "unknown" or not isinstance(agent, str) or not agent or not isinstance(path, str):
+        if not sid or sid == "unknown" or not isinstance(agent, str) or not agent.strip() or not isinstance(path, str):
             return
         path = _resolve_read_path(fields, path)
         if not path:

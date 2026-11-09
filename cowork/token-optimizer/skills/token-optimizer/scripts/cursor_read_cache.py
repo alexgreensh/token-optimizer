@@ -138,7 +138,7 @@ def channel_owner(fields, config: dict | None = None) -> str:
 
 
 def _store_path(sid: str) -> Path:
-    safe = "".join(c for c in sid if c.isalnum() or c in "-_")[:64] or "unknown"
+    safe = sid if sid and len(sid) <= 64 and all(c in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in sid) else "~" + hashlib.sha256(sid.encode("utf-8", "surrogatepass")).hexdigest()
     return _to_dir() / "read-fingerprints" / f"{safe}.json"
 
 
@@ -149,19 +149,35 @@ def _file_key(file_path: str) -> str:
 
 
 def clear_session_reads(sid):
-    """Advance the compaction epoch before any later read can be suppressed."""
+    """Advance the compaction epoch; if that fails, discard the store."""
     if not sid or sid == "unknown":
         return
     path = _store_path(sid).with_suffix(".epoch")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".epoch-", dir=str(path.parent))
+    tmp = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".epoch-", dir=str(path.parent))
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(uuid.uuid4().hex)
-        os.replace(tmp, path)
+        for attempt in range(3):
+            try:
+                os.replace(tmp, path)
+                return
+            except OSError:
+                if attempt < 2:
+                    time.sleep(0.01)
+    except OSError:
+        pass
     finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    with _store_lock(sid) as acquired:
+        if not acquired:
+            raise OSError("cannot invalidate read fingerprints")
+        _store_path(sid).unlink(missing_ok=True)
 
 
 def _epoch(sid):
@@ -342,16 +358,22 @@ def _resolve_read_path(fields, file_path):
 def _contextignored(path, fields):
     roots = fields.get("workspace_roots") or []
     root = roots[0] if roots else fields.get("cwd")
+    root = str(Path(root).resolve()) if root else None
     from runtime_env import runtime_home
     candidates = ([Path(root) / ".contextignore"] if root else []) + [runtime_home() / ".contextignore"]
     for ignore in candidates:
         if not ignore.is_file() or ignore.is_symlink():
             continue
+        if ignore.stat().st_size > 256 * 1024:
+            return True
         for line in ignore.read_text(encoding="utf-8").splitlines()[:1000]:
             pattern = line.strip()
             if pattern and not pattern.startswith("#"):
                 relative = os.path.relpath(path, root) if root else path
-                if any(fnmatch.fnmatch(value, pattern) for value in (path, relative, Path(path).name)):
+                values = (path, relative, Path(path).name)
+                if any(fnmatch.fnmatch(value, pattern) for value in values):
+                    return True
+                if pattern.endswith("/") and (relative.replace(os.sep, "/") + "/").startswith(pattern):
                     return True
     return False
 
@@ -386,8 +408,9 @@ def _evaluate(fields) -> dict | None:
     if not file_path or not _eligible(file_path) or _contextignored(file_path, fields):
         return None
 
-    sid = fields.get("conversation_id")
-    if not sid or sid == "unknown":
+    sid = fields.get("cache_conversation_id") or fields.get("conversation_id")
+    agent = fields.get("agent_id")
+    if not sid or sid == "unknown" or not isinstance(agent, str) or not agent:
         return None
     path = Path(file_path)
     fp = _read_fingerprint(path)
@@ -410,7 +433,7 @@ def _evaluate(fields) -> dict | None:
 def _evaluate_locked(fields, sid, file_path, digest, size, current, mode, owner):
     store = _load_store(sid)
     files = store.setdefault("files", {})
-    key = _file_key(file_path)
+    key = hashlib.sha256(fields["agent_id"].encode("utf-8", "surrogatepass")).hexdigest() + ":" + _file_key(file_path)
     entry = files.get(key)
     base = {"mode": mode, "owner": owner, "path": Path(file_path).name}
 
@@ -444,14 +467,15 @@ def _evaluate_locked(fields, sid, file_path, digest, size, current, mode, owner)
 def confirm_read(fields):
     """Promote a staged changed fingerprint only after a successful Read hook."""
     try:
-        sid = fields.get("conversation_id")
+        sid = fields.get("cache_conversation_id") or fields.get("conversation_id")
+        agent = fields.get("agent_id")
         path = fields.get("tool_args", {}).get("file_path")
-        if not sid or sid == "unknown" or not isinstance(path, str):
+        if not sid or sid == "unknown" or not isinstance(agent, str) or not agent or not isinstance(path, str):
             return
         path = _resolve_read_path(fields, path)
         if not path:
             return
-        key = _file_key(path)
+        key = hashlib.sha256(agent.encode("utf-8", "surrogatepass")).hexdigest() + ":" + _file_key(path)
         with _store_lock(sid) as acquired:
             if not acquired:
                 return

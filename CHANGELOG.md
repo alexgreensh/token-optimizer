@@ -4,11 +4,11 @@
 
 ## [5.13.69] - 2026-11-09
 
-- Cursor gets much more of the kit (beta): smarter re-reads, a checkpoint before compaction with restore after, a quality score and coach that read real token counts, and Cursor in the fleet audit. Re-read blocking ships off by default until it is confirmed on live Cursor.
-- The dashboard reaches your whole history: Trends adds 90 day, 180 day and All ranges, remembers the one you picked, and can load your full history on demand.
-- The dashboard opens reliably when Claude runs it for you, and tells you when a run was cut short instead of quietly skipping.
-- Search results keep every match: when no saved copy can be made, output stays whole instead of trimmed, and the preview states exactly what it left out (#334).
-- Cursor hooks no longer stop on Windows-only file calls, and `install.sh --cursor` honors `--home`.
+- Cursor adds re-read warnings, checkpoints, quality, coaching and fleet audit (beta). Counts use Cursor data where available; estimates are labelled. Read blocking is off by default pending live verification.
+- Dashboard history is easier to explore with 90-day, 180-day and All ranges, a remembered choice and on-demand full history when served locally.
+- Dashboard opens reliably when Claude runs it and reports interrupted builds instead of silently skipping them.
+- Search keeps every match when a saved copy cannot be made, and previews say exactly what was omitted (#334).
+- Cursor hooks work on Windows by skipping a POSIX-only file call; `install.sh --cursor` honors `--home`.
 
 ## [5.13.68] - 2026-11-07
 

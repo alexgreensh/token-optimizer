@@ -68,7 +68,7 @@ def shell_thrash_nudge(fields, now=None):
             old_dir = session_store.SNAPSHOT_DIR
             session_store.SNAPSHOT_DIR = cursor_home() / "token-optimizer" / "snapshot"
             try:
-                return _thrash_check(command, output, stderr=output, now=now)
+                return _thrash_check(command, output, combined_output=True, now=now)
             finally:
                 session_store.SNAPSHOT_DIR = old_dir
         finally:

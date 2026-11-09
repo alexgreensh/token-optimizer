@@ -71,6 +71,8 @@ def decode_payload(payload):
         "trigger": "",
         # U4 correlation/output fields (CLI bundle 2026.11.05 evidence)
         "generation_id": "",
+        "agent_id": "",
+        "cache_conversation_id": "",
         "tool_use_id": "",
         "parent_tool_call_id": "",
         "tool_output": "",
@@ -89,6 +91,7 @@ def decode_payload(payload):
     sid = payload.get("conversation_id", payload.get("session_id", ""))
     if isinstance(sid, str):
         out["conversation_id"] = _sanitize_session_id(sid)
+        out["cache_conversation_id"] = sid if len(sid) <= 1024 else ""
 
     event = payload.get("hook_event_name", "")
     if isinstance(event, str):
@@ -112,6 +115,9 @@ def decode_payload(payload):
     if isinstance(tp, str):
         out["transcript_path"] = tp[:1024]
 
+    agent = payload.get("agent_id") or payload.get("subagent_id")
+    if isinstance(agent, str) and 0 < len(agent) <= 128:
+        out["agent_id"] = agent
     for key in ("generation_id", "tool_use_id", "parent_tool_call_id"):
         v = payload.get(key)
         if isinstance(v, str):

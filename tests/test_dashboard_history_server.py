@@ -45,6 +45,10 @@ m._serve_dashboard(str(root / 'dashboard.html'), port=port, host='127.0.0.1')
         else:
             raise AssertionError('standalone server did not start')
         assert len(token) >= 16
+        malformed = urllib.request.Request(base + '/api/regenerate', data=b'[]', method='POST',
+            headers={'Origin': base, 'X-TO-Token': token, 'Content-Type': 'application/json'})
+        with urllib.request.urlopen(malformed, timeout=10) as response:
+            assert json.load(response)['ok'] is True
         request = urllib.request.Request(base + '/api/regenerate', data=b'{"days":180}', method='POST',
             headers={'Origin': base, 'X-TO-Token': token, 'Content-Type': 'application/json'})
         with urllib.request.urlopen(request, timeout=10) as response:

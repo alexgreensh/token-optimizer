@@ -236,6 +236,7 @@ class TestReadCacheStoreRedaction:
         secret_py.write_text('API_KEY = "AKIAZZZZTOPSECRETKEY00"\n')
         fields = {
             "conversation_id": "conv-store",
+            "agent_id": "parent",
             "tool_name": "Read",
             "tool_args": {"file_path": str(secret_py)},
         }

@@ -6,7 +6,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-DEFAULT_DAYS = 90
+DEFAULT_DAYS = 30
 
 
 def valid(value):

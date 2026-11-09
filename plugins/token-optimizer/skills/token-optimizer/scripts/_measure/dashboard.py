@@ -278,7 +278,6 @@ def _serve_dashboard(filepath, port=None, host=None):
                 self.send_error(413, "Request body too large")
                 return
 
-            # Read JSON body
             body = {}
             if content_len > 0:
                 try:
@@ -286,6 +285,7 @@ def _serve_dashboard(filepath, port=None, host=None):
                 except (_measure_facade.json.JSONDecodeError, ValueError):
                     pass
 
+            if not isinstance(body, dict): body = {}
             if path == "/api/regenerate":
                 choice = body.get("days", dashboard_history.load(_measure_facade.RUNTIME_DIR))
                 if not dashboard_history.valid(choice):

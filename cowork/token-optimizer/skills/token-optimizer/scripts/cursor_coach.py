@@ -366,7 +366,7 @@ def _generate(cursor_home: Any = None, *, days: int = 30, focus: Any = None) -> 
         str(t.get("conversation_id") or t.get("session_id") or "") for t in in_window
     ]
     try:
-        bubble = _cst.read_state_vscdb_tokens(composer_ids)
+        bubble = _cst.read_state_vscdb_tokens(composer_ids, db_path=_cst.state_vscdb_path_for_home(home))
     except Exception:
         bubble = {}
     resolved_tallies: list[dict] = []

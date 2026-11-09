@@ -81,6 +81,7 @@ def _fields(target: Path, sid: str = "conv-1", extra=None) -> dict:
         args.update(extra)
     return {
         "tool_name": "Read",
+        "agent_id": "parent",
         "tool_args": args,
         "conversation_id": sid,
         "tool_use_id": "read-call-1",
@@ -238,7 +239,7 @@ def _bridge_payload(target: Path, sid: str = "conv-1") -> dict:
     f = _fields(target, sid)
     return {"hook_event_name": "preToolUse", "tool_name": f["tool_name"],
             "tool_input": f["tool_args"], "conversation_id": sid,
-            "tool_use_id": f["tool_use_id"],
+            "tool_use_id": f["tool_use_id"], "agent_id": "parent",
             "workspace_roots": f["workspace_roots"]}
 
 
@@ -350,7 +351,7 @@ def test_successful_post_tool_use_confirms_changed_read(env):
     target.write_text(CODE_V2, encoding="utf-8")
     assert rc.evaluate(fields)["emit"] is None
     bridge.handle_post_tool_use({"tool_name": "Read", "tool_input": fields["tool_args"],
-                                 "conversation_id": "conv-1", "tool_use_id": fields["tool_use_id"]})
+                                 "conversation_id": "conv-1", "tool_use_id": fields["tool_use_id"], "agent_id": "parent"})
     assert rc.evaluate(fields)["emit"]["permission"] == "deny"
 
 
@@ -372,7 +373,7 @@ def test_locked_store_preserves_concurrent_read_updates(env):
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(read, targets))
     files = rc._load_store("conv-1")["files"]
-    assert all(str(target) in files for target in targets)
+    assert all(any(k.endswith(str(target)) for k in files) for target in targets)
 
 
 def test_unconfirmed_first_read_is_never_denied(env):

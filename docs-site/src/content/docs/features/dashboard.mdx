@@ -60,7 +60,7 @@ python3 measure.py dashboard-diagnose
 python3 measure.py daemon-status
 ```
 
-The convenience skill `/token-dashboard` collects the latest session data, regenerates the page, and opens it for you. New installations embed **90 days** by default. In Trends, choose 7, 14, 30, 90, or 180 days, or All to display everything embedded in the current file. The selected display range stays selected in that browser.
+The convenience skill `/token-dashboard` collects the latest session data, regenerates the page, and opens it for you. New installations embed **30 days** by default. In Trends, choose 7, 14, 30, 90, or 180 days, or All to display everything embedded in the current file. The selected display range stays selected in that browser.
 
 When the dashboard is served locally, choosing a range longer than the embedded window loads it on demand. **Load full history** explicitly embeds all available history. These choices and `--days` persist across regeneration, session refreshes, and `/token-dashboard`. In a file-only view, start the local server or regenerate with `--days` to load more data. Larger windows produce larger files and can take longer to build.
 
@@ -103,7 +103,7 @@ The chosen host persists per-runtime across upgrades. Accepted values are `127.0
 | Default bind host | `127.0.0.1` |
 | Daemon port | `24842` |
 | `--serve` default port | `8080` (overridable with `--port`) |
-| History window | 90 days initially; saved choice via `--days N`, `--days all`, or the local dashboard |
+| History window | 30 days initially; saved choice via `--days N`, `--days all`, or the local dashboard |
 | Data refresh | Automatic on SessionEnd |
 
 ## Risk rating

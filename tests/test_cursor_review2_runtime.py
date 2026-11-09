@@ -13,7 +13,7 @@ import cursor_bridge_checkpoint as checkpoint
 
 
 def fields(path, root, sid='review2'):
-    return {'tool_name': 'Read', 'tool_args': {'file_path': str(path)}, 'tool_use_id': 'id',
+    return {'tool_name': 'Read', 'agent_id': 'parent', 'tool_args': {'file_path': str(path)}, 'tool_use_id': 'id',
             'conversation_id': sid, 'workspace_roots': [str(root)], 'cwd': str(root)}
 
 

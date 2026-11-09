@@ -948,15 +948,15 @@ install_copilot() {
 # Shared by install_cursor/uninstall_cursor: split "$@" into _CURSOR_FLAGS
 # (--dry-run) and _CURSOR_HOME_RESOLVED (explicit --home wins; else
 # measure.py cursor-home's validated resolution; else env/default fallback),
-# then run the WSL-root recovery + wrong-home warning (reads caller's
-# measure_py via bash dynamic scope).
+# then run the WSL-root recovery + wrong-home warning.
 _cursor_prepare() {
     _CURSOR_FLAGS=(); _CURSOR_HOME_RESOLVED=""
-    while [ $# -gt 0 ]; do case "$1" in --dry-run) _CURSOR_FLAGS+=("$1");; --home) [ $# -ge 2 ] && { _CURSOR_HOME_RESOLVED="$2"; shift; } || :;; --home=*) _CURSOR_HOME_RESOLVED="${1#--home=}";; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --dry-run) _CURSOR_FLAGS+=("$1");; --home) [ $# -ge 2 ] || fail "--home requires a directory path"; _CURSOR_HOME_RESOLVED="$2"; case "$_CURSOR_HOME_RESOLVED" in ""|-*) fail "--home requires a directory path";; esac; shift;; --home=*) _CURSOR_HOME_RESOLVED="${1#--home=}"; case "$_CURSOR_HOME_RESOLVED" in ""|-*) fail "--home requires a directory path";; esac;; esac; shift; done
     _recover_home_from_windows_env TOKEN_OPTIMIZER_CURSOR_HOME ".cursor"
     _wsl_root_wrong_home_warning "Cursor" ".cursor" "TOKEN_OPTIMIZER_CURSOR_HOME" "--cursor"
     _CURSOR_HOME_RESOLVED="${_CURSOR_HOME_RESOLVED:-$(TOKEN_OPTIMIZER_RUNTIME=cursor python3 "$measure_py" cursor-home 2>/dev/null || true)}"
     _CURSOR_HOME_RESOLVED="${_CURSOR_HOME_RESOLVED:-${TOKEN_OPTIMIZER_CURSOR_HOME:-${HOME}/.cursor}}"
+    _CURSOR_HOME_RESOLVED="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().absolute())' "$_CURSOR_HOME_RESOLVED")" || fail "Invalid Cursor home"
 }
 
 install_cursor() {

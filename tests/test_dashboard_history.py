@@ -13,13 +13,13 @@ sys.path.insert(0, str(SCRIPTS))
 
 def test_history_preference_default_save_and_invalid(tmp_path):
     history = importlib.import_module('_measure.dashboard_history')
-    assert history.load(tmp_path) == 90
+    assert history.load(tmp_path) == 30
     history.save(tmp_path, 365)
     assert history.load(tmp_path) == 365
     history.save(tmp_path, 'all')
     assert history.load(tmp_path) == 'all'
     (tmp_path / 'token-optimizer/dashboard-history.json').write_text('{"days": -2}')
-    assert history.load(tmp_path) == 90
+    assert history.load(tmp_path) == 30
 
 
 def test_full_history_window_uses_oldest_activity(tmp_path):
@@ -86,4 +86,25 @@ def test_failed_build_does_not_save_explicit_window(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as ex:
         measure._dispatch_dashboard(['dashboard', '--days', '365', '--quiet'])
     assert ex.value.code == 1
-    assert history.load(tmp_path) == 90
+    assert history.load(tmp_path) == 30
+
+
+def test_default_trends_payload_excludes_older_sessions(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from _activity_fixtures import stamp_activity
+    import measure
+    db = tmp_path / 'trends.db'
+    monkeypatch.setattr(measure, 'TRENDS_DB', db)
+    conn = measure._init_trends_db()
+    now = datetime.now()
+    for i in range(101):
+        day = (now - timedelta(days=5 if i == 0 else 60)).date().isoformat()
+        conn.execute('INSERT INTO session_log (jsonl_path, date, input_tokens, output_tokens, message_count) VALUES (?, ?, ?, ?, ?)',
+                     ('session-%d' % i, day, 100, 20, 1))
+    stamp_activity(conn)
+    conn.commit(); conn.close()
+    recent = measure._collect_trends_from_db(days=30)
+    expanded = measure._collect_trends_from_db(days=90)
+    assert recent['session_count'] == 1
+    assert expanded['session_count'] == 101
+    assert len(json.dumps(recent)) < len(json.dumps(expanded)) / 3

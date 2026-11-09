@@ -166,3 +166,11 @@ def test_bridge_emits_thrash_nudge_and_ledgers(tmp_path, monkeypatch, capsys):
     kinds = [json.loads(l).get("event") for l in ledger.read_text().splitlines() if l.strip()]
     assert "thrashNudge" in kinds
     _purge()
+
+
+def test_shell_search_output_does_not_trigger_false_failure(adapter):
+    mod, _ = adapter
+    sid = 'conv-false-positive'
+    for i in range(3):
+        result = _run(mod, _fields('rg error src', f'src/file{i}.txt: text error: example {i}', sid), 6000000 + i)
+    assert result is None

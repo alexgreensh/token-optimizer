@@ -47,7 +47,7 @@ The installer merges eleven events into `~/.cursor/hooks.json` and every fired e
 | `preCompact` | record real context numbers + capture a redacted checkpoint (emits `user_message`) |
 | `stop` | per-turn tally, throttled rollup + dashboard |
 | `sessionEnd` | finalise tally, unthrottled rollup + dashboard |
-| `afterAgentResponse` | hook-measured token accounting when Cursor carries token fields |
+| `afterAgentResponse` | records hook-reported token fields for offline correlation, not counted in session totals |
 | `postToolUseFailure` | per-tool failure counts for the burn signal |
 | `afterShellExecution` | records shell completion; rewrite evidence pairs on `postToolUse` |
 | `subagentStart` / `subagentStop` | subagent fan-out counts |

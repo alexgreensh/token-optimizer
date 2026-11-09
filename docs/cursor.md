@@ -76,7 +76,7 @@ If a hook field upstream changes, the evidence is on disk, and
 | `preCompact` | record real `context_tokens` / `context_window_size` / `context_usage_percent` + capture a redacted compact checkpoint (one bounded restore rides the next `postToolUse`) | `{"user_message": "..."}` when a checkpoint is captured, else none |
 | `stop` | per-turn tally + throttled rollup/dashboard refresh | none |
 | `sessionEnd` | finalise tally + unthrottled rollup/dashboard | none |
-| `afterAgentResponse` | hook-measured token accounting when Cursor carries token fields (`cursor_hook_measured` provenance, cache-inclusive input; absent/implausible values change nothing) | none |
+| `afterAgentResponse` | records hook-reported token fields for offline correlation; these figures are not counted in session totals | none |
 | `postToolUseFailure` | per-tool failure counts for the burn signal | none |
 | `afterShellExecution` | records shell completion; rewrite evidence comes from paired `postToolUse` | none |
 | `subagentStart` / `subagentStop` | subagent fan-out counts for fleet rows | none |
@@ -223,3 +223,5 @@ rm -rf ~/.cursor/token-optimizer
    rebuilt context is claimed only when a follow-on session demonstrably
    uses it — the ledger says `emitted`, never `delivered`, without that
    evidence.
+
+Cursor read suppression respects the workspace `.contextignore` and the active runtime home’s global `.contextignore` (`~/.cursor/.contextignore` by default).

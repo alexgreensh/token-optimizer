@@ -2558,7 +2558,7 @@ REGEN_STEP_TIMEOUT = 45
 # thread waits for the child and clears _regen_inflight when it exits, bounded by
 # this timeout so a hung child can never wedge the guard True forever (the manual
 # regen path already caps each step at REGEN_STEP_TIMEOUT; this is one step + headroom).
-REGEN_BG_TIMEOUT = REGEN_STEP_TIMEOUT + 45
+REGEN_BG_TIMEOUT = 300
 MEASURE_PY_RESOLVE_TTL = 300
 REGEN_LOG = os.path.join(os.path.dirname(DASHBOARD), "daemon-regen.log")
 
@@ -3166,23 +3166,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if step == "dashboard":
                         argv.append("--force")
                         if days is not None: argv.extend(["--days", str(days)])
-                    # retry cap: retry ONLY the "dashboard" step -- the
-                    # one with the observed intermittent hang (lock contention
-                    # makes the normally-~9s build blow past a single
-                    # REGEN_STEP_TIMEOUT shot) -- and do NOT double the cap on the
-                    # retry. The earlier "2 attempts per step, doubled cap" put the
-                    # worst case at REGEN_STEP_TIMEOUT*(1+2)*2 = 6x = 270s, WORSE
-                    # than the ~240s wedge the original per-step cap fixed. Capping
-                    # every attempt at a flat REGEN_STEP_TIMEOUT and retrying only
-                    # the flaky step bounds the worst case at
-                    # REGEN_STEP_TIMEOUT*(1 + 2) = 3x = 135s, well under 240s, while
-                    # still surviving one transient dashboard hang. `collect` has no
-                    # observed hang, so it stays single-shot.
+                    # Full-history dashboards can exceed the normal collect timeout.
                     _max_attempts = 2 if step == "dashboard" else 1
                     r = None
                     _timeout_exc = None
                     for _attempt in range(_max_attempts):
-                        _to = REGEN_STEP_TIMEOUT
+                        _to = 180 if step == "dashboard" else REGEN_STEP_TIMEOUT
                         try:
                             r = subprocess.run(
                                 argv,

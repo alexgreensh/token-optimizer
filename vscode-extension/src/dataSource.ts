@@ -11,6 +11,7 @@ import {
   findActiveCopilotSession,
   findActiveCursorSession,
   readTallyFile,
+  cursorTallyInWorkspace,
   ActiveSession,
   CursorActiveSession,
 } from './sessionResolver';
@@ -63,8 +64,10 @@ export class DataSource {
       // plus, in Cursor mode, a tally update for a DIFFERENT conversation,
       // which means the user switched chats inside the same window.
       this.watcher.onDidChange((uri) => this.scheduleRefresh(this.cursorSessionSwitch(uri)));
-      this.watcher.onDidCreate(() => this.scheduleRefresh(true));
-      this.watcher.onDidDelete(() => this.scheduleRefresh(true));
+      this.watcher.onDidCreate((uri) => this.scheduleRefresh(
+        !this.paths.cursorSessionsDir || !this.cachedCursorSession || this.cursorSessionSwitch(uri)));
+      this.watcher.onDidDelete((uri) => this.scheduleRefresh(
+        !this.paths.cursorSessionsDir || !this.cachedCursorSession || path.resolve(uri.fsPath) === path.resolve(this.cachedCursorSession.tallyPath)));
     } catch {
       // Watching is best-effort; the timer below still keeps us current.
     }
@@ -133,7 +136,10 @@ export class DataSource {
       const changed = path.resolve(uri.fsPath);
       const dir = path.resolve(sessionsDir);
       if (!changed.startsWith(dir + path.sep)) return false;
-      return changed !== path.resolve(this.cachedCursorSession.tallyPath);
+      if (changed === path.resolve(this.cachedCursorSession.tallyPath)) return false;
+      const workspace = this.workspaceDir();
+      if (!workspace) return true;
+      return cursorTallyInWorkspace(changed, workspace);
     } catch {
       return false;
     }

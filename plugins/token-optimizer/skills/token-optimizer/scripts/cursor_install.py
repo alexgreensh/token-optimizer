@@ -319,9 +319,28 @@ def _copy_no_follow(src: Path, dest: Path) -> None:
         raise
 
 
+def _resolved_root(home):
+    if home is None:
+        return cursor_home()
+    raw = str(home)
+    if not raw or raw.startswith("-"):
+        raise ValueError("--home requires a directory path")
+    path = home.expanduser() if isinstance(home, Path) else Path(raw).expanduser()
+    if path.is_symlink():
+        raise ValueError("--home must not be a symlink")
+    root = path.resolve()
+    try:
+        different = root != cursor_home().resolve()
+    except (OSError, ValueError, NotImplementedError):
+        different = True
+    if different:
+        print("Warning: set TOKEN_OPTIMIZER_CURSOR_HOME to this home for Cursor hooks and doctor.", file=sys.stderr)
+    return root
+
+
 def install(*, dry_run: bool = False, home: Path = None) -> dict:
     """Install the adapter. Returns a summary dict of actions taken."""
-    root = home if home is not None else cursor_home()
+    root = _resolved_root(home)
     actions = {"copied": [], "hook_file": None, "skipped": [], "dry_run": dry_run}
     plugin_dir = _plugin_dir(root)
 
@@ -400,7 +419,7 @@ def install(*, dry_run: bool = False, home: Path = None) -> dict:
 
 def uninstall(*, dry_run: bool = False, home: Path = None) -> dict:
     """Remove our hooks, payload and derived caches; retain session history."""
-    root = home if home is not None else cursor_home()
+    root = _resolved_root(home)
     actions = {"removed": [], "dry_run": dry_run}
 
     bridge_path = _plugin_dir(root) / "cursor_hook_bridge.py"

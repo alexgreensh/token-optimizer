@@ -214,7 +214,7 @@ def _monkeypatch_cursor_state_readers(monkeypatch, *, bubble_tokens=None):
     monkeypatch.setattr(cst, "read_tally", lambda p: _tally())
     monkeypatch.setattr(cst, "idle_finalise", lambda t: t)
     monkeypatch.setattr(
-        cst, "read_state_vscdb_tokens", lambda ids: bubble_tokens or {}
+        cst, "read_state_vscdb_tokens", lambda ids, **kwargs: bubble_tokens or {}
     )
     monkeypatch.setattr(cst, "transcript_estimate", lambda p, home: None)
     return cst
@@ -389,3 +389,12 @@ def test_cursor_summary_reports_unknown_tokens_honestly(monkeypatch, tmp_path, c
     out = capsys.readouterr().out
     assert "no token figures" in out
     assert "use estimated token counts" not in out
+
+
+def test_summary_marks_estimated_headline(monkeypatch, tmp_path, capsys):
+    mod, _, _, _ = _import_measure(monkeypatch, tmp_path, "cursor")
+    cst = _monkeypatch_cursor_state_readers(monkeypatch)
+    monkeypatch.setattr(cst, "transcript_estimate", lambda p, home: 200)
+    mod._cursor_summary()
+    headline = next(line for line in capsys.readouterr().out.splitlines() if "Tokens:" in line)
+    assert "includes 1 estimated" in headline

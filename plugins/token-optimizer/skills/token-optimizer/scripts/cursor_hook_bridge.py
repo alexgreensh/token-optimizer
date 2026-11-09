@@ -749,7 +749,7 @@ def handle_pre_compact(payload):
     fields = decode_payload(payload)
     try:
         import cursor_read_cache
-        cursor_read_cache.clear_session_reads(fields["conversation_id"])
+        cursor_read_cache.clear_session_reads(fields.get("cache_conversation_id") or fields["conversation_id"])
     except Exception:
         pass
     _record_observed("preCompact", conversation_id=fields["conversation_id"] or None)

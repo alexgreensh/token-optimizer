@@ -521,10 +521,10 @@ for name in names.split(","):
 import cursor_read_cache as cache
 cache._home = lambda: pathlib.Path(home)
 result = cache.evaluate({"tool_name": "Read", "tool_args": {"file_path": target},
-                         "conversation_id": "session-123", "tool_use_id": "call-1", "workspace_roots": []})
+                         "conversation_id": "session-123", "agent_id": "parent", "tool_use_id": "call-1", "workspace_roots": []})
 assert result and result["observed"]["decision"] == "first_read", result
 fields = {"tool_name": "Read", "tool_args": {"file_path": target},
-          "conversation_id": "session-123", "tool_use_id": "call-1", "workspace_roots": []}
+          "conversation_id": "session-123", "agent_id": "parent", "tool_use_id": "call-1", "workspace_roots": []}
 cache.confirm_read(fields)
 assert cache.evaluate(fields)["observed"]["decision"] == "shadow_redundant"
 '''
@@ -532,3 +532,9 @@ assert cache.evaluate(fields)["observed"]["decision"] == "shadow_redundant"
                              str(tmp_path), ",".join(ci._PAYLOAD_MODULES)],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_explicit_relative_home_becomes_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = ci.install(dry_run=True, home=Path('relative-cursor'))
+    assert Path(result['hook_file']).is_absolute()

@@ -208,7 +208,7 @@ def test_coach_resolves_token_provenance_live(cursor_home, monkeypatch):
     _write_tally(cursor_home, _tally("conv-tokens"))
     monkeypatch.setattr(
         cst, "read_state_vscdb_tokens",
-        lambda ids: {"conv-tokens": {"input_tokens": 8000, "output_tokens": 1200,
+        lambda ids, **kwargs: {"conv-tokens": {"input_tokens": 8000, "output_tokens": 1200,
                                      "model": "claude-sonnet"}},
     )
     monkeypatch.setattr(cst, "transcript_estimate", lambda p, home: None)
@@ -278,3 +278,27 @@ def test_skill_detects_default_cursor_install_before_fallback(tmp_path):
                             env=env, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "cursor"
+
+
+def test_coach_uses_selected_home_database(cursor_home, tmp_path, monkeypatch):
+    import cursor_state as cst
+    _write_tally(cursor_home, _tally('conv-shared'))
+    def write_db(path, count):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path))
+        conn.execute('CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)')
+        conn.execute('INSERT INTO cursorDiskKV VALUES (?, ?)', ('bubbleId:conv-shared:1', json.dumps({'tokenCount': {'inputTokens': count, 'outputTokens': 2}})))
+        conn.commit(); conn.close()
+    write_db(tmp_path / 'global.vscdb', 999999)
+    write_db(cursor_home / 'User/globalStorage/state.vscdb', 321)
+    monkeypatch.setattr(cst, 'state_vscdb_path', lambda: tmp_path / 'global.vscdb')
+    actual = cst.read_state_vscdb_tokens
+    observed = []
+    def read(ids, **kwargs):
+        result = actual(ids, **kwargs)
+        observed.append(result)
+        return result
+    monkeypatch.setattr(cst, 'read_state_vscdb_tokens', read)
+    data = cursor_coach.generate_cursor_coach_data(cursor_home=cursor_home)
+    assert data['snapshot']['token_provenance'].get('cursor_state_vscdb') == 1
+    assert observed[0]['conv-shared']['input_tokens'] == 321

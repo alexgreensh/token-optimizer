@@ -10,7 +10,7 @@ import {
   resolveAutoPaths,
   detectPluginInstalled,
 } from '../src/paths';
-import { findActiveCursorSession } from '../src/sessionResolver';
+import { findActiveCursorSession, cursorTallyInWorkspace } from '../src/sessionResolver';
 
 let tmp: string;
 
@@ -180,6 +180,19 @@ describe('findActiveCursorSession', () => {
     writeTally(dir(), 'conv-a', { ...base, conversation_id: '../../evil', updated_at: 1000 });
     const found = findActiveCursorSession(dir());
     expect(found?.sessionId).toBe('evil');
+  });
+
+  it('ignores changed tallies from other workspaces', () => {
+    writeTally(dir(), 'foreign', { ...base, workspace_roots: ['/elsewhere'] });
+    writeTally(dir(), 'local', { ...base, workspace_roots: ['/repo/demo'] });
+    expect(cursorTallyInWorkspace(path.join(dir(), 'foreign.json'), '/repo/demo')).toBe(false);
+    expect(cursorTallyInWorkspace(path.join(dir(), 'local.json'), '/repo/demo')).toBe(true);
+  });
+
+  it('prefers the exact workspace over a newer nested workspace', () => {
+    writeTally(dir(), 'nested', { ...base, conversation_id: 'nested', updated_at: 3000, workspace_roots: ['/repo/demo/sub'] });
+    writeTally(dir(), 'exact', { ...base, conversation_id: 'exact', updated_at: 1000, workspace_roots: ['/repo/demo'] });
+    expect(findActiveCursorSession(dir(), { workspaceDir: '/repo/demo' })?.sessionId).toBe('exact');
   });
 
   it('matches a tally cwd nested under the workspace (subfolder agent run)', () => {

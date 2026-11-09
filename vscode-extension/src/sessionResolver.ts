@@ -146,7 +146,7 @@ export function readTallyFile(filePath: string): any | null {
 // matching '/repo-other'. Ancestor matches (workspace inside the tally's root)
 // deliberately return false: showing a different window's session is worse
 // than showing none.
-function tallyInWorkspace(tally: any, workspaceDir: string): boolean {
+export function tallyWorkspaceRank(tally: any, workspaceDir: string): number {
   const normalize = (p: any): string => {
     if (typeof p !== 'string' || !p) return '';
     let s = p.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -154,15 +154,19 @@ function tallyInWorkspace(tally: any, workspaceDir: string): boolean {
     return s;
   };
   const want = normalize(workspaceDir);
-  if (!want) return false;
-  const paths: any[] = [tally && tally.cwd];
+  if (!want) return 0;
   const roots = tally && tally.workspace_roots;
-  if (Array.isArray(roots)) paths.push(...roots);
+  const paths: any[] = Array.isArray(roots) && roots.length ? roots : [tally && tally.cwd];
   for (const raw of paths) {
     const n = normalize(raw);
-    if (n && (n === want || n.startsWith(want + '/'))) return true;
+    if (n === want) return 2;
   }
-  return false;
+  return paths.some(raw => { const n = normalize(raw); return n && n.startsWith(want + '/'); }) ? 1 : 0;
+}
+
+export function cursorTallyInWorkspace(filePath: string, workspaceDir: string): boolean {
+  const tally = readTallyFile(filePath);
+  return !!tally && tallyWorkspaceRank(tally, workspaceDir) > 0;
 }
 
 export function findActiveCursorSession(
@@ -197,10 +201,13 @@ export function findActiveCursorSession(
   const workspaceDir = opts.workspaceDir || null;
   const scanLimit = workspaceDir ? CURSOR_MAX_SCAN_FILES : CURSOR_MAX_CANDIDATES;
   const candidates: CursorActiveSession[] = [];
+  let bestRank = 0;
   for (const file of files.slice(0, scanLimit)) {
     const tally = readTallyFile(file.path);
     if (!tally) continue;
-    if (workspaceDir && !tallyInWorkspace(tally, workspaceDir)) continue;
+    const rank = workspaceDir ? tallyWorkspaceRank(tally, workspaceDir) : 1;
+    if (!rank || rank < bestRank) continue;
+    if (rank > bestRank) { candidates.length = 0; bestRank = rank; }
     const id = typeof tally.conversation_id === 'string' && tally.conversation_id
       ? tally.conversation_id
       : path.basename(file.path, '.json');
@@ -210,7 +217,7 @@ export function findActiveCursorSession(
       mtimeMs: file.mtimeMs,
       tally,
     });
-    if (candidates.length >= CURSOR_MAX_CANDIDATES) break;
+    if (candidates.length >= CURSOR_MAX_CANDIDATES && (!workspaceDir || bestRank === 2)) break;
   }
   if (candidates.length === 0) return null;
 

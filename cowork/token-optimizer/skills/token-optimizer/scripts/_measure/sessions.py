@@ -2377,7 +2377,7 @@ def _grok_summary():
         print(f"    Cost: ~${total_cost:,.2f} ({cost_known} session(s) with authoritative cost)")
     else:
         print("    Cost: no authoritative billing data recorded (costUsdTicks scrubbed)")
-    print(f"    Tokens: {total_in:,} in / {total_out:,} out")
+    print(f"    Tokens: {total_in:,} in / {total_out:,} out" + (f" (includes {estimated} estimated sessions)" if estimated else ""))
     if top_models:
         print("    Models: " + ", ".join(f"{_measure_facade._strip_ansi(str(m))} ({v:,})" for m, v in top_models))
     if incomplete:
@@ -2593,7 +2593,7 @@ def _copilot_summary():
             print(f"    Cost: ~${total_cost:,.2f} (premium requests)")
         else:
             print("    Cost: no billing data recorded by Copilot for these sessions")
-        print(f"    Tokens: {total_in:,} in / {total_out:,} out")
+        print(f"    Tokens: {total_in:,} in / {total_out:,} out" + (f" (includes {estimated} estimated sessions)" if estimated else ""))
         if top_models:
             print("    Models: " + ", ".join(f"{_measure_facade._strip_ansi(str(m))} ({v:,})" for m, v in top_models))
         if incomplete:
@@ -2895,7 +2895,7 @@ def _cursor_summary():
         str(t.get("conversation_id") or t.get("session_id") or "") for t in tallies
     ]
     try:
-        bubble_tokens = _cst.read_state_vscdb_tokens(composer_ids)
+        bubble_tokens = _cst.read_state_vscdb_tokens(composer_ids, db_path=_cst.state_vscdb_path_for_home(home))
     except Exception:
         bubble_tokens = {}
     normalized = []
@@ -2936,7 +2936,7 @@ def _cursor_summary():
         surfaces[sur] = surfaces.get(sur, 0) + 1
 
     print(f"  {len(normalized)} session(s)")
-    print(f"    Tokens: {total_in:,} in / {total_out:,} out")
+    print(f"    Tokens: {total_in:,} in / {total_out:,} out" + (f" (includes {estimated} estimated sessions)" if estimated else ""))
     if token_sources:
         print("    Token sources: " + ", ".join(
             f"{k} ({v})" for k, v in sorted(token_sources.items())
@@ -3010,7 +3010,7 @@ def _collect_cursor_sessions(days=None, quiet=None, rebuild=None):
             str(t.get("conversation_id") or t.get("session_id") or "") for t in tallies
         ]
         try:
-            bubble_tokens = _cst.read_state_vscdb_tokens(composer_ids)
+            bubble_tokens = _cst.read_state_vscdb_tokens(composer_ids, db_path=_cst.state_vscdb_path_for_home(home))
         except Exception:
             bubble_tokens = {}
 

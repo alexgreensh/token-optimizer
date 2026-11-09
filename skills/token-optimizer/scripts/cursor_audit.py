@@ -4,11 +4,18 @@
 History: these ten symbols first shipped inside the frozen _measure/audit.py
 provider (81412770), the first post-freeze provider evolution, which broke
 the lane5 frozen-provider proofs (the u5 tooling has no extension path).
-Per independent review they now live here as a standalone module beside
+Per independent review they now live here as a sibling module beside
 cursor_coach.py; the frozen provider, the split manifest and the measure
 facade are byte-restored to their historical state, and the frozen
 attention-scoring machinery is REUSED by importing the provider read-only
 (never duplicated, never modified).
+
+Runtime dependency, stated plainly: the SUPPORTED usage is the measure CLI
+(``measure.py cursor-audit``), where the measure facade is installed. The
+frozen attention provider resolves that facade at call time, so rule-file
+attention scoring requires it; direct module import without measure works
+for everything else (hooks health, coexistence detection, file discovery)
+and ``_claude_dir`` falls back to runtime_env there.
 
 Scope honesty contract (same style as docs/cursor.md "Honest gaps"):
 - Audits FILE surfaces only: .cursor/rules/**/*.mdc (native project rules),
@@ -49,7 +56,7 @@ def _claude_dir():
     if facade is not None and hasattr(facade, "CLAUDE_DIR"):
         return facade.CLAUDE_DIR
     from runtime_env import claude_home  # noqa: PLC0415
-    return _claude_dir()
+    return claude_home()
 
 
 def _cursor_rule_targets(project_dir):

@@ -482,3 +482,27 @@ def test_symlinked_rule_inside_project_still_audited(tmp_path):
     assert rec["symlink"] is True
     assert rec["attention_score"] is not None  # inside-boundary links are read
     assert not any(f["category"] == "symlink_escape" for f in result["findings"])
+
+
+def test_direct_import_without_measure_facade_exercises_claude_dir_fallback(tmp_path):
+    """Independent-retest regression: cursor_audit must import and resolve
+    _claude_dir() without the measure facade in sys.modules (fallback goes
+    through runtime_env.claude_home, not infinite recursion). Attention
+    scoring is NOT promised standalone; module import + fallback are."""
+    import subprocess
+
+    code = (
+        "import sys, json\n"
+        "sys.path.insert(0, {scripts!r})\n"
+        "import cursor_audit\n"
+        "assert 'measure' not in sys.modules\n"
+        "print(json.dumps(str(cursor_audit._claude_dir())))\n"
+    ).format(scripts=str(SCRIPTS))
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=60,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    resolved = json.loads(proc.stdout.strip())
+    assert resolved.endswith(".claude") or ".claude" in resolved

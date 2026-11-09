@@ -1362,7 +1362,7 @@ function renderSavings(data: DashboardData): string {
     return `<div class="view" id="view-savings">
       ${header}
       ${opportunityPanel}
-      ${pricingCoverage}
+      ${pricingCoverage}${data.savingsEvents.verbosityOutputEstimated?.events ? '<div class="daily-hint">Shorter replies and their re-reads: NOT MEASURED, no un-nudged control yet.</div>' : ''}
       ${measuredCard}
       ${progressCard || `<div class="card">
         <div class="empty-state">
@@ -1527,7 +1527,7 @@ function renderSavings(data: DashboardData): string {
     ${cumulative}
     ${levers}
     ${measuredFloor}
-    ${pricingCoverage}
+    ${pricingCoverage}${data.savingsEvents.verbosityOutputEstimated?.events ? '<div class="daily-hint">Shorter replies and their re-reads: NOT MEASURED, no un-nudged control yet.</div>' : ''}
   </div>`;
 }
 

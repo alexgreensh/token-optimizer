@@ -250,3 +250,17 @@ def test_older_nudge_with_line_boundary_counts_only_whole_requests_after_it(m, t
         _stream_lines("a", [5, 1000]) + _stream_lines("b", [5, 1000])
         + _stream_lines("c", [5, 5, 600])) + "\n", encoding="utf-8")
     assert m._calibrate_prior_verbosity_nudges(LIVE_SID, str(transcript)) == 400
+
+
+def test_calibration_records_negative_delta(m, tmp_path):
+    m._log_savings_event('verbosity_steer', 0, session_id=LIVE_SID,
+                         detail='pre_avg_out=100 pre_turns=2 unit=req')
+    transcript = tmp_path / 't.jsonl'
+    _write_transcript(transcript, [100, 100, 120, 130])
+    assert m._calibrate_prior_verbosity_nudges(LIVE_SID, str(transcript)) == 0
+    conn = m._init_trends_db()
+    try:
+        detail = conn.execute("SELECT detail FROM savings_events WHERE event_type='verbosity_steer_measured'").fetchone()[0]
+    finally:
+        conn.close()
+    assert 'signed_delta=-50' in detail

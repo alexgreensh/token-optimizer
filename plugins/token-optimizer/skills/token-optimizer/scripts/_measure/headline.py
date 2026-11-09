@@ -11,7 +11,8 @@ def _number(value):
 def token_headline(summary):
     s = summary or {}
     pools = ('mcp_cap_estimated', 'hint_followed', 'verbosity_steer',
-             'resume_lean_estimated', 'checkpoint_restore_estimated')
+             'resume_lean_estimated', 'checkpoint_restore_estimated',
+             'verbosity_output_estimated')
     removed = max(0, _number(s.get('total_tokens')))
     for name in pools:
         pool = s.get(name) or s.get(name + '_estimated') or {}

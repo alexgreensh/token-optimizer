@@ -18,7 +18,7 @@ def check(root=split.REPO):
     records = {row['name']: row for row in manifest['symbols']}
     if 'dispatch' in manifest:
         records['__main__'] = manifest['dispatch']
-    expected_files = {'__init__.py', '_compat.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py'} | {name + '.py' for name in split.DOMAINS}
+    expected_files = {'__init__.py', '_compat.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py', 'output_reread.py'} | {name + '.py' for name in split.DOMAINS}
     actual_files = {path.name for path in package.glob('*.py')}
     errors = []
     if actual_files != expected_files:
@@ -52,7 +52,7 @@ def check(root=split.REPO):
         limit = 200 if path.name == '_compat.py' else PASS1_PROVIDER_CEILING
         if len(text.splitlines()) > limit:
             errors.append(f'{path.name}: exceeds {limit} lines')
-        if path.name.startswith('_') or path.name in ('dashboard_history.py', 'weekly_activity.py', 'headline.py'):
+        if path.name.startswith('_') or path.name in ('dashboard_history.py', 'weekly_activity.py', 'headline.py', 'output_reread.py'):
             continue
         domain_tree = ast.parse(text)
         for node in ast.walk(domain_tree):

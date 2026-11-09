@@ -4621,6 +4621,16 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
                 _measure_facade._counted_marker_backfill(conn, quiet=quiet)
     except Exception:
         pass
+    # Verbosity nudges against matched un-nudged replies (savings-truth U5).
+    # Read-only on the DB, one derived JSON file, at most daily, and never on
+    # the hook path: it walks every recent transcript.
+    if drain in ("inline", "full"):
+        try:
+            _measure_facade._output_reread.refresh_study(conn, deadline=(
+                None if drain == "full"
+                else _measure_facade.time.monotonic() + budgets["counted_seconds"]))
+        except Exception:
+            pass
     try:
         if drain == "full":
             _measure_facade._upgrade_drain_mark_done(conn)

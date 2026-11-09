@@ -40,7 +40,7 @@ const ESTIMATED_TIER_CATEGORIES = new Set<string>([
   "setup_optimization",
   "mcp_cap",
   "hint_followed",
-  "verbosity_steer",
+  "verbosity_steer", "verbosity_steer_measured",
   "fresh_session_nudge",
   "checkpoint_restore",
   "resume_lean",
@@ -662,7 +662,7 @@ export interface SavingsEventsSummary {
   categories: SavingsEventCategory[];
   totalTokensSaved: number;
   totalCostSavedUsd: number;
-  totalCount: number;
+  totalCount: number; verbosityOutputEstimated?: { basis: "not_measured"; events: number };
   unpricedTokens?: number;
   unpricedEvents?: number;
   archivePricedNetUsd?: number | null;
@@ -705,7 +705,7 @@ export function readSavingsEventsByCategory(
 
   const root = openclawDir ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".openclaw");
   const sessionEvidence = loadSavingsSessions(root);
-  let unpricedTokens = 0, unpricedEvents = 0;
+  let unpricedTokens = 0, unpricedEvents = 0, verbosityEvents = 0;
 
   const byType = new Map<
     string,
@@ -739,6 +739,7 @@ export function readSavingsEventsByCategory(
         const ts = typeof tsRaw === "string" ? Date.parse(tsRaw) : NaN;
         if (!Number.isFinite(ts) || ts < cutoff) continue;
       }
+      if (et === "verbosity_steer_measured") { verbosityEvents++; continue; }
       const tokens =
         typeof row.tokens_saved === "number" ? row.tokens_saved : 0;
       const session = typeof row.session_id === "string" ? sessionEvidence.get(row.session_id) : undefined;
@@ -769,7 +770,6 @@ export function readSavingsEventsByCategory(
   } catch {
     /* file missing or unreadable — return empty summary */
   }
-
   const categories: SavingsEventCategory[] = Array.from(byType.entries())
     .map(([eventType, agg]) => ({
       eventType,
@@ -803,7 +803,7 @@ export function readSavingsEventsByCategory(
     floorUsd += Math.min(netCost, Math.max(0, archive.floorUsd - (reexpand?.floorUsd ?? 0)));
     floorTokens += Math.min(netTokens, Math.max(0, archive.floorTokens - (reexpand?.floorTokens ?? 0)));
   }
-  return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd, inputRateFloorTokens: floorTokens, inputRateFloorUsd: floorUsd };
+  return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd, inputRateFloorTokens: floorTokens, inputRateFloorUsd: floorUsd, verbosityOutputEstimated: { basis: "not_measured", events: verbosityEvents } };
 }
 
 /**

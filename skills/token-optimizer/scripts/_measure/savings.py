@@ -1359,8 +1359,8 @@ def _net_realized_savings(rows, reprice_deltas):
     Returns (by_category, total_tokens, total_cost, total_events, popped,
     repriced_to_session_mix) where *popped* holds the entries relocated out of
     the realized total (setup_optimization, mcp_cap, hint_followed,
-    verbosity_steer, resume_lean, checkpoint_restore), each an entry dict or
-    None.
+    verbosity_steer, resume_lean, checkpoint_restore, verbosity_steer_measured),
+    each an entry dict or None.
     """
     _measure_facade = _compat.facade()
     by_category = {}
@@ -1392,74 +1392,26 @@ def _net_realized_savings(rows, reprice_deltas):
         total_cost += _delta
         repriced_to_session_mix = True
 
-    # A1: setup_optimization (the one-time prefix trim credited by `compare`)
-    # double-counts with structural_savings, which credits the SAME trim as a
-    # perpetual cache annuity. Structural is the correct ongoing model, so the
-    # one-time event is relocated OUT of the realized total into a separate
-    # one_time_setup line (clearly a one-shot, never summed with the annuity).
-    one_time = by_category.pop("setup_optimization", None)
-    if one_time:
-        total_tokens -= int(one_time.get("tokens_saved", 0) or 0)
-        total_cost -= float(one_time.get("cost_saved_usd", 0.0) or 0.0)
-        total_events -= int(one_time.get("events", 0) or 0)
-
-    # A3: mcp_cap is a hardcoded-ratio ESTIMATE of Claude Code's own MCP-output
-    # truncation (the pre-cap size is invisible to us). It must not sit inside
-    # the measured realized total. Relocate it to the estimated tier; the
-    # three-tier rule keeps it from ever being summed with realized tool_archive.
-    mcp_cap_est = by_category.pop("mcp_cap", None)
-    if mcp_cap_est:
-        total_tokens -= int(mcp_cap_est.get("tokens_saved", 0) or 0)
-        total_cost -= float(mcp_cap_est.get("cost_saved_usd", 0.0) or 0.0)
-        total_events -= int(mcp_cap_est.get("events", 0) or 0)
-
-    # U-G: hint_followed is a DETERMINISTICALLY-TRIGGERED event (a proactive
-    # hint surfaced a file and the agent then read it) but its avoided-search
-    # MAGNITUDE is a conservative estimate. The trigger is observed; the size
-    # is not metered. So it belongs in the estimated tier, never the realized
-    # counted total. Relocate it exactly like mcp_cap.
-    hint_followed_est = by_category.pop("hint_followed", None)
-    if hint_followed_est:
-        total_tokens -= int(hint_followed_est.get("tokens_saved", 0) or 0)
-        total_cost -= float(hint_followed_est.get("cost_saved_usd", 0.0) or 0.0)
-        total_events -= int(hint_followed_est.get("events", 0) or 0)
-
-    # verbosity_steer: the UserPromptSubmit nudge is a deterministic trigger
-    # but the output-token reduction is an ESTIMATE (we can't measure the
-    # counterfactual output). Relocate to estimated tier, same as mcp_cap /
-    # hint_followed. The trigger is observed; the magnitude is not metered.
-    verbosity_steer_est = by_category.pop("verbosity_steer", None)
-    if verbosity_steer_est:
-        total_tokens -= int(verbosity_steer_est.get("tokens_saved", 0) or 0)
-        total_cost -= float(verbosity_steer_est.get("cost_saved_usd", 0.0) or 0.0)
-        total_events -= int(verbosity_steer_est.get("events", 0) or 0)
-
-    # resume_lean is a COUNTERFACTUAL --
-    # the cold `claude --resume` the user would otherwise have run -- not a
-    # removal of tokens already in flight (260/370 real events fired on the
-    # best-guess "continue" path). v5.13.1 fixed its magnitude (target's
-    # real last-turn context) and rate (cache-read when the cache is still
-    # warm, 1h cache-write when cold), but the trigger stays counterfactual,
-    # so it must not sit inside the measured counted total. Relocate to the
-    # estimated tier exactly like mcp_cap. savings_events has no tier
-    # column: this pop IS the tier=estimated stamp.
-    resume_lean_est = by_category.pop("resume_lean", None)
-    if resume_lean_est:
-        total_tokens -= int(resume_lean_est.get("tokens_saved", 0) or 0)
-        total_cost -= float(resume_lean_est.get("cost_saved_usd", 0.0) or 0.0)
-        total_events -= int(resume_lean_est.get("events", 0) or 0)
-
-    # checkpoint_restore credits the working set the resumed session SKIPS
-    # re-reading (_checkpoint_restore_recovery_tokens). That re-read never
-    # happens, so nothing was metered: the magnitude is inferred from this
-    # session's own read history, not observed avoided usage. Same class as
-    # resume_lean -- counterfactual credit, estimated tier. Relocate it out of
-    # the realized total; the pop IS the tier=estimated stamp.
-    checkpoint_restore_est = by_category.pop("checkpoint_restore", None)
-    if checkpoint_restore_est:
-        total_tokens -= int(checkpoint_restore_est.get("tokens_saved", 0) or 0)
-        total_cost -= float(checkpoint_restore_est.get("cost_saved_usd", 0.0) or 0.0)
-        total_events -= int(checkpoint_restore_est.get("events", 0) or 0)
+    # Relocated OUT of the realized total, each into its own non-realized line:
+    #   setup_optimization (A1): one-time prefix trim; structural_savings is the
+    #     ongoing model of the SAME trim, so the one-shot is never summed with it.
+    #   mcp_cap (A3): hardcoded-ratio estimate of Claude Code's own truncation.
+    #   hint_followed (U-G), verbosity_steer: observed trigger, estimated size.
+    #   resume_lean, checkpoint_restore: counterfactual credits (the cold
+    #     reload / working-set re-read never happened, so nothing was metered).
+    #   verbosity_steer_measured (savings-truth U5): a before/after of output
+    #     with no control. Against matched un-nudged replies it is not a
+    #     reduction, so the estimated tier credits only the net-of-control
+    #     figure (output_reread.summary_pool), never these booked rows.
+    # savings_events has no tier column: this pop IS the tier=estimated stamp.
+    popped = {}
+    for name in ("setup_optimization", "mcp_cap", "hint_followed", "verbosity_steer",
+                 "resume_lean", "checkpoint_restore", "verbosity_steer_measured"):
+        entry = popped[name] = by_category.pop(name, None)
+        if entry:
+            total_tokens -= int(entry.get("tokens_saved", 0) or 0)
+            total_cost -= float(entry.get("cost_saved_usd", 0.0) or 0.0)
+            total_events -= int(entry.get("events", 0) or 0)
 
     # B6: net tool-archive re-expansions out of the tool_archive credit. A
     # re-popped result didn't stay collapsed, so its eager credit is reversed
@@ -1485,14 +1437,6 @@ def _net_realized_savings(rows, reprice_deltas):
         total_cost += (net_cost - c_cost) - r_cost
         total_events -= r_events  # re-expand rows are not savings events
 
-    popped = {
-        "setup_optimization": one_time,
-        "mcp_cap": mcp_cap_est,
-        "hint_followed": hint_followed_est,
-        "verbosity_steer": verbosity_steer_est,
-        "resume_lean": resume_lean_est,
-        "checkpoint_restore": checkpoint_restore_est,
-    }
     return (by_category, total_tokens, total_cost, total_events, popped,
             repriced_to_session_mix)
 
@@ -1536,6 +1480,7 @@ def _get_savings_summary(days=None, since=None):
         verbosity_steer_est = popped["verbosity_steer"]
         resume_lean_est = popped["resume_lean"]
         checkpoint_restore_est = popped["checkpoint_restore"]
+        verbosity_output_est = _measure_facade._output_reread.summary_pool(popped["verbosity_steer_measured"])
 
         daily_avg = total_cost / days if days > 0 else 0.0
 
@@ -1568,6 +1513,9 @@ def _get_savings_summary(days=None, since=None):
             # from this session's reads -- the avoided re-read never happened,
             # so nothing was metered. Estimated tier, never realized.
             "checkpoint_restore_estimated": checkpoint_restore_est,
+            # Nudged replies and their later rereads, net of matched un-nudged
+            # replies (U5). Estimated tier; the booked rows are reference only.
+            "verbosity_output_estimated": verbosity_output_est,
             # True when at least one event's dollars moved because its event-time
             # model stamp disagreed with its own session's recorded model mix. The
             # figure is then a rate ALLOCATION, not a pure event-time meter, so
@@ -1599,6 +1547,7 @@ def _get_savings_summary(days=None, since=None):
             "verbosity_steer_estimated": None,
             "resume_lean_estimated": None,
             "checkpoint_restore_estimated": None,
+            "verbosity_output_estimated": None,
             "repriced_to_session_mix": False,
             "reprice_detail": None,
         }
@@ -2537,8 +2486,8 @@ def runway_snapshot(days=None, now=None):
                     # unlabelled. Window-scoped already (days/since passed above).
                     _rl = wm.get("resume_lean_estimated") or {}
                     _vs = wm.get("verbosity_steer") or wm.get("verbosity_steer_estimated") or {}
-                    est_add = float(_rl.get("cost_saved_usd", 0.0) or 0.0) \
-                        + float(_vs.get("cost_saved_usd", 0.0) or 0.0)
+                    _vo = wm.get("verbosity_output_estimated") or {}
+                    est_add = sum(float(p.get("cost_saved_usd", 0.0) or 0.0) for p in (_rl, _vs, _vo))
                 except Exception:
                     pass
                 try:
@@ -6506,7 +6455,7 @@ def _action_savings_components(summary, reread=None):
         for key in (
             "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
             "contamination_exit", "handover_rerun", "resume_lean_estimated",
-            "checkpoint_restore_estimated", "verbosity_steer",
+            "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
         )
     }
     hints = summary.get("hint_followed") or {}
@@ -6700,6 +6649,7 @@ def _get_merged_savings(days=None, since=None):
         # credited working set is inferred -- counterfactual, estimated tier,
         # never in the realized total.
         "checkpoint_restore_estimated": savings.get("checkpoint_restore_estimated"),
+        "verbosity_output_estimated": savings.get("verbosity_output_estimated"),
     }
 
 
@@ -6773,7 +6723,7 @@ def _savings_since_install():
             for k in (
                 "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
                 "contamination_exit", "handover_rerun", "resume_lean_estimated",
-                "checkpoint_restore_estimated", "verbosity_steer",
+                "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
             )
         )
         # Avoided-search: prefer the hint->read estimate (hint_followed; the
@@ -7143,10 +7093,10 @@ def savings_report(days=None, as_json=None):
     # measured table (that was the A1/A3 double-count). Without verbosity_steer
     # here, the row shows "0 events" in the measured table even though the
     # feature fires thousands of times/month — the raw nudge injection count is
-    # an estimated-tier metric, and the measured output reduction shows as
-    # verbosity_steer_measured below.
+    # an estimated-tier metric. verbosity_steer_measured is an uncontrolled
+    # before/after; its net-of-control figure prints in the estimated tier.
     _RELOCATED = {"setup_optimization", "mcp_cap", "verbosity_steer", "resume_lean",
-                  "checkpoint_restore"}
+                  "checkpoint_restore", "verbosity_steer_measured"}
 
     # Known measured categories (even if zero), then any unknown ones in the data.
     table_rows = [(label, by_cat.get(key, {}))
@@ -7309,6 +7259,10 @@ def savings_report(days=None, as_json=None):
         cre_monthly = _money(_est_cents["checkpoint_restore_estimated"])
         print(f"  + est. checkpoint restores: ~${cre_monthly}{per} "
               f"({cr_est.get('events', 0)} restores, inferred working-set re-reads) [estimated]")
+    vo_line = _measure_facade._output_reread.cli_line(summary.get("verbosity_output_estimated"),
+                                     _money(_est_cents["verbosity_output_estimated"]) + per)
+    if vo_line:
+        print(vo_line)
 
     # Estimated tier — FLAGSHIP: contamination-exit avoided rework (cohort).
     ce = summary.get("contamination_exit") or {}

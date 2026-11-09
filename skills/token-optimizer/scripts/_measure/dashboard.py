@@ -3631,7 +3631,8 @@ def _dashboard_saved_tokens(summary):
                  + tok(s.get("hint_followed") or s.get("hint_followed_estimated"))
                  + tok(s.get("verbosity_steer") or s.get("verbosity_steer_estimated"))
                  + tok(s.get("resume_lean_estimated"))
-                 + tok(s.get("checkpoint_restore_estimated")))
+                 + tok(s.get("checkpoint_restore_estimated"))
+                 + tok(s.get("verbosity_output_estimated")))
     measured = num(s.get("total_tokens", 0))
     # The dashboard draws no Tokens Saved card only when nothing was measured
     # AND nothing estimated exists -- estimates still surface on their own.

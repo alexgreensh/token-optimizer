@@ -323,3 +323,29 @@ def test_mixed_session_repairs_only_the_lost_marker(m, tmp_path, monkeypatch):
     assert conn.execute('SELECT count(*) FROM compression_events').fetchone()[0] == before
     assert conn.execute("SELECT count(*) FROM savings_events WHERE origin=?", (tb.ORIGIN,)).fetchone()[0] == 1
     conn.close()
+
+
+def test_mixed_session_nearby_different_bash_command_does_not_hide_loss(m, tmp_path, monkeypatch):
+    dbp = _db(m, tmp_path, monkeypatch)
+    monkeypatch.setattr(m, 'CLAUDE_DIR', tmp_path / 'claude')
+    path, start = _session(tmp_path, LOCAL)
+    _register(dbp, LOCAL, path)
+    conn = sqlite3.connect(str(dbp))
+    conn.execute("INSERT INTO compression_events(timestamp,feature,original_tokens,compressed_tokens,command_pattern,verified,tier,session_uuid,session_id) VALUES(?,?,?,?,?,1,'measured',?,?)", (_local_iso(start + timedelta(minutes=1)), 'bash_compress_pipeline', 12000, 100, 'git log', LOCAL, LOCAL))
+    conn.commit()
+    assert tb.run(conn, m, '2000-01-01')['rows_written'] == 2
+    assert conn.execute("SELECT count(*) FROM compression_events WHERE origin=?", (tb.ORIGIN,)).fetchone()[0] == 1
+    conn.close()
+
+
+def test_mixed_backfill_deduplicates_equivalent_shell_quoting(m, tmp_path, monkeypatch):
+    dbp = _db(m, tmp_path, monkeypatch)
+    monkeypatch.setattr(m, 'CLAUDE_DIR', tmp_path / 'claude')
+    path, start = _session(tmp_path, LOCAL)
+    _register(dbp, LOCAL, path)
+    conn = sqlite3.connect(str(dbp))
+    conn.execute("INSERT INTO compression_events(timestamp,feature,original_tokens,compressed_tokens,command_pattern,verified,tier,session_uuid,session_id) VALUES(?,?,?,?,?,1,'measured',?,?)", (_local_iso(start + timedelta(minutes=1)), 'bash_compress_pipeline', 12000, 100, "cargo 'test'", LOCAL, LOCAL))
+    conn.commit()
+    assert tb.run(conn, m, '2000-01-01')['rows_written'] == 1
+    assert conn.execute("SELECT count(*) FROM compression_events WHERE origin=?", (tb.ORIGIN,)).fetchone()[0] == 0
+    conn.close()

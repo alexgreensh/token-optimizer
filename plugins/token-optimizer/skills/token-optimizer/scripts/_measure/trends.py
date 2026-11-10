@@ -597,9 +597,9 @@ def _ensure_counted_views(conn):
         if {"counted_savings_events", "counted_compression_events"} <= have:
             return True
         statements = list(_measure_facade._COUNTED_VIEW_SQL)
-        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_void_evidence'").fetchone():
-            conn.create_function('archive_proof_current', 3, archive_void_evidence.proof_current)
-            statements[0] += " AND NOT EXISTS (SELECT 1 FROM main.archive_void_evidence v WHERE v.event_id=e.id AND archive_proof_current(v.path,v.size,v.mtime_ns)=1)"
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_void_evidence_v2'").fetchone():
+            conn.create_function('archive_proof_current', 5, archive_void_evidence.proof_current)
+            statements[0] += " AND NOT EXISTS (SELECT 1 FROM main.archive_void_evidence_v2 v WHERE v.event_id=e.id AND archive_proof_current(v.path,v.size,v.mtime_ns,v.parent,v.fingerprint)=1)"
         for statement in statements:
             conn.execute(statement)
         # SQLite resolves view columns lazily: a database missing a column the

@@ -115,7 +115,8 @@ def scan_transcript(path):
                     model = model if isinstance(model, str) and model and not model.startswith("<") else None
                     for block in message["content"]:
                         if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
-                            tool_uses[block["id"]] = (block.get("name"), model)
+                            args = block.get("input")
+                            tool_uses[block["id"]] = (block.get("name"), model, args.get("command") if isinstance(args, dict) else None)
                     continue
                 if record.get("type") != "user":
                     continue
@@ -128,10 +129,10 @@ def scan_transcript(path):
                     match = POINTER_RX.search(text)
                     if match:
                         out["pointer_results"] += 1
-                        tool, model = tool_uses.get(block.get("tool_use_id"), (None, None))
+                        tool, model, command = tool_uses.get(block.get("tool_use_id"), (None, None, None))
                         out["sized"].append({
                             "tool_use_id": block.get("tool_use_id"), "ts": record.get("timestamp"),
-                            "tool": tool, "model": model, "kind": match.group("kind"),
+                            "tool": tool, "model": model, "command": command, "kind": match.group("kind"),
                             "original_chars": int(match.group("chars").replace(",", "")),
                             "truncated": bool(match.group("truncated")), "text": text})
                         continue
@@ -186,7 +187,7 @@ def local_event_sessions(conn):
 
 def unmatched_markers(conn, session_uuid, scan, estimate_tokens, tokens_from_chars):
     """Skip markers with a plausible native row, keeping ambiguous cases conservative."""
-    ce = conn.execute("SELECT timestamp, original_tokens FROM compression_events WHERE "
+    ce = conn.execute("SELECT timestamp, original_tokens, command_pattern FROM compression_events WHERE "
                       "(session_uuid=? OR session_id=?) AND (origin IS NULL OR origin!=?) "
                       "AND (feature LIKE 'bash_%' OR feature IN ('build_output_compress','crossturn_dedup'))", (session_uuid, session_uuid, ORIGIN)).fetchall()
     se = conn.execute("SELECT timestamp, tokens_saved, detail FROM savings_events WHERE "
@@ -197,13 +198,24 @@ def unmatched_markers(conn, session_uuid, scan, estimate_tokens, tokens_from_cha
             return abs((datetime.fromisoformat(stamp) - datetime.fromisoformat(other)).total_seconds()) <= 20
         except (ValueError, TypeError):
             return False
+    def same_command(a, b):
+        if not a or not b or a == b:
+            return True
+        try:
+            import shlex
+            return shlex.split(a) == shlex.split(b)
+        except ValueError:
+            return False
     missing = []
     for event in scan['sized']:
         stamp = local_naive(event.get('ts'))
         if not stamp or not event.get('tool'):
             continue
         if event['tool'] == 'Bash':
-            match = any(near(stamp, ts) for ts, _orig in ce)
+            from .counted_subagents import _stored_command
+            command = _stored_command(event['command']) if isinstance(event.get('command'), str) else None
+            match = any(near(stamp, ts) and same_command(command, pattern)
+                        for ts, _orig, pattern in ce)
         else:
             match = any(near(stamp, ts) and (not detail or detail.startswith('replaced ' + event['tool'] + ' ('))
                         for ts, _tokens, detail in se)

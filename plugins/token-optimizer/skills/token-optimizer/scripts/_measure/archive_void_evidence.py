@@ -1,12 +1,14 @@
 """Identify archive rows contradicted by a uniquely matched full tool result."""
 import json
 import re
+import hashlib
+from pathlib import Path
 from datetime import datetime
 
 _ROW = re.compile(r'^replaced (\S+) \(([\d,]+) chars -> [\d,]+ chars\)')
 
 
-def full_result_ids(path, rows):
+def full_result_ids(path, rows, allow_sidechain=False):
     """Return row IDs only when one result and one row agree on time, tool and size."""
     expected = []
     for ident, timestamp, detail in rows:
@@ -26,7 +28,7 @@ def full_result_ids(path, rows):
                     stamp = datetime.fromisoformat(obj.get('timestamp', '').replace('Z', '+00:00')).astimezone().replace(tzinfo=None)
                 except (ValueError, TypeError, AttributeError):
                     continue
-                if obj.get('isSidechain'):
+                if obj.get('isSidechain') and not allow_sidechain:
                     continue
                 content = (obj.get('message') or {}).get('content')
                 if not isinstance(content, list):
@@ -51,21 +53,33 @@ def full_result_ids(path, rows):
     return {ident for ident, values in matches.items() if len(values) == 1 and hits[values[0]] == 1}
 
 
-def proof_current(path, size, mtime_ns):
+def session_files(parent):
+    parent = Path(parent)
+    return [parent] + sorted((parent.with_suffix('') / 'subagents').glob('agent-*.jsonl'))
+
+
+def session_fingerprint(parent):
     try:
-        stat = __import__('pathlib').Path(path).stat()
-        return int(stat.st_size == size and stat.st_mtime_ns == mtime_ns)
+        values = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in session_files(parent)]
+        return hashlib.sha256(repr(values).encode()).hexdigest()
+    except OSError:
+        return None
+
+
+def proof_current(path, size, mtime_ns, parent, fingerprint):
+    try:
+        stat = Path(path).stat()
+        return int(stat.st_size == size and stat.st_mtime_ns == mtime_ns and session_fingerprint(parent) == fingerprint)
     except (OSError, TypeError, ValueError):
         return 0
 
 
 def collect(conn, max_sessions=8, deadline_seconds=None):
-    """Append evidence after a stable scan; never alter the source ledger."""
+    """Append evidence after stable parent/subagent scans, preserving source rows."""
     import time
-    from pathlib import Path
     started = time.monotonic()
-    conn.execute('CREATE TABLE IF NOT EXISTS archive_void_evidence (event_id INTEGER, path TEXT, size INTEGER, mtime_ns INTEGER, PRIMARY KEY(event_id,path,size,mtime_ns))')
-    conn.execute('CREATE TABLE IF NOT EXISTS archive_void_scans (session_id TEXT, path TEXT, size INTEGER, mtime_ns INTEGER, PRIMARY KEY(session_id,path,size,mtime_ns))')
+    conn.execute('CREATE TABLE IF NOT EXISTS archive_void_evidence_v2 (event_id INTEGER, path TEXT, size INTEGER, mtime_ns INTEGER, parent TEXT, fingerprint TEXT, PRIMARY KEY(event_id,path,size,mtime_ns,fingerprint))')
+    conn.execute('CREATE TABLE IF NOT EXISTS archive_void_scans_v2 (session_id TEXT, parent TEXT, fingerprint TEXT, PRIMARY KEY(session_id,parent,fingerprint))')
     groups = {}
     for ident, stamp, detail, sid in conn.execute("SELECT id,timestamp,detail,COALESCE(session_uuid,session_id) FROM savings_events WHERE event_type='tool_archive' AND timestamp>='2026-08-01' AND timestamp<'2026-09-01' ORDER BY timestamp"):
         if sid:
@@ -75,24 +89,34 @@ def collect(conn, max_sessions=8, deadline_seconds=None):
         row = conn.execute('SELECT jsonl_path FROM session_log WHERE session_uuid=? AND jsonl_path IS NOT NULL ORDER BY id DESC LIMIT 1', (sid,)).fetchone()
         if not row:
             continue
-        path = Path(row[0])
-        try:
-            before = path.stat()
-        except OSError:
+        parent = row[0]
+        fingerprint = session_fingerprint(parent)
+        if fingerprint is None:
             continue
-        proof = (sid, str(path), before.st_size, before.st_mtime_ns)
-        if conn.execute('SELECT 1 FROM archive_void_scans WHERE session_id=? AND path=? AND size=? AND mtime_ns=?', proof).fetchone():
+        proof = (sid, parent, fingerprint)
+        if conn.execute('SELECT 1 FROM archive_void_scans_v2 WHERE session_id=? AND parent=? AND fingerprint=?', proof).fetchone():
             continue
         if (max_sessions is not None and out['scanned'] >= max_sessions) or (deadline_seconds is not None and time.monotonic() - started >= deadline_seconds):
             out['pending'] += 1
             continue
         out['scanned'] += 1
-        ids = full_result_ids(path, events)
-        if ids is None or not proof_current(str(path), before.st_size, before.st_mtime_ns):
+        matches = {}
+        for index, path in enumerate(session_files(parent)):
+            ids = full_result_ids(path, events, allow_sidechain=index > 0)
+            if ids is None:
+                matches = None
+                break
+            for ident in ids:
+                matches.setdefault(ident, []).append(path)
+        if matches is None or session_fingerprint(parent) != fingerprint:
             continue
-        for ident in ids:
-            inserted = conn.execute('INSERT OR IGNORE INTO archive_void_evidence VALUES (?,?,?,?)', (ident, str(path), before.st_size, before.st_mtime_ns))
+        for ident, paths in matches.items():
+            if len(paths) != 1:
+                continue
+            path = paths[0]
+            st = path.stat()
+            inserted = conn.execute('INSERT OR IGNORE INTO archive_void_evidence_v2 VALUES (?,?,?,?,?,?)', (ident, str(path), st.st_size, st.st_mtime_ns, parent, fingerprint))
             out['proven'] += max(0, inserted.rowcount)
-        conn.execute('INSERT OR IGNORE INTO archive_void_scans VALUES (?,?,?,?)', proof)
+        conn.execute('INSERT OR IGNORE INTO archive_void_scans_v2 VALUES (?,?,?)', proof)
     conn.commit()
     return out

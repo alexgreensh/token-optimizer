@@ -357,3 +357,40 @@ def test_proven_full_archive_is_excluded_without_deleting_source(m, tmp_path):
     conn = m._init_trends_db()
     assert conn.execute('SELECT count(*) FROM ' + m._counted_table(conn, 'savings_events')).fetchone()[0] == 1
     conn.close()
+
+
+def test_subagent_archive_proof_rejects_new_ambiguous_match(m, tmp_path):
+    import json
+    from _measure import archive_void_evidence as av
+    from datetime import timezone
+    t = datetime(2026, 8, 15, 11, 0, tzinfo=timezone.utc)
+    stamp = t.astimezone().replace(tzinfo=None).isoformat()
+    parent = tmp_path / 'parent.jsonl'
+    parent.write_text('')
+    subdir = parent.with_suffix('') / 'subagents'
+    subdir.mkdir(parents=True)
+    content = '\n'.join(json.dumps(x) for x in [
+        {'type': 'assistant', 'isSidechain': True, 'timestamp': t.isoformat(), 'message': {'content': [{'type': 'tool_use', 'id': 't1', 'name': 'mcp__x__fetch'}]}},
+        {'type': 'user', 'isSidechain': True, 'timestamp': t.isoformat(), 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 't1', 'content': 'a' * 4000}]}},
+    ])
+    (subdir / 'agent-a.jsonl').write_text(content)
+    conn = m._init_trends_db()
+    conn.execute('INSERT INTO session_log (session_uuid,jsonl_path,date) VALUES (?,?,?)', (REAL_UUID, str(parent), '2026-08-15'))
+    _se(conn, 'tool_archive', 1000, REAL_UUID, 'replaced mcp__x__fetch (4,000 chars -> 300 chars)', stamp)
+    conn.commit()
+    assert av.collect(conn, max_sessions=None)['proven'] == 1
+    conn.close()
+    conn = m._init_trends_db()
+    assert conn.execute('SELECT count(*) FROM ' + m._counted_table(conn, 'savings_events')).fetchone()[0] == 0
+    conn.close()
+    (subdir / 'agent-b.jsonl').write_text(content)
+    conn = m._init_trends_db()
+    assert conn.execute('SELECT count(*) FROM ' + m._counted_table(conn, 'savings_events')).fetchone()[0] == 1
+    conn.close()
+    conn = m._init_trends_db()
+    assert av.collect(conn, max_sessions=None)['proven'] == 0
+    conn.close()
+    conn = m._init_trends_db()
+    assert conn.execute('SELECT count(*) FROM ' + m._counted_table(conn, 'savings_events')).fetchone()[0] == 1
+    assert conn.execute('SELECT count(*) FROM savings_events').fetchone()[0] == 1
+    conn.close()

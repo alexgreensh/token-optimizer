@@ -33,20 +33,44 @@ def _hash63(text):
 
 
 def local_prefixes(home):
-    """(home_key, claude_key): sessions whose project dir encodes a path under
-    HOME run on this machine; anything under ~/.claude is synced or tool-run
-    (cloud stubs live there) and does not load this machine's setup."""
+    """(home_key, claude_key): project-key encodings of HOME and ~/.claude."""
     enc = "".join(c if c.isalnum() else "-" for c in str(home))
     return enc, enc + "--claude"
 
 
+def cloud_sessions(conn):
+    """Sessions proven to have run elsewhere: their ledger rows were rebuilt from
+    the transcript (origin transcript_backfill), as in session_effect."""
+    out = set()
+    try:
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in ("savings_events", "compression_events"):
+            if table in names and "origin" in {r[1] for r in conn.execute("PRAGMA table_info(%s)" % table)}:
+                out.update(r[0] for r in conn.execute(
+                    "SELECT DISTINCT session_uuid FROM %s WHERE origin = 'transcript_backfill' "
+                    "AND session_uuid IS NOT NULL" % table))
+    except Exception:
+        pass
+    return out
+
+
+def proven_foreign(uuid, path, cloud):
+    """True only on evidence the session did not load this machine's setup:
+    it ran in the cloud, or it is a benchmark-harness session (own fixture home)."""
+    from . import fixture_context
+    return bool(uuid and uuid in cloud) or fixture_context.benchmark_path(path)
+
+
 def scope_matches(scope, project, home):
+    """Does a component with this scope load in a session of this project?
+
+    "global" loads in every session on this machine, wherever its cwd is
+    (/workspace, /mnt, D:\\, ~/.claude ...): only proven-foreign sessions are
+    left out, by load_sessions, never by directory name.
+    """
     project = project or ""
     if scope == "global":
-        home_key, claude_key = local_prefixes(home)
-        if project.startswith(claude_key):
-            return False
-        return project == home_key or project.startswith(home_key + "-")
+        return True
     if scope.startswith("project:"):
         return project == scope[len("project:"):]
     if scope.startswith("tree:"):
@@ -74,15 +98,17 @@ def _session_start(metrics_json, first_day):
 
 
 def load_sessions(conn):
-    """owner_hash -> (project, start_epoch) for every session row."""
+    """owner_hash -> (project, start_epoch, foreign) for every session row."""
     out = {}
+    cloud = cloud_sessions(conn)
     for uuid, path, project, metrics, first_day, date in conn.execute(
             "SELECT session_uuid, jsonl_path, project, daily_metrics_json, first_activity_day, date "
             "FROM session_log"):
         start = _session_start(metrics, first_day or date)
+        foreign = proven_foreign(uuid, path, cloud)
         for key in (uuid, path):
             if key:
-                out[_hash63(key)] = (project or "", start)
+                out[_hash63(key)] = (project or "", start, foreign)
     return out
 
 
@@ -132,10 +158,12 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False)
         if sess is None:
             unmatched += 1
             continue
-        project, start = sess
+        project, start, foreign = sess
         card = card_fn(model, (cr or 0) + (cc or 0) + (inp or 0))
         n = int(calls or 1)
         for scope, group in by_scope.items():
+            if foreign and scope == "global":
+                continue
             key = (scope, project)
             if key not in scope_cache:
                 scope_cache[key] = scope_matches(scope, project, home)

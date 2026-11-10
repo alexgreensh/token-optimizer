@@ -146,17 +146,21 @@ def test_scope_start_time_and_projection(m):
     trim_ts = day.astimezone().isoformat()
     _session(conn, m, "before", LOCAL, day - timedelta(hours=1))   # started before the trim
     _session(conn, m, "after", LOCAL_SUB, day + timedelta(hours=1))
-    _session(conn, m, "stub", STUB, day + timedelta(hours=1))      # remote: never loads this setup
-    _session(conn, m, "elsewhere", "-opt-other", day + timedelta(hours=1))
-    for i, u in enumerate(("before", "after", "stub", "elsewhere")):
+    _session(conn, m, "stub", STUB, day + timedelta(hours=1))      # proven remote below: never loads this setup
+    _session(conn, m, "elsewhere", "-workspace-app", day + timedelta(hours=1))   # code outside HOME, same machine
+    _session(conn, m, "bench", "-tmp-to-bench-M1-x", day + timedelta(hours=1),
+             path="/h/.claude/projects/-tmp-to-bench-M1-x/bench.jsonl")          # harness fixture home
+    conn.execute("INSERT INTO savings_events (timestamp, event_type, tokens_saved, session_uuid, origin) "
+                 "VALUES (?, 'tool_archive', 10, 'stub', 'transcript_backfill')", (trim_ts,))
+    for i, u in enumerate(("before", "after", "stub", "elsewhere", "bench")):
         _req(conn, m, u, 10 + i, d, cr=50_000)
     conn.commit()
     g = L.load_trims_from([_trim(L, trim_ts, tokens=500)])
     card = lambda model, p: _card(m, model)
     real = V.value_trims(conn, g, d, d, card, HOME)["trims"][g[0]["id"]]
     proj = V.value_trims(conn, g, d, d, card, HOME, projected=True)["trims"][g[0]["id"]]
-    assert real["requests"] == 1      # only "after"
-    assert proj["requests"] == 2      # "before" + "after"; stub and elsewhere never
+    assert real["requests"] == 2      # "after" + "elsewhere"
+    assert proj["requests"] == 3      # + "before"; the proven-cloud stub and the bench session never
     p = L.load_trims_from([_trim(L, trim_ts, tokens=500, comp="memory_md", item="MEMORY.md",
                                  scope="project:" + LOCAL)])
     assert V.value_trims(conn, p, d, d, card, HOME, projected=True)["trims"][p[0]["id"]]["requests"] == 1

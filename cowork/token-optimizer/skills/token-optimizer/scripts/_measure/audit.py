@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
+from . import _compat, transcript_product
 
 
 def _read_codex_config() -> dict:
@@ -2653,49 +2653,8 @@ def quick_scan(as_json=None):
     offenders.sort(key=lambda x: ((_measure_facade := _compat.facade()), -x[2])[1])
     top_offenders = offenders[:3]
 
-    # Quick win: check for unused skills via trends
-    quick_win = None
-    try:
-        trends = _measure_facade._collect_trends_data(days=30)
-        if trends and _measure_facade.detect_runtime() != "codex":
-            never_used = trends.get("skills", {}).get("never_used", [])
-            active_names = set(skills.get("names", []))
-            never_used = sorted({n for n in never_used
-                                 if n in active_names and not _measure_facade._is_own_tool_skill(n)})
-            if len(never_used) >= 3:
-                # Same rule as the coach's unused-skill savings: measured
-                # per-skill frontmatter only — never count x inventory average
-                # (which reports the inventory bound when most skills are
-                # unused) and never count x a flat constant.
-                detail_map = components.get("skills_detail", {})
-                measured = 0
-                unmeasured = 0
-                for _n in never_used:
-                    try:
-                        _t = int((detail_map.get(_n) or {}).get("frontmatter_tokens") or 0)
-                    except (TypeError, ValueError, OverflowError):
-                        _t = 0
-                    if _t > 0:
-                        measured += _t
-                    else:
-                        unmeasured += 1
-                if measured > 0:
-                    _unm = f" ({unmeasured} of {len(never_used)} lack per-skill measurement)" if unmeasured else ""
-                    quick_win = {
-                        "action": f"Review {len(never_used)} skills not invoked in the window",
-                        "savings": measured,
-                        "detail": f"save ~{measured:,} measured tokens/session{_unm}",
-                        "extend": f"Extends peak quality zone by ~{measured:,} tokens",
-                    }
-                else:
-                    quick_win = {
-                        "action": f"Review {len(never_used)} skills not invoked in the window",
-                        "savings": 0,
-                        "detail": "savings unknown: per-skill measurements unavailable",
-                        "extend": "Removing unused skills extends the peak quality zone",
-                    }
-    except Exception:
-        pass
+    product_check = transcript_product.from_facade(_measure_facade) if _rt == 'claude' else None
+    quick_win = transcript_product.quick_win(_measure_facade, components, skills, product_check) if product_check else None
 
     # If no trends-based win, suggest instruction-file trimming
     if not quick_win and _measure_facade.detect_runtime() == "codex":
@@ -2788,6 +2747,7 @@ def quick_scan(as_json=None):
                 for o in top_offenders
             ],
             "quick_win": quick_win,
+            "transcript_checks": product_check,
             "coaching": coaching,
             "subagent_cache": _measure_facade.subagent_cache_block(),
         }
@@ -2807,6 +2767,9 @@ def quick_scan(as_json=None):
     print(f"  Startup overhead:    {overhead:,} tokens ({overhead_pct:.1f}%)")
     print(f"  Usable before degradation: ~{usable_before_degradation:,} (50% fill = peak quality zone)")
     print(f"  Messages before auto-compact: ~{msgs_before_compact} at typical message size")
+    if product_check:
+        print("  " + transcript_product.listing_message(product_check))
+        print("  " + transcript_product.connector_message(product_check))
 
     print("\n  DEGRADATION RISK")
     print(f"    Current startup fill:  {fill_pct * 100:.0f}% ({overhead:,}) -- {band_name}")
@@ -4309,15 +4272,14 @@ def _is_own_tool_skill(name) -> bool:
 
 def _skill_slim_clause(avg_tokens, runtime):
     """Softer-than-archive options for an unused skill, inserted ABOVE the archive
-    step. Keeps the skill installed while dropping its per-turn description cost.
+    step. Keeps the skill installed while changing its listing visibility.
 
     Returns a block that STARTS and ends with a newline so it drops cleanly
     between the skill list and the archive step (each call site therefore does
     NOT add its own leading newline). Claude gets the two REAL, distinct Claude
     Code levers -- do not conflate them:
       - skillOverrides "name-only": NAME stays visible to the model (still
-        invocable by name), description dropped -> stops auto-triggering, saves
-        the description tokens. The true "name-only" middle mode.
+        invocable by name), description dropped -> stops auto-triggering.
       - disable-model-invocation: true (frontmatter): removes the skill from the
         model's context ENTIRELY (name too); only the user invokes it via /name.
     Foreign runtimes have no per-skill toggle, so they get an honest note.
@@ -4325,9 +4287,8 @@ def _skill_slim_clause(avg_tokens, runtime):
     _measure_facade = _compat.facade()
     if runtime == "claude":
         return (
-            f"\n  Softer than archiving -- two Claude Code levers keep the skill installed and recover "
-            f"~{avg_tokens} tokens/skill per turn (Claude may already have dropped some descriptions past "
-            f"its listing budget, so treat this as an upper bound):"
+            f"\n  Softer than archiving -- two Claude Code levers keep the skill installed. "
+            f"The token change depends on the observed listing and its budget:"
             f"\n    - Name-only (keep it discoverable): in the `/skills` menu press Space to cycle a skill to "
             f"`name-only` (writes `skillOverrides` in .claude/settings.local.json). The model still sees the "
             f"NAME so it can invoke it, but the description drops from context and it stops auto-triggering. "
@@ -4448,68 +4409,11 @@ def generate_auto_recommendations(components, trends=None, days=None):
                 f"Focus on content that's only relevant for specific workflows."
             )
 
-    # --- Rule 3: Unused skills (requires trends data) ---
-    # Use actual measured avg if available, else fallback to constant
-    _si = components.get("skills", {})
-    _actual_avg = _si.get("tokens", 0) // max(_si.get("count", 1), 1) if _si.get("count", 0) > 0 else _measure_facade.TOKENS_PER_SKILL_APPROX
-    # Harness-aware "slim it, don't delete it" clause inserted ABOVE the archive
-    # step (see _skill_slim_clause). Codex is dispatched to
-    # _generate_codex_auto_recommendations and never reaches here, so this only
-    # shapes Claude / other-foreign-runtime advice.
     _runtime = _measure_facade.detect_runtime()
-    if trends:
-        # Never recommend cutting our own measurement skills.
-        never_used = [
-            s for s in trends.get("skills", {}).get("never_used", [])
-            if not _measure_facade._is_own_tool_skill(s)
-        ]
-        installed_count = trends.get("skills", {}).get("installed_count", 0)
-        if len(never_used) >= 5:
-            overhead = len(never_used) * _actual_avg
-            show_count = min(len(never_used), 8)
-            skill_list = ", ".join(_measure_facade._strip_ansi(str(s)) for s in sorted(never_used)[:show_count])
-            remaining = len(never_used) - show_count
-            quick.append(
-                f"**Review {show_count} skills not invoked in {days} days ({len(never_used)} of {installed_count}, counting Skill calls and slash commands)**: "
-                f"Each installed skill costs ~{_actual_avg} tokens in the startup menu, every session, whether you use it or not.\n"
-                f"  Start with these: {skill_list}"
-                + (f"\n  ({remaining} more will surface after you archive these and re-run.)" if remaining > 0 else "") +
-                f"\n  For each skill, ask: do I use this? Is it seasonal? Does anything depend on it? "
-                f"(`grep -r \"[skill-name]\" ~/.claude/CLAUDE.md ~/.claude/rules/ ~/.claude/skills/`)"
-                + _measure_facade._skill_slim_clause(_actual_avg, _runtime) +
-                f"  Archive (harder step, for truly-dead skills) by moving to ~/.claude/_backups/skills-archived-$(date +%Y%m%d)/ (NOT inside skills/). "
-                f"Restore any skill by moving it back. "
-                f"~{overhead:,} tokens recoverable across all {len(never_used)}."
-            )
-        elif len(never_used) >= 2:
-            overhead = len(never_used) * _actual_avg
-            skill_list = ", ".join(_measure_facade._strip_ansi(str(s)) for s in sorted(never_used))
-            medium.append(
-                f"**Review {len(never_used)} skills not invoked in {days} days**: "
-                f"No Skill call or slash command for these in {days} days: {skill_list}."
-                + _measure_facade._skill_slim_clause(_actual_avg, _runtime) +
-                f"  Or archive truly-dead skills to ~/.claude/_backups/skills-archived-$(date +%Y%m%d)/ (NOT inside skills/). "
-                f"~{overhead:,} tokens recoverable."
-            )
-
-    # --- Rule 3a: Skills audit fallback (no trends data) ---
-    skill_info = components.get("skills", {})
-    skill_count = skill_info.get("count", 0)
-    skill_tokens = skill_info.get("tokens", 0)
-    avg_per_skill = skill_tokens // max(skill_count, 1)
-    if not trends and skill_count > 10:
-        est_archive = skill_count - 10
-        est_savings = est_archive * avg_per_skill
-        medium.append(
-            f"**Review {skill_count} skills ({skill_tokens:,} tokens, no usage data)**: "
-            f"You have {skill_count} skills but no session data to determine which are unused. "
-            f"Each skill costs ~{avg_per_skill} tokens at startup whether you use it or not.\n"
-            f"  Install the SessionEnd hook (`{_measure_facade._measure_cli()} setup-hook`) to enable usage-based "
-            f"recommendations. Meanwhile, manually review: do you use all {skill_count} regularly?"
-            + _measure_facade._skill_slim_clause(avg_per_skill, _runtime) +
-            f"  Archiving {est_archive} (harder step, truly-dead skills) would free ~{est_savings:,} tokens/session. "
-            f"~{est_savings:,} tokens recoverable."
-        )
+    if _runtime == 'claude':
+        _product = transcript_product.from_facade(_measure_facade)
+        quick.extend([transcript_product.listing_message(_product), transcript_product.connector_message(_product)])
+        quick.extend(transcript_product.skill_recommendations(_measure_facade, components, trends, 'counting Skill calls and slash commands'))
 
     # --- Rule 3b: Removed in v2.3.0 ---
     # Aggregate "skills consume N tokens" was not actionable. Specific rules (Rule 3
@@ -5032,37 +4936,17 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
     unused_skills = sorted({name for name in unused_skills
                             if name in active_names and not _measure_facade._is_own_tool_skill(name)})
     unused_count = len(unused_skills)
-    # Savings come from per-skill measurement only: sum the unused candidates'
-    # own measured frontmatter tokens. Unmeasured names are reported as such —
-    # never an inventory-wide upper bound and never count x a flat constant.
-    skills_detail = components.get("skills_detail", {})
-    unused_measured_tokens = 0
-    unused_unmeasured = 0
-    for _name in unused_skills:
-        _raw_toks = (skills_detail.get(_name) or {}).get("frontmatter_tokens")
-        try:
-            _toks = int(_raw_toks)
-        except (TypeError, ValueError, OverflowError):
-            # NaN/inf/non-numeric entries are unmeasured, not a coach crash.
-            _toks = 0
-        if _toks > 0:
-            unused_measured_tokens += _toks
-        else:
-            unused_unmeasured += 1
-    if unused_measured_tokens > 0 and unused_unmeasured == 0:
-        unused_savings = f"~{unused_measured_tokens:,} tokens (measured descriptions of the {unused_count} unused skills)"
-    elif unused_measured_tokens > 0:
-        unused_savings = (f"~{unused_measured_tokens:,} tokens measured for the unused set "
-                          f"({unused_unmeasured} of {unused_count} lack per-skill measurement)")
-    else:
-        unused_savings = "Unknown: per-skill token measurements unavailable for the unused set"
+    product_check = transcript_product.from_facade(_measure_facade) if is_claude else None
+    unused_savings = transcript_product.unused_savings(components, unused_skills, product_check)
+    if product_check:
+        patterns_bad.extend(transcript_product.coach_patterns(product_check))
     unused_ratio = unused_count / skill_count if skill_count > 0 else 0
     if unused_count > 20 and skill_pct > 2 and unused_ratio > 0.8:
         skill_fix = (
             "Review unused Codex skills and plugins. Disable truly stale user skills with "
             "`measure.py codex-skill disable --path ...`; do not edit plugin cache directories directly."
             if is_codex
-            else "Review unused skills. Some may be seasonal, but archiving truly abandoned ones saves tokens. Move to ~/.claude/skills/_archived/"
+            else "Review unused skills; use transcript evidence before estimating archive savings."
         )
         # Truly excessive: >80% of skills unused AND significant token overhead
         patterns_bad.append({

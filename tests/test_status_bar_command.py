@@ -529,11 +529,11 @@ def test_dashboard_saved_tokens_is_measured_plus_estimated(sb):
         "total_tokens": 1000,
         "mcp_cap_estimated": {"tokens_saved": 10},
         "hint_followed": {"tokens_saved": 20},
-        "verbosity_steer_estimated": {"tokens_saved": 30},  # fallback key, as the dashboard reads it
+        "verbosity_steer_estimated": {"tokens_saved": 30},  # diagnostic, never credited
         "resume_lean_estimated": {"tokens_saved": 40},
         "reread_avoided": {"reread_tokens": 999999},  # not in the headline
     }
-    assert sb._dashboard_saved_tokens(summary) == (1100, 1000)
+    assert sb._dashboard_saved_tokens(summary) == (1070, 1000)
     assert sb._dashboard_saved_tokens({}) == (0, 0)
 
 

@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, fixture_context, counted_cap, archive_void_evidence
+from . import _compat, fixture_context, counted_cap, archive_void_evidence, compression_fixture_void
 
 
 def _classify_jsonl_is_sidechain(filepath, max_lines=None):
@@ -601,6 +601,8 @@ def _ensure_counted_views(conn):
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_void_evidence_v2'").fetchone():
             conn.create_function('archive_proof_current', 5, archive_void_evidence.proof_current)
             statements[0] += " AND NOT EXISTS (SELECT 1 FROM main.archive_void_evidence_v2 v WHERE v.event_id=e.id AND archive_proof_current(v.path,v.size,v.mtime_ns,v.parent,v.fingerprint)=1)"
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (compression_fixture_void.TABLE,)).fetchone():
+            statements[1] += " AND " + compression_fixture_void.view_filter("c")
         for statement in statements:
             conn.execute(statement)
         # Probe lazy view resolution so older schemas can fall back safely.

@@ -366,8 +366,13 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-def _score_verified_event(row, m, tier_data):
-    """Score a delivered lean block only if the old session stayed stopped."""
+def _score_verified_event(row, m, tier_data, compactions=None):
+    """Score a delivered lean block only if the old session stayed stopped.
+
+    The counterfactual old session's compaction point comes from the user's own
+    compaction sizes (``compaction_survival``); with too little history the
+    fixed 500K rule stays.
+    """
     import re
     result = {'eligible': False, 'turns': 0, 'carry_tokens': 0, 'carry_cost_usd': 0.0}
     target = _sid_for(row, m)
@@ -418,11 +423,22 @@ def _score_verified_event(row, m, tier_data):
     avoided = int(row.get('tokens_saved') or 0)
     if avoided <= 0:
         return result
-    threshold, source = lean_resume_threshold.threshold(new_path, lambda usage: _prompt_tokens(m, usage))
+    from _measure import compaction_survival
+    if compactions is None:
+        compactions = compaction_survival.user_history(m, ev)
+    survival = compaction_survival.for_event(compactions, ev, avoided)
+    if survival.usable:
+        # The counterfactual is the old session continuing: its context window
+        # is 1M when either session (or the avoided reload itself) passed 200K.
+        sizes = [lean_resume_threshold.window_limit(p, lambda usage: _prompt_tokens(m, usage)) for p in (new_path, old_path)]
+        threshold = None if None in sizes else max(sizes + [lean_resume_threshold.window_for(avoided)])
+        source = 'user_compaction_survival'
+    else:
+        threshold, source = lean_resume_threshold.threshold(new_path, lambda usage: _prompt_tokens(m, usage))
+        if threshold is not None and threshold > 500000:
+            threshold, source = 500000, 'old_session_500k_cap'
     if threshold is None:
         return result
-    if threshold > 500000:
-        threshold, source = 500000, 'old_session_500k_cap'
     turns, stopped = _walk(new_path, ev.replace(microsecond=0), avoided, m, threshold)
     if not turns and (stopped != 'counterfactual_compaction' or not (_walk(new_path, ev.replace(microsecond=0), 0, m, 2**63)[0] or [])):
         return result
@@ -439,8 +455,11 @@ def _score_verified_event(row, m, tier_data):
             return result
     except OSError:
         return result
-    result.update(eligible=True, receiver=receiver, oneshot_usd=round(avoided * old_card[key] / 1e6, 6), turns=len(turns), carry_tokens=avoided * len(turns),
-                  carry_cost_usd=round(sum(avoided * card['cache_read'] / 1e6 for card in cards), 6),
+    weights = [survival.weight(ctx) if survival.usable else 1.0 for _dt, _model, ctx in turns]
+    result.update(eligible=True, receiver=receiver, oneshot_usd=round(avoided * old_card[key] / 1e6, 6), turns=len(turns),
+                  carry_tokens=int(round(sum(avoided * w for w in weights))),
+                  carry_cost_usd=round(sum(avoided * w * card['cache_read'] / 1e6 for w, card in zip(weights, cards)), 6),
+                  weighted_turns=round(sum(weights), 4), compactions_above=survival.above,
                   stopped_by=stopped, threshold_source=source)
     return result
 
@@ -457,13 +476,17 @@ def verified_summary(days=30, since=None, db_path=None):
         finally: conn.close()
     except Exception:
         links = {}
+    from _measure import compaction_survival
+    compactions = None
     for row in _events(days=days, since=since, db_path=db_path):
+        if compactions is None:
+            compactions = compaction_survival.user_history(m, _event_dt(m, row.get('timestamp')))
         if 'receiver=' not in (row.get('detail') or ''):
             receiver = links.get(row.get('id'))
             if not receiver:
                 continue
             row = dict(row, detail=(row.get('detail') or '') + ' receiver=' + receiver)
-        score = _score_verified_event(row, m, tier_data)
+        score = _score_verified_event(row, m, tier_data, compactions)
         if not score['eligible']:
             continue
         out['events'] += 1

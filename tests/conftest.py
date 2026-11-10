@@ -73,6 +73,7 @@ import _home_guard  # noqa: E402
 
 _home_guard.install_sandbox()
 _home_guard.install_guard()
+_home_guard.install_subprocess_guard()
 
 
 @pytest.fixture(autouse=True)

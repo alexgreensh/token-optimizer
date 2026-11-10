@@ -68,25 +68,63 @@ def group_events(facade, conn, events, resolve=True):
                     if stored in commands.values():
                         hits[stored].append((dt, path, tid))
         candidates = {}
-        frequency = defaultdict(int)
         for ev in noid:
             key, ts = ev[:2]
             when = facade._counted_event_utc(ts)
-            matches = [(path, tid) for dt, path, tid in hits.get(commands.get(key), [])
-                       if when is not None and abs((dt - when).total_seconds()) <= sub.MATCH_SECONDS]
-            candidates[key] = matches
-            for match in matches:
-                frequency[match] += 1
+            candidates[key] = [((when - dt).total_seconds(), path, tid) for dt, path, tid in hits.get(commands.get(key), [])
+                               if when is not None and LAG_MIN <= (when - dt).total_seconds() <= LAG_MAX]
+        assigned = assign(candidates)
         for ev in noid:
-            key = ev[0]
-            matches = candidates[key]
-            if len(matches) == 1 and frequency[matches[0]] == 1:
-                path, _tid = matches[0]
-                direct[key] = path
+            path = assigned.get(ev[0])
+            if path is not None:
+                direct[ev[0]] = path
                 groups.setdefault(_parent(path).stem, []).append(ev)
             else:
                 groups.setdefault(None, []).append(ev)
     return groups, direct
+
+
+# The hook logs a bash event right after the tool result it compressed. On
+# located rows the event is 0 to 1 s after the result's (second-truncated)
+# timestamp, occasionally up to 1 s before it; the window allows margin.
+LAG_MIN, LAG_MAX = -3.0, 2.0
+# Results in different transcripts this close in lag are indistinguishable.
+TIE_SECONDS = 1.0
+
+
+def assign(candidates):
+    """One event to one tool result. {event key: transcript path}.
+
+    ``candidates`` maps an event to [(lag seconds, path, tool_use_id)]. An
+    event is placed only when its closest free results all sit in one
+    transcript; placing it takes that result, which can settle other events.
+    Events still split across transcripts stay unlocated.
+    """
+    taken, placed = set(), {}
+    pending = {key: sorted(values, key=lambda c: (abs(c[0]), str(c[1]), str(c[2])))
+               for key, values in candidates.items() if values}
+    changed = True
+    while changed and pending:
+        changed = False
+        # Events with the fewest free results first, so a forced pairing is
+        # never taken by an event that had other choices.
+        order = sorted(pending, key=lambda k: (sum((c[1], c[2]) not in taken for c in pending[k]), k))
+        for key in order:
+            free = [c for c in pending[key] if (c[1], c[2]) not in taken]
+            if not free:
+                del pending[key]
+                changed = True
+                continue
+            best = abs(free[0][0])
+            rivals = [c for c in free if abs(c[0]) <= best + TIE_SECONDS]
+            if len({c[1] for c in rivals}) != 1:
+                continue
+            _lag, path, tid = rivals[0]
+            taken.add((path, tid))
+            placed[key] = path
+            del pending[key]
+            changed = True
+    return placed
 
 
 def apply_scope(scope, direct, parent):

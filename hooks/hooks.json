@@ -77,6 +77,17 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 || continue; D=\"${CLAUDE_PLUGIN_ROOT}\"; [ -r \"$D/hooks/python-launcher.sh\" ] || D=\"$(ls -d \"${D%[/\\\\]*}\"/*/ 2>/dev/null | grep -E \"/[0-9]+[.][0-9]+[.][0-9]+/$\" | sort -V | tail -n1)\"; D=\"${D%/}\"; [ -r \"$D/hooks/python-launcher.sh\" ] || exit 0; exec \"$b\" \"$D/hooks/python-launcher.sh\" \"$D/hooks/run.py\" skills/token-optimizer/scripts/codemap_hint.py; done; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

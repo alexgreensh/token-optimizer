@@ -70,7 +70,6 @@ function savingsStoryBands(data) {
   var trimMeasuredTok = trimLedger ? num(sd.tokens_saved) : 0;
   var trimEst = (trimLedger && sd.estimated) || {};
   var est = as.estimates_usd || {};
-  var resumeUsd = num(est.resume_lean_estimated);
   var outputInEst = num(est.output_reread);
   var reloadTok = num(th.reload_avoided_tokens);
   var removedTok = has(th.context_removed_tokens)
@@ -91,9 +90,8 @@ function savingsStoryBands(data) {
     { key: 'output_reread', label: 'Shorter answers, not re-read', usd: orr.cost_saved_usd, tok: orr.tokens_saved,
       on: num(orr.cost_saved_usd) > 0,
       why: orr.control_net == null && orr.available ? 'Not yet compared against sessions without the nudge.' : '' },
-    { key: 'resumes', label: 'Lean resumes', usd: resumeUsd, tok: reloadTok, on: resumeUsd > 0 },
-    { key: 'other', label: 'Other estimates', usd: num(as.estimated_usd) - resumeUsd - outputInEst, tok: 0,
-      on: num(as.estimated_usd) - resumeUsd - outputInEst >= 0.5,
+    { key: 'other', label: 'Other estimates', usd: num(as.estimated_usd) - outputInEst, tok: reloadTok,
+      on: num(as.estimated_usd) - outputInEst >= 0.5,
       why: 'Loops stopped, sub-agent output, handovers and restores.' }
   ];
   function live(rows) {

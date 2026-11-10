@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, headline
+from . import _compat, counted_subagents, headline
 
 def _counted_event_utc(ts):
     """Savings-event timestamps are naive LOCAL time (datetime.now()); transcript
@@ -15,106 +15,9 @@ def _counted_event_utc(ts):
 
 
 def _counted_walk_transcript(path, collect_markers=None):
-    """One pass over a transcript for the counted-cumulative engine.
-
-    Returns (turns, compacts, markers):
-      turns   = [(utc-naive datetime, raw model id, full prompt tokens,
-                  (cache write tokens, 1h part, 5m part, cache read tokens) or None)]
-                -- parent API calls, deduped on requestId/message.id (Claude Code
-                writes one assistant line per content block, all sharing the
-                same usage);
-      compacts= [utc-naive datetime] of real compact_boundary system lines;
-      markers = [(utc-naive datetime-or-None, tokens-or-None)] for
-                "Full result archived" injections (collect_markers only).
-    Never raises; returns ([], [], []) on unreadable files.
-    """
-    _measure_facade = _compat.facade()
-    turns, compacts, markers = [], [], []
-    seen = {}
-    last_ts = None
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if collect_markers and "Full result archived" in line:
-                    m = _measure_facade._COUNTED_MARKER_RX.search(line)
-                    tok = None
-                    if m and m.group(1):
-                        tok = max(1, int(m.group(1).replace(",", "")) // 4)
-                    markers.append((last_ts, tok))
-                if '"assistant"' not in line and "compact_boundary" not in line:
-                    continue
-                try:
-                    d = _measure_facade.json.loads(line)
-                except (_measure_facade.json.JSONDecodeError, ValueError):
-                    continue
-                if not isinstance(d, dict):
-                    continue
-                t = d.get("type")
-                ts = d.get("timestamp")
-                dt = None
-                if ts:
-                    try:
-                        dt = _measure_facade.datetime.strptime(str(ts)[:19], "%Y-%m-%dT%H:%M:%S")
-                    except (ValueError, TypeError):
-                        dt = None
-                if dt is not None:
-                    last_ts = dt
-                if t == "system" and d.get("subtype") == "compact_boundary":
-                    if dt is not None:
-                        compacts.append(dt)
-                    continue
-                if t != "assistant" or d.get("isSidechain"):
-                    continue
-                msg = d.get("message") or {}
-                if not isinstance(msg, dict) or not msg.get("usage"):
-                    continue
-                rid = _measure_facade._usage_request_key(d, msg)
-                if dt is None:
-                    continue
-                # Raw model id: re-reads are priced by generation card
-                # (Opus 5.5 and Fable 5.1 read cache far cheaper than their family).
-                raw_model = msg.get("model")
-                usage = msg["usage"] if isinstance(msg["usage"], dict) else {}
-                prompt_parts = {k: usage[k] for k in (
-                    "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens") if k in usage}
-                nested = usage.get("cache_creation")
-                nested = nested if isinstance(nested, dict) else {}
-                for key in ("ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"):
-                    if key in nested or key in usage:
-                        prompt_parts[key] = nested.get(key) or usage.get(key, 0)
-                if rid is not None and rid in seen:
-                    index, previous_parts = seen[rid]
-                    for key, value in previous_parts.items():
-                        current = prompt_parts.get(key)
-                        if isinstance(value, int) and (not isinstance(current, int) or value > current):
-                            prompt_parts[key] = value
-                prompt_tokens = None
-                cache_class = None
-                if ("input_tokens" in prompt_parts
-                        and all(isinstance(v, int) and v >= 0 for v in prompt_parts.values())):
-                    # Flat and TTL fields describe overlapping cache writes.
-                    # Partial chunks can fill either form; never add both.
-                    creation = max(prompt_parts.get("cache_creation_input_tokens", 0),
-                                   prompt_parts.get("ephemeral_1h_input_tokens", 0)
-                                   + prompt_parts.get("ephemeral_5m_input_tokens", 0))
-                    prompt_tokens = _measure_facade._context_token_count(dict(prompt_parts, cache_creation_input_tokens=creation))
-                    cache_class = (creation, prompt_parts.get("ephemeral_1h_input_tokens", 0),
-                                   prompt_parts.get("ephemeral_5m_input_tokens", 0),
-                                   prompt_parts.get("cache_read_input_tokens", 0))
-                if rid is not None and rid in seen:
-                    previous = turns[index]
-                    turns[index] = (previous[0], previous[1] or raw_model, prompt_tokens, cache_class)
-                    seen[rid] = (index, prompt_parts)
-                    continue
-                if rid is not None:
-                    seen[rid] = (len(turns), prompt_parts)
-                turns.append((dt, raw_model if isinstance(raw_model, str)
-                              and not raw_model.startswith("<") else None, prompt_tokens, cache_class))
-    except (OSError, PermissionError):
-        return [], [], []
-    turns.sort(key=lambda x: ((_measure_facade := _compat.facade()), x[0])[1])
-    compacts.sort()
-    return turns, compacts, markers
+    """Parent-transcript walk for the counted engine; see counted_subagents.walk.
+    Returns (turns, compacts, markers); never raises."""
+    return counted_subagents.walk(_compat.facade(), path, collect_markers)
 
 
 def _claude_image_tokens(width, height):
@@ -437,12 +340,17 @@ def _counted_window_summary(conn, window_start, window_end):
         coverage = dict.fromkeys(_measure_facade._COUNTED_COVERAGE_KEYS, 0)
         missing = dict(unmeasured_events=0, unmeasured_removed_tokens=0,
                        unmeasured_removed_credit_tokens=0, unmeasured_removed_debit_tokens=0)
-        for _key, session_uuid, ts, tokens, _logged_cost, _model in _measure_facade._counted_candidate_events(conn):
+        candidates, scopes = _measure_facade._counted_candidate_events(conn), {}
+        for _key, session_uuid, ts, tokens, _logged_cost, _model in candidates:
             ev_dt = _measure_facade._counted_event_utc(ts)
             if ev_dt is None or ev_dt < start or ev_dt > end:
                 continue
             path = _measure_facade._counted_session_path(conn, session_uuid)
             turns, compacts, _ = _measure_facade._counted_walk_transcript(path) if path is not None else ([], [], [])
+            if turns and session_uuid not in scopes:  # v6: a sub-agent's removal scores on its own turns
+                scopes[session_uuid] = counted_subagents.SessionScope(_measure_facade, conn, path, [(c[0], c[2]) for c in candidates if c[1] == session_uuid])
+            if turns:
+                turns, compacts, _scope = scopes[session_uuid].turns_for(_key, turns, compacts)
             if not turns:
                 missing["unmeasured_events"] += 1
                 missing["unmeasured_removed_tokens"] += int(tokens or 0)
@@ -679,7 +587,7 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
     detail.update(oneshot_class_premium_usd=round(score["oneshot_class_premium_usd"], 6),
                   reread_miss_turns=score.get("reread_miss_turns", 0),
                   reread_miss_premium_usd=round(score.get("reread_miss_premium_usd", 0.0), 6),
-                  version=_measure_facade._COUNTED_PRICING_VERSION, refresh_incomplete=False,
+                  version=_measure_facade._COUNTED_PRICING_VERSION, refresh_incomplete=False, scope=score.get("scope", "parent"),
                   magnitude_basis=magnitude_basis, file_size=proof["file_size"],
                   file_sha256=proof["file_sha256"])
     conn.execute(
@@ -710,8 +618,7 @@ def _update_counted_cumulative(conn, max_sessions=None,
     Bounded by `max_sessions` and a soft wall-clock deadline so a hook-path
     flush is never held up; the backlog converges over passes. Fail-open."""
     _measure_facade = _compat.facade()
-    stats = {"sessions_walked": 0, "rows_written": 0, "pending_sessions": 0,
-             "unmeasured_events": 0}
+    stats = {"sessions_walked": 0, "rows_written": 0, "pending_sessions": 0, "unmeasured_events": 0, **counted_subagents.collect_stats()}
     try:
         started = _measure_facade.time.monotonic()
         # Earlier versions compounded the delta_read mirror as a second removal.
@@ -809,6 +716,8 @@ def _update_counted_cumulative(conn, max_sessions=None,
                     media_details.update(conn.execute(
                         "SELECT id, detail FROM savings_events WHERE id IN (%s)"
                         % ",".join("?" * len(part)), part).fetchall())
+            scope = counted_subagents.SessionScope(_measure_facade, conn, path, [(e[0], e[1]) for e in evs])  # v6
+            counted_subagents.add_stats(stats, scope.stats)
             for key, ts, tok, cost, model in sorted(evs, key=lambda e: ((_measure_facade := _compat.facade()), str(e[1]))[1]):
                 ev_dt = _measure_facade._counted_event_utc(ts)
                 if ev_dt is None or not turns:
@@ -820,16 +729,16 @@ def _update_counted_cumulative(conn, max_sessions=None,
                 if key.startswith("md:"):
                     tok, basis = _measure_facade._counted_media_net_tokens(
                         media_results, media_used, ev_dt, media_details.get(int(key[3:])))
-                score = _measure_facade._counted_score_detail(
-                    turns, compacts, ev_dt, int(tok or 0), tier_data,
-                    oneshot_floor_only=key.startswith("md:"))
+                ev_turns, ev_compacts, ev_scope = scope.turns_for(key, turns, compacts)
+                score = dict(_measure_facade._counted_score_detail(ev_turns, ev_compacts, ev_dt, int(tok or 0), tier_data,
+                    oneshot_floor_only=key.startswith("md:")), scope=ev_scope)
                 if not _measure_facade._counted_store_score(conn, key, key.split(":", 1)[0], uuid,
                                              ts, int(tok or 0), score, mtime, proof,
                                              old=stored.get(key), allow_unobserved=True,
                                              magnitude_basis=basis,
                                              append_check=lambda old, _ev=ev_dt, _tok=int(tok or 0): (
                                                  ((_measure_facade := _compat.facade()), _measure_facade._counted_legacy_append_continuous(
-                                                     old, turns, compacts, _ev, _tok, tier_data))[1])):
+                                                     old, ev_turns, ev_compacts, _ev, _tok, tier_data))[1])):
                     stats["unmeasured_events"] += 1
                     continue
                 stats["rows_written"] += 1
@@ -2530,10 +2439,8 @@ def runway_snapshot(days=None, now=None):
                     # resume_lean too, so both the counted and legacy ctx omit them
                     # -- real, magnitude-metered (v5.13.1) savings that were simply
                     # unlabelled. Window-scoped already (days/since passed above).
-                    _rl = wm.get("resume_lean_estimated") or {}
                     _vs = wm.get("verbosity_steer") or wm.get("verbosity_steer_estimated") or {}
-                    est_add = float(_rl.get("cost_saved_usd", 0.0) or 0.0) \
-                        + float(_vs.get("cost_saved_usd", 0.0) or 0.0)
+                    est_add = float(_vs.get("cost_saved_usd", 0.0) or 0.0)
                 except Exception:
                     pass
                 try:
@@ -6500,7 +6407,7 @@ def _action_savings_components(summary, reread=None):
         key: float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0)
         for key in (
             "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
-            "contamination_exit", "handover_rerun", "resume_lean_estimated",
+            "contamination_exit", "handover_rerun",
             "checkpoint_restore_estimated", "verbosity_steer",
         )
     }
@@ -6770,7 +6677,7 @@ def _savings_since_install():
             float((full.get(k) or {}).get("cost_saved_usd", 0) or 0)
             for k in (
                 "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
-                "contamination_exit", "handover_rerun", "resume_lean_estimated",
+                "contamination_exit", "handover_rerun",
                 "checkpoint_restore_estimated", "verbosity_steer",
             )
         )
@@ -7290,15 +7197,6 @@ def savings_report(days=None, as_json=None):
         mce_monthly = _money(_est_cents["mcp_cap_estimated"])
         print(f"  + est. MCP output cap: ~${mce_monthly}{per} "
               f"({mcp_cap_est.get('events', 0)} capped MCP results) [estimated]")
-
-    # Estimated tier — lean resumes (cold `--resume` reload avoided; the trigger
-    # is a counterfactual, the magnitude is the target's real last-turn context).
-    rl_est = summary.get("resume_lean_estimated") or {}
-    rle_cost = float(rl_est.get("cost_saved_usd", 0.0) or 0.0)
-    if rle_cost > 0:
-        rle_monthly = _money(_est_cents["resume_lean_estimated"])
-        print(f"  + est. lean resumes: ~${rle_monthly}{per} "
-              f"({rl_est.get('events', 0)} cold-resume reloads avoided) [estimated]")
 
     # Estimated tier — checkpoint restores (avoided working-set re-reads; the
     # restore is observed, the credited re-read is inferred, never metered).

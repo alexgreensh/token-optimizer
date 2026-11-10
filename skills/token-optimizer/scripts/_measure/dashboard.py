@@ -710,28 +710,28 @@ def generate_dashboard(coord_path):
     print("  Analyzing context quality...")
     quality = _measure_facade._collect_quality_for_dashboard()
 
-    # Collect hook installation status for dashboard toggles
     hook_status = _measure_facade._collect_hook_status_for_dashboard()
 
-    # Collect management data for Manage tab. The full audit dashboard should
-    # expose the same Codex skill/MCP controls as the standalone dashboard.
     management = _measure_facade._collect_management_data(components=components, trends=trends)
 
-    # Savings data for dashboard. Merged view = measured runtime + realized
-    # structural + opportunity (unclaimed) + estimated uncaptured runtime, all
-    # tier-labelled. Wrapped so a slow/failed savings eval never blocks regen.
     print("  Collecting savings data...")
     savings_data = _measure_facade._dashboard_savings_data(days=30)
 
-    # U6: tiered compression-coverage diagnostic (kept separate from savings;
-    # shadow/opportunity ratios never feed the headline). Fail-open to empty.
+    # Savings-truth U6: lean-resume carry is a SHADOW diagnostic. It is emitted
+    # for review only and is never summed into any savings total.
+    try:
+        import lean_resume_carry as _lean_resume_carry
+        if isinstance(savings_data, dict):
+            savings_data["lean_resume_carry"] = _lean_resume_carry.summary(days=30)
+    except Exception:
+        if isinstance(savings_data, dict):
+            savings_data["lean_resume_carry"] = {"available": False, "evidence": "shadow"}
+
     try:
         compression_coverage = _measure_facade._get_compression_coverage(days=30)
     except Exception:
         compression_coverage = {"available": False, "tiers": {}, "first_read_proxy": None}
 
-    # Tripwire verdict for the coverage panel (per-cohort live edit-rate +
-    # auto-demotions). Read-only; never recomputes/demotes here. Fail-open.
     try:
         cohort_tripwire = _measure_facade._cohort_tripwire_state()
     except Exception:
@@ -3640,7 +3640,6 @@ def _dashboard_saved_tokens(summary):
     estimated = (tok(s.get("mcp_cap_estimated"))
                  + tok(s.get("hint_followed") or s.get("hint_followed_estimated"))
                  + tok(s.get("verbosity_steer") or s.get("verbosity_steer_estimated"))
-                 + tok(s.get("resume_lean_estimated"))
                  + tok(s.get("checkpoint_restore_estimated")))
     measured = num(s.get("total_tokens", 0))
     return measured + estimated, measured

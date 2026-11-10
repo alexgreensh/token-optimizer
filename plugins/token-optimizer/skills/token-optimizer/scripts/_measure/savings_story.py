@@ -27,7 +27,7 @@ def story_token_total(s):
         total += _number(estimate.get('tokens_saved'))
     if float(o.get('cost_saved_usd') or 0) > 0:
         total += _number(o.get('tokens_saved'))
-    if float((a.get('estimates_usd') or {}).get('resume_lean_estimated') or 0) > 0:
+    if float(a.get('estimated_usd') or 0) - float((a.get('estimates_usd') or {}).get('output_reread') or 0) >= 0.5:
         total += _number(h.get('reload_avoided_tokens'))
     return total
 

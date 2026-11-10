@@ -4546,7 +4546,6 @@ var DB = (function() {
     // and output-waste are OPPORTUNITY (avoidable waste TO does not yet prevent), not here. ----
     var mce = s.mcp_cap_estimated || {}, ce = s.contamination_exit || {}, hr = s.handover_rerun || {};
     var rs = s.retrieval_serve || {};
-    var rle = s.resume_lean_estimated || {};
     var vs = s.verbosity_steer || {};
     var cr = s.checkpoint_restore_estimated || {};
     var cp = s.counted_period || {};
@@ -4567,7 +4566,7 @@ var DB = (function() {
     // always reconcile exactly to gettingMo (measured + estimated). Every estItems
     // entry maps to exactly one pillar: loops/sub-agent/mcp_cap -> runtime;
     // heeded/handover/avoided-search/lean-resumes -> behavioral.
-    var behavMo   = mo(mr.realized_cost_usd) + mo(beh.cost_saved_usd) + mo(ce.cost_saved_usd) + mo(hr.cost_saved_usd) + avoidedSearchMo + mo(rle.cost_saved_usd) + mo(vs.cost_saved_usd) + mo(cr.cost_saved_usd);
+    var behavMo   = mo(mr.realized_cost_usd) + mo(beh.cost_saved_usd) + mo(ce.cost_saved_usd) + mo(hr.cost_saved_usd) + avoidedSearchMo + mo(vs.cost_saved_usd) + mo(cr.cost_saved_usd);
     // ---- trust tiers: measured / estimated / opportunity. Opportunity NEVER folds into the headline. ----
     // Measured = billable events we metered (runtime compression + realized model routing).
     // Routing joins the measured tier only when its valuation is measured; the
@@ -4584,7 +4583,6 @@ var DB = (function() {
       { key: 'contamination_exit', label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
       { key: 'handover_rerun', label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
       { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'trigger observed, size estimated' : rs.confidence },
-      { key: 'resume_lean_estimated', label: 'lean resumes (cold reload avoided)', amt: mo(rle.cost_saved_usd), n: Number(rle.events) || 0,           unit: 'resumes' },
       { key: 'checkpoint_restore_estimated', label: 'checkpoint restores (working-set re-reads)', amt: mo(cr.cost_saved_usd), n: Number(cr.events) || 0, unit: 'restores' },
       { key: 'verbosity_steer', label: 'concise output nudges', amt: mo(vs.cost_saved_usd), n: Number(vs.events) || 0, unit: 'nudges' }
     ].filter(function(it){ return it.amt > 0 || it.conf; });

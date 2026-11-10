@@ -533,7 +533,7 @@ def test_dashboard_saved_tokens_is_measured_plus_estimated(sb):
         "resume_lean_estimated": {"tokens_saved": 40},
         "reread_avoided": {"reread_tokens": 999999},  # not in the headline
     }
-    assert sb._dashboard_saved_tokens(summary) == (1100, 1000)
+    assert sb._dashboard_saved_tokens(summary) == (1060, 1000)
     assert sb._dashboard_saved_tokens({}) == (0, 0)
 
 
@@ -543,7 +543,7 @@ def test_dashboard_saved_tokens_matches_story_rows(sb):
         'token_headline': {'context_removed_tokens': 100, 'output_not_generated_tokens': 10,
                            'reread_tokens': 300, 'reload_avoided_tokens': 50},
         'action_savings': {'logged_usd': 2, 'reread_usd': 1, 'reread_available': True,
-                           'estimates_usd': {'resume_lean_estimated': 1}},
+                           'estimated_usd': 1, 'estimates_usd': {'checkpoint_restore_estimated': 1}},
         'structural_detail': {'method': 'trim_ledger', 'tokens_saved': 20, 'cost_saved_usd': 1,
                               'estimated': {'tokens_saved': 40, 'cost_saved_usd': 1}},
         'output_reread': {'tokens_saved': 60, 'cost_saved_usd': 1},

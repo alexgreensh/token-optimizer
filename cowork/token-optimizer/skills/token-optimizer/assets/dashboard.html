@@ -3718,7 +3718,7 @@ var DB = (function() {
     var cacheLabel = isCodex ? 'Cached Input Share' : 'Main-work cache hit rate';
     var cacheNote = isCodex
       ? 'Share of logged input tokens Codex says were cached_input_tokens. Similar to a cache hit rate, but Codex does not expose cache-write TTL or write-size fields.'
-      : 'Main-work sessions with 20+ messages. Above 90% is normal for longer sessions.';
+      : 'Main-work sessions with 20+ messages.';
     var tokenBreakdownNote = isCodex
       ? 'fresh:' + fn(t.total_fresh_input || 0) + ' · cached input:' + fn(t.total_cache_read || 0) + ' · out:' + fn(t.total_output_tokens || 0)
       : 'raw fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0);

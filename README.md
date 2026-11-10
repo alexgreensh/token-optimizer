@@ -373,6 +373,12 @@ When Claude re-reads a code file it already saw, the Read call is blocked and re
 
 Disable: `TOKEN_OPTIMIZER_READ_CACHE_MODE=shadow`
 
+### Code Map
+
+Agents ask a small per-project symbol index instead of grepping and reading whole files: `codemap.py find|show|callers <symbol>` and `outline|deps <file>` (Python, JavaScript, TypeScript). `show` returns just one definition with line numbers the agent can Edit against. There is no server: the index is a SQLite file in the plugin data folder, warmed in the background when a session or subagent starts and checked against file timestamps and sizes before every answer, so it never serves stale code. Sessions and subagents get a one-line hint to use it. When an unchanged file the agent already read in full is read again and the structure map can't summarize it, the code map's outline is shown once instead of a second full copy. Lookup savings are labeled estimated on the dashboard; outline savings are measured.
+
+Disable: `TOKEN_OPTIMIZER_CODEMAP=0` (outline only: `TOKEN_OPTIMIZER_CODEMAP_REREAD=0`)
+
 ### First-Read Skeleton
 
 On the **first** read of a large **code** file (Python or TypeScript, 16KB–256KB) in a history-validated cohort, the Read returns a structural skeleton (signatures/imports) instead of the full file, with a one-line notice and the full content always one step away: `expand <key>`, a ranged Read (`offset`/`limit`), or a direct Edit. The original is archived before any substitution, fail-open — if archiving can't happen, the full file is served.

@@ -696,6 +696,15 @@ def _log_decision(
         pass
 
 
+def _codemap(fn: str, *args: Any, **kwargs: Any) -> Any:
+    """Code map hooks (codemap_reread.py). Any failure is a silent no-op (fail open)."""
+    try:
+        import codemap_reread
+        return getattr(codemap_reread, fn)(*args, **kwargs)
+    except Exception:
+        return None
+
+
 def _log_unexpected_tool(tool_name: str, quiet: bool = False) -> None:
     """Log when the hook is invoked for a non-Read tool (matcher bypass)."""
     log_dir = SNAPSHOT_DIR / "diagnostics"
@@ -827,22 +836,13 @@ def _extract_session_uuid_rc(session_id: Optional[str]) -> tuple:
     return None, False
 
 
-# Process-local: once the savings_events columns are confirmed present we skip
-# the per-write PRAGMA introspection. Fresh tables get all columns from the
-# schema; the ALTERs only matter for pre-v5.10 tables, so one verification per
-# process is enough. (Worst case across mixed old/new DBs in one process: a stale
-# skip -- acceptable for a measurement path, and executescript already creates
-# new tables fully-formed.)
+# Process-local: savings_events columns verified once per process (the ALTERs only
+# matter for pre-v5.10 tables; a stale skip is acceptable on a measurement path).
 _savings_columns_verified = False
 
 
 def _ensure_savings_columns(conn: sqlite3.Connection) -> None:
-    """Idempotent migration: ensure model, session_uuid, and unjoinable columns exist.
-
-    The shipped schema declares all three, but pre-existing tables created before
-    v5.10 lack session_uuid and unjoinable. Runs the PRAGMA once per process, then
-    short-circuits on subsequent calls in the hot savings-write path.
-    """
+    """Idempotent migration for pre-v5.10 tables; PRAGMA runs once per process."""
     global _savings_columns_verified
     if _savings_columns_verified:
         return
@@ -945,11 +945,8 @@ def _summarize_redundant_read(
     except OSError:
         return None, "unreadable"
 
-    # fix-2: fail open. This runs inside the PreToolUse Read hook; an uncaught
-    # error in summarization (e.g. a RecursionError on a pathological AST) would
-    # crash the hook and could block the user's Read. Any failure here returns
-    # (None, "summarize_error"), which the caller treats as not-eligible and
-    # serves the file normally.
+    # fix-2: fail open. Any summarization error (e.g. RecursionError) returns
+    # (None, "summarize_error") and the file is served normally.
     try:
         summary = summarize_code_source(
             content,
@@ -1463,6 +1460,7 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
             _emit_pretool_response(None, None, context_msg)
         return
 
+    _codemap("note_read", file_path)
     store = _make_store(session_id)
     if store is None:
         funnel.row["exit_reason"] = "store_unavailable"
@@ -1878,6 +1876,22 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
         )
     eligible_structure = bool(summary and summary.eligible and reason_code == "ok")
     funnel.structure(eligible_structure, reason_code)
+    served = None if eligible_structure else _codemap(
+        "try_outline", file_path, entry, offset=offset, limit=limit, tokens_est=tokens_est,
+        reason_code=reason_code, mode=mode, mtime_ns=current_stat.st_mtime_ns,
+        max_context_chars=STRICT_ADDITIONAL_CONTEXT_CHARS if save_hook_context_enabled else MAX_ADDITIONAL_CONTEXT_CHARS)
+    if served:  # Code map outline for an unchanged full re-read the skeleton path declined.
+        funnel.row["exit_reason"] = "codemap_outline"
+        store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
+        _log_decision("block", file_path, f"redundant_read_{entry['read_count']}", session_id, mode=mode,
+                      actual_substitution=True, eligible=True, language=language, reason_code="codemap_outline",
+                      offset=offset, limit=limit, replacement_type="codemap_outline", file_tokens_est=tokens_est,
+                      replacement_tokens_est=served["outline_tokens"],
+                      net_saved_tokens_est=max(0, tokens_est - served["outline_tokens"]), replacement_fingerprint=None,
+                      repeat_replacement_count=1, save_hook_additional_context_enabled=save_hook_context_enabled)
+        _codemap("record_served", file_path, tokens_est, served["outline_tokens"], session_id)
+        _emit_pretool_response("deny", served["reason"], served["context"])
+        return
 
     if mode in {"shadow", "warn"} or (mode == "soft_block" and not eligible_structure):
         funnel.row["exit_reason"] = "nonblocking"

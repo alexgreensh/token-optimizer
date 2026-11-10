@@ -1714,7 +1714,7 @@ input:checked + .slider:before {
    Card titles are headings (no small-caps labels above them). Sans for words,
    mono only for standalone figures; numbers inside sentences use the sans face
    with tabular figures. Secondary lines stay in --c-text-main for readability. */
-.st { display: grid; gap: var(--s-3); margin-bottom: var(--s-3); }
+.st { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); margin-bottom: var(--s-3); } .st .card.wide { grid-column: auto; }
 .st .card { padding: var(--s-4); }
 .st-h { font: 600 20px/1.3 var(--font-sans); color: var(--c-text-main); display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) 12px; }
 .st-tag { font: 500 13px/1 var(--font-sans); letter-spacing: 0.01em; color: var(--c-text-main); border: 1px solid var(--c-border-strong); border-radius: 999px; padding: 5px 10px; }

@@ -86,32 +86,7 @@ def test_negative_reread_debits_are_not_clamped_away():
     assert '$93' in actions
 
 
-def test_transformation_percentage_matches_dollars_and_method_is_folded():
-    html = render(fixture())
-    card = html.split('savings-transformation')[1].split('savings-actions')[0]
-    assert '~13% lower cost' in card  # 2000 / 15000, not the 75% per-session gap
-    assert 'cheaper/session' not in card
-    assert 'last 30 days' in card
-    assert '<details class="fold"><summary>How this is estimated</summary>' in card
-    assert '<details open' not in card
-    visible = card.split('<details')[0]
-    assert len(re.sub('<[^>]+>', ' ', visible).split()) < 85
-
-
-def test_neutral_reprice_basis_is_disclosed_on_the_card():
-    s = fixture()
-    s['before_after']['compression_reprice_basis'] = 'routing_pending'
-    card = render(s).split('savings-transformation')[1].split('savings-actions')[0]
-    assert 'model-mix repricing is paused' in card.lower()
-    s['before_after']['compression_reprice_basis'] = 'routing_unavailable'
-    card = render(s).split('savings-transformation')[1].split('savings-actions')[0]
-    assert 'model-mix repricing could not be measured' in card.lower()
-    s['before_after']['compression_reprice_basis'] = 'routing_recipe'
-    card = render(s).split('savings-transformation')[1].split('savings-actions')[0]
-    assert 'model-mix repricing' not in card.lower()
-
-
-def test_capped_transformation_percentage_matches_the_capped_dollars():
+def test_transformation_dollars_do_not_replace_action_savings():
     s = fixture()
     s['before_after'].update({
         'monthly_savings_usd': 100,
@@ -122,10 +97,10 @@ def test_capped_transformation_percentage_matches_the_capped_dollars():
         'savings_capped': True,
         'savings_cap_note': 'Capped at actual spend; uncapped estimate was $900.',
     })
-    card = render(s).split('savings-transformation')[1].split('savings-actions')[0]
-    assert '~10% lower cost' in card
-    assert '~90% lower cost' not in card
-    assert 'Capped at actual spend; uncapped estimate was $900.' in card
+    html = render(s)
+    assert 'savings-transformation' not in html
+    assert 'savings-actions' in html
+    assert 'Capped at actual spend; uncapped estimate was $900.' not in html
 
 
 def test_history_compares_same_context_cohort_and_discloses_overlap():
@@ -159,10 +134,10 @@ def test_repeat_read_pricing_note_shows_once_beside_its_figure():
     assert "cp.reread_pricing_note" in source
 
 
-def test_flat_transformation_shows_plain_no_change_card():
+def test_flat_transformation_does_not_replace_action_card():
     s = fixture()
     s['before_after'] = {'monthly_savings_usd': 0, 'reason': 'flat', 'transformation_state': 'flat',
                          'actual_monthly_usd': 27767.09, 'counterfactual_monthly_usd': 27820.04}
     html = render(s)
-    assert 'No measurable change in cost per unit of work' in html
-    assert 'disagree' not in html.lower()
+    assert 'savings-transformation' not in html
+    assert 'savings-actions' in html

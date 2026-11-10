@@ -357,8 +357,7 @@ def test_cli_methods_disagree_branch_shows_both_figures(
 # -------------------------------------------------- 6. dashboard rendering
 
 def test_dashboard_methods_disagree_suppresses_the_hero():
-    """The dashboard must render a neutral card stating both figures instead of
-    the savings-amount hero when reason='methods_disagree'."""
+    """Disagreeing transformation estimates must not replace action savings."""
     from test_savings_render import fixture, render
     s = fixture()
     s["before_after"] = {
@@ -375,20 +374,19 @@ def test_dashboard_methods_disagree_suppresses_the_hero():
     html = render(s)
     assert "savings-transformation" not in html, \
         "the transformation hero must not render on methods_disagree"
-    assert "Two estimates disagree" in html
-    assert "$1,200" in html
-    assert "-$8,400" in html
+    assert "savings-actions" in html
+    assert "-$8,400" not in html
 
 
-def test_dashboard_agreeing_payload_still_shows_the_hero():
+def test_dashboard_agreeing_payload_keeps_action_savings():
     from test_savings_render import fixture, render
     s = fixture()
     s["before_after"]["session_weight_pool"]["crosscheck"] = {
         "unit": "message", "transformation_usd": 1950.0,
         "agrees": True, "gap_pct": 2.5}
     html = render(s)
-    assert "savings-transformation" in html
-    assert "$2,000" in html
+    assert "savings-transformation" not in html
+    assert "savings-actions" in html
 
 
 def test_flat_band_reads_near_zero_methods_as_no_change():

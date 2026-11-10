@@ -245,7 +245,7 @@ function savingsStoryHtml(data) {
       '<h2 class="st-h">Setup cleanup' + '</h2>' +
       (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + usd(sd.projected_30d.measured.usd) + ' at recent usage levels.</p>' : '') +
       (rows
-        ? '<p class="st-lead">Trimming what loads on every call pays again on each call. These amounts are already in the total.</p><ul class="st-rows st-rows--card">' + rows + '</ul>' +
+        ? '<p class="st-lead">Trimming setup reduces repeated context on calls that load it. These amounts are already in the total.</p><ul class="st-rows st-rows--card">' + rows + '</ul>' +
           f.fold('How each one is priced', '<ul>' + formula + '</ul>' + (opts.length ? '<p>Your figure can be one of these sizes, priced the same way:</p><ul>' + opts.map(function(o) {
             return '<li>' + count(o.tokens_per_call) + ' tokens per call: about ' + usd(o.projected_30d_usd) + ' per 30 days' + (o.chosen ? ' (shown)' : '') + '</li>';
           }).join('') + '</ul>' : ''))
@@ -276,7 +276,7 @@ function savingsStoryHtml(data) {
         (statedRouting ? '<p>Estimated routing, based on your stated 95% Opus baseline.</p>' : '') +
         (statedRouting && periodText ? '<p>Most of the routing estimate comes from ' + esc(periodText) + '.</p>' : '') +
         (statedRouting && has(installRouting.routing_measured_baseline_opus_share) && has(installRouting.routing_measured_baseline_realized_cost_usd) ? '<p>Using the measured starting mix (' + (num(installRouting.routing_measured_baseline_opus_share)*100).toFixed(2) + '% Opus), the routing estimate is ' + usd(installRouting.routing_measured_baseline_realized_cost_usd) + '.</p>' : '') +
-        (SI.excluded ? '<p>Excluded since install: routing ' + (has(SI.excluded.routing) ? usd(SI.excluded.routing) + ' (assumed)' : 'Measuring') + ', lean resumes ' + (has(SI.excluded.lean_resumes) ? usd(SI.excluded.lean_resumes) : 'Measuring') + ', and verbosity ' + (has(SI.excluded.verbosity) ? usd(SI.excluded.verbosity) : 'Measuring') + '.</p>' : '<p>Excluded since install: routing, lean resumes and verbosity; amounts are Measuring.</p>') +
+        (SI.excluded ? '<p>Excluded since install: ' + (statedRouting ? '' : 'routing' + (has(SI.excluded.routing) ? ' ' + usd(SI.excluded.routing) : '') + ', ') + 'unverified lean-resume proxy ' + (has(SI.excluded.lean_resumes) ? usd(SI.excluded.lean_resumes) : 'not priced') + ', and verbosity ' + (has(SI.excluded.verbosity) ? usd(SI.excluded.verbosity) : 'not priced') + '.</p>' : '<p>Unverified lean-resume and verbosity estimates are excluded.</p>') +
         (windows.length ? '<p>Right now: ' + windows.map(function(w) {
           return esc(names[w.key] || ((w.label || 'Window') + ' limit')) + ' ' + num(w.headroom_pct) + '% left';
         }).join(', ') + ' (share of each limit window).</p>' : '') +

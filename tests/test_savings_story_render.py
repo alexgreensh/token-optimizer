@@ -126,6 +126,16 @@ def test_setup_card_does_not_claim_unattributed_trim_is_in_total():
     assert 'Unknown origin' not in story({'savings': s})
 
 
+def test_stated_routing_is_not_described_as_excluded_or_measuring():
+    s = full()
+    s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
+    s['since_install']['excluded_usd'] = {'routing': None, 'lean_resumes': 12, 'verbosity': 2}
+    html = story({'savings': s})
+    assert 'routing Measuring' not in html
+    assert 'Excluded since install: routing' not in html
+    assert 'unverified lean-resume proxy' in html
+
+
 def hero(out):
     return out.split('class="card st-hero"')[1].split('class="st-grid"')[0]
 
@@ -201,7 +211,7 @@ def test_since_install_fold_names_exclusions_from_payload():
     s = full()
     s['since_install']['excluded_usd'] = {'routing': 101, 'lean_resumes': 20, 'verbosity': 9}
     out = story({'savings': s})
-    assert 'Excluded since install: routing $101 (assumed), lean resumes $20, and verbosity $9.' in out
+    assert 'Excluded since install: routing $101, unverified lean-resume proxy $20, and verbosity $9.' in out
 
 
 def test_local_best_filter_is_explained_in_fold():

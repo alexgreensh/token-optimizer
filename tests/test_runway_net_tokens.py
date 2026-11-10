@@ -1,5 +1,6 @@
 """Runway saved tokens follow the same netting and ownership rules as the savings totals."""
 import importlib
+import json
 import sqlite3
 import sys
 import time
@@ -20,7 +21,12 @@ def m(monkeypatch, tmp_path):
     monkeypatch.syspath_prepend(str(SCRIPTS))
     sys.modules.pop("measure", None)
     mod = importlib.import_module("measure")
-    mod._init_trends_db().close()
+    conn = mod._init_trends_db()
+    day = datetime.now().date().isoformat()
+    conn.execute("INSERT INTO session_log(session_uuid,date,daily_usage_json) VALUES(?,?,?)",
+                 (SID, day, json.dumps({day: {"sonnet": {"cache_read": 1_000_000}}})))
+    conn.commit()
+    conn.close()
     monkeypatch.setattr(mod, "_keepwarm_read_meters", lambda now=None: {
         "available": True, "stale": False, "age_s": 60, "ts": time.time(),
         "five_hour_pct": 20.0, "seven_day_pct": 56.0,

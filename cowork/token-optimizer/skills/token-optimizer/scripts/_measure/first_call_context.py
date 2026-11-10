@@ -8,6 +8,25 @@ from functools import lru_cache
 from pathlib import Path
 
 
+@lru_cache(maxsize=1)
+def _optimizer_commands():
+    """Use registered hook commands as identity evidence, not runner names."""
+    try:
+        root = json.loads((Path(__file__).resolve().parents[4] / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, IndexError):
+        return frozenset()
+    commands, pending = set(), [root]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            if isinstance(item.get("command"), str):
+                commands.add(item["command"])
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return frozenset(commands)
+
+
 def _text(value):
     if isinstance(value, str):
         return value
@@ -53,8 +72,8 @@ def observe(rows, estimate):
             continue
         typ = a.get("type")
         if typ == "hook_success":
-            command = str(a.get("command") or "").lower()
-            if any(name in command for name in ("token-optimizer", "token_optimizer", "sessionstart_runner", "userpromptsubmit_runner")):
+            command = str(a.get("command") or "")
+            if command in _optimizer_commands() or any(name in command.lower() for name in ("token-optimizer", "token_optimizer")):
                 try:
                     output = json.loads(a.get("stdout") or "{}")
                     context = (output.get("hookSpecificOutput") or {}).get("additionalContext")

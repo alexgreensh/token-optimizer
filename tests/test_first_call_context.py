@@ -42,6 +42,22 @@ def test_unmatched_hook_output_is_not_attributed():
     assert observe(rows, len)["components"] == {"SessionStart_other_or_unknown": 9}
 
 
+def test_generic_runner_name_is_not_sufficient_to_identify_plugin():
+    rows = [{"type": "attachment", "attachment": {"type": "hook_success", "hookEvent": "SessionStart", "command": "other-plugin/hooks/sessionstart_runner.py", "stdout": json.dumps({"hookSpecificOutput": {"additionalContext": "abc"}})}},
+            {"type": "attachment", "attachment": {"type": "hook_additional_context", "hookEvent": "SessionStart", "content": "abc"}},
+            {"type": "assistant", "timestamp": "2026-11-01", "message": {"usage": {"input_tokens": 1}}}]
+    assert observe(rows, len)["components"] == {"SessionStart_other_or_unknown": 3}
+
+
+def test_registered_optimizer_hook_is_identified():
+    from _measure.first_call_context import _optimizer_commands
+    command = next(c for c in _optimizer_commands() if "sessionstart_runner.py" in c)
+    rows = [{"type": "attachment", "attachment": {"type": "hook_success", "hookEvent": "SessionStart", "command": command, "stdout": json.dumps({"hookSpecificOutput": {"additionalContext": "abc"}})}},
+            {"type": "attachment", "attachment": {"type": "hook_additional_context", "hookEvent": "SessionStart", "content": "abc"}},
+            {"type": "assistant", "timestamp": "2026-11-01", "message": {"usage": {"input_tokens": 1}}}]
+    assert observe(rows, len)["components"]["SessionStart_token_optimizer"] == 3
+
+
 def test_collect_reads_parent_transcripts_and_dated_trims(tmp_path):
     from _measure.first_call_context import collect
     path = tmp_path / "session.jsonl"

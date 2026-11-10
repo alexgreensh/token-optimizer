@@ -3801,7 +3801,7 @@ var DB = (function() {
       topSkills.forEach(function(entry) {
         var w = Math.max(3, (entry[1] / maxSkill) * 100);
         var sd = skillsDetail[entry[0]];
-        var tokNote = sd ? sd.frontmatter_tokens + ' tok' : '~100 tok';
+        var tokNote = sd ? sd.frontmatter_tokens + ' frontmatter tokens' : 'Measuring';
         html += '<div class="bar-row" data-skill-name="' + esc(entry[0]) + '" style="cursor:pointer;">' +
           '<span class="bar-label" style="width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(entry[0]) + ' (' + tokNote + ')">' + esc(entry[0]) + '</span>' +
           '<div class="bar-track"><div class="bar-fill" style="width:' + w + '%"></div></div>' +
@@ -3813,11 +3813,10 @@ var DB = (function() {
     // Never-used skills with expandable detail (half-folded)
     var neverUsed = t.skills ? t.skills.never_used : [];
     if (!isCodex && neverUsed.length > 0) {
-      var overhead = t.skills.never_used_overhead || (neverUsed.length * 100);
       var PREVIEW_COUNT = 4;
-      html += '<div class="card wide"><div class="card-header"><span>Not Invoked (' + neverUsed.length + ' skills)</span><span class="label">~' + fn(overhead) + ' tokens/session</span></div>' +
+      html += '<div class="card wide"><div class="card-header"><span>Not Invoked (' + neverUsed.length + ' skills)</span><span class="label">Context impact: Measuring</span></div>' +
         '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:var(--s-2);">' +
-        'No Skill call or slash command for these in the window. Each still loads ~100 tokens of frontmatter every session. A skill you drive by slash command counts as invoked; if one you use often shows here, open an issue. Click a skill for details, or "Quick Wins" to archive.</p>';
+        'No Skill call or slash command for these in the window. A skill you drive by slash command counts as invoked; if one you use often shows here, open an issue. Click a skill for details, or "Quick Wins" to archive.</p>';
 
       function buildSkillRow(name) {
         var sd = skillsDetail[name];
@@ -3825,7 +3824,7 @@ var DB = (function() {
           '<div class="skill-detail-header">' +
           '<input type="checkbox" class="skill-archive-check" data-skill="' + esc(name) + '" title="Select to archive">' +
           '<span class="skill-name">' + esc(name) + '</span>' +
-          '<span class="skill-tokens">' + (sd ? sd.frontmatter_tokens + ' tok' : '~100 tok') + '</span>' +
+          '<span class="skill-tokens">' + (sd ? sd.frontmatter_tokens + ' frontmatter tokens' : 'Measuring') + '</span>' +
           '<span class="expand-arrow">\u25B6</span>' +
           '</div>' +
           '<div class="skill-detail-body"><div class="skill-detail-content">';

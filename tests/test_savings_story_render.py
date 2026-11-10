@@ -159,7 +159,7 @@ def _visible(html):
 def test_session_shares_above_fold_and_place_split_in_fold():
     out = story({'savings': full()})
     h = hero(out)
-    assert 'st-mega st-mega--usd">$118</span>' in h and 'st-mega st-mega--tok">' in h
+    assert 'st-mega st-mega--usd">$118</span>' in h and 'st-mega st-mega--tok"' in h
     assert 'tokens kept out of context' in h
     assert all(x in _visible(out) for x in ('4.8%', '10.5%', '25%'))
     fold = h.split('<details')[1]
@@ -255,6 +255,13 @@ def test_tokens_saved_card_has_no_fresh_only_share():
     assert not re.search(r'tsSpentTokens\s*\+\s*tsFullSaved', tpl)
     assert not re.search(r'/\s*tsWouldSendTotal|tsSavedPct', tpl)
     assert 'spent_token_basis' not in STORY.read_text() and 'trends.total_tokens' not in STORY.read_text()
+
+
+def test_trends_does_not_invent_unused_skill_context_cost():
+    source = TEMPLATE.read_text()
+    assert 'Each still loads ~100 tokens' not in source
+    assert 'neverUsed.length * 100' not in source
+    assert 'Context impact: Measuring' in source
 
 
 def test_inliner(tmp_path):

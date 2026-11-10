@@ -169,7 +169,7 @@ function savingsStoryHtml(data) {
       '<h2 class="st-h">Saved in the last ' + days + ' days</h2>' +
       '<div class="st-mega__row">' +
         '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
-        (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
+        (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok" style="font-size:clamp(32px,4vw,48px)">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
       (has(ps.net_median) && has(ps.net_p75) && has(ps.net_max) ? '<p class="st-lead">In recorded sessions where Token Optimizer acted, a typical session kept <strong>' + pct(ps.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(ps.net_p75) + ' or more</strong>, and the best session <strong>' + pct(ps.net_max) + '</strong>.</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +

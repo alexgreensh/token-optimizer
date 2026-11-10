@@ -96,11 +96,18 @@ def collect(conn, max_sessions=8, deadline_seconds=None):
         if sid:
             groups.setdefault(sid, []).append((ident, stamp, detail))
     out = {'scanned': 0, 'proven': 0, 'pending': 0}
+    rollouts = None
     for sid, events in groups.items():
         row = conn.execute('SELECT jsonl_path FROM session_log WHERE session_uuid=? AND jsonl_path IS NOT NULL ORDER BY id DESC LIMIT 1', (sid,)).fetchone()
+        codex = None
         if not row:
-            continue
-        parent = row[0]
+            if rollouts is None:
+                from . import archive_void_codex
+                rollouts = archive_void_codex.rollout_index()
+            codex = rollouts.get(str(sid).lower())
+            if codex is None:
+                continue
+        parent = row[0] if row else str(codex[-1])
         fingerprint = session_fingerprint(parent)
         if fingerprint is None:
             continue
@@ -111,6 +118,9 @@ def collect(conn, max_sessions=8, deadline_seconds=None):
             out['pending'] += 1
             continue
         out['scanned'] += 1
+        if codex is not None:
+            _record_codex(conn, out, codex, events, proof)
+            continue
         matches = {}
         for index, path in enumerate(session_files(parent)):
             ids = full_result_ids(path, events, allow_sidechain=index > 0)
@@ -132,3 +142,21 @@ def collect(conn, max_sessions=8, deadline_seconds=None):
     conn.commit()
     return out
 
+
+def _record_codex(conn, out, rollouts, events, proof):
+    """Void evidence for a Codex thread whose rollouts never showed the pointer.
+
+    The proof is bound to the thread's newest rollout file (where the thread
+    keeps writing); a change there makes the evidence stale until rescanned.
+    """
+    from . import archive_void_codex
+    _sid, parent, fingerprint = proof
+    ids = archive_void_codex.void_ids(rollouts, events)
+    if ids is None or session_fingerprint(parent) != fingerprint:
+        out['pending'] += 1
+        return
+    st = Path(parent).stat()
+    for ident in sorted(ids):
+        inserted = conn.execute('INSERT OR IGNORE INTO archive_void_evidence_v2 VALUES (?,?,?,?,?,?)', (ident, parent, st.st_size, st.st_mtime_ns, parent, fingerprint))
+        out['proven'] += max(0, inserted.rowcount)
+    conn.execute('INSERT OR IGNORE INTO ' + _SCANS + ' VALUES (?,?,?)', proof)

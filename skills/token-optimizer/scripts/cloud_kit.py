@@ -488,7 +488,7 @@ _REQUIRED = ("hooks/hooks.json", "hooks/python-launcher.sh", "hooks/run.py",
     "skills/token-optimizer/scripts/_measure/" + name for name in (
         '__init__.py', '_compat.py', 'runtime.py', 'pricing.py', 'audit.py',
         'dashboard.py', 'lifecycle.py', 'sessions.py', 'trends.py', 'cache_policy.py',
-        'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py', 'counted_position.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'structural_ledger.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'rework_metrics.py', 'session_best.py', 'savings_story.py', 'counted_orphans.py', 'counted_cap.py', 'archive_void_evidence.py', 'compaction_survival.py', 'cost_per_message_trend.py', 'lean_resume_receivers.py', 'routing_period.py', 'fixture_context.py', 'transcript_product.py',
+        'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py', 'counted_position.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'structural_ledger.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'rework_metrics.py', 'session_best.py', 'savings_story.py', 'counted_orphans.py', 'counted_cap.py', 'archive_void_evidence.py', 'compaction_survival.py', 'archive_void_codex.py', 'cost_per_message_trend.py', 'lean_resume_receivers.py', 'routing_period.py', 'fixture_context.py', 'transcript_product.py',
     )
 )
 

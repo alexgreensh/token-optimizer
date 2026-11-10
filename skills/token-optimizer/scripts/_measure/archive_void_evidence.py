@@ -74,14 +74,25 @@ def proof_current(path, size, mtime_ns, parent, fingerprint):
         return 0
 
 
+# Scan memo. v2 scans covered August 2026 rows only; a session marked scanned
+# there may still hold unscanned rows from other months, so every session is
+# rescanned once under the all-dates memo.
+_SCANS = 'archive_void_scans_v3'
+
+
 def collect(conn, max_sessions=8, deadline_seconds=None):
-    """Append evidence after stable parent/subagent scans, preserving source rows."""
+    """Append evidence after stable parent/subagent scans, preserving source rows.
+
+    Every archive row is checked, whatever its date: a row is voided only when
+    its own transcript holds the full result (see ``full_result_ids``), so a
+    period where archiving worked produces no evidence.
+    """
     import time
     started = time.monotonic()
     conn.execute('CREATE TABLE IF NOT EXISTS archive_void_evidence_v2 (event_id INTEGER, path TEXT, size INTEGER, mtime_ns INTEGER, parent TEXT, fingerprint TEXT, PRIMARY KEY(event_id,path,size,mtime_ns,fingerprint))')
-    conn.execute('CREATE TABLE IF NOT EXISTS archive_void_scans_v2 (session_id TEXT, parent TEXT, fingerprint TEXT, PRIMARY KEY(session_id,parent,fingerprint))')
+    conn.execute('CREATE TABLE IF NOT EXISTS ' + _SCANS + ' (session_id TEXT, parent TEXT, fingerprint TEXT, PRIMARY KEY(session_id,parent,fingerprint))')
     groups = {}
-    for ident, stamp, detail, sid in conn.execute("SELECT id,timestamp,detail,COALESCE(session_uuid,session_id) FROM savings_events WHERE event_type='tool_archive' AND timestamp>='2026-08-01' AND timestamp<'2026-09-01' ORDER BY timestamp"):
+    for ident, stamp, detail, sid in conn.execute("SELECT id,timestamp,detail,COALESCE(session_uuid,session_id) FROM savings_events WHERE event_type='tool_archive' ORDER BY timestamp"):
         if sid:
             groups.setdefault(sid, []).append((ident, stamp, detail))
     out = {'scanned': 0, 'proven': 0, 'pending': 0}
@@ -94,7 +105,7 @@ def collect(conn, max_sessions=8, deadline_seconds=None):
         if fingerprint is None:
             continue
         proof = (sid, parent, fingerprint)
-        if conn.execute('SELECT 1 FROM archive_void_scans_v2 WHERE session_id=? AND parent=? AND fingerprint=?', proof).fetchone():
+        if conn.execute('SELECT 1 FROM ' + _SCANS + ' WHERE session_id=? AND parent=? AND fingerprint=?', proof).fetchone():
             continue
         if (max_sessions is not None and out['scanned'] >= max_sessions) or (deadline_seconds is not None and time.monotonic() - started >= deadline_seconds):
             out['pending'] += 1
@@ -117,6 +128,7 @@ def collect(conn, max_sessions=8, deadline_seconds=None):
             st = path.stat()
             inserted = conn.execute('INSERT OR IGNORE INTO archive_void_evidence_v2 VALUES (?,?,?,?,?,?)', (ident, str(path), st.st_size, st.st_mtime_ns, parent, fingerprint))
             out['proven'] += max(0, inserted.rowcount)
-        conn.execute('INSERT OR IGNORE INTO archive_void_scans_v2 VALUES (?,?,?)', proof)
+        conn.execute('INSERT OR IGNORE INTO ' + _SCANS + ' VALUES (?,?,?)', proof)
     conn.commit()
     return out
+

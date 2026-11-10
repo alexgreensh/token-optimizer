@@ -182,3 +182,31 @@ def test_orphan_agent_scope_survives_symlinked_projects(m, tmp_path, monkeypatch
         row = conn.execute('SELECT reread_tokens, pricing_detail FROM counted_reread').fetchone()
     assert row[0] == 2000
     assert json.loads(row[1])['scope'] == 'subagent'
+
+
+def test_window_counts_relocated_orphan_from_agent(m, tmp_path, monkeypatch):
+    db = _db(m, tmp_path, monkeypatch)
+    parent, start = _transcript(m, tmp_path, monkeypatch, n_turns=8)
+    _agent(parent, start, tid='agent-a123')
+    ts = _local_iso(start + timedelta(seconds=30))
+    _add_event(db, 'bash_compress_pipeline', 1000, ts, table='compression_events')
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE compression_events SET session_uuid=NULL, session_id='a123', command_pattern='unknown command'")
+        m._update_counted_cumulative(conn, max_sessions=10**9, deadline_seconds=None, quiet=True)
+        window = m._counted_window_summary(conn, start, start + timedelta(hours=1))
+    assert window['reread_tokens'] == 2000
+
+
+def test_window_does_not_trust_replaced_agent_transcript(m, tmp_path, monkeypatch):
+    db = _db(m, tmp_path, monkeypatch)
+    parent, start = _transcript(m, tmp_path, monkeypatch, n_turns=8)
+    agent = _agent(parent, start, tid='agent-a123')
+    ts = _local_iso(start + timedelta(seconds=30))
+    _add_event(db, 'bash_compress_pipeline', 1000, ts, table='compression_events')
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE compression_events SET session_uuid=NULL, session_id='a123', command_pattern='unknown command'")
+        m._update_counted_cumulative(conn, max_sessions=10**9, deadline_seconds=None, quiet=True)
+        agent.write_text('{}\n')
+        window = m._counted_window_summary(conn, start, start + timedelta(hours=1))
+    assert window['reread_tokens'] == 0
+    assert window['unmeasured_events'] == 1

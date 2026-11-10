@@ -340,7 +340,7 @@ def _counted_window_summary(conn, window_start, window_end):
         coverage = dict.fromkeys(_measure_facade._COUNTED_COVERAGE_KEYS, 0)
         missing = dict(unmeasured_events=0, unmeasured_removed_tokens=0,
                        unmeasured_removed_credit_tokens=0, unmeasured_removed_debit_tokens=0)
-        candidates, scopes = _measure_facade._counted_candidate_events(conn), {}
+        candidates, direct = counted_orphans.window_events(_measure_facade, conn, _measure_facade._counted_candidate_events(conn)); scopes = {}
         for _key, session_uuid, ts, tokens, _logged_cost, _model in candidates:
             ev_dt = _measure_facade._counted_event_utc(ts)
             if ev_dt is None or ev_dt < start or ev_dt > end:
@@ -348,7 +348,8 @@ def _counted_window_summary(conn, window_start, window_end):
             path = _measure_facade._counted_session_path(conn, session_uuid)
             turns, compacts, _ = _measure_facade._counted_walk_transcript(path) if path is not None else ([], [], [])
             if turns and session_uuid not in scopes:  # v6: a sub-agent's removal scores on its own turns
-                scopes[session_uuid] = counted_subagents.SessionScope(_measure_facade, conn, path, [(c[0], c[2]) for c in candidates if c[1] == session_uuid])
+                scopes[session_uuid] = counted_orphans.apply_scope(counted_subagents.SessionScope(_measure_facade, conn, path, [(c[0], c[2]) for c in candidates if c[1] == session_uuid]), {c[0]: direct[c[0]] for c in candidates if c[1] == session_uuid and c[0] in direct}, path)
+            if turns and _key in scopes[session_uuid].unresolved: turns = []
             if turns:
                 turns, compacts, _scope = scopes[session_uuid].turns_for(_key, turns, compacts)
             if not turns:
@@ -589,7 +590,7 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
     detail.update(oneshot_class_premium_usd=round(score["oneshot_class_premium_usd"], 6),
                   reread_miss_turns=score.get("reread_miss_turns", 0),
                   reread_miss_premium_usd=round(score.get("reread_miss_premium_usd", 0.0), 6),
-                  version=_measure_facade._COUNTED_PRICING_VERSION, refresh_incomplete=False, scope=score.get("scope", "parent"),
+                  version=_measure_facade._COUNTED_PRICING_VERSION, refresh_incomplete=False, scope=score.get("scope", "parent"), resolved_agent=score.get("resolved_agent"),
                   magnitude_basis=magnitude_basis, file_size=proof["file_size"],
                   file_sha256=proof["file_sha256"])
     conn.execute(
@@ -623,7 +624,6 @@ def _update_counted_cumulative(conn, max_sessions=None,
     stats = {"sessions_walked": 0, "rows_written": 0, "pending_sessions": 0, "unmeasured_events": 0, **counted_subagents.collect_stats()}
     try:
         started = _measure_facade.time.monotonic()
-        # Earlier versions compounded the delta_read mirror as a second removal.
         # Delete only those derived duplicates; keep both source telemetry rows.
         duplicates = conn.execute(
             "DELETE FROM counted_reread WHERE event_key IN "
@@ -725,7 +725,7 @@ def _update_counted_cumulative(conn, max_sessions=None,
                 event_path = orphan_paths.get(key, path); before_walk = event_path.stat()
                 ev_turns, ev_compacts, ev_scope = scope.turns_for(key, turns, compacts)
                 score = dict(_measure_facade._counted_score_detail(ev_turns, ev_compacts, ev_dt, int(tok or 0), tier_data,
-                    oneshot_floor_only=key.startswith("md:")), scope=ev_scope)
+                    oneshot_floor_only=key.startswith("md:")), scope=ev_scope, resolved_agent=event_path.name if key in orphan_paths and ev_scope == "subagent" else None)
                 old_size = (_measure_facade._counted_pricing_detail(stored[key].get("pricing_detail")).get("file_size", 0) or 0) if key in stored else 0; proof_key = (event_path, old_size, before_walk.st_mtime_ns, before_walk.st_size)
                 if proof_key not in event_proofs: event_proofs[proof_key] = _measure_facade._counted_file_proof(event_path, [old_size])
                 event_proof = event_proofs[proof_key]; event_stat = event_path.stat(); event_mtime = event_stat.st_mtime

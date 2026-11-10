@@ -109,3 +109,42 @@ def can_relocate(old, key, source, ts, tokens, proven):
             and int(old.get("tokens") or 0) == tokens and old.get("transcript_mtime") is None
             and int(old.get("turns_counted") or 0) == 0 and int(old.get("reread_tokens") or 0) == 0
             and float(old.get("reread_usd") or 0) == 0)
+
+
+def window_events(facade, conn, events):
+    """Reuse stored transcript identity only when its old prefix still matches."""
+    import json
+    rows = {r[0]: r[1:] for r in conn.execute(
+        'SELECT event_key, session_uuid, event_ts, tokens, pricing_detail FROM counted_reread')}
+    out, paths, proofs = [], {}, {}
+    for event in events:
+        key, uuid, ts, tokens, cost, model = event
+        row = rows.get(key)
+        if uuid or not row or not row[0] or row[1] != ts or int(row[2] or 0) != int(tokens or 0):
+            out.append(event)
+            continue
+        try:
+            detail = json.loads(row[3] or '{}')
+            parent = facade._counted_session_path(conn, row[0])
+            agent = detail.get('resolved_agent')
+            if not parent or detail.get('refresh_incomplete') or not detail.get('file_sha256'):
+                raise ValueError('no evidence')
+            if detail.get("scope") == "subagent" and not agent:
+                raise ValueError("missing agent identity")
+            if agent:
+                if Path(agent).name != agent or not agent.startswith('agent-') or not agent.endswith('.jsonl'):
+                    raise ValueError('invalid agent name')
+                path = parent.with_suffix('') / 'subagents' / agent
+            else:
+                path = parent
+            size = int(detail['file_size'])
+            proof_key = (path, size)
+            if proof_key not in proofs:
+                proofs[proof_key] = facade._counted_file_proof(path, [size])
+            if proofs[proof_key]['prefixes'].get(size) != detail['file_sha256']:
+                raise ValueError('transcript changed')
+            paths[key] = path
+            out.append((key, row[0], ts, tokens, cost, model))
+        except (OSError, ValueError, TypeError, KeyError):
+            out.append(event)
+    return out, paths

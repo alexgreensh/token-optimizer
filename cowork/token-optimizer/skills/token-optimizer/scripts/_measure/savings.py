@@ -5160,7 +5160,7 @@ def _weight_pool_payload(pool):
 
 def _estimate_before_after_savings(days=None, estimated_pools=None, model_routing=None, since=None):
     """THE headline saving: your FROZEN typical pre-TO session, priced at your PRE-TO
-    efficiency (~95% Opus + baseline cache pattern) vs what that same session costs now.
+    efficiency (the frozen baseline model mix + cache pattern) vs what that same session costs now.
 
     This is a PER-SESSION COMPARISON on a FROZEN volume anchor. The "old way / session"
     figure is computed entirely from frozen inputs (the captured typical_session token
@@ -5175,7 +5175,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
          bcr=cache_read, bcw=cache_write, bout=output. The current window over `days` is
          read ONLY for the session count (recent_n) and the CURRENT cache-hit (cur_hit).
       2. OLD WAY / session (counterfactual) = price(bfi, bcr, bout) + cache-write, all at
-         the BASELINE (~95% Opus) mix. Depends only on frozen inputs + prices -> stable.
+         the BASELINE mix. Depends only on frozen inputs + prices -> stable.
       3. NOW / session (actual) = the SAME frozen tokens, but the fresh+cache_read pool
          (t_pool = bfi + bcr) redistributed at cur_hit (cur_CR = cur_hit*t_pool; cur_F =
          t_pool - cur_CR), priced at the CURRENT mix. Cache-write is held constant in
@@ -5184,9 +5184,10 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
          volume than the typical session held.
       4. MAIN TRANSFORMATION (monthly) = (old_cps - now_cps) * recent_n, signed.
 
-    Baseline model mix is ~95% Opus: the product owner's confirmed pre-TO mix. We floor
-    the frozen baseline's measured opus_share at 0.95 (the early window was already
-    partly optimized, so its measured share understates the true pre-TO era). base_hit
+    Baseline model mix: the user's stated pre-TO share when one is set, else the frozen
+    measured share from their own install-era history; with neither (or a
+    non-Anthropic runtime) the before arm uses the current mix, so routing is zero.
+    No share is assumed for anyone. base_hit
     comes from the frozen baseline typical session's cache pattern; if unavailable it
     falls back to the current cache-hit (caching lever = 0, conservative).
 
@@ -5257,7 +5258,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
             return zero
 
         # The frozen robust baseline supplies the PRE-TO efficiency anchors: the model
-        # mix (floored to ~95% Opus, the owner's confirmed pre-TO mix) and the cache-hit
+        # mix (stated or measured share, never assumed) and the cache-hit
         # pattern. It is NOT used for volume -- volume comes entirely from the current
         # window, held constant across both arms.
         baseline = _measure_facade._get_baseline_state()
@@ -5284,8 +5285,8 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         # (via _cost_per_session's fallback), understating actual and INFLATING savings.
         # If model_daily is empty/stale, derive the actual mix from the SAME session_log
         # rows already loaded (their stored model_usage breakdown). Bail if still empty.
-        # Baseline (pre-TO) model mix: floor to ~95% Opus ONLY for an Anthropic runtime
-        # with no usable measured baseline. A real frozen baseline share is trusted as-is;
+        # Baseline (pre-TO) model mix: the frozen share (stated or measured) for an
+        # Anthropic runtime; with none, the current mix. A frozen share is trusted as-is;
         # a non-Anthropic user is priced at their own measured mix, never fabricated Opus.
         anthropic = _measure_facade.detect_runtime() not in {"codex", "hermes", "copilot", "opencode", "cursor", "antigravity", "grok"}
         if anthropic and frozen_opus and frozen_opus > 0:
@@ -5881,7 +5882,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
             breakdown_caveat = (
             "Counterfactual attribution: your FROZEN typical pre-TO session is priced two "
             "ways -- the way you work now, and the way you worked before Token Optimizer "
-            "(~95% Opus, your old cache pattern) -- then scaled by your session count this "
+            "(" + ("about %d%% Opus, " % round(100 * baseline_opus_share) if baseline_opus_share > 0 else "") + "your old cache pattern) -- then scaled by your session count this "
             "period. The per-session difference is split between model routing (including "
             "cache-write, which is billed at the writing model's rate) and caching. Subagent "
             "(sidechain) work is a second pool: the window's real delegated tokens priced at "
@@ -6542,8 +6543,14 @@ def _savings_since_install():
         # assumption and stays out of every savings total.
         measured = float(full.get("total_cost_usd", 0) or 0) - savings_story.verbosity_logged(full)
         full_routing = full.get("model_routing") or {}
-        stated = (full_routing.get("baseline_source") == "pretool_baseline" and abs(float(full_routing.get("baseline_opus_share") or 0) - 0.95) < 1e-8 and full_routing.get("evidence") not in ("pending", "unavailable"))
-        stated_routing = float(full_routing.get("realized_cost_usd") or 0) if stated else 0.0
+        # Since-install routing for every user: a stated pre-TO share
+        # (pretool_baseline.json / TOKEN_OPTIMIZER_BASELINE_OPUS_SHARE) wins,
+        # else the model mix measured at install (snapshot or earliest
+        # history). Same pricing either way; no baseline, a non-Anthropic
+        # runtime, or no Opus in the baseline means $0, never invented Opus.
+        routing_source = savings_story.routing_baseline_kind(full_routing, _measure_facade.detect_runtime())
+        stated = routing_source is not None
+        stated_routing = max(0.0, float(full_routing.get("realized_cost_usd") or 0)) if stated else 0.0
         # Estimated = genuine TO-realized counterfactuals only — the same
         # categories the dashboard's estimated tier (estItems) sums, so the two
         # cards agree about what "estimated" contains. cache_drop and
@@ -6578,7 +6585,8 @@ def _savings_since_install():
                 try:
                     from . import routing_period
                     rconn = _measure_facade._open_trends_db_readonly(timeout=1.0)
-                    try: majority_period = routing_period.strongest(rconn, _measure_facade, stated_routing, d)
+                    share = float(full_routing.get("baseline_opus_share") or 0)
+                    try: majority_period = routing_period.strongest(rconn, _measure_facade, stated_routing, d, shares={"opus": share, "sonnet": round(1.0 - share, 4)})
                     finally: rconn.close()
                 except Exception:
                     pass
@@ -6587,7 +6595,8 @@ def _savings_since_install():
                 "components_usd": display_parts, "routing_majority_period": majority_period,
                 "estimated_usd": round(sum(components["display"]["estimates_usd"].values()), 2),
                 "routing_usd": round(float(components.get("routing_usd", 0) or 0), 2),
-                "routing_baseline_opus_share": full_routing.get("baseline_opus_share"), "routing_baseline_source": full_routing.get("baseline_source"),
+                "routing_baseline_opus_share": full_routing.get("baseline_opus_share"), "routing_baseline_source": routing_source,
+                "routing_baseline_basis": full_routing.get("baseline_source"),
                 "routing_measured_baseline_opus_share": full_routing.get("measured_baseline_opus_share"), "routing_measured_baseline_realized_cost_usd": full_routing.get("measured_baseline_realized_cost_usd"),
                 "routing_pending": full_routing.get("evidence") == "pending",
                 "routing_pending_sessions": int(full_routing.get("pending_sessions") or 0),

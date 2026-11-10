@@ -1,14 +1,18 @@
-"""Find the four consecutive months that drove an attested routing estimate."""
+"""Find the four consecutive months that drove a routing estimate.
+
+`shares` is the baseline family mix the estimate was priced against
+(e.g. {"opus": 0.7, "sonnet": 0.3}); without it there is no period."""
 import json
 from collections import defaultdict
 
 
-def strongest(conn, facade, expected, start_date=None):
-    if expected <= 0:
+def strongest(conn, facade, expected, start_date=None, shares=None):
+    shares = {k: float(v) for k, v in (shares or {}).items() if v}
+    if expected <= 0 or not shares or abs(sum(shares.values()) - 1.0) > 0.01:
         return None
     families = ('opus', 'sonnet', 'sonnet_legacy', 'haiku')
     rates = {fam: facade._routing_class_rates(facade._routing_reference_model(fam)) for fam in families}
-    if not all(rates.values()):
+    if not all(rates.values()) or any(k not in rates for k in shares):
         return None
     months = defaultdict(float)
     for (raw,) in conn.execute('SELECT daily_usage_json FROM session_log'):
@@ -27,7 +31,7 @@ def strongest(conn, facade, expected, start_date=None):
                     continue
                 tokens = {}
                 facade._add_routing_buckets(tokens, parts)
-                months[day[:7]] += sum(tokens.get(k, 0) * (.95 * rates['opus'][k] + .05 * rates['sonnet'][k] - rates[family][k]) for k in facade._ROUTING_CLASSES) / 1e6
+                months[day[:7]] += sum(tokens.get(k, 0) * (sum(w * rates[f][k] for f, w in shares.items()) - rates[family][k]) for k in facade._ROUTING_CLASSES) / 1e6
     total = sum(months.values())
     if total <= 0 or abs(total - expected) > max(0.02 * expected, 1.0):
         return None

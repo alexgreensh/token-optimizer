@@ -151,10 +151,11 @@ def test_since_install_excludes_verbosity_and_reports_its_amount(m, monkeypatch)
     assert out['all_in']['estimated_usd'] == 0
 
 
-def test_since_install_includes_stated_routing_only_as_estimate(m, monkeypatch):
+@pytest.mark.parametrize('share', [0.6, 0.8, 0.95])
+def test_since_install_includes_stated_routing_only_as_estimate(m, monkeypatch, share):
     _install(m, 120)
     routing = {'realized_cost_usd': 300.25, 'evidence': 'estimated', 'baseline_source': 'pretool_baseline',
-               'baseline_opus_share': 0.95, 'measured_baseline_opus_share': 0.8369,
+               'baseline_opus_share': share, 'measured_baseline_opus_share': 0.8369,
                'measured_baseline_realized_cost_usd': 0.0}
     monkeypatch.setattr(m, '_get_merged_savings', lambda **kw: {'total_cost_usd': 12.5, 'model_routing': routing})
     monkeypatch.setattr(m, '_counted_cumulative_summary', lambda **kw: {'available': True, 'reread_usd': 80})
@@ -163,3 +164,51 @@ def test_since_install_includes_stated_routing_only_as_estimate(m, monkeypatch):
     assert out['all_in']['components_usd']['routing_estimated'] == 300.25
     assert out['all_in']['total_usd'] == 392.75
     assert out['all_in']['routing_measured_baseline_realized_cost_usd'] == 0
+
+
+def _routing_user(m, monkeypatch, routing, runtime='claude'):
+    _install(m, 120)
+    monkeypatch.setattr(m, 'detect_runtime', lambda: runtime)
+    monkeypatch.setattr(m, '_get_merged_savings', lambda **kw: {'total_cost_usd': 12.5, 'model_routing': routing})
+    monkeypatch.setattr(m, '_counted_cumulative_summary', lambda **kw: {'available': True, 'reread_usd': 80})
+    return m._savings_since_install()
+
+
+@pytest.mark.parametrize('source', ['snapshot', 'history'])
+def test_measured_only_user_gets_routing_from_install_mix(m, monkeypatch, source):
+    out = _routing_user(m, monkeypatch, {'realized_cost_usd': 41.5, 'evidence': 'estimated',
+                                         'baseline_source': source, 'baseline_opus_share': 0.71})
+    assert out['all_in']['components_usd']['routing_estimated'] == 41.5
+    assert out['all_in']['routing_baseline_source'] == 'measured_at_install'
+    assert out['all_in']['routing_baseline_opus_share'] == 0.71
+    assert out['excluded_usd']['routing'] is None
+
+
+def test_stated_share_overrides_and_is_labelled_stated(m, monkeypatch):
+    out = _routing_user(m, monkeypatch, {'realized_cost_usd': 77.0, 'evidence': 'estimated',
+                                         'baseline_source': 'pretool_baseline', 'baseline_opus_share': 0.6})
+    assert out['all_in']['components_usd']['routing_estimated'] == 77.0
+    assert out['all_in']['routing_baseline_source'] == 'stated'
+
+
+def test_no_baseline_means_no_routing(m, monkeypatch):
+    out = _routing_user(m, monkeypatch, {'realized_cost_usd': 0.0, 'evidence': 'unavailable', 'baseline_source': None,
+                                         'baseline_opus_share': 0.0})
+    assert out['excluded_usd'].get('routing') is not None or out['all_in']['components_usd']['routing_estimated'] == 0
+    assert out['all_in']['components_usd']['routing_estimated'] == 0
+    assert out['all_in']['routing_baseline_source'] is None
+
+
+def test_non_anthropic_runtime_never_gets_routing(m, monkeypatch):
+    out = _routing_user(m, monkeypatch, {'realized_cost_usd': 55.0, 'evidence': 'estimated',
+                                         'baseline_source': 'history', 'baseline_opus_share': 0.9}, runtime='codex')
+    assert out['all_in']['components_usd']['routing_estimated'] == 0
+    assert out['all_in']['routing_baseline_source'] is None
+
+
+
+def test_sonnet_only_install_mix_has_no_routing(m, monkeypatch):
+    out = _routing_user(m, monkeypatch, {'realized_cost_usd': 0.0, 'evidence': 'estimated',
+                                         'baseline_source': 'history', 'baseline_opus_share': 0.0})
+    assert out['all_in']['components_usd']['routing_estimated'] == 0
+    assert out['all_in']['routing_baseline_source'] is None

@@ -1,4 +1,6 @@
-"""An unattributed cost-per-message trend on one constant price basis."""
+"""An unattributed cost-per-message trend on one constant price basis: Opus
+list prices for every model, so model mix changes do not move the index
+through price; the renderer labels it "at constant Opus prices"."""
 import json
 import math
 from collections import defaultdict

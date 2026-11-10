@@ -119,19 +119,23 @@ def apply_listing_check(trims, sessions, chars_per_token, data_dir=None):
 
 
 GROWTH_RECENT_S = 7 * 86400
-GROWTH_MIN_MONTH = 20
+GROWTH_MONTH_SHARE = 0.1  # a baseline month needs >= 10% of a typical month's sessions
 
 
 def listing_growth(sessions, now_epoch, chars_per_token, read=None):
     """How much the initial skill listing grew: today's size versus the
-    smallest monthly median in the owner's own history.
+    user's own earlier listing (the smallest monthly median before the
+    current month).
 
     sessions: (start_epoch, transcript_path) for local sessions. Current is the
-    median of sessions that started in the last 7 days (at least MIN_SESSIONS);
-    the baseline is the smallest median among months with at least
-    GROWTH_MIN_MONTH sessions. Returns None without enough evidence."""
+    median of sessions that started in the last 7 days (at least MIN_SESSIONS).
+    A baseline month needs at least MIN_SESSIONS sessions and at least 10% of
+    the user's median month, so light users qualify and a stray month cannot
+    set the baseline. Returns None without an earlier month to compare."""
+    import math
     from datetime import datetime
     read = read or first_listing_chars
+    current_month = datetime.fromtimestamp(now_epoch).strftime("%Y-%m")
     recent, months = [], {}
     for start, path in sessions:
         if start is None or not path:
@@ -139,14 +143,20 @@ def listing_growth(sessions, now_epoch, chars_per_token, read=None):
         n = read(path)
         if not n:
             continue
-        months.setdefault(datetime.fromtimestamp(start).strftime("%Y-%m"), []).append(n)
         if now_epoch - GROWTH_RECENT_S <= start <= now_epoch:
             recent.append(n)
-    medians = {m: statistics.median(v) for m, v in months.items() if len(v) >= GROWTH_MIN_MONTH}
-    if len(recent) < MIN_SESSIONS or not medians:
+        month = datetime.fromtimestamp(start).strftime("%Y-%m")
+        if month < current_month:
+            months.setdefault(month, []).append(n)
+    if len(recent) < MIN_SESSIONS or not months:
+        return None
+    floor = max(MIN_SESSIONS, int(math.ceil(GROWTH_MONTH_SHARE * statistics.median(len(v) for v in months.values()))))
+    medians = {m: statistics.median(v) for m, v in months.items() if len(v) >= floor}
+    if not medians:
         return None
     base_month = min(medians, key=lambda m: (medians[m], m))
     current, base = statistics.median(recent), medians[base_month]
     return {"current_chars": int(current), "baseline_chars": int(base), "baseline_month": base_month,
             "recent_sessions": len(recent), "baseline_sessions": len(months[base_month]),
+            "month_floor": floor,
             "growth_tokens": max(0, int((current - base) / float(chars_per_token or 4.0)))}

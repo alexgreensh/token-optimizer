@@ -169,7 +169,7 @@ function savingsStoryHtml(data) {
       (bashExpand ? '<p>Bash compression, net of re-expands: ' + usd(bashNet) + ' once, before repeat-reads.</p>' : '') +
       (num((as.estimates_usd || {}).expand_overhead) ? '<p>Estimated expand-command overhead: ' + usd(as.estimates_usd.expand_overhead) + '.</p>' : '') +
       table('Measured, counted event by event', measured) +
-      table('Estimated, sized by a stated method', estimated) +
+      table('Estimated, sized by a documented method', estimated) +
       '<p>Measured rows come from the ledger: each removal, the cache rate the next call would have paid, and every later turn that would have re-read it, up to the session&rsquo;s next compaction.</p>' +
       savingsPerSessionHtml(ps, overhead) +
       (measuringNames.length ? '<p>Still measuring, not in the total yet: ' + measuringNames.join(' and ') + '.</p>' : '') +
@@ -292,8 +292,31 @@ function savingsSinceInstallBody(data, SI) {
     (ledgerShare != null ? '<p>Counted ledger alone, as a share of the API-rate cost of the sessions where Token Optimizer ran: ' + pct(ledgerShare) + '.</p>' : '');
 }
 
-// Model routing, its own card: the since-install estimate at the stated
-// baseline. Never added to any other total.
+// Which baseline the since-install routing estimate compares against:
+// 'stated' (the user's own pre-TO share) or 'measured' (the mix Token
+// Optimizer recorded at install). Older payloads only carried a stated one.
+function savingsRoutingBasis(data) {
+  var f = savingsStoryFmt(), has = f.has, num = f.num;
+  var s = (data && data.savings) || {};
+  var ai = ((s.since_install || {}).all_in) || {};
+  var mr = s.model_routing || {};
+  var src = ai.routing_baseline_source || mr.baseline_source;
+  var kind = (src === 'measured_at_install' || src === 'snapshot' || src === 'history') ? 'measured' : 'stated';
+  var share = has(ai.routing_baseline_opus_share) ? num(ai.routing_baseline_opus_share) : (has(mr.baseline_opus_share) ? num(mr.baseline_opus_share) : null);
+  var pct = share != null ? Math.round(share * 100) + '%' : '';
+  return {
+    kind: kind, pct: pct,
+    lead: kind === 'measured'
+      ? 'Compared with the model mix Token Optimizer recorded when you installed' + (pct ? ' (' + pct + ' Opus)' : '') + '.'
+      : 'At your stated ' + (pct ? pct + ' ' : '') + 'Opus baseline.',
+    ledger: kind === 'measured'
+      ? 'Estimated routing, against the model mix recorded at install' + (pct ? ' (' + pct + ' Opus)' : '')
+      : 'Estimated routing, at your stated ' + (pct ? pct + ' ' : '') + 'Opus baseline'
+  };
+}
+
+// Model routing, its own card: the since-install estimate against the stated
+// or install-time baseline. Never added to any other total.
 function savingsRoutingCardHtml(data) {
   var f = savingsStoryFmt(), num = f.num, has = f.has, usd = f.usd;
   var s = (data && data.savings) || {};
@@ -301,24 +324,26 @@ function savingsRoutingCardHtml(data) {
   var mr = s.model_routing || {};
   var routing = num((ai.components_usd || {}).routing_estimated);
   if (!(routing > 0)) return '';
-  var share = has(ai.routing_baseline_opus_share) ? num(ai.routing_baseline_opus_share) : (has(mr.baseline_opus_share) ? num(mr.baseline_opus_share) : null);
-  var shareText = share != null ? Math.round(share * 100) + '% ' : '';
+  var basis = savingsRoutingBasis(data);
   var period = savingsMonthRange(ai.routing_majority_period, ' to ');
   var days = Number(s.period_days) || 30;
-  var body = '<p>Compared with running ' + (shareText ? shareText + 'of your work' : 'your stated share of work') + ' on Opus, as you told Token Optimizer at install. It is an estimate about your own habits, so it is never added to any savings total.</p>' +
-    (has(ai.routing_measured_baseline_opus_share) && has(ai.routing_measured_baseline_realized_cost_usd) ? '<p>Using the measured starting mix (' + (num(ai.routing_measured_baseline_opus_share) * 100).toFixed(2) + '% Opus), the routing estimate is ' + usd(ai.routing_measured_baseline_realized_cost_usd) + '.</p>' : '') +
-    (mr.baseline_source === 'pretool_baseline' && num(mr.realized_cost_usd) > 0 ? '<p>Last ' + days + ' days: ' + usd(mr.realized_cost_usd) + ' of it.</p>' : '');
+  var body = (basis.kind === 'measured'
+      ? '<p>Your current work priced at the model mix Token Optimizer recorded when you installed' + (basis.pct ? ' (' + basis.pct + ' Opus)' : '') + ', against what it actually cost.'
+      : '<p>Your current work priced at the ' + (basis.pct ? basis.pct + ' ' : '') + 'Opus share you gave Token Optimizer, against what it actually cost.') +
+      ' It is an estimate, so it is never added to any savings total.</p>' +
+    (basis.kind === 'stated' && has(ai.routing_measured_baseline_opus_share) && has(ai.routing_measured_baseline_realized_cost_usd) ? '<p>Using the measured starting mix (' + (num(ai.routing_measured_baseline_opus_share) * 100).toFixed(2) + '% Opus), the routing estimate is ' + usd(ai.routing_measured_baseline_realized_cost_usd) + '.</p>' : '') +
+    (num(mr.realized_cost_usd) > 0 ? '<p>Last ' + days + ' days: ' + usd(mr.realized_cost_usd) + ' of it.</p>' : '');
   return '<div class="card st-card st-card--route">' +
     '<h2 class="st-h">Model routing <span class="st-tag">Estimated</span></h2>' +
     '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--route st-mega--card">' + usd(routing) + '</span><span class="st-mega__unit">saved by routing since you installed</span></p>' +
-    '<p class="st-lead">' + (shareText ? 'At your stated ' + shareText + 'Opus baseline.' : 'At your stated Opus baseline.') + (period ? ' Most of it from ' + esc(period) + '.' : '') + '</p>' +
+    '<p class="st-lead">' + esc(basis.lead) + (period ? ' Most of it from ' + esc(period) + '.' : '') + '</p>' +
     f.fold('How this is estimated', body) +
     '</div>';
 }
 
 // Still on the table: computable opportunities per period, each with one
-// action. A part the data cannot size yet says "Measuring" and stays out of
-// the sum. Never part of any savings total.
+// action. A part the data cannot size is left out. Never part of any
+// savings total.
 function savingsOnTableHtml(data) {
   var f = savingsStoryFmt(), num = f.num, has = f.has, usd = f.usd, tok = f.tok, count = f.count;
   var s = (data && data.savings) || {};
@@ -333,26 +358,22 @@ function savingsOnTableHtml(data) {
     rows.push({ label: 'Model routing', action: 'Send routine work to ' + name, usd: num(mr.potential_cost_usd) });
     how.push('<li>Model routing: if ' + (frac != null ? 'about ' + frac + '% of' : 'part of') + ' your Opus work ran on ' + name + ', new input and output priced at API rates. An assumption about your own work.</li>');
   }
-  if (lb && typeof lb === 'object') {
-    if (lb.available && num(lb.cost_usd) > 0) {
-      rows.push({ label: 'Skill listing', action: 'Trim the skill list budget', usd: num(lb.cost_usd) });
-      var bm = /^\d{4}-\d{2}$/.test(lb.baseline_month || '') ? new Date(lb.baseline_month + '-01T00:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : 'its smallest month';
-      how.push('<li>Skill listing: Claude Code sends about ' + count(lb.current_chars) + ' characters of skill listing with each session now, against ' + count(lb.baseline_chars) + ' in ' + esc(bm) +
-        '. The ' + tok(lb.growth_tokens) + '-token difference &times; ' + count(lb.calls) + ' calls on this Mac in the last ' + count(lb.period_days || days) + ' days &times; each call&rsquo;s cache-read price.</li>');
-    } else if (!lb.available) {
-      rows.push({ label: 'Skill listing', action: 'Trim the skill list budget', usd: null });
-    }
+  // The skill-listing row appears only when the user's own history sizes it;
+  // with no earlier listing to compare, it is left out (never "Measuring").
+  if (lb && typeof lb === 'object' && lb.available && num(lb.cost_usd) > 0) {
+    var bm = /^\d{4}-\d{2}$/.test(lb.baseline_month || '') ? new Date(lb.baseline_month + '-01T00:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '';
+    rows.push({ label: 'Skill listing', action: 'Trim the skill list budget', usd: num(lb.cost_usd) });
+    how.push('<li>Skill listing: your skill list grew from ' + count(lb.baseline_chars) + ' to ' + count(lb.current_chars) + ' characters per message' + (bm ? ' since ' + esc(bm) : '') +
+      '. Trimming it back is worth the ' + tok(lb.growth_tokens) + '-token difference &times; ' + count(lb.calls) + ' calls on this computer in the last ' + count(lb.period_days || days) + ' days &times; each call&rsquo;s cache-read price.</li>');
   }
   if (!rows.length) return '';
-  var priced = rows.filter(function(r) { return r.usd != null; });
-  var total = priced.reduce(function(a, r) { return a + r.usd; }, 0);
+  var total = rows.reduce(function(a, r) { return a + r.usd; }, 0);
   return '<div class="card st-table">' +
     '<h2 class="st-h">Still on the table</h2>' +
-    '<div class="st-table__body"><p class="st-mega__item st-mega__item--card">' + (priced.length
-      ? '<span class="st-mega st-mega--warm st-mega--card">' + usd(total) + '</span><span class="st-mega__unit">more every ' + days + ' days, yours to claim</span>'
-      : '<span class="st-mega st-mega--warm st-mega--word">Measuring</span><span class="st-mega__unit">sizing what is left to claim</span>') + '</p>' +
+    '<div class="st-table__body"><p class="st-mega__item st-mega__item--card">' +
+      '<span class="st-mega st-mega--warm st-mega--card">' + usd(total) + '</span><span class="st-mega__unit">more every ' + days + ' days, yours to claim</span></p>' +
     '<div class="st-table__rows"><ul class="st-rows st-rows--card">' + rows.map(function(r) {
-      return '<li><span>' + esc(r.label) + '<span class="st-sub">' + esc(r.action) + '</span></span><span class="st-v">' + (r.usd != null ? usd(r.usd) : 'Measuring') + '</span></li>';
+      return '<li><span>' + esc(r.label) + '<span class="st-sub">' + esc(r.action) + '</span></span><span class="st-v">' + usd(r.usd) + '</span></li>';
     }).join('') + '</ul>' +
     f.fold('How each one is sized', '<ul>' + how.join('') + '</ul><p>Valued at API rates, per ' + days + ' days. None of this is in any savings total.</p>') +
     '</div></div></div>';
@@ -373,7 +394,7 @@ function savingsCostTrendHtml(raw) {
   var points = trend.map(function(p, i) { return (i * 500 / (trend.length - 1)).toFixed(1) + ',' + (90 - Number(p.index) / maxIndex * 80).toFixed(1); }).join(' ');
   var ticks = trend.map(function(p, i) { if (i !== trend.length - 1 && i % Math.ceil(trend.length / 6)) return ''; var d = new Date(p.month + '-01T00:00:00'), x = 20 + i * 460 / (trend.length - 1); return '<text x="' + x.toFixed(1) + '" y="115" text-anchor="middle" fill="currentColor" font-size="11">' + esc(d.toLocaleDateString('en-US', {month:'short'})) + '</text>'; }).join('');
   return '<div class="card wide st-card"><h2 class="st-h">Cost per message down ' + down + '% since ' + esc(since) + '</h2>' +
-    '<p class="st-lead">Indexed to the first month, using constant token prices. This trend is not attributed to Token Optimizer.</p>' +
+    '<p class="st-lead">Indexed to the first month, at constant Opus prices for every model. This trend is not attributed to Token Optimizer.</p>' +
     '<p>Start ' + Math.round(start) + ' &middot; Latest ' + Math.round(latest) + '</p>' +
     '<svg viewBox="0 0 500 120" role="img" aria-label="Monthly cost per message index" style="width:100%;height:140px">' +
     '<polyline fill="none" stroke="currentColor" stroke-width="3" points="' + points + '"></polyline>' + ticks + '</svg></div>';
@@ -383,7 +404,7 @@ function savingsCostTrendHtml(raw) {
 // session's own context), split by where the session ran. Never above the fold.
 function savingsPerSessionHeadline(ps) {
   var f = savingsStoryFmt(), has = f.has, bp = (ps || {}).by_place || {}, local = bp.local || {}, cloud = bp.cloud || {}, lines = [];
-  if (f.num(local.sessions) > 0 && has(local.net_median)) lines.push('On this Mac: typical ' + f.pct(local.net_median) + (has(local.net_p75) ? ', top quarter ' + f.pct(local.net_p75) + '+' : '') + (local.best && has(local.best.net_max) ? ', best ' + f.pct(local.best.net_max) : ''));
+  if (f.num(local.sessions) > 0 && has(local.net_median)) lines.push('On this computer: typical ' + f.pct(local.net_median) + (has(local.net_p75) ? ', top quarter ' + f.pct(local.net_p75) + '+' : '') + (local.best && has(local.best.net_max) ? ', best ' + f.pct(local.best.net_max) : ''));
   if (f.num(cloud.sessions) > 0 && has(cloud.net_median)) lines.push('Cloud: typical ' + f.pct(cloud.net_median));
   return lines.length ? '<p class="st-lead">Per session, share of its own context not sent. ' + lines.join('; ') + '.</p>' : '';
 }
@@ -392,7 +413,7 @@ function savingsPerSessionHtml(ps, overhead) {
   var f = savingsStoryFmt(), num = f.num, has = f.has;
   ps = ps || {};
   var bp = ps.by_place || {};
-  var rows = [['On this Mac', bp.local], ['Cloud sessions', bp.cloud]].filter(function(r) {
+  var rows = [['On this computer', bp.local], ['Cloud sessions', bp.cloud]].filter(function(r) {
     return r[1] && num(r[1].sessions) > 0 && has(r[1].net_median);
   });
   if (!rows.length && num(ps.sessions) > 0 && has(ps.net_median)) rows = [['All sessions', ps]];
@@ -506,7 +527,7 @@ function savingsLedgerHtml(data) {
     out += '<h3 class="ts-section-label st-gap">Since you installed' + (SI.date ? ' on ' + esc(SI.date) : '') + ' (' + f.count(SI.days) + ' days)</h3><ul class="st-rows">' +
       SI.parts.map(function(p) { return row(p[0], p[1], 0); }).join('') +
       '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(SI.total) + '</strong></span></li></ul>' +
-      (SI.routing ? '<ul class="st-rows">' + row('Estimated routing, based on your stated 95% Opus baseline', SI.routing, 0) + '</ul>' : '');
+      (SI.routing ? '<ul class="st-rows">' + row(savingsRoutingBasis(data).ledger, SI.routing, 0) + '</ul>' : '');
   }
   var cp = s.counted_period || {};
   if (cp.pricing_note) out += '<p>' + esc(cp.pricing_note) + '</p>';

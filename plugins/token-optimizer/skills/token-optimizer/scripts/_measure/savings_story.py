@@ -48,3 +48,28 @@ def story_token_total(s):
     if float(a.get('estimated_usd') or 0) - float((a.get('estimates_usd') or {}).get('output_reread') or 0) >= 0.5:
         total += _number(h.get('reload_avoided_tokens'))
     return total
+
+
+NON_ANTHROPIC_RUNTIMES = {"codex", "hermes", "copilot", "opencode", "cursor", "antigravity", "grok"}
+
+
+def routing_baseline_kind(routing, runtime):
+    """'stated' (the user's own pre-TO share), 'measured_at_install' (the mix
+    recorded at install or the earliest history), or None when routing is not
+    estimated: no baseline, no Opus in it, a non-Anthropic runtime, or usage
+    still being re-read."""
+    routing = routing or {}
+    if runtime in NON_ANTHROPIC_RUNTIMES or routing.get("evidence") in ("pending", "unavailable"):
+        return None
+    try:
+        share = float(routing.get("baseline_opus_share") or 0)
+    except (TypeError, ValueError):
+        return None
+    if share <= 0:
+        return None
+    source = routing.get("baseline_source")
+    if source == "pretool_baseline":
+        return "stated"
+    if source in ("snapshot", "history"):
+        return "measured_at_install"
+    return None

@@ -136,9 +136,11 @@ def test_setup_card_does_not_claim_unattributed_trim_is_in_total():
     assert 'Unknown origin' not in story({'savings': s})
 
 
-def test_stated_routing_is_not_described_as_excluded_or_measuring():
+@pytest.mark.parametrize('share', [0.6, 0.8, 0.95])
+def test_stated_routing_is_not_described_as_excluded_or_measuring(share):
     s = full()
     s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
+    s['since_install']['all_in']['routing_baseline_opus_share'] = share
     s['since_install']['excluded_usd'] = {'routing': None, 'lean_resumes': 12, 'verbosity': 2}
     html = story({'savings': s})
     assert 'routing Measuring' not in html
@@ -154,10 +156,12 @@ def table(out):
     return out.split('class="card st-table"')[1].split('class="st-grid"')[0]
 
 
-def routed():
+def routed(share=0.95):
     s = full()
     s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
-    s['since_install']['all_in']['routing_baseline_opus_share'] = 0.95
+    s['since_install']['all_in']['routing_baseline_opus_share'] = share
+    s['since_install']['all_in']['routing_baseline_source'] = 'stated'
+    s['model_routing']['baseline_opus_share'] = share
     s['model_routing'].update(potential_cost_usd=61.4, routable_fraction=0.2, target_model='claude-sonnet-5-5')
     return s
 
@@ -200,11 +204,11 @@ def test_session_shares_above_fold_and_place_split_in_fold():
     h = hero(out)
     assert 'st-mega st-mega--usd">$95</span>' in h and 'st-mega st-mega--tok">' in h
     assert 'tokens kept out of context' in h
-    assert 'On this Mac: typical 3.1%, top quarter 9%+, best 25%' in _visible(h)
+    assert 'On this computer: typical 3.1%, top quarter 9%+, best 25%' in _visible(h)
     assert 'Cloud: typical 22%' in _visible(h)
     fold = h.split('<details')[1]
     assert "share of that session&rsquo;s own context" in fold
-    assert 'On this Mac: typical 3.1%, top quarter 9% or more (100 sessions)' in fold
+    assert 'On this computer: typical 3.1%, top quarter 9% or more (100 sessions)' in fold
     assert 'Cloud sessions: typical 22%, top quarter 40% or more (20 sessions)' in fold
 
 
@@ -212,7 +216,7 @@ def test_split_falls_back_to_all_sessions_without_by_place():
     s = full()
     del s['session_effect']['per_session']['by_place']
     fold = hero(story({'savings': s})).split('<details')[1]
-    assert 'All sessions: typical 4.8%' in fold and 'On this Mac' not in fold
+    assert 'All sessions: typical 4.8%' in fold and 'On this computer' not in fold
 
 
 def test_unavailable_reread_price_is_not_claimed_as_part_of_total():
@@ -469,16 +473,18 @@ def test_grid_is_reread_routing_then_setup_then_coverage():
     assert 'ran in 150 of your 200 sessions' in cov and '12 of them are not in the ledger yet' in cov
 
 
-def test_routing_card_has_one_huge_estimated_number_and_short_explainer():
-    s = routed()
+@pytest.mark.parametrize('share', [0.6, 0.8, 0.95])
+def test_routing_card_has_one_huge_estimated_number_and_short_explainer(share):
+    s = routed(share)
     s['since_install']['all_in']['routing_majority_period'] = {'start': '2026-04', 'end': '2026-07'}
     s['since_install']['all_in']['routing_measured_baseline_opus_share'] = 0.8369
     s['since_install']['all_in']['routing_measured_baseline_realized_cost_usd'] = 0
     card = story({'savings': s}).split('class="card st-card st-card--route"')[1].split('</details></div>')[0]
     assert '<span class="st-tag">Estimated</span>' in card
     assert 'st-mega st-mega--route st-mega--card">$3,484</span>' in card
-    assert '<p class="st-lead">At your stated 95% Opus baseline. Most of it from Apr to Jul.</p>' in card
+    assert '<p class="st-lead">At your stated %d%% Opus baseline. Most of it from Apr to Jul.</p>' % round(share * 100) in card
     assert '83.69%' in card and 'never added to any savings total' in card
+    assert 'Opus share you gave Token Optimizer' in card
     assert 'Last 30 days: $50 of it.' in card
     assert 'Measuring' not in card
 
@@ -499,24 +505,24 @@ def test_still_on_the_table_sums_routing_and_skill_listing_in_warm_accent():
     assert 'st-mega st-mega--warm st-mega--card">$170</span>' in t and 'st-mega--usd' not in t
     assert re.findall(r'<li><span>([^<]+)<span class="st-sub">([^<]+)</span></span><span class="st-v">([^<]+)</span>', t) == [
         ('Model routing', 'Send routine work to Sonnet', '$61'), ('Skill listing', 'Trim the skill list budget', '$108')]
-    assert '30,000 characters' in t and '6,000 in Apr 2026' in t and '12,000 calls' in t
+    assert 'your skill list grew from 6,000 to 30,000 characters per message since Apr 2026' in t and '12,000 calls' in t
+    assert 'waste' not in t.lower()
     # Opportunity never joins a savings figure.
     assert '$170' not in hero(out) and 'savings total' in t
 
 
-def test_unsized_skill_listing_says_measuring_and_stays_out_of_the_sum():
+def test_unsized_skill_listing_is_hidden_and_stays_out_of_the_sum():
     s = routed()
     s['skill_listing_budget'] = {'available': False, 'reason': 'not enough skill listings in transcripts'}
     t = table(story({'savings': s}))
     assert 'st-mega--warm st-mega--card">$61</span>' in t
-    assert '<span class="st-v">Measuring</span>' in t
+    assert 'Skill listing' not in t and 'Measuring' not in t
 
 
-def test_still_on_the_table_with_nothing_sized_shows_measuring_not_zero():
+def test_still_on_the_table_absent_when_nothing_is_sized():
     s = full()
     s['skill_listing_budget'] = {'available': False, 'reason': 'no usage data yet'}
-    t = table(story({'savings': s}))
-    assert 'st-mega--word">Measuring</span>' in t and '$0' not in t
+    assert 'st-table' not in story({'savings': s})
 
 
 def test_still_on_the_table_absent_without_any_opportunity():
@@ -601,3 +607,56 @@ def test_subdollar_amounts_read_naturally():
 def test_compounding_card_names_its_priced_removal_basis():
     grid = story({'savings': full()}).split('class="st-grid"')[1]
     assert '<strong>2.0M priced tokens removed</strong> became <strong>80.0M tokens not sent</strong>' in grid
+
+
+
+def _measured_user():
+    s = routed()
+    ai = s['since_install']['all_in']
+    ai.update(routing_baseline_source='measured_at_install', routing_baseline_opus_share=0.71,
+              routing_majority_period={'start': '2026-04', 'end': '2026-07'})
+    s['model_routing'].update(baseline_source='history', baseline_opus_share=0.71, measured_baseline_opus_share=None,
+                              measured_baseline_realized_cost_usd=None)
+    return s
+
+
+def test_measured_install_baseline_never_says_stated():
+    s = _measured_user()
+    out = story({'savings': s}) + call('savingsLedgerHtml(data)', {'savings': s})
+    card = out.split('class="card st-card st-card--route"')[1].split('</details></div>')[0]
+    assert ('<p class="st-lead">Compared with the model mix Token Optimizer recorded when you installed (71% Opus). '
+            'Most of it from Apr to Jul.</p>') in card
+    assert 'st-mega--route st-mega--card">$3,484</span>' in card
+    assert 'Estimated routing, against the model mix recorded at install (71% Opus)' in out
+    assert 'stated' not in out.lower() and 'told token optimizer' not in out.lower()
+
+
+@pytest.mark.parametrize('share', [0.6, 0.8, 0.95])
+def test_stated_baseline_ledger_row_names_its_share(share):
+    out = call('savingsLedgerHtml(data)', {'savings': routed(share)})
+    assert 'Estimated routing, at your stated %d%% Opus baseline' % round(share * 100) in out
+
+
+def test_no_routing_estimate_means_no_card_for_any_basis():
+    for src in ('measured_at_install', 'stated', None):
+        s = full()
+        s['since_install']['all_in']['routing_baseline_source'] = src
+        assert 'st-card--route' not in story({'savings': s})
+
+
+
+@pytest.mark.parametrize('user', ['none', 'sonnet_only', 'non_anthropic'])
+def test_no_routing_card_without_a_routing_number(user):
+    s = full()
+    s['model_routing'].update(baseline_opus_share=0.0 if user != 'non_anthropic' else 0.9, realized_cost_usd=0.0,
+                              baseline_source=None if user == 'none' else 'history', potential_cost_usd=0)
+    s['since_install']['all_in']['components_usd']['routing_estimated'] = 0
+    s['since_install']['all_in']['routing_baseline_source'] = None
+    out = story({'savings': s})
+    assert 'st-card--route' not in out and 'Model routing <span' not in out and 'Send routine work' not in out
+
+
+def test_cost_trend_names_its_constant_opus_prices():
+    s = full()
+    s['cost_per_message_trend'] = [{'month': '2026-03', 'index': 100}, {'month': '2026-04', 'index': 70}]
+    assert 'at constant Opus prices for every model' in story({'savings': s})

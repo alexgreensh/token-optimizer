@@ -534,7 +534,7 @@ def cli_lines(effect):
     if cov['unknown_sessions']:
         lines.append('  {:,} sessions not scanned yet (transcript missing).'.format(cov['unknown_sessions']))
     places = ps.get('by_place') or {}
-    rows = [(label, places.get(key) or {}) for key, label in (('local', 'this Mac'), ('cloud', 'cloud'))]
+    rows = [(label, places.get(key) or {}) for key, label in (('local', 'this computer'), ('cloud', 'cloud'))]
     rows = [(label, v) for label, v in rows if v.get('sessions')]
     if not rows and ps.get('sessions'):
         rows = [('all', ps)]

@@ -227,3 +227,29 @@ def test_orphan_match_accepts_benchmark_with_real_usage(m, tmp_path, monkeypatch
         groups, direct = counted_orphans.group_events(m, conn, m._counted_candidate_events(conn))
     assert direct['ce:1'].name == 'agent-a123.jsonl'
     assert len(groups[bench.stem]) == 1
+
+
+def test_orphan_match_uses_result_time_not_a_wide_window(m, tmp_path, monkeypatch):
+    """Parallel agents ran the same command 25 s apart: the result just before
+    the event identifies the transcript, where a 120 s window saw a tie."""
+    from _measure import counted_orphans
+    db = _db(m, tmp_path, monkeypatch)
+    parent, start = _transcript(m, tmp_path, monkeypatch)
+    near = _agent(parent, start, tid='agent-a123')                                   # result at +30 s
+    _agent(parent, start - timedelta(seconds=25), tid='agent-a456')                  # result at +5 s
+    _add_event(db, 'bash_compress_pipeline', 1000, _local_iso(start + timedelta(seconds=30, milliseconds=400)), table='compression_events')
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE compression_events SET session_uuid=NULL, session_id=NULL, command_pattern='make test'")
+        groups, direct = counted_orphans.group_events(m, conn, m._counted_candidate_events(conn))
+    assert str(direct['ce:1']) == str(near)
+
+
+def test_orphan_assignment_is_one_event_to_one_result():
+    from _measure import counted_orphans as co
+    # B can only be r2 (in f2); A ties f1/f2 until B takes r2.
+    placed = co.assign({'A': [(0.3, 'f1', 'r1'), (0.4, 'f2', 'r2')], 'B': [(0.2, 'f2', 'r2')]})
+    assert placed == {'A': 'f1', 'B': 'f2'}
+    # Same second in two transcripts and nothing else to separate them: unlocated.
+    assert co.assign({'A': [(0.3, 'f1', 'r1'), (0.5, 'f2', 'r2')]}) == {}
+    # Two events, one result: only one of them gets it.
+    assert len(co.assign({'A': [(0.3, 'f1', 'r1')], 'B': [(0.6, 'f1', 'r1')]})) == 1

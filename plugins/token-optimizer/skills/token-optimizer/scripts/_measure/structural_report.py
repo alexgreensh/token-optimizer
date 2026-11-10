@@ -157,6 +157,32 @@ def price_synthetic(s, days, now=None, f=None, home=None, scope="global"):
             "write_5m_savings_usd": a["write_5m_usd"], "cost_saved_usd": a["usd"], **cover}
 
 
+def skill_listing_budget(days=30, now=None, f=None, home=None):
+    """Still on the table: the skill listing's growth since its smallest month,
+    priced on every local call in the window at that call's cache-read rate.
+    {"available": False, "reason": ...} when the history cannot show it."""
+    f = f or _compat.facade()
+    try:
+        if not f.TRENDS_DB.exists():
+            return {"available": False, "reason": "no usage data yet"}
+        conn = _open_db(f)
+        try:
+            sessions = _local_sessions(conn, str(home or f.HOME))
+        finally:
+            conn.close()
+        end = (now or datetime.now()).timestamp()
+        growth = listing.listing_growth(sessions, end, f.CHARS_PER_TOKEN)
+        if growth is None:
+            return {"available": False, "reason": "not enough skill listings in transcripts"}
+        priced = price_synthetic(growth["growth_tokens"], days, now=now, f=f, home=home) if growth["growth_tokens"] > 0 else None
+        return {"available": True, "period_days": int(days or 30), **growth,
+                "calls": int((priced or {}).get("events", 0)),
+                "cost_usd": round(float((priced or {}).get("cost_saved_usd", 0.0)), 4),
+                "basis": "growth tokens x local calls in the window x each call's cache-read rate"}
+    except Exception as exc:  # never break the savings summary
+        return {"available": False, "reason": type(exc).__name__}
+
+
 def attested_whatif(sizes, ts, days=30, now=None, f=None, home=None):
     """Side by side value of owner-attested historic trims, NOT recorded.
     The choice of size is the owner's; this only prices the options."""

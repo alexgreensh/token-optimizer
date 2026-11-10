@@ -1749,7 +1749,18 @@ input:checked + .slider:before {
 .st-rows li { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-3); padding: 9px 0; border-bottom: 1px solid var(--c-border); font-size: 16px; line-height: 1.4; color: var(--c-text-main); }
 .st-rows--card { margin-top: var(--s-3); }
 .st-sub { display: block; font: 400 14px/1.5 var(--font-sans); color: var(--c-text-main); margin-top: 2px; }
-.st-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); } .st-routing-band { background: var(--c-elev-2); border-radius: 8px; padding: 12px; margin-top: var(--s-3); }
+.st-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: var(--s-3); }
+.st-mega__row--hero { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: var(--s-4); }
+.st-mega__row--hero .st-mega { font-size: clamp(60px, 6.2vw, 96px); }
+.st-mega__note { font: 600 17px/1.3 var(--font-sans); color: var(--c-savings); }
+.st-mega--route { color: var(--c-info); text-shadow: 0 0 26px rgba(96,165,250,0.36), 0 0 2px rgba(96,165,250,0.4); }
+.st-mega--warm { color: var(--c-warning-2); text-shadow: 0 0 28px rgba(251,191,36,0.38), 0 0 2px rgba(251,191,36,0.45); }
+.st-mega--word { font-size: clamp(48px, 5vw, 72px); letter-spacing: -0.02em; }
+.st-table { border: 1px solid rgba(251,191,36,0.45); box-shadow: 0 0 0 1px rgba(251,191,36,0.10), 0 0 44px rgba(251,191,36,0.10); }
+[data-theme="light"] .st-table { border-color: var(--c-warning-2); box-shadow: none; }
+.st-table__body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: var(--s-3) var(--s-5); align-items: center; }
+.st-table__rows .st-rows--card { margin-top: 0; }
+.st-bar__title { font: 600 17px/1.3 var(--font-sans); color: var(--c-text-main); margin: var(--s-4) 0 var(--s-2); }
 .st-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
 .st-ratio__track { display: block; height: 12px; border-radius: 6px; background: var(--c-elev-3); overflow: hidden; }
 .st-ratio__carry { display: block; height: 100%; border-radius: 6px; background: var(--c-accent-cyan); }
@@ -1763,16 +1774,17 @@ input:checked + .slider:before {
 .st-health { margin-top: var(--s-3); }
 .st-gap { margin-top: var(--s-4); }
 @media (max-width: 900px) {
-  .st-grid, .st-bands { grid-template-columns: 1fr; }
+  .st-grid, .st-bands, .st-mega__row--hero, .st-table__body { grid-template-columns: 1fr; }
   .st-grid > :last-child:nth-child(odd) { grid-column: auto; }
+  .st-mega__row--hero .st-mega { font-size: 72px; }
 }
 @media (max-width: 520px) {
   .st .card { padding: var(--s-3); }
   .st-hero { padding: var(--s-4) var(--s-3) var(--s-3) !important; }
   .st-hero .st-rows { display: none; }
   .st-bands { gap: var(--s-2); }
-  .st-mega { font-size: 64px; }
-  .st-mega--card { font-size: 56px; }
+  .st-mega, .st-mega__row--hero .st-mega { font-size: 64px; }
+  .st-mega--card, .st-mega--word { font-size: 56px; }
   .st-mega__row { gap: var(--s-3); }
   .st-morerow { flex-direction: column; }
 }
@@ -1798,7 +1810,7 @@ input:checked + .slider:before {
   .nav-menu .nav-separator { display: none; }
   .user-profile { display: none; }
   .dashboard-grid { grid-template-columns: 1fr; }
-  .stat-row { grid-template-columns: 1fr; }
+  .stat-row { grid-template-columns: 1fr !important; } /* rows set 3 columns inline */
 }
 /* ========== HOOK TOGGLES ========== */
 .hook-toggle { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
@@ -3712,12 +3724,21 @@ var DB = (function() {
       : 'Deduplicated usage; the raw token classes below use a different basis.';
     var pop = t.population_metrics || {};
     var eligibleCacheHit = Number(pop.cache_eligible_main_hit_rate);
-    var avgCacheDisplay = Number.isFinite(eligibleCacheHit) && pop.cache_eligible_main_sessions
-      ? Math.round(eligibleCacheHit * 100) : avgCacheHit;
-    var cacheLabel = isCodex ? 'Cached Input Share' : 'Main-work cache hit rate';
+    // Claude: lead with the token-weighted rate across every scanned session;
+    // the per-session averages become secondary lines.
+    var overallCacheHit = Number((data.cache_health || {}).overall_cache_hit_rate);
+    var cacheOverall = !isCodex && (data.cache_health || {}).overall_cache_hit_rate != null && Number.isFinite(overallCacheHit) && overallCacheHit >= 0;
+    var avgCacheDisplay = cacheOverall ? (overallCacheHit * 100).toFixed(1).replace(/\.0$/, '')
+      : (Number.isFinite(eligibleCacheHit) && pop.cache_eligible_main_sessions ? Math.round(eligibleCacheHit * 100) : avgCacheHit);
+    var cacheLabel = isCodex ? 'Cached Input Share' : (cacheOverall ? 'Cache hit rate (all tokens)' : 'Main-work cache hit rate');
+    var cacheSessionLines = cacheOverall
+      ? (pop.cache_eligible_main_sessions ? '<div style="font-size:12px;color:var(--c-text-main);margin-top:6px">Average session, 20+ messages: ' + Math.round((Number(pop.cache_eligible_main_hit_rate) || 0) * 100) + '%</div>' : '') +
+        (pop.cache_ineligible_sessions ? '<div style="font-size:12px;color:var(--c-text-main);margin-top:2px">Average short or delegated session: ' + Math.round((Number(pop.cache_ineligible_hit_rate) || 0) * 100) + '%</div>' : '') +
+        '<div style="font-size:11px;color:var(--c-text-dim);margin-top:2px">Session lines average each session&rsquo;s own rate; the big number weights every token.</div>'
+      : '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + (pop.cache_eligible_main_sessions || 0) + ' cache-building main-work sessions · ' + (pop.cache_ineligible_sessions || 0) + ' short/delegated sessions at ' + Math.round((Number(pop.cache_ineligible_hit_rate) || 0) * 100) + '%</div>';
     var cacheNote = isCodex
       ? 'Share of logged input tokens Codex says were cached_input_tokens. Similar to a cache hit rate, but Codex does not expose cache-write TTL or write-size fields.'
-      : 'Main-work sessions with 20+ messages.';
+      : (cacheOverall ? '' : 'Main-work sessions with 20+ messages.');
     var tokenBreakdownNote = isCodex
       ? 'fresh:' + fn(t.total_fresh_input || 0) + ' · cached input:' + fn(t.total_cache_read || 0) + ' · out:' + fn(t.total_output_tokens || 0)
       : 'raw fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0);
@@ -3734,7 +3755,7 @@ var DB = (function() {
     }
     var cacheExtra = isCodex
       ? '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div>'
-      : '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Cache writes: ' + esc(globalTtlMix) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(globalTtlSessionLabel) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(ttlPeriodSummary || 'TTL period summary unavailable') + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div>';
+      : '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Cache writes: ' + esc(globalTtlMix) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(globalTtlSessionLabel) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(ttlPeriodSummary || 'TTL period summary unavailable') + '</div>' + (cacheNote ? '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div>' : '');
 
     html += '<div class="stat-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:var(--s-3)">' +
       '<div class="stat-card"><div class="stat-card-value">' + t.session_count + '</div><div class="stat-card-label">All logged sessions (' + t.period_days + 'd)</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + (pop.main_work_sessions || 0) + ' main-work · ' + (pop.delegated_sessions || 0) + ' delegated/subagent</div></div>' +
@@ -3744,7 +3765,7 @@ var DB = (function() {
       '<div class="stat-row" style="grid-template-columns:repeat(3,1fr)">' +
       '<div class="stat-card"><div class="stat-card-value">' + Math.round(t.avg_duration_minutes || 0) + 'm</div><div class="stat-card-label">Avg duration, all logged</div></div>' +
       '<div class="stat-card"><div class="stat-card-value">' + fn((t.avg_input_tokens || 0) + (t.avg_output_tokens || 0)) + '</div><div class="stat-card-label">Avg tokens, all logged sessions</div></div>' +
-      '<div class="stat-card"><div class="stat-card-value" style="color:var(--c-savings-strong, #22c55e)">' + avgCacheDisplay + (avgCacheDisplay !== 'N/A' ? '%' : '') + '</div><div class="stat-card-label">' + cacheLabel + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + (pop.cache_eligible_main_sessions || 0) + ' cache-building main-work sessions · ' + (pop.cache_ineligible_sessions || 0) + ' short/delegated sessions at ' + Math.round((Number(pop.cache_ineligible_hit_rate) || 0) * 100) + '%</div>' + cacheExtra + '</div>' +
+      '<div class="stat-card"><div class="stat-card-value" style="color:var(--c-savings-strong, #22c55e)">' + avgCacheDisplay + (avgCacheDisplay !== 'N/A' ? '%' : '') + '</div><div class="stat-card-label">' + cacheLabel + '</div>' + cacheSessionLines + cacheExtra + '</div>' +
       '</div>';
 
     // Shared data for skills sections
@@ -4396,7 +4417,7 @@ var DB = (function() {
         // stand without the live meter).
         (rwCards
           ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:var(--s-3);">' + rwCards + '</div>'
-          : '<div style="padding:var(--s-3);border:1px dashed var(--c-border);border-radius:8px;color:var(--c-text-dim);font-size:15px;line-height:1.5;text-wrap:pretty;">Your live 5-hour and weekly limit view refreshes while you are actively working &mdash; it reappears here on your next session.</div>') +
+          : '<div style="padding:var(--s-3);border:1px dashed var(--c-border);border-radius:8px;color:var(--c-text-dim);font-size:15px;line-height:1.5;text-wrap:pretty;">Your live 5-hour and weekly limit view refreshes while you are actively working. It reappears here on your next session.</div>') +
         // Freshness of the WINDOW reading itself (not the dashboard build). The
         // meter only refreshes while Claude Code is actively running, so a
         // dashboard opened later shows the last real reading -- label it with its
@@ -4541,7 +4562,7 @@ var DB = (function() {
     // ---- mechanism pillars (structural / runtime / behavioral). Behavioral holds only
     // what you're actually getting (realized routing + estimated loop prevention); cache-drop
     // and output-waste are OPPORTUNITY (avoidable waste TO does not yet prevent), not here. ----
-    var mce = s.mcp_cap_estimated || {}, ce = s.contamination_exit || {}, hr = s.handover_rerun || {};
+    var ce = s.contamination_exit || {}, hr = s.handover_rerun || {};
     var rs = s.retrieval_serve || {};
     var rle = {}; // The avoided reload is diagnostic, not a credited saving.
     var vs = {};
@@ -4559,7 +4580,7 @@ var DB = (function() {
     var avoidedSearchN  = hfHasData ? (Number(hf.events) || 0) : (Number(rs.served_sessions) || 0);
     var avoidedSearchUnit = hfHasData ? 'hints used' : 'served';
     var structMo  = mo(sd.cost_saved_usd);
-    var runtimeMo = Math.max(0, mo(s.total_cost_usd) - structMo) + mo(unc.cost_saved_usd) + mo(mce.cost_saved_usd);
+    var runtimeMo = Math.max(0, mo(s.total_cost_usd) - structMo) + mo(unc.cost_saved_usd);
     // behavioral holds every estimated behavioral item (loops + the cohort
     // estimators + avoided-search), so the pillars (struct + runtime + behavioral)
     // always reconcile exactly to gettingMo (measured + estimated). Every estItems
@@ -4571,11 +4592,10 @@ var DB = (function() {
     // Measured = billable events we metered (runtime compression).
     var measuredMo = mo(s.total_cost_usd);
     // Estimated = genuine TO-realized counterfactuals grounded in YOUR behavior; each carries a sample size.
-    // (Pillars + estimated reconcile to gettingMo: mcp_cap folds into runtime.)
+    // Pillars and estimated amounts reconcile to gettingMo.
     var estItems = [
       { key: 'behavioral_estimate', label: 'loops prevented',                amt: mo(beh.cost_saved_usd), n: Number(beh.loop_events) || 0,        unit: 'events' },
       { key: 'uncaptured_runtime', label: 'sub-agent runtime',              amt: mo(unc.cost_saved_usd), n: Number(unc.subagent_dispatches) || 0, unit: 'dispatches' },
-      { key: 'mcp_cap_estimated', label: 'MCP output cap',                 amt: mo(mce.cost_saved_usd), n: Number(mce.events) || 0,             unit: 'capped results' },
       { key: 'contamination_exit', label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
       { key: 'handover_rerun', label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
       { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'trigger observed, size estimated' : rs.confidence },
@@ -4880,7 +4900,7 @@ var DB = (function() {
     if ((Number(recl.cost_usd) || 0) > 0) {
       parts.push('Avoid re-reading files that have not changed, or add them to .contextignore. ' + (Number(recl.tokens) || 0).toLocaleString() + ' tokens of stale re-reads across ' + (Number(recl.sessions) || 0).toLocaleString() + ' sessions are worth about ' + moneyCents(oppCents.reclaimable) + per + '.');
     }
-    if ((Number(mr.potential_cost_usd) || 0) > 0) {
+    if (!story && (Number(mr.potential_cost_usd) || 0) > 0) {
       parts.push('Route routine work to lighter models and keep Opus for the work that needs it. The routing line above shows the size of that assumption.');
     }
     if (cdTokensMo > 0) {
@@ -4896,10 +4916,8 @@ var DB = (function() {
       // whole-workload comparison is no longer shown here.
       if (parts.length > 0) {
         moreFolds.push('<details class="fold"><summary>Room to save more</summary><div class="fold__body">' +
-          '<p>Changes you could make to your setup or habits. None of this is in any total above.</p>' +
+          '<p>More changes you could make to your setup or habits, beyond Still on the table. None of this is in any total above.</p>' +
           parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
-          (routingPotentialMo > 0 ? '<p>If about ' + routingFracPct + '% of your Opus work ran on ' + esc(routingTarget) +
-            ', about ' + money(routingPotentialMo) + esc(per) + ' at API rates. This is an assumption about your own work.</p>' : '') +
           (data.runtime !== 'cursor' && data.runtime !== 'antigravity' ? '<p>Run <strong>/token-optimizer</strong> and follow its suggestions to claim it.</p>' : '') +
           '</div></details>');
       }

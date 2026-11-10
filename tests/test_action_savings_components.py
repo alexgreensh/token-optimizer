@@ -44,7 +44,7 @@ def test_attested_realized_setup_is_included_once_in_action_total(measure):
     result = measure._action_savings_components(source, {'available': True, 'reread_usd': 0})
     assert result['estimates_usd']['structural_estimated'] == 12.5
     assert result['net_total_usd'] == 100 + 1 + 2 + 8 + 16 + 32 + 12.5
-    assert result['estimates_usd']['mcp_cap_estimated'] == 0
+    assert 'mcp_cap_estimated' not in result['estimates_usd']
 
 
 @pytest.mark.parametrize("hint_events,hint_cost,reread,expected", [
@@ -83,6 +83,9 @@ def test_same_snapshot_cli_json_dashboard(
     measure.savings_report(as_json=True)
     payload = json.loads(capsys.readouterr().out)
     dashboard = measure._dashboard_savings_data()
+    assert 'mcp_cap_estimated' not in dashboard
+    assert 'mcp_cap_estimated' not in dashboard['action_savings']['estimates_usd']
+    assert 'mcp_cap_estimated' not in dashboard['action_savings']['display']['estimates_usd']
     assert payload["action_savings"] == dashboard["action_savings"]
     components = payload["action_savings"]
     assert components["total_usd"] == expected
@@ -110,7 +113,7 @@ def test_component_helper_is_pure_and_counts_only_rereads(measure):
     assert source == before
     assert components["total_usd"] == 182
     assert set(components["estimates_usd"]) == {
-        "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
+        "behavioral_estimate", "uncaptured_runtime",
         "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
         "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
         "hint_followed", "expand_overhead", "structural_estimated",

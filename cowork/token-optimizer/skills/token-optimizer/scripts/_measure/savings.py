@@ -1209,6 +1209,7 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
     if not isinstance(savings_data, dict):
         savings_data = {"total_tokens": 0, "total_cost_usd": 0.0,
                         "by_category": {}}
+    savings_data.pop("mcp_cap_estimated", None)
     if source_failed:
         return savings_data
     try:
@@ -1218,6 +1219,7 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
         finally: conn.close()
     except Exception:
         savings_data["cost_per_message_trend"] = []
+    savings_data["skill_listing_budget"] = structural_report.skill_listing_budget(days or 30)
     try:
         savings_data["since_install"] = _measure_facade._savings_since_install()
     except Exception:
@@ -1406,8 +1408,6 @@ def _get_savings_summary(days=None, since=None):
             # A1: one-time first-trim (compare). Reported separately, NEVER summed
             # into the realized total (structural_savings is the ongoing model).
             "one_time_setup": one_time,
-            # The flat MCP-cap estimate is unsupported and excluded.
-            "mcp_cap_estimated": None,
             # U-G: observed-trigger / estimated-magnitude avoided-search from
             # proactive hints. Estimated tier, never in the realized total.
             "hint_followed_estimated": hint_followed_est,
@@ -1454,7 +1454,6 @@ def _get_savings_summary(days=None, since=None):
             "daily_avg_usd": 0.0,
             "period_days": days,
             "one_time_setup": None,
-            "mcp_cap_estimated": None,
             "hint_followed_estimated": None,
             "verbosity_steer_estimated": None,
             "resume_lean_estimated": None,
@@ -6266,9 +6265,9 @@ def _action_savings_components(summary, reread=None):
     """
     _measure_facade = _compat.facade()
     estimates = {
-        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated", "mcp_cap_estimated") else float((((summary.get("structural_detail") or {}).get("estimated") if key == "structural_estimated" else summary.get(key)) or {}).get("cost_saved_usd", 0) or 0))
+        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated") else float((((summary.get("structural_detail") or {}).get("estimated") if key == "structural_estimated" else summary.get(key)) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
-            "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
+            "behavioral_estimate", "uncaptured_runtime",
             "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
             "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated",
         )
@@ -6459,8 +6458,6 @@ def _get_merged_savings(days=None, since=None):
         "progressive_disclosure": _measure_facade._progressive_disclosure_summary(days=days),
         # A1: one-time first-trim, surfaced separately, never in the realized total.
         "one_time_setup": savings.get("one_time_setup"),
-        # A3: MCP-cap estimate lives in the estimated tier, never realized.
-        "mcp_cap_estimated": None,
         # U-G: deterministically-triggered avoided-search from proactive hints
         # (observed hint->read), estimated magnitude. Estimated tier, never realized.
         "hint_followed": savings.get("hint_followed_estimated"),

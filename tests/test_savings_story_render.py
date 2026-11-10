@@ -147,7 +147,19 @@ def test_stated_routing_is_not_described_as_excluded_or_measuring():
 
 
 def hero(out):
-    return out.split('class="card st-hero"')[1].split('class="st-grid"')[0]
+    return re.split(r'class="card st-table"|class="st-grid"', out.split('class="card st-hero"')[1])[0]
+
+
+def table(out):
+    return out.split('class="card st-table"')[1].split('class="st-grid"')[0]
+
+
+def routed():
+    s = full()
+    s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
+    s['since_install']['all_in']['routing_baseline_opus_share'] = 0.95
+    s['model_routing'].update(potential_cost_usd=61.4, routable_fraction=0.2, target_model='claude-sonnet-5-5')
+    return s
 
 
 @pytest.mark.parametrize('savings', [
@@ -203,19 +215,12 @@ def test_split_falls_back_to_all_sessions_without_by_place():
     assert 'All sessions: typical 4.8%' in fold and 'On this Mac' not in fold
 
 
-def test_four_cards_in_one_grid_then_one_coverage_line():
-    out = story({'savings': full()})
-    grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
-    titles = re.findall(r'<h2 class="st-h">([^<]+)', grid)
-    assert titles == ['Removed once, saved on every later turn', 'Setup cleanup', 'Saved since install', 'Model routing ']
-    cov = out.split('class="st-cov"')[1]
-    assert 'ran in 150 of your 200 sessions' in cov and '12 of them are not in the ledger yet' in cov
-    assert 'svg' not in cov and '%' not in cov
-    assert 'st-mega--tok st-mega--card">40&times;</span>' in grid
-    assert '<strong>2.0M tokens removed</strong> became <strong>80.0M tokens not sent</strong>' in grid
-    # Limits: since-install dollars, routing never added (100+200+10+40).
-    assert 'st-mega--usd st-mega--card">$310</span><span class="st-mega__unit">measured since you installed' in grid
-    assert 'stretch' not in out and '$1,349' not in out
+def test_unavailable_reread_price_is_not_claimed_as_part_of_total():
+    s = full()
+    s['action_savings']['reread_available'] = False
+    out = story({'savings': s})
+    assert 'Removed once, saved on every later turn' in out
+    assert 'came from re-reads avoided' not in out
 
 
 def test_since_install_fold_names_exclusions_from_payload():
@@ -230,17 +235,6 @@ def test_local_best_filter_is_explained_in_fold():
     s['session_effect']['per_session']['by_place']['local']['best']['filtered'] = True
     out = story({'savings': s})
     assert 'selected among sessions with at least 20 turns' in out
-
-
-def test_unfinished_pools_say_measuring_with_no_number():
-    out = story({'savings': base()})
-    grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
-    cards = grid.split('class="card st-card"')[1:]
-    setup = [c for c in cards if '<h2 class="st-h">Setup cleanup' in c][0]
-    routing = [c for c in cards if '<h2 class="st-h">Model routing' in c][0]
-    assert 'Measuring' in setup and '$' not in setup
-    assert 'Estimated' in routing and 'Measuring' not in routing
-    assert 'Still measuring, not in the total yet: setup cleanup and shorter answers' in hero(out)
 
 
 def test_no_forbidden_wording_or_eyebrows():
@@ -328,12 +322,27 @@ def test_ledger_fold_matches_hero_and_never_adds_routing():
         'estimated_usd': 40.0, 'total_usd': 1349.0}}
     out = call('savingsLedgerHtml(data)', {'savings': s})
     assert '$95.00' in out  # same total as the hero (83 + 12), to the cent
-    assert '$1,349.00' in out and '$999.00' in out  # stated routing is estimated since install
-    assert 'The since-install total includes estimated routing only when a stated baseline is available' in out
+    assert '$350.00' in out and '$999.00' in out
+    assert '$1,349.00' not in out
+    assert out.index('$350.00') < out.index('Estimated routing') < out.index('$999.00')
     assert 'class="label"' not in out
     html = render_savings(s)
     ledger = html.split('Full ledger and history')[1]
     assert 'savings-actions' not in ledger and 'savings-history' not in ledger  # contradicting cards are gone
+
+
+def test_reread_row_rounds_independently_and_matches_card():
+    s = full()
+    s['action_savings'].update(logged_usd=21.39, class_premium_usd=12.28,
+                               reread_usd=84.01, estimated_usd=5.31)
+    s['structural_detail'].update(cost_saved_usd=0.90,
+                                  estimated={'cost_saved_usd': 2.29})
+    s['counted_period'].update(removed_tokens=1000, reread_tokens=67000,
+                               reread_usd=84.01)
+    out = story({'savings': s})
+    assert 'Re-reads avoided</span><span class="st-v">$84</span>' in out
+    assert 'worth $84 at API rates' in out
+    assert 'Re-reads avoided</span><span class="st-v">$85</span>' not in out
 
 
 def test_every_measured_row_is_visible_in_hero_and_includes_premium():
@@ -353,10 +362,11 @@ def test_setup_forecast_is_not_in_the_historical_total():
     s = full()
     s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 1,
                               'tokens_saved': 100, 'projected_30d': {'measured': {'usd': 36}},
-                              'trims': [{'item': 'Memory', 'tier': 'measured', 'tokens_per_call': 2, 'cost_saved_usd': 1}]}
+                              'trims': [{'item': 'Memory', 'tier': 'measured', 'tokens_per_call': 2, 'cost_saved_usd': 1, 'projected_30d_usd': 36}]}
     out = story({'savings': s})
-    assert 'Projected next 30 days' in out and '$36' in out
-    assert 'assuming other savings stay at their recent rate' in out
+    assert 'Projected next 30 days' not in _visible(out)
+    assert 'Estimated next 30 days at the recent rate: about $36' in out
+    assert '$36' not in _visible(out)
     bands = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
     assert bands['mUsd'] != 36
 
@@ -387,9 +397,9 @@ def test_visible_dollars_are_whole_and_exact_values_remain_in_fold():
     assert '$182' in visible and '$176' in visible and 'under $1' in visible
     assert not re.search(r'\$[\d,]+\.\d{2}', visible)
     assert '$0.27' in h and '$117.36' in h
-    assert 'Re-reads avoided</span><span class="st-v">$118' in h
+    assert 'Re-reads avoided</span><span class="st-v">$117' in h
     assert 'Context removed</span><span class="st-v">$58' in h
-    assert 'Estimated <span class="st-v">$6' in h
+    assert 'Estimated <span class="st-v">$7' in h
 
 
 def test_subdollar_band_does_not_display_zero():
@@ -401,30 +411,11 @@ def test_subdollar_band_does_not_display_zero():
     assert 'Measured  $0' not in visible
 
 
-def test_routing_is_opportunity_and_limits_explain_total():
-    out = story({'savings': full()})
-    card = out.split('<h2 class="st-h">Model routing', 1)[1].split('</div>', 1)[0]
-    assert 'Estimated' in card and 'Measuring' not in card
-    assert 'based on your stated 95% Opus baseline' in card
-
-
 def test_fallback_never_shows_transformation_hero():
     savings = base()
     savings['before_after'] = {'monthly_savings_usd': 1000, 'actual_monthly_usd': 500, 'counterfactual_monthly_usd': 1500}
     out = render_savings(savings, with_story=False)
     assert 'class="card wide savings-transformation"' not in out
-
-
-def test_stated_routing_is_estimated_since_install_with_measured_comparison():
-    s = full()
-    s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
-    s['since_install']['all_in']['routing_measured_baseline_opus_share'] = 0.8369
-    s['since_install']['all_in']['routing_measured_baseline_realized_cost_usd'] = 0
-    out = story({'savings': s})
-    card = out.split('<h2 class="st-h">Saved since install', 1)[1].split('</div></details>', 1)[0]
-    assert 'st-mega--card">$310</span>' in card
-    assert 'Estimated routing, based on your stated 95% Opus baseline' in card
-    assert '83.69%' in card and '$0' in card
 
 
 def test_archive_fold_shows_net_and_bash_debit_separately():
@@ -437,14 +428,6 @@ def test_archive_fold_shows_net_and_bash_debit_separately():
     assert 'Bash compression, net of re-expands: $3' in out
 
 
-def test_cost_per_message_trend_is_indexed_without_a_savings_claim():
-    s = full()
-    s['cost_per_message_trend'] = [{'month': '2026-08', 'index': 100}, {'month': '2026-09', 'index': 120}]
-    out = story({'savings': s})
-    assert 'Cost per message' in out and '<polyline' in out
-    assert 'not attributed to Token Optimizer' in out
-
-
 def test_hero_matches_action_total_without_adding_diagnostic_pools():
     s = full()
     s['action_savings']['total_usd'] = 95.0
@@ -455,35 +438,166 @@ def test_hero_matches_action_total_without_adding_diagnostic_pools():
     assert '$595' not in h
 
 
-def test_routing_estimate_names_majority_period_inside_fold():
-    s = full()
-    s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
+# ---- Round 2 layout: hero band, Still on the table, routing card ----
+
+def test_hero_band_leads_with_three_numbers_and_since_install_estimate_line():
+    h = hero(story({'savings': routed()}))
+    megas = re.findall(r'<span class="st-mega st-mega--(usd|tok)">([^<]+)</span>', h)
+    # 30 days: 44.2 + 8.4 + 30.4 + 12 = 95; since install 100+200+10; tokens 1.5M+80M+0.5M+1M.
+    assert megas == [('usd', '$95'), ('usd', '$310'), ('tok', '83.0M')]
+    assert 'st-mega__row st-mega__row--hero' in h
+    assert '<span class="st-mega__note">+ $40 estimated</span>' in h
+    assert 'measured since Nov 1, 2025</span>' in h
+    # Routing never joins the since-install figures.
+    assert '$3,484' not in h and '$3,794' not in h and '$350' not in h
+
+
+def test_saved_since_install_card_is_gone_and_its_fold_moves_to_hero():
+    out = story({'savings': routed()})
+    assert 'Saved since install' not in out
+    assert 'How since-install is valued' in hero(out)
+    assert 'st-routing-band' not in out
+
+
+def test_grid_is_reread_routing_then_setup_then_coverage():
+    out = story({'savings': routed()})
+    grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
+    titles = re.findall(r'<h2 class="st-h">([^<]+)', grid)
+    assert titles == ['$30 of your $95 came from re-reads avoided', 'Model routing ', 'Setup cleanup']
+    assert 'st-mega--tok st-mega--card">40&times;</span>' in grid
+    cov = out.split('class="st-cov"')[1]
+    assert 'ran in 150 of your 200 sessions' in cov and '12 of them are not in the ledger yet' in cov
+
+
+def test_routing_card_has_one_huge_estimated_number_and_short_explainer():
+    s = routed()
     s['since_install']['all_in']['routing_majority_period'] = {'start': '2026-04', 'end': '2026-07'}
-    out = story({'savings': s})
-    assert 'Most of the routing estimate comes from Apr–Jul 2026.' in out
-    assert 'Most of the routing estimate' in _visible(out)
+    s['since_install']['all_in']['routing_measured_baseline_opus_share'] = 0.8369
+    s['since_install']['all_in']['routing_measured_baseline_realized_cost_usd'] = 0
+    card = story({'savings': s}).split('class="card st-card st-card--route"')[1].split('</details></div>')[0]
+    assert '<span class="st-tag">Estimated</span>' in card
+    assert 'st-mega st-mega--route st-mega--card">$3,484</span>' in card
+    assert '<p class="st-lead">At your stated 95% Opus baseline. Most of it from Apr to Jul.</p>' in card
+    assert '83.69%' in card and 'never added to any savings total' in card
+    assert 'Last 30 days: $50 of it.' in card
+    assert 'Measuring' not in card
 
 
-def test_routing_opportunity_is_visible_with_stated_baseline():
+def test_no_routing_card_without_a_since_install_routing_estimate():
     out = story({'savings': full()})
-    card = out.split('<h2 class="st-h">Model routing', 1)[1]
-    assert 'Estimated $50' in card
-    assert 'based on your stated 95% Opus baseline' in card
+    assert 'st-card--route' not in out
+    assert 'Model routing <span class="st-tag">Estimated</span>' not in out
 
 
-def test_since_install_headlines_measured_and_labels_estimates():
-    s = full()
-    s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
+def test_still_on_the_table_sums_routing_and_skill_listing_in_warm_accent():
+    s = routed()
+    s['skill_listing_budget'] = {'available': True, 'period_days': 30, 'current_chars': 30000, 'baseline_chars': 6000,
+                                 'baseline_month': '2026-04', 'growth_tokens': 6000, 'calls': 12000, 'cost_usd': 108.2}
     out = story({'savings': s})
-    card = out.split('<h2 class="st-h">Saved since install', 1)[1].split('</div></details>', 1)[0]
-    assert 'st-mega--card">$310</span>' in card
-    assert '$40 estimated' in card
-    assert 'everything counted' not in card
+    assert out.index('class="card st-hero"') < out.index('class="card st-table"') < out.index('class="st-grid"')
+    t = table(out)
+    assert 'st-mega st-mega--warm st-mega--card">$170</span>' in t and 'st-mega--usd' not in t
+    assert re.findall(r'<li><span>([^<]+)<span class="st-sub">([^<]+)</span></span><span class="st-v">([^<]+)</span>', t) == [
+        ('Model routing', 'Send routine work to Sonnet', '$61'), ('Skill listing', 'Trim the skill list budget', '$108')]
+    assert '30,000 characters' in t and '6,000 in Apr 2026' in t and '12,000 calls' in t
+    # Opportunity never joins a savings figure.
+    assert '$170' not in hero(out) and 'savings total' in t
 
 
-def test_cost_chart_labels_start_end_and_months():
+def test_unsized_skill_listing_says_measuring_and_stays_out_of_the_sum():
+    s = routed()
+    s['skill_listing_budget'] = {'available': False, 'reason': 'not enough skill listings in transcripts'}
+    t = table(story({'savings': s}))
+    assert 'st-mega--warm st-mega--card">$61</span>' in t
+    assert '<span class="st-v">Measuring</span>' in t
+
+
+def test_still_on_the_table_with_nothing_sized_shows_measuring_not_zero():
+    s = full()
+    s['skill_listing_budget'] = {'available': False, 'reason': 'no usage data yet'}
+    t = table(story({'savings': s}))
+    assert 'st-mega--word">Measuring</span>' in t and '$0' not in t
+
+
+def test_still_on_the_table_absent_without_any_opportunity():
+    s = full()
+    s['skill_listing_budget'] = {'available': True, 'cost_usd': 0, 'growth_tokens': 0}
+    assert 'st-table' not in story({'savings': s})
+
+
+def test_room_fold_drops_routing_now_shown_on_the_table():
+    s = routed(); s['total_cost_usd'] = 40.0
+    s['model_routing']['potential_cost_usd'] = 61.4
+    html = render_savings(s)
+    row = html.split('class="st-morerow"')[1]
+    assert 'Route routine work to lighter models' not in row
+    assert 'Opus work ran on' not in row.split('Full ledger and history')[0]
+
+
+@pytest.mark.parametrize('latest,shown', [(95, False), (91, False), (90, True), (72, True)])
+def test_cost_per_message_renders_only_when_down_ten_percent(latest, shown):
+    s = full()
+    s['cost_per_message_trend'] = [{'month': '2026-03', 'index': 100}, {'month': '2026-07', 'index': 120},
+                                   {'month': '2026-11', 'index': latest}]
+    out = story({'savings': s})
+    assert ('<polyline' in out) is shown
+    if shown:
+        assert 'Cost per message down ' + str(100 - latest) + '% since March</h2>' in out
+        assert 'Start 100' in out and 'Latest ' + str(latest) in out and 'Mar' in out and 'Nov' in out
+        assert 'not attributed to Token Optimizer' in out
+
+
+def test_cost_per_message_rising_never_renders():
     s = full()
     s['cost_per_message_trend'] = [{'month': '2026-08', 'index': 100}, {'month': '2026-09', 'index': 120}]
+    assert 'Cost per message' not in story({'savings': s})
+
+
+def _trends_cache_card(cache_health, pop):
+    data = {'trends': {'period_days': 30, 'session_count': 10, 'total_tokens': 1, 'total_messages': 1,
+                       'population_metrics': pop, 'daily': []},
+            'cache_health': cache_health, 'runtime': 'claude'}
+    html = TEMPLATE.read_text()
+    start = html.index("    var eligibleCacheHit = Number(pop.cache_eligible_main_hit_rate);")
+    end = html.index("    var tokenBreakdownNote")
+    prefix = ('const data = JSON.parse(process.argv[2]); const t = data.trends; const pop = t.population_metrics;\n'
+              "const isCodex = false; const avgCacheHit = 'N/A';\n")
+    return _node(prefix + html[start:end] + '\nprocess.stdout.write(JSON.stringify([String(avgCacheDisplay), cacheLabel, cacheSessionLines]));', data)
+
+
+def test_trends_cache_card_leads_with_token_weighted_rate():
+    pop = {'cache_eligible_main_sessions': 40, 'cache_eligible_main_hit_rate': 0.7712,
+           'cache_ineligible_sessions': 9, 'cache_ineligible_hit_rate': 0.4321}
+    big, label, lines = json.loads(_trends_cache_card({'overall_cache_hit_rate': 0.9733}, pop))
+    assert big == '97.3' and label == 'Cache hit rate (all tokens)'
+    assert 'Average session, 20+ messages: 77%</div>' in lines
+    assert 'Average short or delegated session: 43%</div>' in lines
+    assert 'cache-eligible' not in lines.lower() and 'cache-building' not in lines
+
+
+def test_trends_cache_card_falls_back_without_cache_health():
+    pop = {'cache_eligible_main_sessions': 40, 'cache_eligible_main_hit_rate': 0.7712}
+    big, label, _ = json.loads(_trends_cache_card({}, pop))
+    assert big == '77' and label == 'Main-work cache hit rate'
+
+
+def test_unfinished_pools_say_measuring_with_no_number():
+    out = story({'savings': base()})
+    grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
+    setup = [c for c in grid.split('class="card st-card"')[1:] if '<h2 class="st-h">Setup cleanup' in c][0]
+    assert 'Measuring' in setup and '$' not in setup
+    assert 'Still measuring, not in the total yet: setup cleanup and shorter answers' in hero(out)
+
+
+def test_subdollar_amounts_read_naturally():
+    s = full()
+    s['structural_detail']['trims'][0]['projected_30d_usd'] = 0.4
+    s['action_savings']['estimates_usd']['expand_overhead'] = -0.6
     out = story({'savings': s})
-    assert 'Start 100' in out and 'Latest 120' in out
-    assert 'Aug' in out and 'Sep' in out
+    assert 'at the recent rate: under $1.' in out and 'about under' not in out
+    assert 'overhead: under $1.' in out and '-under' not in out
+
+
+def test_compounding_card_names_its_priced_removal_basis():
+    grid = story({'savings': full()}).split('class="st-grid"')[1]
+    assert '<strong>2.0M priced tokens removed</strong> became <strong>80.0M tokens not sent</strong>' in grid

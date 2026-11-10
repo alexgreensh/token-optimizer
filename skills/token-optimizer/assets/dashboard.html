@@ -3707,10 +3707,10 @@ var DB = (function() {
       .filter(function(label) { return !!label; })
       .join(' | ');
 
-    var tokenLabel = isCodex ? 'Measured/Estimated Tokens' : 'Billable Tokens';
+    var tokenLabel = isCodex ? 'Measured/Estimated Tokens' : 'Deduplicated Fresh Input + Output';
     var tokenNote = isCodex
       ? 'Codex logs use token_count snapshots when present; older sessions fall back to local estimates.'
-      : 'Fresh input + cache writes + output (what your invoice bills at full rate).';
+      : 'Deduplicated usage; the raw token classes below use a different basis.';
     var pop = t.population_metrics || {};
     var eligibleCacheHit = Number(pop.cache_eligible_main_hit_rate);
     var avgCacheDisplay = Number.isFinite(eligibleCacheHit) && pop.cache_eligible_main_sessions
@@ -3721,7 +3721,7 @@ var DB = (function() {
       : 'Main-work sessions with 20+ messages. Above 90% is normal for longer sessions.';
     var tokenBreakdownNote = isCodex
       ? 'fresh:' + fn(t.total_fresh_input || 0) + ' · cached input:' + fn(t.total_cache_read || 0) + ' · out:' + fn(t.total_output_tokens || 0)
-      : 'fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0);
+      : 'raw fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0);
     var codexCostNote = '';
     if (isCodex && typeof t.total_cost_usd === 'number') {
       codexCostNote = '<div style="font-size:10px;color:var(--c-text-dim);margin-top:2px">API-equivalent known cost: $' + t.total_cost_usd.toFixed(2);
@@ -4957,7 +4957,7 @@ var DB = (function() {
     // ---- SAVE MORE: suggestions, promoted right under the hero ----
     var parts = [];
     if ((Number(sp.cost_saved_usd) || 0) > 0 && unusedSkills > 0) {
-      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window. Archiving what you no longer need is worth about ' + moneyCents(oppCents.structural) + per + ', automatically, from then on.');
+      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window. Context impact: Measuring.');
     }
     if ((Number(recl.cost_usd) || 0) > 0) {
       parts.push('Avoid re-reading files that have not changed, or add them to .contextignore. ' + (Number(recl.tokens) || 0).toLocaleString() + ' tokens of stale re-reads across ' + (Number(recl.sessions) || 0).toLocaleString() + ' sessions are worth about ' + moneyCents(oppCents.reclaimable) + per + '.');
@@ -4978,9 +4978,7 @@ var DB = (function() {
       // whole-workload comparison is no longer shown here.
       if (parts.length > 0) {
         moreFolds.push('<details class="fold"><summary>Room to save more</summary><div class="fold__body">' +
-          '<p>Changes you could make to your setup or habits' +
-          (opportunityMo > 0 ? ', worth about ' + money(oppCents.total / 100) + (runRate ? ' per 30 days' : ' so far') : '') +
-          '. None of this is in any total above.</p>' +
+          '<p>Changes you could make to your setup or habits. None of this is in any total above.</p>' +
           parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
           (routingPotentialMo > 0 ? '<p>If about ' + routingFracPct + '% of your Opus work ran on ' + esc(routingTarget) +
             ', about ' + money(routingPotentialMo) + esc(per) + ' at API rates. This is an assumption about your own work.</p>' : '') +

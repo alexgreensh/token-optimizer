@@ -221,7 +221,7 @@ def test_savings_tab_one_row_of_folds_and_quality_moves_to_health():
     assert re.findall(r'<summary>([^<]+)', row)[:3] == ['Room to save more', 'Where your sessions ran', 'Full ledger and history']
     assert 'Whole-workload' not in html and 'Context quality' not in html and 'legacy-runway' not in html
     assert '<div class="label">Value</div>' not in html and 'still on the table' not in html
-    assert 'per 30 days. None of this is in any total above' in row  # amount inside, summary stays quiet
+    assert 'None of this is in any total above' in row
     health = call('healthNotesHtml(data)', dict(extra, savings=s))
     assert 'Context quality' in health and 'scored <span class="st-num">60</span> out of 100' in health
 
@@ -262,6 +262,8 @@ def test_trends_does_not_invent_unused_skill_context_cost():
     assert 'Each still loads ~100 tokens' not in source
     assert 'neverUsed.length * 100' not in source
     assert 'Context impact: Measuring' in source
+    assert 'Deduplicated Fresh Input + Output' in source
+    assert 'Deduplicated usage; the raw token classes below use a different basis.' in source
 
 
 def test_inliner(tmp_path):

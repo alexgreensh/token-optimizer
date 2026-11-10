@@ -57,7 +57,7 @@ def test_pinned_anchor_does_not_call_post_install_window_pre_install(tmp_path, m
         "status": "pinned", "activity_basis": 1, "rates": measure._WEIGHT_POOL_FLAT_RATES,
         "metrics": METRICS, "window": ["2026-03-17", "2026-04-16"],
         "label": "your pre-install baseline (2026-03-17 to 2026-04-16)"}))
-    assert measure._pinned_workload_anchor()["label"] == "your tracked baseline (2026-03-17 to 2026-04-16)"
+    assert measure._pinned_workload_anchor()["label"] == "your earliest tracked month (2026-03-17 to 2026-04-16)"
 
 
 def test_pre_install_anchor_is_built_from_this_users_own_window(tmp_path, monkeypatch):

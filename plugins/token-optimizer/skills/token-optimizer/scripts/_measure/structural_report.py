@@ -49,7 +49,11 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
             "unattributed": {"tokens_saved": 0, "cost_saved_usd": 0.0, "trims": 0},
             "projected_30d": {"measured": {"tokens": 0, "usd": 0.0}, "estimated": {"tokens": 0, "usd": 0.0}}}
     try:
-        trims = trims if trims is not None else ledger.load_trims(f.SNAPSHOT_DIR)
+        if trims is None:
+            from token_estimate import estimate_tokens
+            from . import structural_archives
+            trims = ledger.load_trims(f.SNAPSHOT_DIR)
+            trims += structural_archives.discover(f.CLAUDE_DIR, trims, estimate_tokens)
         if not trims:
             return zero
         conn = _open_db(f)
@@ -61,6 +65,8 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
             for t in trims:
                 if t.get("listing_check") == "pending" and t["tier"] == "measured":
                     t["tier"] = "estimated"  # not yet verified against what was sent
+                if t.get("origin") == "dated_archive" and t.get("listing_check") == "measured":
+                    t["tier"] = "measured"
             start, end = value.window(days, now)
             card = value.card_resolver(f)
             real = value.value_trims(conn, trims, start, end, card, home)

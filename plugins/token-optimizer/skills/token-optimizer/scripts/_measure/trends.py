@@ -556,13 +556,13 @@ def _counted_view_statements():
     return (
         "CREATE TEMP VIEW IF NOT EXISTS counted_savings_events AS "
         "SELECT e.* FROM main.savings_events e "
-        f"WHERE NOT {_measure_facade._fixture_session_sql('e.session_id')} AND {fixture_context.excluded_session_sql('e')}"
+        f"WHERE NOT {_measure_facade._fixture_session_sql('e.session_id')} AND NOT {_measure_facade._fixture_session_sql('e.session_uuid')} AND {fixture_context.excluded_session_sql('e')}"
         f" AND NOT COALESCE({counted_cap.contradicted('e')}, 0) AND NOT (e.event_type IN ({media_types}) AND e.detail IS NOT NULL AND ({media}))"
         f" AND NOT (e.event_type = 'tool_archive_reexpand' AND COALESCE(e.session_id, '') != '' AND {media_pair})"
         f" AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})",
         "CREATE TEMP VIEW IF NOT EXISTS counted_compression_events AS "
         "SELECT c.* FROM main.compression_events c "
-        f"WHERE NOT {_measure_facade._fixture_session_sql('c.session_id')} AND {fixture_context.excluded_session_sql('c')}"
+        f"WHERE NOT {_measure_facade._fixture_session_sql('c.session_id')} AND NOT {_measure_facade._fixture_session_sql('c.session_uuid')} AND {fixture_context.excluded_session_sql('c')}"
         f" AND NOT (c.original_tokens > c.compressed_tokens AND COALESCE(c.session_id, '') != '' AND {ce_twin})",
     )
 
@@ -578,7 +578,7 @@ def _counted_media_candidate_statement():
         "SELECT 'md:'||e.id, e.session_uuid, e.timestamp, 0, NULL, e.model "
         "FROM main.savings_events e WHERE e.event_type = 'tool_archive' AND e.timestamp >= ? "
         f"AND e.detail IS NOT NULL AND ({media}) "
-        f"AND NOT {_measure_facade._fixture_session_sql('e.session_id')} AND {fixture_context.excluded_session_sql('e')} "
+        f"AND NOT {_measure_facade._fixture_session_sql('e.session_id')} AND NOT {_measure_facade._fixture_session_sql('e.session_uuid')} AND {fixture_context.excluded_session_sql('e')} "
         f"AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})"
     )
 
@@ -592,6 +592,7 @@ def _ensure_counted_views(conn):
     are missing or the SQLite build lacks window functions."""
     _measure_facade = _compat.facade()
     try:
+        conn.create_function('to_transcript_has_usage', 1, fixture_context.has_usage)
         have = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_temp_master WHERE type='view'").fetchall()}
         if {"counted_savings_events", "counted_compression_events"} <= have:

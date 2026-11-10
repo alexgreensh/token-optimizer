@@ -78,7 +78,9 @@ def test_estimated_multiplier_keeps_estimated_tiers_while_floor_stays_measured(m
     monkeypatch.setattr(measure, "_dashboard_spent_token_basis",
                         lambda conn, days=30: {"tokens": 1_000_000, "basis": "test", "complete": True})
     from _measure import headline
+    import lean_resume_carry
     monkeypatch.setattr(headline, "input_traffic", lambda *args: {"tokens": 1_000_000, "basis": "including cache", "complete": True})
+    monkeypatch.setattr(lean_resume_carry, "verified_summary", lambda **kw: {"tokens_saved": 30_000, "cost_saved_usd": 0, "events": 1})
     monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.0})
     monkeypatch.setattr(measure, "_keepwarm_read_meters", lambda now=None: {
         "available": False, "stale": True, "age_s": None, "ts": None,

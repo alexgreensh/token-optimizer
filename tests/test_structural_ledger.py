@@ -59,6 +59,28 @@ def test_owner_hash_matches_the_collector(m):
     assert V._hash63("abc-123") == m._stable_hash63("abc-123")
 
 
+def test_dated_archive_flows_into_realized_estimate(m, tmp_path, monkeypatch):
+    from pathlib import Path
+    _, _, R, _, _ = _mods()
+    claude = tmp_path / 'claude'
+    folder = claude / 'archive' / 'agents-2026-01-01'
+    folder.mkdir(parents=True)
+    (folder / 'old.md').write_text('---\nname: old\ndescription: useful archived agent\n---\nbody')
+    monkeypatch.setattr(m, 'CLAUDE_DIR', claude)
+    monkeypatch.setattr(m, 'HOME', Path(HOME))
+    day = datetime(2026, 1, 2, 12)
+    conn = _db(m)
+    _session(conn, m, 'after-archive', LOCAL, day)
+    _req(conn, m, 'after-archive', 9991, '2026-01-02', cr=50000)
+    conn.commit(); conn.close()
+    out = R.compute(days=4, now=datetime(2026, 1, 4), f=m, home=HOME)
+    row = next(r for r in out['trims'] if r['item'] == 'old')
+    assert row['tier'] == 'estimated' and row['requests'] == 1
+    assert row['tokens_saved'] == row['tokens_per_call'] > 0
+    assert out['estimated']['tokens_saved'] == row['tokens_saved']
+    assert not (m.SNAPSHOT_DIR / 'structural_trims.jsonl').exists()
+
+
 def test_fresh_home_reports_zero_with_no_trims_message(m):
     _, _, R, _, _ = _mods()
     out = m._compute_structural_savings(days=30)

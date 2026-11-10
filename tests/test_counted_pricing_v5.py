@@ -222,6 +222,12 @@ def test_partial_cache_miss_requires_position_and_no_context_shrink(m):
     assert out['reread_usd'] == pytest.approx(1000 * (card['cache_write_1h'] + 2 * card['cache_read']) / 1e6)
 
 
+def test_uncached_tail_is_not_a_cache_rebuild():
+    from _measure.counted_position import is_rebuild
+    assert not is_rebuild((2000, 2000, 0, 99950), 1000, 102000, 100000)
+    assert is_rebuild((4000, 4000, 0, 96000), 1000, 102000, 100000)
+
+
 def test_old_pricing_is_quarantined_then_rescored_premium_is_counted(m):
     detail = dict.fromkeys(m._COUNTED_COVERAGE_KEYS, 0)
     detail.update(version='4', oneshot_class_premium_usd=0.75)

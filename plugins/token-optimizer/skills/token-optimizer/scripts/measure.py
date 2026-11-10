@@ -163,7 +163,7 @@ if __name__ in ("__main__",):
 
 from _measure import _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5, transcript_backfill as _transcript_backfill, counted_subagents as _counted_subagents, headline as _headline, structural_report as _structural_report
 _measure_providers = _measure_compat.prepare(sys.modules[__name__])
-from _measure import counted_cap as _counted_cap, output_reread as _output_reread  # noqa: E402  stateless helper (U5)
+from _measure import counted_cap as _counted_cap, output_reread as _output_reread, transcript_product as _transcript_product  # noqa: E402
 from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared
 from hook_runtime import (
     HookDeadline,
@@ -3698,7 +3698,7 @@ _counted_session_path = _measure_compat.bind(_measure_providers['savings']._coun
 
 
 # Eligibility is per row. A global migration flag never certifies old prices.
-_COUNTED_PRICING_VERSION = "8"
+_COUNTED_PRICING_VERSION = "9"
 _COUNTED_META_PRICING = "counted_pricing_version"
 
 

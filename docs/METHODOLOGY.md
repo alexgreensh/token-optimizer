@@ -14,13 +14,13 @@ section 1 are enforced by tests; a rule without a test is a wish.
 
 | # | Rule | Enforced by |
 |---|---|---|
-| R1 | **One headline, four parts.** The monthly total is logged actions + realized model routing + repeat reads avoided + other estimates. Nothing else is added. | `test_action_savings_components.py` |
+| R1 | **One action headline.** The monthly total is logged actions, write-class premium, repeat reads and eligible estimates. Routing is separate. | `test_action_savings_components.py` |
 | R2 | **Parts add up to the total, to the cent.** Round once (largest remainder), never each part on its own. | `test_savings_display_cents.py` |
 | R3 | **What-ifs stay outside.** "Could save" items, cache drops and the routing what-if are never in the headline. | `test_action_savings_components.py`, `test_opportunity_routing_split.py` |
-| R4 | **Since install uses the same recipe.** The all-time figure is the same four parts summed over the install window. It can never be a single slice. | `test_since_install_all_in.py` |
+| R4 | **Since install separates evidence.** Show measured and estimated action savings separately, with stated-baseline routing in its own estimated band. | `test_since_install_all_in.py` |
 | R5 | **Longer never means smaller.** For non-negative parts, a longer window is at least the shorter one, and since install is at least the last 30 days. | `test_savings_invariants.py` |
 | R6 | **Every request counted once.** Streamed and replayed requests fold to one by request id, across sessions. | `test_usage_counted_once.py` |
-| R7 | **Only real work counts.** Test-suite and benchmark sessions, screenshots priced as text, and twin rows from two installs are left out of every total. | `test_counted_views.py` |
+| R7 | **Only real work counts.** Synthetic fixtures, screenshots priced as text, and twin rows are excluded. Benchmark sessions with transcript-proven API usage count. | `test_counted_views.py`, `test_transcript_backfill.py` |
 | R8 | **A debit mirrors its credit.** If a credit is left out (screenshot archive), its reversal (re-expanding that screenshot) is left out too. | `test_counted_views.py` |
 | R9 | **Price by token class and exact model.** Fresh input, cache read, 5-minute cache write, 1-hour cache write and output each have their own rate, for the model generation that ran. | `test_counted_pricing_integrity.py` |
 | R10 | **Unknown is $0 and said out loud.** A model or class with no known price is never given a guessed price. Its tokens are listed as unpriced. | `test_counted_pricing_integrity.py` |
@@ -130,11 +130,14 @@ Each key below is one line in the report. All are priced at the window's input-r
 
 | Key | What it estimates |
 |---|---|
-| `resume_lean_estimated` | Cold resumes avoided by a lean restore (priced like its logged event) |
-| `checkpoint_restore_estimated` | Working-set re-reads a checkpoint restore let the session skip. The restore is observed; the avoided re-read is inferred from the session's own read history and capped, never metered |
+| `resume_lean_estimated` | Unverified historical proxy, excluded from totals. |
+| `resume_lean_verified` | Receiver-verified reload and carry estimate, capped at the old session's compaction window and the receiver's next compaction. |
+| `checkpoint_restore_estimated` | Unverified restore estimate, excluded from totals. |
+| `structural_estimated` | Realized setup cleanup estimated from dated archives or owner-attested trims, priced at each eligible call's cache-read rate. |
+| `expand_overhead` | Estimated expansion-command and reread overhead, subtracted from action savings. |
 | `uncaptured_runtime` | Compression inside sub-agent runs that is never logged as an event |
 | `behavioral_estimate` | One more loop span avoided per caught loop |
-| `mcp_cap_estimated` | Large MCP results capped (priced like its logged event) |
+| `mcp_cap_estimated` | Unsupported flat cap estimate, excluded from totals. |
 | `handover_rerun` | Re-work avoided by a continuity handover, from your own session cohorts |
 | `contamination_exit` | Sessions that heeded a fresh-session nudge, from your own cohorts |
 | `verbosity_steer` | Output shortened by a concise-output nudge, before an observed measurement exists |

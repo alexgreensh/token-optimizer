@@ -421,8 +421,10 @@ def _score_verified_event(row, m, tier_data):
     threshold, source = lean_resume_threshold.threshold(new_path, lambda usage: _prompt_tokens(m, usage))
     if threshold is None:
         return result
+    if threshold > 500000:
+        threshold, source = 500000, 'old_session_500k_cap'
     turns, stopped = _walk(new_path, ev.replace(microsecond=0), avoided, m, threshold)
-    if not turns:
+    if not turns and (stopped != 'counterfactual_compaction' or not (_walk(new_path, ev.replace(microsecond=0), 0, m, 2**63)[0] or [])):
         return result
     from _measure import counted_pricing_v5
     key = counted_pricing_v5.resume_rate_key(row.get('detail'))

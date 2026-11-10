@@ -11,7 +11,7 @@ def _number(value):
 
 def token_headline(summary):
     s = summary or {}
-    pools = ('mcp_cap_estimated', 'hint_followed', 'resume_lean_verified')
+    pools = ('hint_followed', 'resume_lean_verified')
     verbosity = sum(max(0, _number(v.get('tokens_saved'))) for k, v in (s.get('by_category') or {}).items()
                     if str(k).startswith('verbosity') and isinstance(v, dict))
     removed = max(0, _number(s.get('total_tokens')) - verbosity)

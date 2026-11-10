@@ -3642,9 +3642,7 @@ def _dashboard_saved_tokens(summary):
         except AttributeError:
             return 0
 
-    estimated = (tok(s.get("mcp_cap_estimated"))
-                 + tok(s.get("hint_followed") or s.get("hint_followed_estimated"))
-                 )
+    estimated = tok(s.get("hint_followed") or s.get("hint_followed_estimated"))
     measured = num(s.get("total_tokens", 0))
     return measured + estimated, measured
 

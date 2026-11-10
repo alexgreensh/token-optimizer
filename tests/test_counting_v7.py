@@ -20,7 +20,9 @@ def test_partial_cache_rebuild_uses_removal_position(m):
 
 def test_rebuild_boundaries():
     from _measure.counted_position import is_rebuild
-    assert is_rebuild((30, 30, 0, 99), 10, 120, 100)
+    assert is_rebuild((30, 30, 0, 96), 10, 120, 100)
+    assert not is_rebuild((30, 30, 0, 97), 10, 120, 100)
+    assert not is_rebuild((30, 30, 0, 99), 10, 120, 100)
     assert not is_rebuild((30, 30, 0, 100), 10, 120, 100)
     assert not is_rebuild((30, 30, 0, 0), 10, 99, 100)
     assert not is_rebuild((9, 9, 0, 80), 10, 120, 100)

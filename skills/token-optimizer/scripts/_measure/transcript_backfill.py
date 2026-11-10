@@ -308,7 +308,7 @@ def candidate_sessions(conn, since_date, is_fixture):
         "ORDER BY id", (since_date,)).fetchall()
     latest = {}
     for uuid, path in rows:
-        if uuid and not is_fixture(uuid) and not fixture_context.benchmark_path(path):
+        if uuid and not is_fixture(uuid) and fixture_context.allowed_path(path):
             latest[uuid] = path or latest.get(uuid)
     return latest
 

@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, transcript_product
+from . import _compat
 
 
 def _read_codex_config() -> dict:
@@ -2653,8 +2653,8 @@ def quick_scan(as_json=None):
     offenders.sort(key=lambda x: ((_measure_facade := _compat.facade()), -x[2])[1])
     top_offenders = offenders[:3]
 
-    product_check = transcript_product.from_facade(_measure_facade) if _rt == 'claude' else None
-    quick_win = transcript_product.quick_win(_measure_facade, components, skills, product_check) if product_check else None
+    product_check = _measure_facade._transcript_product.from_facade(_measure_facade) if _rt == 'claude' else None
+    quick_win = _measure_facade._transcript_product.quick_win(_measure_facade, components, skills, product_check) if product_check else None
 
     # If no trends-based win, suggest instruction-file trimming
     if not quick_win and _measure_facade.detect_runtime() == "codex":
@@ -2768,8 +2768,8 @@ def quick_scan(as_json=None):
     print(f"  Usable before degradation: ~{usable_before_degradation:,} (50% fill = peak quality zone)")
     print(f"  Messages before auto-compact: ~{msgs_before_compact} at typical message size")
     if product_check:
-        print("  " + transcript_product.listing_message(product_check))
-        print("  " + transcript_product.connector_message(product_check))
+        print("  " + _measure_facade._transcript_product.listing_message(product_check))
+        print("  " + _measure_facade._transcript_product.connector_message(product_check))
 
     print("\n  DEGRADATION RISK")
     print(f"    Current startup fill:  {fill_pct * 100:.0f}% ({overhead:,}) -- {band_name}")
@@ -4411,9 +4411,9 @@ def generate_auto_recommendations(components, trends=None, days=None):
 
     _runtime = _measure_facade.detect_runtime()
     if _runtime == 'claude':
-        _product = transcript_product.from_facade(_measure_facade)
-        quick.extend([transcript_product.listing_message(_product), transcript_product.connector_message(_product)])
-        quick.extend(transcript_product.skill_recommendations(_measure_facade, components, trends, 'counting Skill calls and slash commands'))
+        _product = _measure_facade._transcript_product.from_facade(_measure_facade)
+        quick.extend([_measure_facade._transcript_product.listing_message(_product), _measure_facade._transcript_product.connector_message(_product)])
+        quick.extend(_measure_facade._transcript_product.skill_recommendations(_measure_facade, components, trends, 'counting Skill calls and slash commands'))
 
     # --- Rule 3b: Removed in v2.3.0 ---
     # Aggregate "skills consume N tokens" was not actionable. Specific rules (Rule 3
@@ -4936,10 +4936,10 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
     unused_skills = sorted({name for name in unused_skills
                             if name in active_names and not _measure_facade._is_own_tool_skill(name)})
     unused_count = len(unused_skills)
-    product_check = transcript_product.from_facade(_measure_facade) if is_claude else None
-    unused_savings = transcript_product.unused_savings(components, unused_skills, product_check)
+    product_check = _measure_facade._transcript_product.from_facade(_measure_facade) if is_claude else None
+    unused_savings = _measure_facade._transcript_product.unused_savings(components, unused_skills, product_check)
     if product_check:
-        patterns_bad.extend(transcript_product.coach_patterns(product_check))
+        patterns_bad.extend(_measure_facade._transcript_product.coach_patterns(product_check))
     unused_ratio = unused_count / skill_count if skill_count > 0 else 0
     if unused_count > 20 and skill_pct > 2 and unused_ratio > 0.8:
         skill_fix = (

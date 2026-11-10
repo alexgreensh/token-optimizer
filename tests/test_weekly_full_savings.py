@@ -46,7 +46,7 @@ def test_window_parser_excludes_outside_activity_and_dedups_streaming(measure, t
     assert measure._parse_session_jsonl(p)['api_calls'] == 3  # cache must be window-specific
 
 
-def test_weekly_full_value_replaces_overlapping_component_sum(measure, monkeypatch):
+def test_runway_does_not_claim_whole_workload_transformation_dollars(measure, monkeypatch):
     _wire(measure, monkeypatch, resume_lean_usd=18.32)
     monkeypatch.setattr(measure, '_weekly_full_savings', lambda **kw: {
         'saved_usd': 200.62, 'start': '2026-09-03T17:00:00+00:00',
@@ -54,8 +54,8 @@ def test_weekly_full_value_replaces_overlapping_component_sum(measure, monkeypat
     }, raising=False)
     snap = measure.runway_snapshot()
     wk = next(w for w in snap['windows'] if w['key'] == 'seven_day')
-    assert wk['saved_usd'] == 200.62  # not 37.10, nor 200.62 + 37.10
-    assert snap['saved_usd_context'] + snap['saved_usd_routing'] == 200.62
+    assert wk['saved_usd'] == 37.10
+    assert snap['saved_usd_context'] + snap['saved_usd_routing'] == 37.10
     assert next(w for w in snap['windows'] if w['key'] == 'five_hour')['saved_usd'] is None
 
 
@@ -131,13 +131,13 @@ def test_weekly_full_reports_missing_transcript_coverage(measure, monkeypatch, t
         assert value['coverage']['total_sessions'] == 21
 
 
-def test_full_savings_survives_flat_throughput_multiplier(measure, monkeypatch):
+def test_flat_throughput_does_not_surface_transformation_dollars(measure, monkeypatch):
     _wire(measure, monkeypatch, resume_lean_usd=0)
     monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.0})
     monkeypatch.setattr(measure, '_weekly_full_savings', lambda **kw: {'saved_usd': 200.62})
     snap=measure.runway_snapshot()
     assert snap is not None
-    assert next(w for w in snap['windows'] if w['key']=='seven_day')['saved_usd']==200.62
+    assert snap['saved_usd_context'] != 200.62
 
 
 def test_child_growth_refresh_does_not_double_count_cached_parent(measure, monkeypatch, tmp_path):

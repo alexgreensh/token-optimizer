@@ -1386,7 +1386,6 @@ def _get_savings_summary(days=None, since=None):
         (by_category, total_tokens, total_cost, total_events, popped,
          repriced_to_session_mix) = _measure_facade._net_realized_savings(rows, reprice_deltas)
         one_time = popped["setup_optimization"]
-        mcp_cap_est = popped["mcp_cap"]
         hint_followed_est = popped["hint_followed"]
         verbosity_steer_est = popped["verbosity_steer"]
         resume_lean_est = popped["resume_lean"]
@@ -1408,8 +1407,8 @@ def _get_savings_summary(days=None, since=None):
             # A1: one-time first-trim (compare). Reported separately, NEVER summed
             # into the realized total (structural_savings is the ongoing model).
             "one_time_setup": one_time,
-            # A3: MCP-cap estimate, relocated to the estimated tier (not realized).
-            "mcp_cap_estimated": mcp_cap_est,
+            # The flat MCP-cap estimate is unsupported and excluded.
+            "mcp_cap_estimated": None,
             # U-G: observed-trigger / estimated-magnitude avoided-search from
             # proactive hints. Estimated tier, never in the realized total.
             "hint_followed_estimated": hint_followed_est,
@@ -2287,8 +2286,7 @@ def runway_snapshot(days=None, now=None):
         meter_available = bool(meters.get("available"))
         meter_stale = bool(meters.get("stale")) or not meter_available
 
-        weekly_full = _measure_facade._weekly_full_savings(
-            resets_at=meters.get("seven_day_resets_at"), now=now)
+        weekly_signal = bool(_measure_facade._weekly_full_savings(resets_at=meters.get("seven_day_resets_at"), now=now)); weekly_full = None  # Do not surface the counterfactual dollars.
 
         # Context uses dated input and output, including cache.
         consumed = saved = context_saved = 0
@@ -2323,7 +2321,7 @@ def runway_snapshot(days=None, now=None):
 
         mult = context_mult * (routing_mult if routing_mult is not None else 1.0)
         # Hide immaterial changes unless weekly savings are available.
-        if mult < 1.02 and not weekly_full:
+        if mult < 1.02 and not weekly_signal:
             return None
 
         # --- USD-per-window: API-credit OVERAGE over each window's OWN real span ---
@@ -2396,7 +2394,7 @@ def runway_snapshot(days=None, now=None):
                     merged_ctx = float(wm.get("total_cost_usd", 0.0) or 0.0)
                     rt = float((wm.get("model_routing") or {}).get("realized_cost_usd", 0.0) or 0.0)
                     repriced = bool(wm.get("repriced_to_session_mix"))
-                    est_add = 0.0  # Lean resume is diagnostic until the avoided reload is established.
+                    est_add = max(0.0, float((wm.get("resume_lean_verified") or {}).get("cost_saved_usd") or 0.0))
                 except Exception:
                     pass
                 try:
@@ -6269,7 +6267,7 @@ def _action_savings_components(summary, reread=None):
     """
     _measure_facade = _compat.facade()
     estimates = {
-        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated") else float((((summary.get("structural_detail") or {}).get("estimated") if key == "structural_estimated" else summary.get(key)) or {}).get("cost_saved_usd", 0) or 0))
+        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated", "mcp_cap_estimated") else float((((summary.get("structural_detail") or {}).get("estimated") if key == "structural_estimated" else summary.get(key)) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
             "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
             "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
@@ -6463,7 +6461,7 @@ def _get_merged_savings(days=None, since=None):
         # A1: one-time first-trim, surfaced separately, never in the realized total.
         "one_time_setup": savings.get("one_time_setup"),
         # A3: MCP-cap estimate lives in the estimated tier, never realized.
-        "mcp_cap_estimated": savings.get("mcp_cap_estimated"),
+        "mcp_cap_estimated": None,
         # U-G: deterministically-triggered avoided-search from proactive hints
         # (observed hint->read), estimated magnitude. Estimated tier, never realized.
         "hint_followed": savings.get("hint_followed_estimated"),
@@ -6545,15 +6543,11 @@ def _savings_since_install():
         # categories the dashboard's estimated tier (estItems) sums, so the two
         # cards agree about what "estimated" contains. cache_drop and
         # output_waste are OPPORTUNITY (avoidable waste TO does not yet prevent),
-        # so they are excluded here — counting them would claim money saved that
-        # was actually spent. mcp_cap_estimated does NOT double-count with
-        # uncaptured_runtime: _get_savings_summary pops mcp_cap out of the
-        # measured totals before _estimate_uncaptured_runtime derives its
-        # per-session proxy from them, so the two pools are disjoint.
+        # so they are excluded here, along with the unsupported MCP-cap estimate.
         estimated = sum(
             float((full.get(k) or {}).get("cost_saved_usd", 0) or 0)
             for k in (
-                "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
+                "behavioral_estimate", "uncaptured_runtime",
                 "contamination_exit", "handover_rerun", "resume_lean_verified",
             )
         )
@@ -7069,15 +7063,6 @@ def savings_report(days=None, as_json=None):
 
     # cache_drop + output_waste are OPPORTUNITY (avoidable waste TO does not yet
     # prevent), shown in the COULD SAVE block below, never in the estimated total.
-
-    # Estimated tier — MCP-cap (relocated from measured; Claude Code's own
-    # truncation, inferred not observed).
-    mcp_cap_est = summary.get("mcp_cap_estimated") or {}
-    mce_cost = float(mcp_cap_est.get("cost_saved_usd", 0.0) or 0.0)
-    if mce_cost > 0:
-        mce_monthly = _money(_est_cents["mcp_cap_estimated"])
-        print(f"  + est. MCP output cap: ~${mce_monthly}{per} "
-              f"({mcp_cap_est.get('events', 0)} capped MCP results) [estimated]")
 
     # Estimated tier — checkpoint restores (avoided working-set re-reads; the
     # restore is observed, the credited re-read is inferred, never metered).

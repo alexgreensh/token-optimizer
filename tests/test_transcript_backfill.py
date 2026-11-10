@@ -286,25 +286,44 @@ def test_local_naive_matches_the_ledger_clock():
         tzinfo=timezone.utc).astimezone().replace(tzinfo=None).isoformat()
 
 
-def test_candidate_sessions_excludes_optimizer_benchmark_transcripts():
+def test_candidate_sessions_require_usage_for_benchmark_transcripts(tmp_path):
+    folder = tmp_path / '-private-var-folders-x-T-to-bench-M2-abc'
+    folder.mkdir()
+    real_bench = folder / 'real.jsonl'
+    real_bench.write_text(json.dumps({'type': 'assistant', 'message': {'usage': {'input_tokens': 10}}}) + '\n')
+    no_usage = folder / 'fake.jsonl'
+    no_usage.write_text(json.dumps({'type': 'assistant', 'message': {'content': []}}) + '\n')
     conn = sqlite3.connect(':memory:')
     conn.execute('CREATE TABLE session_log (id INTEGER, session_uuid TEXT, jsonl_path TEXT, date TEXT)')
     conn.executemany('INSERT INTO session_log VALUES (?, ?, ?, ?)', [
-        (1, 'bench', '/projects/-private-var-folders-x-T-to-bench-M2-abc/bench.jsonl', '2026-08-01'),
-        (2, 'real', '/projects/-Users-person-work/real.jsonl', '2026-08-01'),
+        (1, 'bench', str(real_bench), '2026-08-01'),
+        (2, 'fake', str(no_usage), '2026-08-01'),
+        (3, 'real', '/projects/-Users-person-work/real.jsonl', '2026-08-01'),
     ])
-    assert set(tb.candidate_sessions(conn, '2026-01-01', lambda _: False)) == {'real'}
+    assert set(tb.candidate_sessions(conn, '2026-01-01', lambda _: False)) == {'real', 'bench'}
 
 
-def test_existing_benchmark_events_are_not_counted(m, tmp_path, monkeypatch):
+def test_benchmark_events_count_only_with_real_usage(m, tmp_path, monkeypatch):
     db = _db(m, tmp_path, monkeypatch)
+    folder = tmp_path / '-private-var-folders-x-T-to-bench-M2-abc'
+    folder.mkdir()
+    path = folder / 'bench.jsonl'
+    path.write_text(json.dumps({'type': 'assistant', 'message': {'usage': {'input_tokens': 10}}}) + '\n')
     with sqlite3.connect(db) as conn:
         conn.execute("INSERT INTO session_log (session_uuid, jsonl_path, date) VALUES (?, ?, ?)",
-                     ('bench', '/projects/-private-var-folders-x-T-to-bench-M2-abc/bench.jsonl', '2026-08-01'))
+                     ('bench', str(path), '2026-08-01'))
+        conn.execute("INSERT INTO session_log (session_uuid, jsonl_path, date) VALUES (?, ?, ?)",
+                     ('fake', str(folder / 'missing.jsonl'), '2026-08-01'))
         conn.execute("INSERT INTO compression_events (timestamp, feature, session_uuid, original_tokens, compressed_tokens, verified) VALUES (?, ?, ?, ?, ?, ?)",
                      ('2026-08-01', 'bash_compress_pipeline', 'bench', 100, 10, 1))
+        conn.execute("INSERT INTO compression_events (timestamp, feature, session_uuid, original_tokens, compressed_tokens, verified) VALUES (?, ?, ?, ?, ?, ?)",
+                     ('2026-08-01', 'bash_compress_pipeline', 'fake', 100, 10, 1))
+        conn.execute("INSERT INTO compression_events (timestamp, feature, session_id, original_tokens, compressed_tokens, verified) VALUES (?, ?, ?, ?, ?, ?)",
+                     ('2026-08-01', 'bash_compress_pipeline', 'fake', 100, 10, 1))
+        conn.execute("INSERT INTO compression_events (timestamp, feature, session_uuid, original_tokens, compressed_tokens, verified) VALUES (?, ?, ?, ?, ?, ?)",
+                     ('2026-08-01', 'bash_compress_pipeline', 'test-session-no-transcript', 100, 10, 1))
         assert m._ensure_counted_views(conn)
-        assert conn.execute('SELECT count(*) FROM counted_compression_events').fetchone()[0] == 0
+        assert conn.execute('SELECT session_uuid FROM counted_compression_events').fetchall() == [('bench',)]
 
 
 def test_mixed_session_repairs_only_the_lost_marker(m, tmp_path, monkeypatch):

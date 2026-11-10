@@ -37,7 +37,7 @@ def group_events(facade, conn, events, resolve=True):
     agent_index = defaultdict(list)
     if orphan and base.exists():
         for path in base.glob('*/*/subagents/agent-*.jsonl'):
-            if _parent(path).is_file() and not fixture_context.benchmark_path(_parent(path)):
+            if _parent(path).is_file() and fixture_context.allowed_path(_parent(path)):
                 agent_index[path.stem[6:]].append(path)
     noid = []
     for key, uuid, ts, tok, cost, model in events:
@@ -60,7 +60,7 @@ def group_events(facade, conn, events, resolve=True):
         commands = {key: data[1] for key, data in info.items() if key.startswith('ce:') and data[1]}
         hits = defaultdict(list)
         for path in list(base.glob('*/*.jsonl')) + [p for paths in agent_index.values() for p in paths]:
-            if fixture_context.benchmark_path(_parent(path)):
+            if not fixture_context.allowed_path(_parent(path)):
                 continue
             for dt, tid, name, command, size in sub.index_results(path, path.parent.name == 'subagents'):
                 if name == 'Bash' and command:
@@ -129,7 +129,7 @@ def window_events(facade, conn, events):
             detail = json.loads(row[3] or '{}')
             parent = facade._counted_session_path(conn, row[0])
             agent = detail.get('resolved_agent')
-            if not parent or fixture_context.benchmark_path(parent) or detail.get('refresh_incomplete') or not detail.get('file_sha256'):
+            if not parent or not fixture_context.allowed_path(parent) or detail.get('refresh_incomplete') or not detail.get('file_sha256'):
                 raise ValueError('no evidence')
             if detail.get("scope") == "subagent" and not agent:
                 raise ValueError("missing agent identity")

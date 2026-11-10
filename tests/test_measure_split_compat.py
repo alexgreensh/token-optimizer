@@ -176,7 +176,12 @@ def _moved_consumer(name, domain, tmp_path):
 
 def test_moved_savings_consumer_uses_patched_connection(m, tmp_path, monkeypatch):
     consumer = _moved_consumer('_get_savings_summary', 'savings', tmp_path)
-    connection = SimpleNamespace(execute=Mock(return_value=SimpleNamespace(fetchall=lambda: [('fixture', 1, 123, 4.5)])), close=Mock())
+    class Cursor:
+        def __iter__(self):
+            return iter([])
+        def fetchall(self):
+            return [('fixture', 1, 123, 4.5)]
+    connection = SimpleNamespace(execute=Mock(return_value=Cursor()), close=Mock())
     factory = Mock(return_value=connection)
     monkeypatch.setattr(m, '_init_trends_db', factory)
     def table(conn, name):
@@ -186,9 +191,8 @@ def test_moved_savings_consumer_uses_patched_connection(m, tmp_path, monkeypatch
     monkeypatch.setattr(m, '_session_model_reprice', lambda *a, **kw: ({}, 0, 0))
     result = consumer()
     assert result['total_tokens'] == 123
-    # One summary query, plus (savings-truth U4) the schema probe of the exact-card
-    # resume_lean reprice on the SAME patched connection.
-    assert factory.call_count == 1 and connection.execute.call_count == 2
+    # Both schema probes and the summary query use the same patched connection.
+    assert factory.call_count == 1 and connection.execute.call_count == 3
     connection.close.assert_called_once()
 
 

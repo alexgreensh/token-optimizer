@@ -9,9 +9,7 @@ from test_savings_render import render
 
 
 def snapshot():
-    # Rounded one by one these parts print 39.84 + 47.72 + 35.52 = 123.08,
-    # while the exact total 123.084384 also prints 123.08. Model routing is
-    # disclosed separately and never enters this sum.
+    # Model routing and unsupported MCP and resume estimates stay out.
     return {
         "period_days": 30,
         "total_cost_usd": 39.8352,
@@ -73,8 +71,8 @@ def test_text_lines_add_up_to_all_in(measure, monkeypatch, capsys):
     amounts = [cents(re.search(r"~\$([\d,.]+)/mo", ln).group(1)) for ln in lines]
     monthly = cents(re.search(r"Estimated monthly: \$([\d,.]+)", out).group(1))
     all_in = cents(re.search(r"ALL IN: ~\$([\d,.]+)/mo", out).group(1))
-    assert len(amounts) == 7
-    assert monthly + sum(amounts) == all_in == 12308
+    assert len(amounts) == 5
+    assert monthly + sum(amounts) == all_in == 9506
     # The measured table adds up as well.
     table = out.split("Cost Saved")[1].split("TOTAL (measured)")[0]
     rows = [cents(m) for m in re.findall(r"\$([\d.]+)$", table, re.M)]
@@ -87,11 +85,11 @@ def test_json_display_fields_add_up_and_keep_exact_values(measure, monkeypatch, 
     measure.savings_report(as_json=True)
     action = json.loads(capsys.readouterr().out)["action_savings"]
     display = action["display"]
-    assert action["net_total_usd"] == pytest.approx(123.084384)
+    assert action["net_total_usd"] == pytest.approx(95.061284)
     assert action["logged_usd"] == 39.8352
     parts = list(display["components_cents"].values()) + list(display["estimates_cents"].values())
-    assert sum(parts) == display["total_cents"] == 12308
-    assert display["total_usd"] == 123.08
+    assert sum(parts) == display["total_cents"] == 9506
+    assert display["total_usd"] == 95.06
 
 
 def test_dashboard_hero_parts_add_up(measure, monkeypatch):
@@ -102,5 +100,5 @@ def test_dashboard_hero_parts_add_up(measure, monkeypatch):
     logged = cents(re.search(r"Logged actions <strong>\$([\d,.]+)", actions).group(1))
     repeat = cents(re.search(r"Repeat reads avoided <strong>~\$([\d,.]+)", actions).group(1))
     other = cents(re.search(r"Other estimates <strong>~\$([\d,.]+)", actions).group(1))
-    assert total == 12308
+    assert total == 9506
     assert logged + repeat + other == total

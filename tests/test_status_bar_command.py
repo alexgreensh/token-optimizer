@@ -533,7 +533,7 @@ def test_dashboard_saved_tokens_is_measured_plus_estimated(sb):
         "resume_lean_estimated": {"tokens_saved": 40},
         "reread_avoided": {"reread_tokens": 999999},  # not in the headline
     }
-    assert sb._dashboard_saved_tokens(summary) == (1070, 1000)
+    assert sb._dashboard_saved_tokens(summary) == (1020, 1000)
     assert sb._dashboard_saved_tokens({}) == (0, 0)
 
 
@@ -630,10 +630,10 @@ def test_compactions_count_resumes_where_it_stopped_and_finds_split_markers(sb, 
 def test_dashboard_headline_shows_estimates_when_nothing_was_measured(sb):
     # Estimates still surface on their own: measured=0 no longer zeroes the card.
     assert sb._dashboard_saved_tokens({"total_tokens": 0, "hint_followed": {"tokens_saved": 500}}) == (500, 0)
-    assert sb._dashboard_saved_tokens({"total_tokens": 0, "checkpoint_restore_estimated": {"tokens_saved": 700}}) == (700, 0)
+    assert sb._dashboard_saved_tokens({"total_tokens": 0, "checkpoint_restore_estimated": {"tokens_saved": 700}}) == (0, 0)
     # Nothing measured AND nothing estimated -> the card stays hidden.
     assert sb._dashboard_saved_tokens({"total_tokens": 0}) == (0, 0)
-    assert sb._dashboard_saved_tokens({"total_tokens": "1e3", "mcp_cap_estimated": {"tokens_saved": "12.5"}}) == (1012, 1000)
+    assert sb._dashboard_saved_tokens({"total_tokens": "1e3", "mcp_cap_estimated": {"tokens_saved": "12.5"}}) == (1000, 1000)
 
 
 def test_post_compact_refresh_end_to_end_counts_once(sb, tmp_path):

@@ -60,10 +60,10 @@ function savingsStoryBands(data) {
   var trimLedger = sd.method === 'trim_ledger';
   var trims = trimLedger ? (sd.trims || []).filter(function(t) { return t && !t.closed_at && num(t.tokens_per_call) > 0; }) : [];
   function trimName(tier) {
-    var t = trims.filter(function(x) { return (x.source === 'attested' || x.tier === 'estimated') === (tier === 'estimated'); })
-      .sort(function(a, b) { return String(b.ts).localeCompare(String(a.ts)); })[0];
-    var when = t ? f.day(t.ts) : '';
-    return 'Setup cleanup' + (when ? ', ' + when : '') + (tier === 'estimated' ? ' (realized, your figure)' : ' (realized, recorded)');
+    var group = trims.filter(function(x) { return (x.source === 'attested' || x.tier === 'estimated') === (tier === 'estimated'); })
+      .sort(function(a, b) { return String(b.ts).localeCompare(String(a.ts)); });
+    var t = group[0], when = t && group.every(function(x) { return String(x.ts).slice(0, 10) === String(t.ts).slice(0, 10); }) ? f.day(t.ts) : '';
+    return 'Setup cleanup' + (when ? ', ' + when : '') + (tier === 'estimated' ? (t && t.source === 'dated_archive' ? ' (realized, archive estimate)' : ' (realized, your figure)') : ' (realized, recorded)');
   }
   var trimMeasuredUsd = trimLedger ? num(sd.cost_saved_usd) : 0;
   var trimMeasuredTok = trimLedger ? num(sd.tokens_saved) : 0;
@@ -219,7 +219,7 @@ function savingsStoryHtml(data) {
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Removed once, saved on every later turn</h2>' +
       '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + Math.round(carryN) + '&times;</span><span class="st-mega__unit">re-reads avoided per token removed</span></p>' +
-      '<p class="st-lead"><strong>' + tok(removedOnce) + ' tokens removed</strong> became <strong>' + tok(rereads) + ' tokens not sent</strong> on later reads.</p>' +
+      '<p class="st-lead"><strong>' + tok(removedOnce) + ' tokens removed</strong> became <strong>' + tok(rereads) + ' tokens not sent</strong> on later reads' + (has(cp.reread_usd) ? ', worth ' + usd(cp.reread_usd) + ' at API rates' : '') + '.</p>' +
       '</div>');
   }
   if (!trimLedger) {
@@ -233,7 +233,7 @@ function savingsStoryHtml(data) {
     var rows = valuedTrims.slice(0, 4).map(function(t) {
       var attested = t.source === 'attested' || t.tier === 'estimated';
       return '<li><span>' + esc(t.label || t.item || t.component || 'Setup cleanup') +
-        '<span class="st-sub">' + esc(f.day(t.ts) || 'undated') + ', ' + (attested ? 'your figure' : 'recorded by the audit') + '</span></span>' +
+        '<span class="st-sub">' + esc(f.day(t.ts) || 'undated') + ', ' + (t.source === 'dated_archive' ? 'estimated from archive' : attested ? 'your figure' : 'recorded by the audit') + '</span></span>' +
         '<span class="st-v">' + usd(t.cost_saved_usd) + '</span></li>';
     }).join('');
     var opts = sd.attested_options || [];
@@ -259,6 +259,7 @@ function savingsStoryHtml(data) {
     var names = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
     var installRouting = (s.since_install || {}).all_in || {};
     var statedRouting = num((installRouting.components_usd || {}).routing_estimated);
+    var sinceEstimate = num(installRouting.estimated_usd), sinceMeasured = SI.total - statedRouting - sinceEstimate;
     var period = installRouting.routing_majority_period || {};
     var periodText = '';
     if (/^\d{4}-\d{2}$/.test(period.start || '') && /^\d{4}-\d{2}$/.test(period.end || '')) {
@@ -267,11 +268,11 @@ function savingsStoryHtml(data) {
       periodText = startMonth + (period.start.slice(0,4) === period.end.slice(0,4) ? '' : ' ' + period.start.slice(0,4)) + '–' + endMonth + ' ' + period.end.slice(0,4);
     }
     cards.push('<div class="card st-card">' +
-      '<h2 class="st-h">Room in your limits</h2>' +
-      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(SI.total - statedRouting) + '</span><span class="st-mega__unit">since you installed</span></p>' +
-      '<p class="st-lead">This figure is everything counted since install, excluding the estimated routing shown separately below.</p>' +
+      '<h2 class="st-h">Saved since install</h2>' +
+      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(sinceMeasured) + '</span><span class="st-mega__unit">measured since you installed</span></p>' +
+      '<p class="st-lead">' + usd(sinceEstimate) + ' estimated savings, shown separately.</p>' +
       (statedRouting ? '<div class="st-routing-band"><p>Estimated routing: <strong>' + usd(statedRouting) + '</strong>, based on your stated 95% Opus baseline.</p>' + (periodText ? '<p>Most of the routing estimate comes from ' + esc(periodText) + '.</p>' : '') + '</div>' : '') +
-      f.fold('How this is valued', '<p>The same rows as the total above, summed since ' + (SI.date ? esc(SI.date) : 'install') +
+      f.fold('How this is valued', '<p>Measured and separately estimated savings are summed since ' + (SI.date ? esc(SI.date) : 'install') +
         '. Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is an estimate of room, not a refund.</p>' +
         (statedRouting ? '<p>Estimated routing, based on your stated 95% Opus baseline.</p>' : '') +
         (statedRouting && periodText ? '<p>Most of the routing estimate comes from ' + esc(periodText) + '.</p>' : '') +
@@ -284,8 +285,7 @@ function savingsStoryHtml(data) {
       '</div>');
   }
   cards.push('<div class="card st-card">' +
-    '<h2 class="st-h">Model routing <span class="st-tag">Opportunity</span></h2>' +
-    '<p class="st-lead">Using lighter models is an opportunity, not part of the action savings total.</p>' +
+    '<h2 class="st-h">Model routing <span class="st-tag">Estimated</span></h2>' +
     (mr.baseline_source === 'pretool_baseline' && has(mr.realized_cost_usd) ? '<p>Estimated ' + usd(mr.realized_cost_usd) + ' for this period, based on your stated 95% Opus baseline.</p>' : '') +
     '</div>');
   if (cards.length) out += '<div class="st-grid">' + cards.join('') + '</div>';
@@ -295,10 +295,12 @@ function savingsStoryHtml(data) {
   if (trend.length >= 2) {
     var maxIndex = Math.max.apply(null, trend.map(function(p) { return Number(p.index); })) || 1;
     var points = trend.map(function(p, i) { return (i * 500 / (trend.length - 1)).toFixed(1) + ',' + (90 - Number(p.index) / maxIndex * 80).toFixed(1); }).join(' ');
+    var ticks = trend.map(function(p, i) { if (i !== trend.length - 1 && i % Math.ceil(trend.length / 6)) return ''; var d = new Date(p.month + '-01T00:00:00'), x = 20 + i * 460 / (trend.length - 1); return '<text x="' + x.toFixed(1) + '" y="115" text-anchor="middle" fill="currentColor" font-size="11">' + esc(d.toLocaleDateString('en-US', {month:'short'})) + '</text>'; }).join('');
     out += '<div class="card wide st-card"><h2 class="st-h">Cost per message</h2>' +
       '<p class="st-lead">Indexed to the first month, using constant token prices. This trend is not attributed to Token Optimizer.</p>' +
-      '<svg viewBox="0 0 500 100" role="img" aria-label="Monthly cost per message index" style="width:100%;height:120px">' +
-      '<polyline fill="none" stroke="currentColor" stroke-width="3" points="' + points + '"></polyline></svg>' +
+      '<p>Start 100 &middot; Latest ' + Math.round(Number(trend[trend.length - 1].index)) + '</p>' +
+      '<svg viewBox="0 0 500 120" role="img" aria-label="Monthly cost per message index" style="width:100%;height:140px">' +
+      '<polyline fill="none" stroke="currentColor" stroke-width="3" points="' + points + '"></polyline>' + ticks + '</svg>' +
       '<p>' + esc(trend[0].month) + ' to ' + esc(trend[trend.length - 1].month) + '</p></div>';
   }
 

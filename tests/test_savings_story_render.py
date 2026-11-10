@@ -197,14 +197,14 @@ def test_four_cards_in_one_grid_then_one_coverage_line():
     out = story({'savings': full()})
     grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
     titles = re.findall(r'<h2 class="st-h">([^<]+)', grid)
-    assert titles == ['Removed once, saved on every later turn', 'Setup cleanup', 'Room in your limits', 'Model routing ']
+    assert titles == ['Removed once, saved on every later turn', 'Setup cleanup', 'Saved since install', 'Model routing ']
     cov = out.split('class="st-cov"')[1]
     assert 'ran in 150 of your 200 sessions' in cov and '12 of them are not in the ledger yet' in cov
     assert 'svg' not in cov and '%' not in cov
     assert 'st-mega--tok st-mega--card">40&times;</span>' in grid
     assert '<strong>2.0M tokens removed</strong> became <strong>80.0M tokens not sent</strong>' in grid
     # Limits: since-install dollars, routing never added (100+200+10+40).
-    assert 'st-mega--usd st-mega--card">$350</span><span class="st-mega__unit">since you installed' in grid
+    assert 'st-mega--usd st-mega--card">$310</span><span class="st-mega__unit">measured since you installed' in grid
     assert 'stretch' not in out and '$1,349' not in out
 
 
@@ -229,7 +229,7 @@ def test_unfinished_pools_say_measuring_with_no_number():
     setup = [c for c in cards if '<h2 class="st-h">Setup cleanup' in c][0]
     routing = [c for c in cards if '<h2 class="st-h">Model routing' in c][0]
     assert 'Measuring' in setup and '$' not in setup
-    assert 'Opportunity' in routing and 'Measuring' not in routing
+    assert 'Estimated' in routing and 'Measuring' not in routing
     assert 'Still measuring, not in the total yet: setup cleanup and shorter answers' in hero(out)
 
 
@@ -394,9 +394,8 @@ def test_subdollar_band_does_not_display_zero():
 def test_routing_is_opportunity_and_limits_explain_total():
     out = story({'savings': full()})
     card = out.split('<h2 class="st-h">Model routing', 1)[1].split('</div>', 1)[0]
-    assert 'Opportunity' in card and 'Measuring' not in card
-    assert 'not part of the action savings total' in card
-    assert 'This figure is everything counted since install, excluding the estimated routing shown separately below.' in out
+    assert 'Estimated' in card and 'Measuring' not in card
+    assert 'based on your stated 95% Opus baseline' in card
 
 
 def test_fallback_never_shows_transformation_hero():
@@ -412,8 +411,8 @@ def test_stated_routing_is_estimated_since_install_with_measured_comparison():
     s['since_install']['all_in']['routing_measured_baseline_opus_share'] = 0.8369
     s['since_install']['all_in']['routing_measured_baseline_realized_cost_usd'] = 0
     out = story({'savings': s})
-    card = out.split('<h2 class="st-h">Room in your limits', 1)[1].split('</div></details>', 1)[0]
-    assert 'st-mega--card">$350</span>' in card
+    card = out.split('<h2 class="st-h">Saved since install', 1)[1].split('</div></details>', 1)[0]
+    assert 'st-mega--card">$310</span>' in card
     assert 'Estimated routing, based on your stated 95% Opus baseline' in card
     assert '83.69%' in card and '$0' in card
 
@@ -460,3 +459,21 @@ def test_routing_opportunity_is_visible_with_stated_baseline():
     card = out.split('<h2 class="st-h">Model routing', 1)[1]
     assert 'Estimated $50' in card
     assert 'based on your stated 95% Opus baseline' in card
+
+
+def test_since_install_headlines_measured_and_labels_estimates():
+    s = full()
+    s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
+    out = story({'savings': s})
+    card = out.split('<h2 class="st-h">Saved since install', 1)[1].split('</div></details>', 1)[0]
+    assert 'st-mega--card">$310</span>' in card
+    assert '$40 estimated' in card
+    assert 'everything counted' not in card
+
+
+def test_cost_chart_labels_start_end_and_months():
+    s = full()
+    s['cost_per_message_trend'] = [{'month': '2026-08', 'index': 100}, {'month': '2026-09', 'index': 120}]
+    out = story({'savings': s})
+    assert 'Start 100' in out and 'Latest 120' in out
+    assert 'Aug' in out and 'Sep' in out

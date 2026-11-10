@@ -68,7 +68,7 @@ def _wire(measure, monkeypatch, resume_lean_usd):
     monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30, since=None: {
         "total_cost_usd": 18.78,
         "model_routing": {"realized_cost_usd": 0.0},
-        "resume_lean_estimated": rl,
+        "resume_lean_verified": rl,
         "verbosity_steer_estimated": None,
         "repriced_to_session_mix": False,
     })
@@ -94,3 +94,11 @@ def test_no_addback_leaves_measured_total_unchanged(measure, monkeypatch):
     assert snap is not None
     assert snap["saved_usd_context"] == pytest.approx(18.78, abs=0.01)
     assert snap["saved_usd_tier"] == "measured"
+
+
+def test_unverified_resume_is_not_added(measure, monkeypatch):
+    _wire(measure, monkeypatch, resume_lean_usd=0.0)
+    monkeypatch.setattr(measure, "_get_merged_savings", lambda **kw: {
+        "total_cost_usd": 18.78, "resume_lean_estimated": {"cost_saved_usd": 100},
+        "model_routing": {"realized_cost_usd": 0}, "repriced_to_session_mix": False})
+    assert measure.runway_snapshot(days=30)["saved_usd_context"] == pytest.approx(18.78)

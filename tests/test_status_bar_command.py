@@ -537,6 +537,20 @@ def test_dashboard_saved_tokens_is_measured_plus_estimated(sb):
     assert sb._dashboard_saved_tokens({}) == (0, 0)
 
 
+def test_dashboard_saved_tokens_matches_story_rows(sb):
+    summary = {
+        'total_tokens': 100,
+        'token_headline': {'context_removed_tokens': 100, 'output_not_generated_tokens': 10,
+                           'reread_tokens': 300, 'reload_avoided_tokens': 50},
+        'action_savings': {'logged_usd': 2, 'reread_usd': 1, 'reread_available': True,
+                           'estimates_usd': {'resume_lean_estimated': 1}},
+        'structural_detail': {'method': 'trim_ledger', 'tokens_saved': 20, 'cost_saved_usd': 1,
+                              'estimated': {'tokens_saved': 40, 'cost_saved_usd': 1}},
+        'output_reread': {'tokens_saved': 60, 'cost_saved_usd': 1},
+    }
+    assert sb._dashboard_saved_tokens(summary) == (560, 100)
+
+
 def test_dashboard_headline_uses_savings_story_calculation():
     # The status bar still reports once-removed tokens; the dashboard compounds them.
     html = (Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" / "assets" / "dashboard.html").read_text(encoding="utf-8")

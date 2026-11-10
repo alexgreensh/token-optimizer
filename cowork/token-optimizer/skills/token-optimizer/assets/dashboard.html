@@ -3621,6 +3621,12 @@ var DB = (function() {
     var days = Number(s.period_days) || 30;
     var out = '<div class="card wide"><div class="card-header"><span>Tokens Saved</span></div>';
     out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + formatTokens(total) + '</div><div class="metric-unit">tokens kept out of context in the last ' + days + ' days</div></div>';
+    var types = s.token_type_breakdown || {};
+    var typeRows = [['cache_reread', 'Cache re-reads avoided'], ['cache_write', 'Cache writes avoided'], ['fresh', 'Fresh input and output avoided']];
+    out += '<div class="ts-divider"></div><h3 class="ts-section-label">Tokens by type</h3><div class="st-bands">' + typeRows.map(function(row) {
+      var value = types[row[0]];
+      return '<div class="st-band">' + row[1] + '<br><strong>' + (typeof value === 'number' && isFinite(value) ? formatTokens(value) : 'Measuring') + '</strong></div>';
+    }).join('') + '</div>';
     if (modelTotal > 0) {
       out += '<div class="ts-divider"></div><h3 class="ts-section-label">Model usage</h3>';
       out += modelMixBodyHtml(mix, data.runtime === 'codex', spent > 0 ? spent : modelTotal);
@@ -3644,8 +3650,6 @@ var DB = (function() {
       '</div>' +
       '<div class="last-updated">Last updated: ' + esc(ts) + '</div>';
 
-    // Runway leads here too: on a rate-limited plan "how much of my allowance is
-    // left" is the first question a trends view should answer, before any chart.
     html += tokensSavedCardHtml(data.savings || {});
 
     if (!t) {
@@ -3747,12 +3751,6 @@ var DB = (function() {
     // Shared data for skills sections
     var skillsDetail = (data.snapshot && data.snapshot.components && data.snapshot.components.skills_detail) || {};
 
-    // Tokens Saved card: the full card (hero + spent-vs-saved + model-mix-as-
-    // usage + footer). Rendered in BOTH Trends and Savings (sharing the
-    // hoisted tokensSavedCardHtml + modelMixBodyHtml helpers). Replaces the
-    // former standalone Model Mix card — the model-mix-as-usage section is
-    // now inside the Tokens Saved card, reconciled to the billable SPENT.
-    // Fail-open: returns '' only when measured AND estimated are both ≤ 0.
 
     // Daily breakdown with date navigation
     var daily = t.daily || [];

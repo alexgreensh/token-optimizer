@@ -173,7 +173,7 @@ function savingsStoryHtml(data) {
         '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
-      (has(ps.net_median) && has(ps.net_p75) && has(ps.net_max) ? '<p class="st-lead">In sessions where Token Optimizer acted, a typical session kept <strong>' + pct(ps.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(ps.net_p75) + ' or more</strong>, and the best session <strong>' + pct(ps.net_max) + '</strong>.</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
+      (has(ps.net_median) && has(ps.net_p75) && has(ps.net_max) ? '<p class="st-lead">In recorded sessions where Token Optimizer acted, a typical session kept <strong>' + pct(ps.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(ps.net_p75) + ' or more</strong>, and the best session <strong>' + pct(ps.net_max) + '</strong>.</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
@@ -231,7 +231,7 @@ function savingsStoryHtml(data) {
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Room in your limits</h2>' +
       '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(SI.total) + '</span><span class="st-mega__unit">since you installed</span></p>' +
-      '<p class="st-lead">Work your limits never had to carry over <strong>' + count(SI.days) + ' days</strong>, valued at API rates.</p>' +
+      '<p class="st-lead">Your savings make room within your usage limits.</p>' +
       f.fold('How this is valued', '<p>The same rows as the total above, summed since ' + (SI.date ? esc(SI.date) : 'install') +
         '. Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is an estimate of room, not a refund. Model routing is never part of it.</p>' +
         (windows.length ? '<p>Right now: ' + windows.map(function(w) {

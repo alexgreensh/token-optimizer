@@ -8,6 +8,7 @@ def _number(value):
         return 0
 
 
+
 def token_headline(summary):
     s = summary or {}
     pools = ('mcp_cap_estimated', 'hint_followed', 'verbosity_steer',

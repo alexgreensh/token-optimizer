@@ -3615,13 +3615,13 @@ def _open_trends_db_readonly(timeout=None):
 
 
 def _dashboard_saved_tokens(summary):
-    """The dashboard's Tokens Saved headline: measured plus the estimated tier.
-
-    Mirrors tokensSavedCardHtml in assets/dashboard.html exactly (same fields,
-    same `a || b` fallbacks), so the status bar and the dashboard never disagree.
-    """
+    """Return the dashboard token total and its measured floor."""
     _measure_facade = _compat.facade()
     s = summary or {}
+
+    if isinstance(s.get("action_savings"), dict) and isinstance(s.get("token_headline"), dict):
+        from . import savings_story
+        return savings_story.story_token_total(s), max(0, int(s.get("total_tokens") or 0))
 
     def num(v):
         _measure_facade = _compat.facade()
@@ -3643,8 +3643,6 @@ def _dashboard_saved_tokens(summary):
                  + tok(s.get("resume_lean_estimated"))
                  + tok(s.get("checkpoint_restore_estimated")))
     measured = num(s.get("total_tokens", 0))
-    # The dashboard draws no Tokens Saved card only when nothing was measured
-    # AND nothing estimated exists -- estimates still surface on their own.
     return measured + estimated, measured
 
 
@@ -3659,9 +3657,8 @@ def _status_bar_savings_or_reason(session_id, _retried=None):
     try:
         conn = _measure_facade._open_trends_db_readonly()
         try:
-            # One read transaction: both bucket reads see the same committed rows (the
-            # 30-day headline below runs on its own connection, as the dashboard's does).
             conn.execute("BEGIN")
+            has_counted = bool(conn.execute("SELECT 1 FROM counted_reread LIMIT 1").fetchone())
             days = _measure_facade._realized_savings_buckets(conn, cutoff, by_day=True)
             window = _measure_facade._realized_savings_buckets(conn, cutoff).get("", {"tokens": 0})
             sess = _measure_facade._realized_savings_buckets(conn, "", session_uuid=session_id).get(
@@ -3694,11 +3691,13 @@ def _status_bar_savings_or_reason(session_id, _retried=None):
         daily.append({"date": d, "tokens": int(b.get("tokens", 0)),
                       "usd": float(b.get("usd", 0.0))})
     headline = _measure_facade._get_merged_savings(days=_measure_facade._STATUS_BAR_DAYS)
+    from . import headline as headline_module
+    counted = _measure_facade._counted_cumulative_summary(days=_measure_facade._STATUS_BAR_DAYS) if has_counted else {"available": False}
+    headline["counted_period"] = counted
+    headline["token_headline"] = headline_module.token_headline(headline)
+    _measure_facade._apply_counted_oneshot_pricing(headline, counted)
+    headline["action_savings"] = _measure_facade._action_savings_components(headline, counted)
     shown, measured = _measure_facade._dashboard_saved_tokens(headline)
-    # The headline pass fails open to zeros; when the window, netted the way the
-    # headline nets it, shows savings but the headline is zero, it failed: say so
-    # rather than cache a false 0. Single days are not compared, since a debit on
-    # one day can honestly cancel savings on another.
     if measured == 0 and int(window.get("tokens", 0)) > 0:
         return None, "savings database busy"
     return {

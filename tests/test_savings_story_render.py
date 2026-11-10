@@ -119,6 +119,13 @@ def full():
     return s
 
 
+def test_setup_card_does_not_claim_unattributed_trim_is_in_total():
+    s = full()
+    s['structural_detail']['trims'].append({'label': 'Unknown origin', 'tier': 'unattributed',
+        'ts': '2026-02-01', 'tokens_per_call': 100, 'requests': 10, 'cost_saved_usd': 99})
+    assert 'Unknown origin' not in story({'savings': s})
+
+
 def hero(out):
     return out.split('class="card st-hero"')[1].split('class="st-grid"')[0]
 

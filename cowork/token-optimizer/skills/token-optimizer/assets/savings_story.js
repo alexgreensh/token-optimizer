@@ -228,7 +228,7 @@ function savingsStoryHtml(data) {
       '<p class="st-lead">Each cleanup is being recorded with the date it happened and the tokens it removes from every call. It joins the total once that record exists.</p>' +
       '</div>');
   } else {
-    var valuedTrims = trims.filter(function(t) { return num(t.cost_saved_usd) > 0 || num(t.projected_30d_usd) > 0; })
+    var valuedTrims = trims.filter(function(t) { return t.tier !== 'unattributed' && (num(t.cost_saved_usd) > 0 || num(t.projected_30d_usd) > 0); })
       .sort(function(a, b) { return num(b.projected_30d_usd) - num(a.projected_30d_usd); });
     var rows = valuedTrims.slice(0, 4).map(function(t) {
       var attested = t.source === 'attested' || t.tier === 'estimated';

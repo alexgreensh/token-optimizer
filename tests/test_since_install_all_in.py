@@ -107,8 +107,9 @@ def test_since_install_all_in_uses_the_headline_parts(m, monkeypatch):
     all_in = out["all_in"]
     parts = all_in["components_usd"]
     assert parts["logged"] == 12.5 and parts["routing_estimated"] == 300.25 and parts["reread"] == pytest.approx(80.13, abs=0.011)
-    assert all_in["estimated_usd"] == pytest.approx(4.01)
-    assert all_in["total_usd"] == pytest.approx(round(12.5 + 300.25 + 80.125 + 4.01, 2), abs=0.011)
+    assert all_in["estimated_usd"] == pytest.approx(0.01)
+    assert all_in["total_usd"] == pytest.approx(round(12.5 + 300.25 + 80.125 + 0.01, 2), abs=0.011)
+    assert out['excluded_usd'] == {'routing': 300.25, 'lean_resumes': 4.0, 'verbosity': None}
     total_cents = round(all_in["total_usd"] * 100)
     assert total_cents == round(sum(parts.values()) * 100) + round(all_in["estimated_usd"] * 100)
     assert all_in["routing_pending"] is False
@@ -120,5 +121,20 @@ def test_since_install_marks_pending_routing(m, monkeypatch):
                                                     "pending_sessions": 657}}
     monkeypatch.setattr(m, "_get_merged_savings", lambda days=30, since=None: dict(full))
     monkeypatch.setattr(m, "_counted_cumulative_summary", lambda days=None, **k: {"available": False})
-    all_in = m._savings_since_install()["all_in"]
+    out = m._savings_since_install()
+    all_in = out["all_in"]
     assert all_in["routing_pending"] is True and all_in["routing_pending_sessions"] == 657
+    assert out['excluded_usd']['routing'] is None
+
+
+def test_since_install_excludes_verbosity_and_reports_its_amount(m, monkeypatch):
+    _install(m, 120)
+    full = {'total_cost_usd': 20, 'by_category': {'verbosity_steer_measured': {'cost_saved_usd': 7}},
+            'verbosity_steer': {'cost_saved_usd': 3}, 'resume_lean_estimated': {'cost_saved_usd': 4},
+            'model_routing': {'realized_cost_usd': 2, 'evidence': 'estimated'}}
+    monkeypatch.setattr(m, '_get_merged_savings', lambda **kw: dict(full))
+    monkeypatch.setattr(m, '_counted_cumulative_summary', lambda **kw: {'available': True, 'reread_usd': 5})
+    out = m._savings_since_install()
+    assert out['excluded_usd'] == {'routing': 2, 'lean_resumes': 4, 'verbosity': 10}
+    assert out['all_in']['components_usd']['logged'] == 13
+    assert out['all_in']['estimated_usd'] == 0

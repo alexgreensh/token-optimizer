@@ -533,7 +533,7 @@ def test_dashboard_saved_tokens_is_measured_plus_estimated(sb):
         "resume_lean_estimated": {"tokens_saved": 40},
         "reread_avoided": {"reread_tokens": 999999},  # not in the headline
     }
-    assert sb._dashboard_saved_tokens(summary) == (1060, 1000)
+    assert sb._dashboard_saved_tokens(summary) == (1030, 1000)
     assert sb._dashboard_saved_tokens({}) == (0, 0)
 
 

@@ -3639,7 +3639,6 @@ def _dashboard_saved_tokens(summary):
 
     estimated = (tok(s.get("mcp_cap_estimated"))
                  + tok(s.get("hint_followed") or s.get("hint_followed_estimated"))
-                 + tok(s.get("verbosity_steer") or s.get("verbosity_steer_estimated"))
                  + tok(s.get("checkpoint_restore_estimated")))
     measured = num(s.get("total_tokens", 0))
     return measured + estimated, measured

@@ -7,6 +7,24 @@ def _number(value):
         return 0
 
 
+def verbosity_logged(summary):
+    return sum(float(row.get('cost_saved_usd') or 0) for name, row in
+               (summary.get('by_category') or {}).items()
+               if str(name).startswith('verbosity') and isinstance(row, dict))
+
+
+def excluded_since_install(summary):
+    routing_row = summary.get('model_routing') or {}
+    lean_row = summary.get('resume_lean_estimated') or {}
+    estimate = summary.get('verbosity_steer') or {}
+    routing = (float(routing_row['realized_cost_usd']) if routing_row.get('realized_cost_usd') is not None
+               and routing_row.get('evidence') not in ('pending', 'unavailable') else None)
+    lean = float(lean_row['cost_saved_usd']) if lean_row.get('cost_saved_usd') is not None else None
+    verbosity = (verbosity_logged(summary) + float(estimate.get('cost_saved_usd') or 0)
+                 if estimate or any(str(k).startswith('verbosity') for k in (summary.get('by_category') or {})) else None)
+    return {'routing': routing, 'lean_resumes': lean, 'verbosity': verbosity}
+
+
 def story_token_total(s):
     """Match the token-bearing rows actually shown in the savings story."""
     a, h = s.get('action_savings') or {}, s.get('token_headline') or {}

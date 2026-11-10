@@ -230,8 +230,8 @@ def test_headline_splits_the_removed_pool_by_what_it_is():
                         'resume_lean_estimated': {'tokens_saved': 200},
                         'checkpoint_restore_estimated': {'tokens_saved': 50},
                         'mcp_cap_estimated': {'tokens_saved': 25}})
-    assert h['removed_tokens'] == 1075
-    assert h['output_not_generated_tokens'] == 300
+    assert h['removed_tokens'] == 775
+    assert h['output_not_generated_tokens'] == 0
     assert h['reload_avoided_tokens'] == 50
     assert h['context_removed_tokens'] == 725
     assert h['context_removed_tokens'] + h['output_not_generated_tokens'] + h['reload_avoided_tokens'] == h['removed_tokens']

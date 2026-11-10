@@ -6408,14 +6408,15 @@ def _action_savings_components(summary, reread=None):
         for key in (
             "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
             "contamination_exit", "handover_rerun",
-            "checkpoint_restore_estimated", "verbosity_steer",
+            "checkpoint_restore_estimated",
         )
     }
     hints = summary.get("hint_followed") or {}
     avoided_source = "hint_followed" if int(hints.get("events") or 0) > 0 else "retrieval_serve"
     estimates[avoided_source] = float(
         (summary.get(avoided_source) or {}).get("cost_saved_usd", 0) or 0)
-    logged = float(summary.get("total_cost_usd", 0) or 0)
+    from . import savings_story
+    logged = float(summary.get("total_cost_usd", 0) or 0) - savings_story.verbosity_logged(summary)
     routing_data = summary.get("model_routing") or {}
     routing = float(routing_data.get("realized_cost_usd", 0) or 0)
     routing_measured = routing if routing_data.get("evidence", "measured") == "measured" else 0.0
@@ -6657,13 +6658,12 @@ def _savings_since_install():
         full = _measure_facade._get_merged_savings(days=days)
         # Measured = logged runtime + realized structural + realized routing
         # (routing only when its baseline is measured).
-        measured = float(full.get("total_cost_usd", 0) or 0)
+        from . import savings_story
+        measured = float(full.get("total_cost_usd", 0) or 0) - savings_story.verbosity_logged(full)
         # Routing that leans on a reference-priced baseline is an estimate, not measured.
         full_routing = full.get("model_routing") or {}
         full_routing_usd = float(full_routing.get("realized_cost_usd", 0) or 0)
         routing_is_estimate = full_routing.get("evidence") == "estimated"
-        if not routing_is_estimate:
-            measured += full_routing_usd
         # Estimated = genuine TO-realized counterfactuals only — the same
         # categories the dashboard's estimated tier (estItems) sums, so the two
         # cards agree about what "estimated" contains. cache_drop and
@@ -6678,7 +6678,7 @@ def _savings_since_install():
             for k in (
                 "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
                 "contamination_exit", "handover_rerun",
-                "checkpoint_restore_estimated", "verbosity_steer",
+                "checkpoint_restore_estimated",
             )
         )
         # Avoided-search: prefer the hint->read estimate (hint_followed; the
@@ -6690,8 +6690,6 @@ def _savings_since_install():
         rs = full.get("retrieval_serve") or {}
         avoided = hf if int(hf.get("events") or 0) > 0 else rs
         estimated += float(avoided.get("cost_saved_usd", 0) or 0)
-        if routing_is_estimate:
-            estimated += full_routing_usd
         # The all-in since install uses the monthly headline's own recipe
         # (logged + routing + repeat reads + estimates) over the install window,
         # so the two figures always mean the same thing.
@@ -6715,6 +6713,7 @@ def _savings_since_install():
         return {
             "install_date": d,
             "days": days,
+            "excluded_usd": savings_story.excluded_since_install(full),
             "measured_usd": round(measured, 2),
             "estimated_usd": round(estimated, 2),
             "total_usd": round(measured + estimated, 2),
@@ -7050,7 +7049,7 @@ def savings_report(days=None, as_json=None):
     # feature fires thousands of times/month — the raw nudge injection count is
     # an estimated-tier metric, and the measured output reduction shows as
     # verbosity_steer_measured below.
-    _RELOCATED = {"setup_optimization", "mcp_cap", "verbosity_steer", "resume_lean",
+    _RELOCATED = {"setup_optimization", "mcp_cap", "verbosity_steer", "verbosity_steer_measured", "resume_lean",
                   "checkpoint_restore"}
 
     # Known measured categories (even if zero), then any unknown ones in the data.
@@ -7236,12 +7235,6 @@ def savings_report(days=None, as_json=None):
             label = "retrieval"
         print(f"  + est. avoided search ({label}): ~${_money(_est_cents[avoided_source])}{per} "
               f"({detail}) [estimated]")
-
-    verbosity = summary.get("verbosity_steer") or {}
-    verbosity_cost = summary["action_savings"]["estimates_usd"]["verbosity_steer"]
-    if verbosity_cost > 0:
-        print(f"  + est. concise output nudges: ~${_money(_est_cents['verbosity_steer'])}{per} "
-              f"({verbosity.get('events', 0)} nudges) [estimated]")
 
     print(f"  = ALL IN: ~${all_in}{per} (measured + modeled + estimated)")
     if routing_pending:

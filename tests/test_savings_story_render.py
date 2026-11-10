@@ -73,7 +73,7 @@ def effect():
         'window': {'start': '2026-01-01T00:00:00', 'end': '2026-01-31T00:00:00'},
         'per_session': {'sessions': 120, 'median': 0.05, 'p75': 0.11, 'p90': 0.2,
                         'net_median': 0.048, 'net_p75': 0.105, 'net_max': 0.25,
-                        'by_place': {'local': {'sessions': 100, 'net_median': 0.031, 'net_p75': 0.09},
+                        'by_place': {'local': {'sessions': 100, 'net_median': 0.031, 'net_p75': 0.09, 'best': {'net_max': 0.25, 'filtered': False}},
                                      'cloud': {'sessions': 20, 'net_median': 0.22, 'net_p75': 0.4}}},
         'coverage': {'sessions': 200, 'ran_sessions': 150, 'ran_traffic_share': 0.75,
                      'ran_no_ledger_sessions': 12, 'unknown_sessions': 0,
@@ -159,9 +159,9 @@ def _visible(html):
 def test_session_shares_above_fold_and_place_split_in_fold():
     out = story({'savings': full()})
     h = hero(out)
-    assert 'st-mega st-mega--usd">$118</span>' in h and 'st-mega st-mega--tok"' in h
+    assert 'st-mega st-mega--usd">$118</span>' in h and 'st-mega st-mega--tok">' in h
     assert 'tokens kept out of context' in h
-    assert all(x in _visible(out) for x in ('4.8%', '10.5%', '25%'))
+    assert all(x in _visible(out) for x in ('3.1%', '9%', '25%', '22%'))
     fold = h.split('<details')[1]
     assert "share of that session&rsquo;s own context" in fold
     assert 'On this Mac: typical 3.1%, top quarter 9% or more (100 sessions)' in fold
@@ -188,6 +188,20 @@ def test_four_cards_in_one_grid_then_one_coverage_line():
     # Limits: since-install dollars, routing never added (100+200+10+40).
     assert 'st-mega--usd st-mega--card">$350</span><span class="st-mega__unit">since you installed' in grid
     assert 'stretch' not in out and '$1,349' not in out
+
+
+def test_since_install_fold_names_exclusions_from_payload():
+    s = full()
+    s['since_install']['excluded_usd'] = {'routing': 101, 'lean_resumes': 20, 'verbosity': 9}
+    out = story({'savings': s})
+    assert 'Excluded since install: routing $101 (assumed), lean resumes $20, and verbosity $9.' in out
+
+
+def test_local_best_filter_is_explained_in_fold():
+    s = full()
+    s['session_effect']['per_session']['by_place']['local']['best']['filtered'] = True
+    out = story({'savings': s})
+    assert 'selected among sessions with at least 20 turns' in out
 
 
 def test_unfinished_pools_say_measuring_with_no_number():

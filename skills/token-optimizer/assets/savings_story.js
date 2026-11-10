@@ -114,6 +114,7 @@ function savingsStoryHtml(data) {
   var s = data.savings || {};
   var se = s.session_effect || {};
   var ps = se.per_session || {};
+  var places = ps.by_place || {}, local = places.local || {}, cloud = places.cloud || {};
   var cov = se.coverage || {};
   var fleet = se.fleet || {};
   var as = s.action_savings || {};
@@ -169,9 +170,9 @@ function savingsStoryHtml(data) {
       '<h2 class="st-h">Saved in the last ' + days + ' days</h2>' +
       '<div class="st-mega__row">' +
         '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
-        (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok" style="font-size:clamp(32px,4vw,48px)">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
+        (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
-      (has(ps.net_median) && has(ps.net_p75) && has(ps.net_max) ? '<p class="st-lead">In recorded sessions where Token Optimizer acted, a typical session kept <strong>' + pct(ps.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(ps.net_p75) + ' or more</strong>, and the best session <strong>' + pct(ps.net_max) + '</strong>.</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
+      (has(local.net_median) && has(local.net_p75) ? '<p class="st-lead">On this Mac, a typical recorded session where Token Optimizer acted kept <strong>' + pct(local.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(local.net_p75) + ' or more</strong>' + (local.best && has(local.best.net_max) ? ', and the best kept out <strong>' + pct(local.best.net_max) + '</strong>' : ', best session: Measuring') + '. ' + (has(cloud.net_median) ? 'Cloud sessions: <strong>' + pct(cloud.net_median) + '</strong> typical; hooks can time out there.' : 'Cloud sessions: Measuring.') + '</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
@@ -232,6 +233,7 @@ function savingsStoryHtml(data) {
       '<p class="st-lead">Your savings make room within your usage limits.</p>' +
       f.fold('How this is valued', '<p>The same rows as the total above, summed since ' + (SI.date ? esc(SI.date) : 'install') +
         '. Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is an estimate of room, not a refund. Model routing is never part of it.</p>' +
+        (SI.excluded ? '<p>Excluded since install: routing ' + (has(SI.excluded.routing) ? usd(SI.excluded.routing) + ' (assumed)' : 'Measuring') + ', lean resumes ' + (has(SI.excluded.lean_resumes) ? usd(SI.excluded.lean_resumes) : 'Measuring') + ', and verbosity ' + (has(SI.excluded.verbosity) ? usd(SI.excluded.verbosity) : 'Measuring') + '.</p>' : '<p>Excluded since install: routing, lean resumes and verbosity; amounts are Measuring.</p>') +
         (windows.length ? '<p>Right now: ' + windows.map(function(w) {
           return esc(names[w.key] || ((w.label || 'Window') + ' limit')) + ' ' + num(w.headroom_pct) + '% left';
         }).join(', ') + ' (share of each limit window).</p>' : '') +
@@ -289,7 +291,8 @@ function savingsPerSessionHtml(ps, overhead) {
         ' (' + f.count(v.sessions) + ' sessions)</li>';
     }).join('') + '</ul><p>Medians of sessions with ledger entries, after subtracting the notes Token Optimizer itself adds' +
     (num(overhead.usd) > 0 ? ' (' + f.tok(overhead.reread_tokens) + ' tokens re-read, about ' + f.usd(overhead.usd) + ')' : '') +
-    '. Cloud means the session&rsquo;s events were rebuilt from its transcript because its hooks ran on another machine.</p>';
+    '. Cloud means the session&rsquo;s events were rebuilt from its transcript because its hooks ran on another machine.</p>' +
+    (bp.local && bp.local.best && bp.local.best.filtered ? '<p>Best local session is selected among sessions with at least 20 turns because the unfiltered best was small.</p>' : '');
 }
 
 // Since-install total from the same components as the hero, routing excluded.
@@ -303,7 +306,7 @@ function savingsSinceInstall(data) {
     .filter(function(p) { return num(p[1]) !== 0; });
   if (!parts.length) return null;
   var date = si.install_date ? new Date(si.install_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-  return { parts: parts, total: parts.reduce(function(a, p) { return a + num(p[1]); }, 0), days: num(si.days), date: date };
+  return { parts: parts, total: parts.reduce(function(a, p) { return a + num(p[1]); }, 0), days: num(si.days), date: date, excluded: si.excluded_usd || null };
 }
 
 // "Where your sessions ran" fold body, for the caller's row of folds.

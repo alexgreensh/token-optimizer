@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, counted_subagents, headline
+from . import _compat, counted_subagents, headline, structural_report
 
 def _counted_event_utc(ts):
     """Savings-event timestamps are naive LOCAL time (datetime.now()); transcript
@@ -2791,118 +2791,34 @@ def _per_session_prefix_tokens(fallback=None):
 
 
 def _compound_structural(s, days, fallback_prefix):
-    """Apply the verified cache-compounding formula to S prefix tokens.
+    """Forward value of S prefix tokens over the window (opportunity pricing).
 
-        read    = S * SUM(api_calls)                     * cache_read_rate
-        write1h = (S / per_session_prefix) * SUM(cc_1h)  * cache_write_1h_rate
-        write5m = (S / per_session_prefix) * SUM(cc_5m)  * cache_write_5m_rate
-
-    api_calls already include sub-agent calls, so no separate sub-agent
-    multiplier is applied (that would double count with runtime attribution).
-    Shared by realized savings and potential/opportunity so both speak the same
-    math. Returns a dict of the three terms + totals, or None when S<=0 or no DB.
+    Thin caller of structural_report.price_synthetic: per request, at that
+    request's exact model card, S x cache_read on cache hits and S x the write
+    class actually paid on misses (session starts, sub-agent starts, cache
+    drops). Replaces the family-keyed mix rate and the "S / prefix x ALL cache
+    writes" term, which overstated reads ~2.4x and writes ~2.9x. Only local
+    sessions count: synced cloud sessions never load this machine's setup.
+    `fallback_prefix` is unused, kept for call-site symmetry. None when S<=0.
     """
-    _measure_facade = _compat.facade()
-    if s <= 0 or not _measure_facade.TRENDS_DB.exists():
+    if s <= 0:
         return None
-    cutoff = (_measure_facade.datetime.now() - _measure_facade.timedelta(days=days)).strftime("%Y-%m-%d")
-    conn = _measure_facade._init_trends_db()
-    _measure_facade.ensure_activity_view(conn)
-    try:
-        row = conn.execute(
-            "SELECT COALESCE(SUM(api_calls),0), COALESCE(SUM(cache_create_1h_tokens),0), "
-            "COALESCE(SUM(cache_create_5m_tokens),0), "
-            "COALESCE(SUM(CASE WHEN COALESCE(api_calls_known,0)=0 THEN 1 ELSE 0 END),0) "
-            "FROM session_activity WHERE date >= ?",
-            (cutoff,),
-        ).fetchone()
-    finally:
-        conn.close()
-    sum_api_calls = int(row[0] or 0)
-    sum_cc_1h = int(row[1] or 0)
-    sum_cc_5m = int(row[2] or 0)
-    api_calls_unknown_days = int(row[3] or 0)
-
-    per_session_prefix = _measure_facade._per_session_prefix_tokens(fallback=fallback_prefix)
-    # Blended by the window's model mix, NOT the reporting session's model:
-    # session-model rates make the same opportunity diverge several-fold between
-    # sessions with different cache rate tiers, run minutes apart.
-    read_rate, write_5m_rate, write_1h_rate = _measure_facade._mix_cache_rates(days=days)
-    # Clamp to 1.0: the prefix trim S can never cache-write more than a full
-    # per-session prefix worth of tokens. An unclamped ratio (S > prefix, e.g.
-    # a stale/small prefix baseline) overstated the structural write-tier >2x.
-    write_fraction = min(1.0, s / per_session_prefix) if per_session_prefix > 0 else 0.0
-
-    read_savings = s * sum_api_calls * read_rate / 1_000_000
-    write_1h_savings = write_fraction * sum_cc_1h * write_1h_rate / 1_000_000
-    write_5m_savings = write_fraction * sum_cc_5m * write_5m_rate / 1_000_000
-    return {
-        "events": sum_api_calls,
-        # api_calls is a lower bound when any activity day lacks dated call
-        # evidence (daily_calls_json was never recorded): those days contribute
-        # NULL, not a measured zero, and are disclosed here.
-        "api_calls_complete": api_calls_unknown_days == 0,
-        "api_calls_unknown_days": api_calls_unknown_days,
-        "tokens_saved": int(s * sum_api_calls + write_fraction * (sum_cc_1h + sum_cc_5m)),
-        "read_savings_usd": round(read_savings, 4),
-        "write_1h_savings_usd": round(write_1h_savings, 4),
-        "write_5m_savings_usd": round(write_5m_savings, 4),
-        "cost_saved_usd": round(read_savings + write_1h_savings + write_5m_savings, 4),
-    }
+    return structural_report.price_synthetic(s, days)
 
 
 def _compute_structural_savings(days=None):
-    """Realized structural savings: prefix reduction compounded over cache events.
+    """Realized structural savings from the per-component trim ledger.
 
-    Structural waste is the unused skill frontmatter, MEMORY/CLAUDE bloat,
-    duplicate reminders and dead MCP loaded into the prefix every session. When
-    the user trims S tokens below their captured baseline, those tokens stop
-    being cache-written and cache-read on every future call, so the saving
-    compounds (see _compound_structural for the formula).
-
-    S = max(0, baseline_overhead - current_overhead): both are measured prefix
-    token counts in the same units (snapshot estimated_total vs a live audit).
-    The earlier model compared the snapshot against session_log.input_tokens,
-    which is the TOTAL input mix (billions/month), so the delta always floored
-    to zero.
-
-    Realized stays $0 until the user prunes below the captured baseline; the
-    opportunity figure lives in _compute_structural_potential. Labelled
-    "estimated" (the write term divides write tokens by prefix size, which
-    slightly overcounts when mid-conversation output is cached). Returns zeros
-    (baseline_source=None) with no baseline. Never raises.
+    Thin caller of structural_report.compute (scripts/_measure/structural_*):
+    each trim is a dated event (audit action, owner attestation or detected
+    shrink), credited for sessions where its component loads, from the trim
+    until the item comes back, priced per request. Unrelated prefix growth
+    never offsets a trim. Measured-tier trims are in tokens_saved /
+    cost_saved_usd; attested ("estimated") and unattributed trims are reported
+    in their own bands and never summed here. No trims -> zeros with
+    status "no_trims". Never raises.
     """
-    _measure_facade = _compat.facade()
-    zero = {
-        "events": 0, "tokens_saved": 0, "cost_saved_usd": 0.0,
-        "baseline_source": None, "baseline_date": None, "overhead_delta": 0,
-        "read_savings_usd": 0.0, "write_1h_savings_usd": 0.0,
-        "write_5m_savings_usd": 0.0, "evidence": "estimated",
-    }
-    try:
-        baseline = _measure_facade._resolve_structural_baseline(days=days)
-        if not baseline:
-            return zero
-        current_overhead = _measure_facade._current_overhead_tokens()
-        if not current_overhead:
-            return zero
-        baseline_overhead = int(baseline["baseline_tokens"])
-        known = {**zero, "baseline_source": baseline["source"], "baseline_date": baseline["date"]}
-        s = max(0, baseline_overhead - current_overhead)
-        if s <= 0:
-            return known  # baseline known, nothing trimmed below it yet -> realized $0
-        terms = _measure_facade._compound_structural(s, days, fallback_prefix=baseline_overhead)
-        if not terms:
-            return known
-        return {
-            **terms,
-            "baseline_source": baseline["source"],
-            "baseline_date": baseline["date"],
-            "overhead_delta": s,
-            "evidence": "estimated",
-        }
-    except Exception:
-        return zero
+    return structural_report.compute(days=days or 30)
 
 
 def _unused_skill_overhead_tokens(days=None):
@@ -7015,22 +6931,11 @@ def savings_report(days=None, as_json=None):
     print("  Pricing: known model rates, API equivalent")
 
     struct = summary.get("structural_detail") or {}
-    src = struct.get("baseline_source")
-    if src == "snapshot":
-        b_date = (struct.get("baseline_date") or "")[:10]
-        delta = struct.get("overhead_delta", 0)
-        # Labelled "Prefix baseline" (not just "Baseline") to distinguish from
-        # the transformation card's session-cost anchors (2026-06-23 etc.).
-        # These are two different baselines with two different jobs: this one
-        # measures prefix token reduction (structural savings), the anchors
-        # measure per-call cost drift. Calling both "baseline" on the same
-        # screen caused the zero-cards confusion.
-        if delta > 0:
-            print(f"  Prefix baseline: snapshot {b_date} (prefix trimmed {delta:,} tokens, compounding [est])")
-        else:
-            print(f"  Prefix baseline: snapshot {b_date} (no prefix trimmed below baseline yet -> realized $0)")
+    if struct.get("baseline_source") == "trim_ledger":
+        print(f"  Setup trims: {len(struct.get('trims') or [])} recorded since "
+              f"{(struct.get('baseline_date') or '')[:10]} ({struct.get('overhead_delta', 0):,} tokens per call still trimmed)")
     else:
-        print("  Prefix baseline: none (run 'snapshot before' to track structural savings)")
+        print(f"  Setup trims: {struct.get('message') or 'no trims recorded yet'}")
 
     print()
     print(f"  {'Category':<28s} {'Events':>8s} {'Tokens Saved':>14s} {'Cost Saved':>11s}")

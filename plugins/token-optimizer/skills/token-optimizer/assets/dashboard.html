@@ -3622,7 +3622,7 @@ var DB = (function() {
     var out = '<div class="card wide"><div class="card-header"><span>Tokens Saved</span></div>';
     out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + formatTokens(total) + '</div><div class="metric-unit">tokens kept out of context in the last ' + days + ' days</div></div>';
     if (modelTotal > 0) {
-      out += '<div class="ts-divider"></div><h3 class="ts-section-label">Which models did the work</h3>';
+      out += '<div class="ts-divider"></div><h3 class="ts-section-label">Model usage</h3>';
       out += modelMixBodyHtml(mix, data.runtime === 'codex', spent > 0 ? spent : modelTotal);
     }
     out += '<div class="ts-foot">' + (storyAvailable ? 'Same figure as the Savings card.<br>' : '') + formatTokens(removed) + ' tokens removed once.</div></div>';
@@ -3646,7 +3646,7 @@ var DB = (function() {
 
     // Runway leads here too: on a rate-limited plan "how much of my allowance is
     // left" is the first question a trends view should answer, before any chart.
-    html += runwayCardHtml();
+    html += tokensSavedCardHtml(data.savings || {});
 
     if (!t) {
       var collectNote = isCodex
@@ -3753,7 +3753,6 @@ var DB = (function() {
     // former standalone Model Mix card — the model-mix-as-usage section is
     // now inside the Tokens Saved card, reconciled to the billable SPENT.
     // Fail-open: returns '' only when measured AND estimated are both ≤ 0.
-    html += tokensSavedCardHtml(data.savings || {});
 
     // Daily breakdown with date navigation
     var daily = t.daily || [];

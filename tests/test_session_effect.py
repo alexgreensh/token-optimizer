@@ -83,6 +83,7 @@ def test_per_session_percentiles_include_sidechains_and_skip_zero_input(tmp_path
     assert ps['p75'] == pytest.approx(shares[7])
     assert ps['p90'] == pytest.approx(shares[9])
     assert ps['max'] == pytest.approx(shares[-1])
+    assert ps['net_max'] == pytest.approx(shares[-1])
 
 
 def test_rows_outside_window_are_ignored(tmp_path):
@@ -157,6 +158,7 @@ def test_fleet_shares_and_net_of_overhead(tmp_path):
     oh = r['overhead']
     assert oh['injected_tokens'] > 0 and oh['reread_tokens'] > 0 and oh['usd'] > 0
     assert r['per_session']['net_median'] < r['per_session']['median']
+    assert r['per_session']['net_max'] < r['per_session']['max']
 
 
 def test_scan_cache_and_budget(tmp_path):

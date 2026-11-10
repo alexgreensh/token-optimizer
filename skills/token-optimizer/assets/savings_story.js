@@ -173,6 +173,7 @@ function savingsStoryHtml(data) {
         '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
+      (has(ps.net_median) && has(ps.net_p75) && has(ps.net_max) ? '<p class="st-lead">In sessions where Token Optimizer acted, a typical session kept <strong>' + pct(ps.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(ps.net_p75) + ' or more</strong>, and the best session <strong>' + pct(ps.net_max) + '</strong>.</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
@@ -191,8 +192,8 @@ function savingsStoryHtml(data) {
     var carryN = rereads / removedOnce;
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Removed once, saved on every later turn</h2>' +
-      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + tok(rereads) + '</span><span class="st-mega__unit">re-reads avoided</span></p>' +
-      '<p class="st-lead">From <strong>' + tok(removedOnce) + ' tokens removed once</strong>, each spared about <strong>' + Math.round(carryN) + ' more reads</strong> before its session compacted.</p>' +
+      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + Math.round(carryN) + '&times;</span><span class="st-mega__unit">re-reads avoided per token removed</span></p>' +
+      '<p class="st-lead"><strong>' + tok(removedOnce) + ' tokens removed</strong> became <strong>' + tok(rereads) + ' tokens not sent</strong> on later reads.</p>' +
       '</div>');
   }
   if (!trimLedger) {

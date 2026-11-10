@@ -413,6 +413,7 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
             'p90': _percentile(gross, 9, 10), 'max': gross[-1] if gross else None,
             'net_median': _percentile(net, 1, 2), 'net_p75': _percentile(net, 3, 4),
             'net_p90': _percentile(net, 9, 10),
+            'net_max': net[-1] if net else None,
             'by_place': by_place,
             'basis': 'per session: (removed + rereads) / (session input incl. cache + removed + rereads), '
                      'counted ledger rows in the window; net subtracts TO injections and their rereads',

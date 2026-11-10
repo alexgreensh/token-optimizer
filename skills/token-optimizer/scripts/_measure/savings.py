@@ -612,12 +612,11 @@ def _update_counted_cumulative(conn, max_sessions=None,
                                quiet=None):
     """Incrementally (re)compute counted_reread rows in the collect pass.
 
-    A session is (re)walked only when it has counted events with no stored row,
-    or when its transcript grew since the stored rows were computed (an open
-    session keeps accruing re-reads). Unchanged sessions cost one stat() each.
-    Bounded by `max_sessions` and a soft wall-clock deadline so a hook-path
-    flush is never held up; the backlog converges over passes. Fail-open."""
+    A session is rewalked when events are new or its transcript has grown.
+    Bounded by a soft deadline; the backlog converges over passes. Fail-open."""
     _measure_facade = _compat.facade()
+    from . import first_read_revive
+    first_read_revive.reconcile(conn, _measure_facade.SNAPSHOT_DIR)
     stats = {"sessions_walked": 0, "rows_written": 0, "pending_sessions": 0, "unmeasured_events": 0, **_compat.facade()._counted_subagents.collect_stats()}
     try:
         started = _measure_facade.time.monotonic()

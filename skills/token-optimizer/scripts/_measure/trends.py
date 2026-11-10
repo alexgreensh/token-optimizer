@@ -2264,8 +2264,7 @@ def _cohort_tripwire_state():
 def cohorts_promote(cohort_args):
     """CLI: clear a tripwire demotion for one or more `lang:band` cohorts.
 
-    The ONLY runtime path that re-promotes a demoted cohort (hysteresis). Returns
-    the count cleared. Unknown cohorts are ignored with a note.
+    The ONLY runtime path that re-promotes a demoted cohort (hysteresis).
     """
     _measure_facade = _compat.facade()
     sidecar = _measure_facade._read_tripwire_sidecar()
@@ -2292,10 +2291,9 @@ def cohorts_promote(cohort_args):
         if cohort in demoted:
             demoted.discard(cohort)
             cleared += 1
-            # T5: stamp the promotion time so pre-promote skeleton/follow-up
-            # history is fenced out of the live edit-rate and the cohort cannot
-            # immediately re-demote on the very edits that demoted it.
+            # A fresh promotion also authorizes target-outline replacement.
             promoted_at[f"{cohort[0]}|{cohort[1]}"] = now
+            promoted_at[f"target_skeleton_v1|{cohort[0]}|{cohort[1]}"] = now
     if cleared:
         rates = {}
         _measure_facade._write_tripwire_sidecar(demoted, rates, promoted_at=promoted_at)

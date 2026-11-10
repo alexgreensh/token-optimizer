@@ -68,6 +68,13 @@ def record_control(snapshot_dir, session_id, tool_id, path, language, band):
     _record(snapshot_dir, control_rows(session_id, tool_id, path, language, band))
 
 
+def record_target_outline(snapshot_dir, session_id, tool_id, path, language, band):
+    """Keep target substitutions distinct from periphery-map treatments."""
+    rows = _rows(session_id, tool_id, [path], language, band, "legacy_skeleton")
+    _record(snapshot_dir, rows)
+    return rows
+
+
 def _record(snapshot_dir, rows):
     if not rows:
         return

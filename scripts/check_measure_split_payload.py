@@ -10,7 +10,7 @@ import sys
 
 from measure_split import REPO, DOMAINS
 
-SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS) + ('dashboard_history.py', 'weekly_activity.py', 'headline.py', 'structural_ledger.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'rework_metrics.py', 'periphery_exposure.py', 'structure_funnel.py', 'setup_attachment_counter.py', 'first_read_outcomes.py', 'setup_budget_monitor.py', 'setup_connector_ledger.py', 'first_call_context.py')
+SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS) + ('dashboard_history.py', 'weekly_activity.py', 'headline.py', 'structural_ledger.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'rework_metrics.py', 'periphery_exposure.py', 'structure_funnel.py', 'setup_attachment_counter.py', 'first_read_outcomes.py', 'setup_budget_monitor.py', 'setup_connector_ledger.py', 'first_call_context.py', 'first_read_revive.py')
 
 
 def verify(payload, canonical=REPO):

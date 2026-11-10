@@ -1042,13 +1042,11 @@ def _first_read_compress(
             and cohort not in _demoted_cohorts()
             and result.replacement_text
         ):
-            # retarget: the Read TARGET is served full (never denied); the
-            # compression budget moves to PERIPHERY skeletons injected as
-            # additionalContext. Returns False so the caller serves the full
-            # target via the normal allow path. No ``first_read_skeleton`` event
-            # is emitted for the target, and the target-keyed ``active_fr:``
-            # marker is no longer armed here (periphery files carry their own,
-            # armed inside _inject_periphery_skeletons once U2 populates them).
+            from _measure import first_read_revive
+            if first_read_revive.enabled(SNAPSHOT_DIR / _TRIPWIRE_SIDECAR_NAME, language, cohort[1]):
+                if first_read_revive.serve(file_path, stat, language, cohort[1], session_id, content,
+                                           result, orig_tokens, estimate_tokens, _emit_pretool_response, SNAPSHOT_DIR, tool_use_id, _additional_context_within_cap, save_hook_context_enabled):
+                    return True
             return _serve_first_read_retarget(
                 file_path, size, language, session_id, store, content, quiet, tool_use_id,
             )

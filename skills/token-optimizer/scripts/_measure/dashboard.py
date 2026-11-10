@@ -810,6 +810,11 @@ def generate_dashboard(coord_path):
 
     # Load template and inject data
     template = template_path.read_text(encoding="utf-8")
+    try:  # U9: inline renderer modules kept beside the template (fail-open)
+        import dashboard_assets as _dashboard_assets
+        template = _dashboard_assets.inline(template, template_path.parent)
+    except Exception:
+        pass
     data_json = _measure_facade.json.dumps(data, ensure_ascii=True, default=str)
     data_json = data_json.replace("</", "<\\/")  # Prevent </script> injection
     placeholder = "window.__TOKEN_DATA__ = null;"
@@ -2555,6 +2560,11 @@ def generate_standalone_dashboard(days=None, quiet=None, force=None):
     data = _measure_facade._sanitize_dashboard_paths(data)
 
     template = template_path.read_text(encoding="utf-8")
+    try:  # U9: inline renderer modules kept beside the template (fail-open)
+        import dashboard_assets as _dashboard_assets
+        template = _dashboard_assets.inline(template, template_path.parent)
+    except Exception:
+        pass
     data_json = _measure_facade.json.dumps(data, ensure_ascii=True, default=str)
     data_json = data_json.replace("</", "<\\/")  # Prevent </script> injection
     placeholder = "window.__TOKEN_DATA__ = null;"

@@ -396,13 +396,12 @@ h1, h2, h3, h4 { font-weight: 400; }
   text-transform: uppercase;
   letter-spacing: 0.1em;
   font-size: 15px;
-  border-left: 2px solid transparent;
+  border-radius: 6px;
 }
 
 .nav-item:hover, .nav-item.active {
   color: var(--c-text-main);
   background: var(--c-accent-soft);
-  border-left-color: var(--c-accent-cyan);
   text-shadow: var(--glow-text);
 }
 
@@ -431,7 +430,7 @@ h1, h2, h3, h4 { font-weight: 400; }
 
 .user-profile i {
   font-family: var(--font-mono);
-  font-style: italic;
+  font-style: normal;
   color: var(--c-accent-cyan);
 }
 
@@ -1375,9 +1374,8 @@ input:checked + .slider:before {
 .metric-unit {
   font-family: var(--font-sans);
   font-weight: 500;
-  font-size: 24px;
-  color: var(--c-text-dim);
-  letter-spacing: 0.03em;
+  font-size: 22px;
+  color: var(--c-text-main);
 }
 .metric-sub.tight {
   font-size: 18px;
@@ -1392,18 +1390,17 @@ input:checked + .slider:before {
 .ts-divider { height: 1px; background: var(--c-border); margin: var(--s-4) 0 var(--s-3); }
 
 .ts-section-label {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--c-text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--c-text-main);
   margin-bottom: var(--s-2);
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: var(--s-3);
 }
-.ts-section-label .muted { text-transform: none; letter-spacing: 0; color: var(--c-text-faint); font-size: 12px; }
+.ts-section-label .muted { color: var(--c-text-main); font-weight: 400; font-size: 14px; }
 
 /* spent-vs-saved combined bar: one row, two proportional segments. */
 .sv-bar {
@@ -1424,9 +1421,9 @@ input:checked + .slider:before {
 
 .ts-foot {
   margin-top: var(--s-4);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--c-text-faint);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--c-text-main);
   line-height: 1.6;
   text-wrap: pretty;
 }
@@ -1546,7 +1543,6 @@ input:checked + .slider:before {
 .rec-callout {
   background: var(--c-surface);
   border: 1px solid var(--c-border);
-  border-left: 3px solid var(--c-accent-cyan);
   border-radius: 8px;
   padding: var(--s-3) var(--s-4);
   margin-bottom: var(--s-2);
@@ -1714,6 +1710,73 @@ input:checked + .slider:before {
   border: 1px solid var(--c-border);
 }
 
+/* ========== SAVINGS STORY (U9, assets/savings_story.js) ==========
+   Card titles are headings (no small-caps labels above them). Sans for words,
+   mono only for standalone figures; numbers inside sentences use the sans face
+   with tabular figures. Secondary lines stay in --c-text-main for readability. */
+.st { display: grid; gap: var(--s-3); margin-bottom: var(--s-3); }
+.st .card { padding: var(--s-4); }
+.st-h { font: 600 20px/1.3 var(--font-sans); color: var(--c-text-main); display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) 12px; }
+.st-tag { font: 500 13px/1 var(--font-sans); letter-spacing: 0.01em; color: var(--c-text-main); border: 1px solid var(--c-border-strong); border-radius: 999px; padding: 5px 10px; }
+.st-num { font-family: var(--font-sans); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--c-accent-cyan); white-space: nowrap; }
+.st-v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--c-text-main); text-align: right; white-space: nowrap; }
+.st-lead { font-size: 17px; line-height: 1.6; color: var(--c-text-main); margin-top: var(--s-3); max-width: 60ch; text-wrap: pretty; }
+.st-lead strong { font-weight: 600; }
+.st-big { font: 400 22px/1.45 var(--font-sans); color: var(--c-text-main); margin-top: var(--s-3); text-wrap: pretty; }
+.st-big .st-num { font-size: 34px; }
+.st-hero { padding: var(--s-5) var(--s-4) var(--s-4) !important; }
+/* The big numbers: the Tokens Saved card's display treatment (thin mono,
+   saturated savings green or accent cyan, soft glow in dark mode). */
+.st-mega__row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s-3) var(--s-6, 48px); margin: var(--s-3) 0 var(--s-4); }
+.st-mega__item { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.st-mega__item--card { margin-top: var(--s-3); }
+.st-mega { font: 300 clamp(72px, 8.4vw, 116px)/0.9 var(--font-mono); letter-spacing: -0.035em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.st-mega--usd { color: var(--c-savings); text-shadow: 0 0 26px rgba(74,222,128,0.34), 0 0 2px rgba(74,222,128,0.4); }
+.st-mega--tok { color: var(--c-accent-cyan); text-shadow: 0 0 26px rgba(0,240,255,0.32), 0 0 2px rgba(0,240,255,0.4); }
+.st-mega--card { font-size: clamp(60px, 5.6vw, 84px); }
+.st-mega__unit { font: 500 19px/1.3 var(--font-sans); color: var(--c-text-main); }
+[data-theme="light"] .st-mega { text-shadow: none; }
+.st-bar { display: flex; gap: 3px; height: 8px; border-radius: 4px; overflow: hidden; opacity: 0.85; }
+.st-bar__m { background: var(--c-savings); border-radius: 7px 0 0 7px; }
+.st-bar__e { background: repeating-linear-gradient(135deg, var(--c-savings) 0 3px, transparent 3px 7px); box-shadow: inset 0 0 0 1.5px var(--c-savings); border-radius: 0 7px 7px 0; }
+.st-bands { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2) var(--s-5); margin-top: var(--s-3); }
+.st-legend { display: flex; align-items: center; gap: 10px; font: 600 17px/1.3 var(--font-sans); color: var(--c-text-main); }
+.st-legend .st-v { margin-left: auto; font-size: 19px; font-weight: 500; }
+.st-sw { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+.st-sw.st-m { background: var(--c-savings); }
+.st-sw.st-e { background: repeating-linear-gradient(135deg, var(--c-savings) 0 2px, transparent 2px 4px); box-shadow: inset 0 0 0 1.5px var(--c-savings); }
+.st-rows { list-style: none; margin-top: var(--s-2); border-top: 1px solid var(--c-border); }
+.st-rows li { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-3); padding: 9px 0; border-bottom: 1px solid var(--c-border); font-size: 16px; line-height: 1.4; color: var(--c-text-main); }
+.st-rows--card { margin-top: var(--s-3); }
+.st-sub { display: block; font: 400 14px/1.5 var(--font-sans); color: var(--c-text-main); margin-top: 2px; }
+.st-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); }
+.st-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+.st-ratio__track { display: block; height: 12px; border-radius: 6px; background: var(--c-elev-3); overflow: hidden; }
+.st-ratio__carry { display: block; height: 100%; border-radius: 6px; background: var(--c-accent-cyan); }
+.st-quality { margin-top: var(--s-3); max-width: 640px; }
+.st-cov { font-size: 17px; line-height: 1.6; color: var(--c-text-main); padding: 0 var(--s-1); max-width: 90ch; }
+.st-morerow { display: flex; flex-wrap: wrap; gap: 0 var(--s-4); padding: var(--s-2) var(--s-1) 0; border-top: 1px solid var(--c-border); margin-bottom: var(--s-4); }
+.st-morerow > .fold { margin-top: 0; }
+.st-morerow > .fold[open] { flex-basis: 100%; }
+.st-morerow > .fold > summary { font-size: 15px; }
+.st-morerow .fold__body { max-width: none; }
+.st-health { margin-top: var(--s-3); }
+.st-gap { margin-top: var(--s-4); }
+@media (max-width: 900px) {
+  .st-grid, .st-bands { grid-template-columns: 1fr; }
+  .st-grid > :last-child:nth-child(odd) { grid-column: auto; }
+}
+@media (max-width: 520px) {
+  .st .card { padding: var(--s-3); }
+  .st-hero { padding: var(--s-4) var(--s-3) var(--s-3) !important; }
+  .st-hero .st-rows { display: none; }
+  .st-bands { gap: var(--s-2); }
+  .st-mega { font-size: 64px; }
+  .st-mega--card { font-size: 56px; }
+  .st-mega__row { gap: var(--s-3); }
+  .st-morerow { flex-direction: column; }
+}
+
 /* ========== RESPONSIVE ========== */
 @media (max-width: 1024px) {
   .layout { grid-template-columns: 200px 1fr; }
@@ -1728,6 +1791,12 @@ input:checked + .slider:before {
     padding: var(--s-3);
   }
   .main-col { padding: var(--s-3); }
+  .nav-col .brand { margin-bottom: var(--s-2); font-size: 20px; }
+  .nav-menu { flex-direction: row; overflow-x: auto; gap: 4px; margin: 0 calc(-1 * var(--s-3)); padding: 0 var(--s-3) 2px; scrollbar-width: none; }
+  .nav-menu::-webkit-scrollbar { display: none; }
+  .nav-menu .nav-item { flex: none; white-space: nowrap; padding: 8px 12px; gap: 8px; }
+  .nav-menu .nav-separator { display: none; }
+  .user-profile { display: none; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .stat-row { grid-template-columns: 1fr; }
 }
@@ -2419,6 +2488,8 @@ function tokenSplitText(h, fmt) {
   parts.push(h.reread_available ? '~' + fmt(h.reread_tokens || 0) + ' re-reads avoided' : 're-reads unavailable');
   return parts.join(' &middot; ');
 }
+// U9 savings story: assets/savings_story.js, inlined here at generation.
+/*@include savings_story.js*/
 
 function hostRefreshHtml(data) {
   return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard --user</span>');
@@ -3490,12 +3561,7 @@ var DB = (function() {
     var untrackedTokens = (denom > modelTotal) ? (denom - modelTotal) : 0;
     var out = '';
     if (isCodex) {
-      out += '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:var(--s-2);">Codex model names are read from session logs when available. Unknown future model IDs are shown by name but left unpriced until rates are known.</p>';
-    } else if (modelCount <= 1) {
-      var singleModel = Object.keys(modelMix)[0] || 'unknown';
-      out += '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:var(--s-2);">All sessions use ' + esc(singleModel) + '. Consider defaulting agents to haiku (5x cheaper) or sonnet for data-gathering tasks.</p>';
-    } else {
-      out += '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:var(--s-2);">Haiku is 5x cheaper for data-gathering. If you see mostly Opus, consider defaulting agents to Sonnet/Haiku.</p>';
+      out += '<p style="font-size:15px;color:var(--c-text-main);margin-bottom:var(--s-2);">Codex model names are read from session logs when available. Unknown future model IDs are shown by name but left unpriced until rates are known.</p>';
     }
     out += '<div class="model-bar">';
     modelOrder.forEach(function(m) {
@@ -3538,110 +3604,28 @@ var DB = (function() {
     return out;
   }
 
-  // Tokens Saved card: a savings hero + a spent-vs-saved bar + a model-mix-as-
-  // usage bar + footer. Hoisted to module scope so BOTH renderTrends and
-  // renderSavings render it identically without duplicating the body logic.
-  // Reads trends data from the global `data`; the savings object is passed as
-  // `savings` (data.savings in renderTrends, the in-scope `s` in renderSavings).
-  // SPENT = deduplicated fresh input + output on actual activity days.
-  // Cache reads and writes are excluded. NOT sum(model_mix):
-  // model_mix can omit unattributed tokens. Fail-open to that sum rather than 0.
-  // SAVED = savings.total_tokens. Fail-open: measured AND estimated both ≤ 0 →
-  // return '' (omit card entirely); either > 0 → render (estimates still show
-  // when the measured floor is zero). SAVED > 0 but SPENT missing/zero →
-  // render hero + footer only.
-  // The model-mix "where the spent went" bar reconciles to SPENT via a trailing
-  // "untracked" segment for SPENT - sum(model_mix) (tokens billed without a
-  // model tag). Returns '' when the card should not render.
+  // Share the Savings story calculation and period, including its eligibility rules.
   function tokensSavedCardHtml(savings) {
     var s = savings || {};
-    var tsSavedTokens = Number(s.total_tokens) || 0;
-    // Estimated-tier tokens (kept OUT of the measured SAVED total by
-    // _get_savings_summary). Surfaced in the footer as the estimated slice,
-    // labelled with whichever estimated categories are present, and they keep
-    // the card alive when the measured floor is zero.
-    // Field names match _get_merged_savings' re-export: mcp_cap_estimated
-    // keeps its suffix; hint_followed and verbosity_steer drop the _estimated
-    // suffix (the summary's *_estimated locals are re-keyed without it).
-    // Fallback: also try the _estimated suffix in case _get_savings_summary's
-    // fallback path (no re-key) is active.
-    var tsEstItems = [];
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.mcp_cap_estimated, 'MCP caps');
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.hint_followed || s.hint_followed_estimated, 'hint-served reads');
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.verbosity_steer || s.verbosity_steer_estimated, 'verbosity nudges');
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.resume_lean_estimated, 'lean resumes');
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.checkpoint_restore_estimated, 'checkpoint restores');
-    var tsEstTokens = tsEstItems.reduce(function(a, b) { return a + b.tokens; }, 0);
-    var tsEstLabelList = tsEstItems.map(function(it) { return it.label; }).join(', ');
-    if (tsSavedTokens <= 0 && tsEstTokens <= 0) return '';
-    var tsTrends = data.trends || {};
-    var tsSpentBasis = tsTrends.spent_token_basis || {};
-    var tsModelMix = tsTrends.model_mix || {};
-    var tsModelTotal = 0;
-    for (var tsMk in tsModelMix) { tsModelTotal += tsModelMix[tsMk]; }
-    var tsIsCodex = data.runtime === 'codex';
-    var tsPeriodDays = Number(tsTrends.period_days) || Number(s.period_days) || 30;
-    // Missing dated coverage must not be replaced by lifetime model totals.
-    var tsReportedTotal = Number(tsTrends.total_tokens) || 0;
-    var tsSpentTokens = Object.prototype.hasOwnProperty.call(tsTrends, 'total_tokens') ? Math.max(0, tsReportedTotal) : tsModelTotal;
-    // (tsWouldSendTotal / percentages are computed below, AFTER the estimated
-    // tier is summed: the card headlines the FULL saved total in every state.)
-    // FULL saved total = measured floor + estimated tier. The headline is
-    // ALWAYS the full number, never the floor alone; the measured-vs-estimated
-    // split stays visible right under it so the honesty travels with the size,
-    // and the %-prevented / spent-vs-saved bar / would-send total are all
-    // computed against the same full figure.
-    var tsFullSaved = tsSavedTokens + tsEstTokens;
-    var tsWouldSendTotal = tsSpentTokens + tsFullSaved;
-    var tsSavedPct = (tsWouldSendTotal > 0) ? Math.round(tsFullSaved / tsWouldSendTotal * 100) : 0;
-    var tsSpentPct = 100 - tsSavedPct; // no 101% rounding
-    var tsSplitShort = fn(tsSavedTokens) + ' measured' + (tsEstTokens > 0 ? ' + ' + fn(tsEstTokens) + ' estimated' : '');
-
-    var out = '<div class="card wide"><div class="card-header"><span>Tokens Saved</span><span class="label">Last ' + tsPeriodDays + ' days · measured + estimated</span></div>';
-    // HERO: total tokens saved, savings-green, mono, tabular-nums.
-    out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + fn(tsFullSaved) + '</div><div class="metric-unit">tokens saved</div></div>';
-    out += '<div class="metric-sub tight" style="margin-top:2px;">' + fn(tsFullSaved) + ' saved · ' + tsSplitShort + '</div>';
-    if (tsSpentTokens > 0) {
-      out += '<div class="metric-sub tight">Token Optimizer prevented <span class="pct">≈' + tsSavedPct + '%</span> of the tokens this workload would otherwise have sent. Claude <code>/stats</code>-compatible spent: <b>' + fn(tsSpentTokens) + '</b>; tokens never sent: <b>' + fn(tsFullSaved) + '</b> (' + tsSplitShort + ').</div>';
-      // Spent vs Saved bar: one row, two proportional segments (spent+saved).
-      out += '<div class="ts-divider"></div>';
-      out += '<div class="ts-section-label"><span>Spent vs Saved</span><span class="muted">without Token Optimizer: ≈' + fn(tsWouldSendTotal) + '</span></div>';
-      out += '<div class="sv-bar" title="spent ' + fn(tsSpentTokens) + ' + saved ' + fn(tsFullSaved) + ' (' + tsSplitShort + ') = ' + fn(tsWouldSendTotal) + ' would-be total">';
-      out += '<div class="sv-seg spent" style="width:' + tsSpentPct + '%">spent · ' + fn(tsSpentTokens) + '</div>';
-      out += '<div class="sv-seg saved" style="width:' + tsSavedPct + '%">saved · ' + fn(tsFullSaved) + '</div>';
-      out += '</div>';
-      out += '<div class="sv-caption">Without Token Optimizer you\'d have sent <b>≈' + fn(tsWouldSendTotal) + '</b> to do the same work.</div>';
-      // Model mix relabeled as USAGE: where the SPENT went. Bar + legend
-      // reconcile to SPENT via a trailing "untracked" segment for tokens
-      // billed without a model tag (SPENT - sum(model_mix)).
-      if (tsModelTotal > 0) {
-        out += '<div class="ts-divider"></div>';
-        out += '<div class="ts-section-label"><span>Where the ' + fn(tsSpentTokens) + ' you spent went</span><span class="muted">which models do the work</span></div>';
-        out += modelMixBodyHtml(tsModelMix, tsIsCodex, tsSpentTokens);
-      }
-    } else {
-      // SAVED exists but SPENT is unknown (no billable total AND no
-      // model_mix). Render the hero + footer only.
-      out += '<div class="metric-sub tight">Token Optimizer saved <b>' + fn(tsFullSaved) + '</b> tokens that never had to be sent (' + tsSplitShort + ').</div>';
+    var storyAvailable = typeof savingsStoryOn === 'function' && savingsStoryOn(data);
+    var bands = typeof savingsStoryBands === 'function' ? savingsStoryBands(data) : null;
+    var total = bands ? bands.totalTok : Number((s.token_headline || {}).total_tokens) || 0;
+    if (total <= 0) return '';
+    var formatTokens = typeof savingsStoryFmt === 'function' ? savingsStoryFmt().tok : fn;
+    var removed = Number((s.token_headline || {}).removed_tokens) || 0;
+    var trends = data.trends || {};
+    var mix = trends.model_mix || {};
+    var modelTotal = 0;
+    for (var model in mix) { modelTotal += Number(mix[model]) || 0; }
+    var spent = Object.prototype.hasOwnProperty.call(trends, 'total_tokens') ? Math.max(0, Number(trends.total_tokens) || 0) : modelTotal;
+    var days = Number(s.period_days) || 30;
+    var out = '<div class="card wide"><div class="card-header"><span>Tokens Saved</span></div>';
+    out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + formatTokens(total) + '</div><div class="metric-unit">tokens kept out of context in the last ' + days + ' days</div></div>';
+    if (modelTotal > 0) {
+      out += '<div class="ts-divider"></div><h3 class="ts-section-label">Which models did the work</h3>';
+      out += modelMixBodyHtml(mix, data.runtime === 'codex', spent > 0 ? spent : modelTotal);
     }
-    // Footer: metered floor + optional estimated-slice sentence + plan note.
-    out += '<div class="ts-foot"><span class="tier">Measured + estimated.</span> ' + fn(tsSavedTokens) + ' of these tokens are metered action by action (the floor)' + (tsEstTokens > 0 ? '; ≈' + fn(tsEstTokens) + ' are estimated (' + esc(tsEstLabelList) + ') and are included in the headline, labelled.' : '.') + (tsSpentBasis.basis ? ' Spent basis: ' + esc(tsSpentBasis.basis) + '.' : '') + ' Subscription plan — counted in tokens, no per-token cost.</div>';
-    out += '</div>';
+    out += '<div class="ts-foot">' + (storyAvailable ? 'Same figure as the Savings card.<br>' : '') + formatTokens(removed) + ' tokens removed once.</div></div>';
     return out;
   }
 
@@ -4689,14 +4673,20 @@ var DB = (function() {
     var routingAltShare = mr.measured_baseline_opus_share;
     var routingAltMo = mr.measured_baseline_realized_cost_usd != null ? mo(mr.measured_baseline_realized_cost_usd) : null;
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
+    // U9: the savings story leads when the payload carries session_effect;
+    // older payloads (or a template without the inlined module) keep the
+    // previous layout unchanged.
+    var story = '';
+    try { story = (typeof savingsStoryHtml === 'function') ? savingsStoryHtml(data) : ''; } catch (e) { story = ''; }
 
     var html = '<div class="section-header">' +
-      '<div class="label">Value</div><h1>Savings</h1>' +
-      '<p>Your savings, with the time period and method shown for each total.</p>' +
+      (story ? '<h1>Savings</h1>' : '<div class="label">Value</div><h1>Savings</h1>' +
+        '<p>Your savings, with the time period and method shown for each total.</p>') +
       '</div>' +
       '<div class="last-updated">Updated ' + esc(ts) + ' &middot; refreshes after every session</div>';
 
-    html += runwayCardHtml();
+    html += story || runwayCardHtml();
+    var storyHead = html; html = '';
 
     // ---- HERO: the before/after transformation (THE headline). Current activity priced at
     // your pre-TO per-session weight + mix vs actual — comprehensive (volume + structural +
@@ -4800,13 +4790,15 @@ var DB = (function() {
       '</div>';
     }
 
+    var transformHtml = html; html = '';
+
     // ---- Tokens Saved card: the full card (hero + spent-vs-saved + model-
     // mix-as-usage + footer). Rendered as the 2nd card in the Savings view,
     // right after the big-picture transformation hero above and before the
     // "Counted directly" measured-floor card below. Also rendered in the
     // Trends view — both call the shared hoisted tokensSavedCardHtml helper
     // so the card is identical across views. SPENT = trends.total_tokens
-    // (billable total), SAVED = savings.total_tokens. See tokensSavedCardHtml
+    // (billable total); the savings total comes from savingsStoryBands. See tokensSavedCardHtml
     // for the full fail-open spec. ----
     // Add only rereads to the one-shot ledger. Adding the counted-period total
     // would count its initial removals twice and discard unmatched logged events.
@@ -4988,6 +4980,8 @@ var DB = (function() {
     }
     html += '</div>';
     html += fold('Token savings and model usage', tokensSavedCardHtml(s));
+    var ledgerHtml = html;
+    html = storyHead + (story ? '' : transformHtml + ledgerHtml);
 
     // ---- SAVE MORE: suggestions, promoted right under the hero ----
     var parts = [];
@@ -5006,7 +5000,33 @@ var DB = (function() {
     if ((Number(ow.cost_saved_usd) || 0) > 0) {
       parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + moneyCents(oppCents.output) + per + ' in output.');
     }
-    if (parts.length > 0) {
+    var moreFolds = [];
+    if (story) {
+      // U9: nothing else on the tab. Opportunity, coverage detail, the previous
+      // cards and diagnostics sit in one row of folds at the bottom; the
+      // whole-workload comparison is no longer shown here.
+      if (parts.length > 0) {
+        moreFolds.push('<details class="fold"><summary>Room to save more</summary><div class="fold__body">' +
+          '<p>Changes you could make to your setup or habits' +
+          (opportunityMo > 0 ? ', worth about ' + money(oppCents.total / 100) + (runRate ? ' per 30 days' : ' so far') : '') +
+          '. None of this is in any total above.</p>' +
+          parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
+          (routingPotentialMo > 0 ? '<p>If about ' + routingFracPct + '% of your Opus work ran on ' + esc(routingTarget) +
+            ', about ' + money(routingPotentialMo) + esc(per) + ' at API rates. This is an assumption about your own work.</p>' : '') +
+          (data.runtime !== 'cursor' && data.runtime !== 'antigravity' ? '<p>Run <strong>/token-optimizer</strong> and follow its suggestions to claim it.</p>' : '') +
+          '</div></details>');
+      }
+      var covFold = (typeof savingsCoverageFold === 'function') ? savingsCoverageFold(data) : '';
+      if (covFold) moreFolds.push(covFold);
+      // The previous action-savings, since-install and Tokens Saved cards are not
+      // shown in story mode: they still add routing to their totals and count
+      // tokens on another basis, so they would contradict the hero.
+      var ledgerBody = (typeof savingsLedgerHtml === 'function') ? savingsLedgerHtml(data) : ledgerHtml;
+      var mixTotal = 0, mix = (data.trends && data.trends.model_mix) || {};
+      for (var mixK in mix) { mixTotal += Number(mix[mixK]) || 0; }
+      if (mixTotal > 0 && typeof modelMixBodyHtml === 'function') ledgerBody += '<h3 class="ts-section-label st-gap">Which models did the work</h3>' + modelMixBodyHtml(mix, data.runtime === 'codex', mixTotal);
+      moreFolds.push('<details class="fold"><summary>Full ledger and history</summary><div class="fold__body">' + ledgerBody + '</div></details>');
+    } else if (parts.length > 0) {
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);border:1px solid var(--c-amber);box-shadow:0 0 0 1px rgba(217,164,65,0.18), 0 0 44px rgba(217,164,65,0.12);">';
       html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-amber);letter-spacing:0.08em;">Money on the table &middot; opportunity</div>';
       if (opportunityMo > 0) {
@@ -5085,7 +5105,7 @@ var DB = (function() {
         trendTxt = dd > 3 ? 'trending up' : (dd < -3 ? 'trending down' : 'holding steady');
       }
     }
-    if (avgQ !== null) {
+    if (avgQ !== null && !story) {
       var barPct = Math.min(100, Math.max(0, avgQ));
       html += '<div class="card wide" style="margin-top:var(--s-3);"><div class="card-header"><span>Context quality &middot; 30-day average</span>' +
         (trendTxt ? '<span class="label">' + esc(trendTxt) + '</span>' : '') + '</div>';
@@ -5178,7 +5198,8 @@ var DB = (function() {
         ccHtml += '</div>';
       }
       ccHtml += '</div>';
-      html += ccHtml;
+      if (story) moreFolds.push('<details class="fold"><summary>Compression coverage (diagnostic)</summary><div class="fold__body">' + ccHtml + '</div></details>');
+      else html += ccHtml;
     }
 
     // ---- Cache Health: TTL-expiry watchdog (opportunity tier). Observed
@@ -5344,6 +5365,7 @@ var DB = (function() {
       kwHtml += '</div>';
       html += kwHtml;
     }
+    if (moreFolds.length) html += '<div class="st-morerow">' + moreFolds.join('') + '</div>';
 
     el.innerHTML = html;
     el.querySelectorAll('details > summary').forEach(function(summary) {
@@ -5585,6 +5607,8 @@ var DB = (function() {
       });
       html += '</div>';
     }
+    // U9: context quality and hook time limits moved here from the Savings tab.
+    try { if (typeof healthNotesHtml === 'function') html += healthNotesHtml(data); } catch (e) {}
 
     el.innerHTML = html;
   }

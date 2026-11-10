@@ -537,17 +537,12 @@ def test_dashboard_saved_tokens_is_measured_plus_estimated(sb):
     assert sb._dashboard_saved_tokens({}) == (0, 0)
 
 
-def test_dashboard_headline_formula_matches_the_dashboard_source():
-    # Drift guard: if the dashboard's Tokens Saved card changes its fields,
-    # _dashboard_saved_tokens must change with it.
+def test_dashboard_headline_uses_savings_story_calculation():
+    # The status bar still reports once-removed tokens; the dashboard compounds them.
     html = (Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" / "assets" / "dashboard.html").read_text(encoding="utf-8")
-    card = html[html.index("function tokensSavedCardHtml"):]
-    card = card[:card.index("var tsFullSaved")]
-    for field in ("s.mcp_cap_estimated", "s.hint_followed || s.hint_followed_estimated",
-                  "s.verbosity_steer || s.verbosity_steer_estimated", "s.resume_lean_estimated",
-                  "s.checkpoint_restore_estimated", "Number(s.total_tokens)"):
-        assert field in card, field
-    assert card.count("pushEst(obj, label)") == 5
+    card = html[html.index("function tokensSavedCardHtml"):html.index("function renderTrends()")]
+    assert "savingsStoryBands(data)" in card
+    assert "bands.totalTok" in card
 
 
 def test_compactions_counted_from_transcript(sb, tmp_path):

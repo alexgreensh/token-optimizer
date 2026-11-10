@@ -142,9 +142,26 @@ function savingsStoryHtml(data) {
     var mPct = totalUsd > 0 ? Math.max(0, Math.min(100, mUsd / totalUsd * 100)) : 0;
     function cents(rows) { return rows.reduce(function(n, r) { return n + Math.round(num(r.usd) * 100); }, 0); }
     function moneyCents(n) { return (n < 0 ? '-$' : '$') + (Math.abs(n) / 100).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
-    function top(rows) {
-      return '<ul class="st-rows">' + rows.map(function(r) {
-        return '<li><span>' + esc(r.label) + '</span><span class="st-v">' + moneyCents(Math.round(num(r.usd) * 100)) + '</span></li>';
+    // Allocate rounding differences so the displayed whole-dollar rows add up.
+    // Sub-dollar amounts keep their honest "under $1" label.
+    function roundedRows(rows, target) {
+      var amounts = rows.map(function(r) { return Math.abs(num(r.usd)) < 1 ? 0 : Math.floor(num(r.usd)); });
+      var candidates = rows.map(function(r, i) { return i; }).filter(function(i) { return Math.abs(num(rows[i].usd)) >= 1; });
+      var diff = target - amounts.reduce(function(a, n) { return a + n; }, 0);
+      candidates.sort(function(a, b) {
+        var af = num(rows[a].usd) - Math.floor(num(rows[a].usd));
+        var bf = num(rows[b].usd) - Math.floor(num(rows[b].usd));
+        return diff >= 0 ? bf - af : af - bf;
+      });
+      for (var i = 0; candidates.length && i < Math.abs(diff); i++) amounts[candidates[i % candidates.length]] += diff > 0 ? 1 : -1;
+      return amounts;
+    }
+    var measuredWhole = Math.round(mUsd), estimatedWhole = Math.round(totalUsd) - measuredWhole;
+    function top(rows, total) {
+      var rounded = roundedRows(rows, total);
+      return '<ul class="st-rows">' + rows.map(function(r, i) {
+        var display = Math.abs(num(r.usd)) < 1 ? usd(r.usd) : usd(rounded[i]);
+        return '<li><span>' + esc(r.label) + '</span><span class="st-v">' + display + '</span></li>';
       }).join('') + '</ul>';
     }
     function table(title, rows) {
@@ -169,18 +186,19 @@ function savingsStoryHtml(data) {
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">Saved in the last ' + days + ' days</h2>' +
       '<div class="st-mega__row">' +
-        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + moneyCents(cents(measured) + cents(estimated)) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
+        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
-      (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + moneyCents(Math.round((totalUsd - num(sd.cost_saved_usd) + num(sd.projected_30d.measured.usd)) * 100)) + ', including setup cleanup ' + moneyCents(Math.round(num(sd.projected_30d.measured.usd) * 100)) + ', assuming other savings stay at their recent rate.</p>' : '') +
+      (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + usd(totalUsd - num(sd.cost_saved_usd) + num(sd.projected_30d.measured.usd)) + ', including setup cleanup ' + usd(sd.projected_30d.measured.usd) + ', assuming other savings stay at their recent rate.</p>' : '') +
       (has(local.net_median) && has(local.net_p75) ? '<p class="st-lead">On this Mac, a typical recorded session where Token Optimizer acted kept <strong>' + pct(local.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(local.net_p75) + ' or more</strong>' + (local.best && has(local.best.net_max) ? ', and the best kept out <strong>' + pct(local.best.net_max) + '</strong>' : ', best session: Measuring') + '. ' + (has(cloud.net_median) ? 'Cloud sessions: <strong>' + pct(cloud.net_median) + '</strong> typical; hooks can time out there.' : 'Cloud sessions: Measuring.') + '</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
       '<div class="st-bands">' +
-        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + moneyCents(cents(measured)) + '</span></p>' + top(measured) + '</div>' : '') +
-        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + moneyCents(cents(estimated)) + '</span></p>' + top(estimated) + '</div>' : '') +
+        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(measuredWhole) + '</span></p>' + top(measured, measuredWhole) + '</div>' : '') +
+        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(estimatedWhole) + '</span></p>' + top(estimated, estimatedWhole) + '</div>' : '') +
       '</div>' +
+      '<p class="st-sub">Whole-dollar rows are rounded to reconcile; exact amounts are in the breakdown.</p>' +
       f.fold('How this total is built', method) +
       '</div>';
   }

@@ -271,6 +271,7 @@ class SessionScope:
         self.files = subagent_files(path)
         self.location = {}
         self.required_subagents = set()
+        self.fail_closed = False
         self.stats = collect_stats()
         self._walks = {}
         if not events:
@@ -278,6 +279,7 @@ class SessionScope:
         try:
             info = event_info(conn, [key for key, _ts in events])
         except Exception:
+            self.fail_closed = True
             return
         self.required_subagents = {key for key, data in info.items() if data[0] == "first_read_skeleton" and data[2]}
         if not self.files:
@@ -358,7 +360,7 @@ class SessionScope:
         """(turns, compacts, scope) to score this event against."""
         index = self.location.get(key)
         if index is None:
-            if key in self.required_subagents:
+            if self.fail_closed or key in self.required_subagents:
                 return [], [], SCOPE_SUBAGENT
             return parent_turns, parent_compacts, SCOPE_PARENT
         if index not in self._walks:

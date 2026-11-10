@@ -154,4 +154,8 @@ def test_confirmed_subagent_saving_compounds_only_its_own_turns(m, tmp_path, mon
                 return conn.execute(sql, params)
         scope = counted_subagents.SessionScope(m, MissingScope(), parent, [(f"ce:{event_id}", stamp)])
         assert scope.turns_for(f"ce:{event_id}", [("parent",)], []) == ([], [], "subagent")
+        class BrokenDB:
+            def execute(self, *args): raise sqlite3.DatabaseError("unreadable")
+        scope = counted_subagents.SessionScope(m, BrokenDB(), parent, [(f"ce:{event_id}", stamp)])
+        assert scope.turns_for(f"ce:{event_id}", [("parent",)], []) == ([], [], "subagent")
     assert row == (900, 1800, 2)

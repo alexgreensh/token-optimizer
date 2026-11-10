@@ -4665,9 +4665,7 @@ def _price_parent_rows(rows, tier, api_calls_unknown=None):
 def _pinned_workload_anchor():
     """This user's pinned pre-install workload anchor, or None until built.
 
-    Built once from the user's OWN baseline window (baseline_state.json, the
-    sessions before Token Optimizer was installed), so every user is compared
-    against their own starting point, never a fixed calendar month."""
+    Built once from the user's baseline window in baseline_state.json."""
     _measure_facade = _compat.facade()
     try:
         path = _measure_facade.SNAPSHOT_DIR / _measure_facade._PRETOOL_ANCHOR_FILE
@@ -4682,7 +4680,7 @@ def _pinned_workload_anchor():
                         for k in ("sessions", "usd", "tokens", "flat_usd", "api_calls", "messages"))
                 and m["sessions"] >= _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS
                 and m["api_calls"] > 0 and m["flat_usd"] > 0):
-            return {"metrics": m, "label": str(data.get("label") or "your pre-install baseline")}
+            return {"metrics": m, "label": str(data.get("label") or "your tracked baseline").replace("pre-install baseline", "tracked baseline")}
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     return None
@@ -4755,7 +4753,7 @@ def _pretool_anchor_step(budget_seconds=None, tier=None):
             ok = m["sessions"] >= _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS and m["api_calls"] > 0 and m["flat_usd"] > 0
             state = {"status": "pinned" if ok else "unavailable", "window": [start, end],
                      "rates": _measure_facade._WEIGHT_POOL_FLAT_RATES, "activity_basis": 1, "metrics": m,
-                     "label": f"your pre-install baseline ({start} to {end})",
+                     "label": f"your tracked baseline ({start} to {end})",
                      "pinned_at": _measure_facade.datetime.now().isoformat()}
         _measure_facade._write_baseline_state(path, state)
         return state["status"]

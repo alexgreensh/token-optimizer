@@ -112,6 +112,7 @@ def _cli_summary(routing=None, concrete=True):
         "model_routing": {
             "realized_cost_usd": 2.5,
             "baseline_opus_share": 0.9,
+            "baseline_source": "pretool_baseline",
             "current_opus_share": 0.4,
         },
     }
@@ -358,6 +359,7 @@ def test_cli_discloses_unpriced_models_left_out_of_routing(measure, monkeypatch,
 def _routing_realized(evidence, **extra):
     s = _savings()
     s["model_routing"].update({"realized_cost_usd": 50.0, "baseline_opus_share": 0.95,
+                               "baseline_source": "pretool_baseline",
                                "current_opus_share": 0.8, "evidence": evidence, **extra})
     return s
 
@@ -367,21 +369,23 @@ def _logged(text):
     return float(m.group(1).replace(",", "")) if m else None
 
 
-def test_dashboard_measured_routing_stays_in_logged_actions():
+def test_dashboard_routing_is_disclosed_apart_from_the_total():
     text = _text(_render(_routing_realized("measured")))
-    assert _logged(text) == 60.0
-    assert "model routing:" not in text
+    assert _logged(text) == 10.0
+    assert ("Model routing: ~$50.0/mo assuming 95% Opus before Token Optimizer "
+            "(now 80% Opus). Not in this total.") in text
+    assert "$10.0 logged + estimated" in text
 
 
-def test_dashboard_estimated_routing_is_not_folded_into_logged_actions():
+def test_dashboard_estimated_routing_is_disclosed_apart_from_the_total():
     text = _text(_render(_routing_realized("estimated", baseline_reference_priced=["opus"])))
     assert _logged(text) == 10.0
-    assert re.search(r"model routing: \$50", text)
+    assert "Model routing:" in text and "Not in this total" in text
     assert ("Routing compares your earlier and current mix on one price list, the newest card of each family "
             "(Opus), because your earlier mix records no model generations. "
-            "The figure is listed under estimates.") in text
-    # The total still counts it once: logged 10 + estimated 50.
-    assert re.search(r"logged \+ estimated", text)
+            "It is shown separately from the totals above.") in text
+    # Routing never enters the total, measured or estimated.
+    assert "$10.0 logged + estimated" in text
 
 
 def test_dashboard_discloses_generation_price_gap_apart_from_routing():
@@ -397,7 +401,8 @@ def test_dashboard_discloses_generation_price_gap_apart_from_routing():
 
 def test_cli_measured_routing_label(measure, monkeypatch, capsys):
     out = _cli_out(measure, monkeypatch, capsys, _cli_summary({"evidence": "measured"}))
-    line = next(l for l in out.splitlines() if "model routing (realized)" in l)
+    line = next(l for l in out.splitlines() if "Model routing (not in ALL IN)" in l)
+    assert "assuming 90% Opus before Token Optimizer (now 40%)" in line
     assert line.endswith("[measured]")
     assert "newest card" not in out
 
@@ -405,11 +410,23 @@ def test_cli_measured_routing_label(measure, monkeypatch, capsys):
 def test_cli_reference_priced_routing_is_labelled_estimated_and_disclosed(measure, monkeypatch, capsys):
     out = _cli_out(measure, monkeypatch, capsys,
                    _cli_summary({"evidence": "estimated", "baseline_reference_priced": ["opus"]}))
-    line = next(l for l in out.splitlines() if "model routing (realized)" in l)
+    line = next(l for l in out.splitlines() if "Model routing (not in ALL IN)" in l)
     assert line.endswith("[estimated]")
     assert ("routing compares your earlier and current mix on one price list, the newest card of each family "
             "(Opus), because your earlier mix records no model generations, so this figure is an estimate") in out
     assert "ALL IN" in out
+
+
+def test_routing_measured_alternative_shows_on_cli_and_dashboard(measure, monkeypatch, capsys):
+    summary = _cli_summary({"measured_baseline_opus_share": 0.8369,
+                            "measured_baseline_realized_cost_usd": 30.0})
+    out = _cli_out(measure, monkeypatch, capsys, summary)
+    assert "measured alternative: your earliest tracked month had 83.7% Opus" in out
+    text = _text(_render(_routing_realized(
+        "estimated", measured_baseline_opus_share=0.8369,
+        measured_baseline_realized_cost_usd=30.0)))
+    assert ("Measured alternative: your earliest tracked month had 83.7% Opus; "
+            "the same comparison gives ~$30.0/mo.") in text
 
 
 def test_cli_discloses_generation_price_gap_apart_from_routing(measure, monkeypatch, capsys):
@@ -419,7 +436,7 @@ def test_cli_discloses_generation_price_gap_apart_from_routing(measure, monkeypa
             "that gap is model generation pricing, not routing") in out
 
 
-def test_since_install_moves_estimated_routing_to_the_estimated_side(measure, monkeypatch):
+def test_since_install_keeps_routing_out_of_both_sides(measure, monkeypatch):
     long_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     monkeypatch.setattr(measure, "_install_date", lambda: long_ago)
     base = {"total_cost_usd": 10.0}
@@ -429,9 +446,10 @@ def test_since_install_moves_estimated_routing_to_the_estimated_side(measure, mo
     monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30: {
         **base, "model_routing": {"realized_cost_usd": 50.0, "evidence": "estimated"}})
     est = measure._savings_since_install()
-    assert meas["measured_usd"] == 60.0 and meas["estimated_usd"] == 0.0
-    assert est["measured_usd"] == 10.0 and est["estimated_usd"] == 50.0
-    assert est["total_usd"] == 60.0
+    for out in (meas, est):
+        assert out["measured_usd"] == 10.0 and out["estimated_usd"] == 0.0
+        assert out["all_in"]["total_usd"] == pytest.approx(10.0)
+        assert out["all_in"]["routing_usd"] == pytest.approx(50.0)
 
 
 def test_default_routable_fraction_is_twenty_percent(measure):

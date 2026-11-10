@@ -54,10 +54,11 @@ def fixture():
 def test_action_hero_adds_rereads_once_and_keeps_other_logged_savings():
     html = render(fixture())
     actions = html.split('savings-actions')[1].split('savings-history')[0]
-    assert '$1,177' in actions  # 100 + 7 + 954 + 16 + 100, not +89 again
-    assert 'Logged actions <strong>$107' in actions
+    assert '$1,170' in actions  # 100 + 954 + 16 + 100; routing is disclosed apart
+    assert 'Logged actions <strong>$100' in actions
     assert 'Repeat reads avoided <strong>~$954' in actions
     assert 'Other estimates <strong>~$116' in actions
+    assert 'Model routing:' in actions and 'Not in this total' in actions
     assert 'smaller and exact' not in html
 
 
@@ -65,7 +66,7 @@ def test_action_hero_adds_rereads_once_and_keeps_other_logged_savings():
 def test_missing_or_empty_rereads_preserves_logged_floor(counted):
     s = fixture(); s['counted_period'] = counted
     actions = render(s).split('savings-actions')[1].split('savings-history')[0]
-    assert '$223' in actions
+    assert '$216' in actions
     assert '$2,613' not in actions  # never borrow lifetime value for an empty period
 
 
@@ -73,7 +74,7 @@ def test_young_install_uses_actual_totals_and_labels_estimates():
     s = fixture(); s['since_install']['days'] = 4
     actions = render(s).split('savings-actions')[1].split('savings-history')[0]
     assert '4 days tracked' in actions
-    assert '$1,177' in actions
+    assert '$1,170' in actions
     assert 'logged + estimated' in actions
     assert '/mo' not in actions
 
@@ -81,7 +82,7 @@ def test_young_install_uses_actual_totals_and_labels_estimates():
 def test_negative_reread_debits_are_not_clamped_away():
     s = fixture(); s['counted_period']['reread_usd'] = -23
     actions = render(s).split('savings-actions')[1].split('savings-history')[0]
-    assert '$200' in actions
+    assert '$193' in actions
 
 
 def test_transformation_percentage_matches_dollars_and_method_is_folded():
@@ -136,7 +137,7 @@ def test_history_compares_same_context_cohort_and_discloses_overlap():
 def test_seven_day_card_does_not_project_thirty_day_value():
     s = fixture(); s['period_days'] = 7
     actions = render(s).split('savings-actions')[1].split('savings-history')[0]
-    assert '$1,177' in actions
+    assert '$1,170' in actions
     assert '$5,044' not in actions
     assert '7 days tracked' in actions
 
@@ -144,7 +145,7 @@ def test_seven_day_card_does_not_project_thirty_day_value():
 def test_verbosity_estimate_is_included_once():
     s = fixture(); s['verbosity_steer'] = {'cost_saved_usd': 10, 'events': 2}
     actions = render(s).split('savings-actions')[1].split('savings-history')[0]
-    assert '$1,187' in actions
+    assert '$1,180' in actions
     assert 'Other estimates <strong>~$126' in actions
 
 

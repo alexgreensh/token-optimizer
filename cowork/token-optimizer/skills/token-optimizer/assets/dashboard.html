@@ -4567,22 +4567,19 @@ var DB = (function() {
     var avoidedSearchUnit = hfHasData ? 'hints used' : 'served';
     var structMo  = mo(sd.cost_saved_usd);
     var runtimeMo = Math.max(0, mo(s.total_cost_usd) - structMo) + mo(unc.cost_saved_usd) + mo(mce.cost_saved_usd);
-    // behavioral holds every estimated behavioral item (routing + loops + the cohort
+    // behavioral holds every estimated behavioral item (loops + the cohort
     // estimators + avoided-search), so the pillars (struct + runtime + behavioral)
     // always reconcile exactly to gettingMo (measured + estimated). Every estItems
     // entry maps to exactly one pillar: loops/sub-agent/mcp_cap -> runtime;
     // heeded/handover/avoided-search/lean-resumes -> behavioral.
-    var behavMo   = mo(mr.realized_cost_usd) + mo(beh.cost_saved_usd) + mo(ce.cost_saved_usd) + mo(hr.cost_saved_usd) + avoidedSearchMo + mo(rle.cost_saved_usd) + mo(vs.cost_saved_usd) + mo(vo.cost_saved_usd) + mo(cr.cost_saved_usd);
-    // ---- trust tiers: measured / estimated / opportunity. Opportunity NEVER folds into the headline. ----
-    // Measured = billable events we metered (runtime compression + realized model routing).
-    // Routing joins the measured tier only when its valuation is measured; the
-    // standardized newest-card schedule makes it an estimate (Other estimates).
-    var routingEstimated = mr.evidence === 'estimated';
-    var measuredMo = mo(s.total_cost_usd) + (routingEstimated ? 0 : mo(mr.realized_cost_usd));
+    var behavMo   = mo(beh.cost_saved_usd) + mo(ce.cost_saved_usd) + mo(hr.cost_saved_usd) + avoidedSearchMo + mo(rle.cost_saved_usd) + mo(vs.cost_saved_usd) + mo(cr.cost_saved_usd);
+    // ---- trust tiers: measured / estimated / opportunity. Opportunity and the
+    // routing assumption NEVER fold into the headline. ----
+    // Measured = billable events we metered (runtime compression).
+    var measuredMo = mo(s.total_cost_usd);
     // Estimated = genuine TO-realized counterfactuals grounded in YOUR behavior; each carries a sample size.
     // (Pillars + estimated reconcile to gettingMo: mcp_cap folds into runtime.)
     var estItems = [
-      { key: 'routing_estimated', label: 'model routing',                  amt: routingEstimated ? mo(mr.realized_cost_usd) : 0, n: (mr.baseline_reference_priced || []).length, unit: 'model families on one newest-card price list' },
       { key: 'behavioral_estimate', label: 'loops prevented',                amt: mo(beh.cost_saved_usd), n: Number(beh.loop_events) || 0,        unit: 'events' },
       { key: 'uncaptured_runtime', label: 'sub-agent runtime',              amt: mo(unc.cost_saved_usd), n: Number(unc.subagent_dispatches) || 0, unit: 'dispatches' },
       { key: 'mcp_cap_estimated', label: 'MCP output cap',                 amt: mo(mce.cost_saved_usd), n: Number(mce.events) || 0,             unit: 'capped results' },
@@ -4602,9 +4599,9 @@ var DB = (function() {
     // retain the component calculation above until their next regeneration.
     var actionSavings = s.action_savings;
     if (actionSavings) {
-      measuredMo = mo(actionSavings.logged_usd) + mo(actionSavings.routing_measured_usd) + mo(actionSavings.class_premium_usd || 0);
+      measuredMo = mo(actionSavings.logged_usd) + mo(actionSavings.class_premium_usd || 0);
       rereadMo = mo(actionSavings.reread_usd);
-      estimatedMo = mo(actionSavings.estimated_usd) + mo(actionSavings.routing_estimated_usd);
+      estimatedMo = mo(actionSavings.estimated_usd);
       gettingMo = mo(actionSavings.total_usd);
     }
     // Whole-cent display values from the payload: the parts shown on the card
@@ -4616,13 +4613,11 @@ var DB = (function() {
       var estSumCents = Object.keys(de).reduce(function(a, k) { return a + de[k]; }, 0);
       exactCents = {
         total: dispCents.total_cents,
-        // The write-class premium is measured and joins Logged actions (older payloads have none).
-        logged: dc.logged + dc.routing_measured + (Number(dc.class_premium) || 0),
+        logged: dc.logged + (Number(dc.class_premium) || 0),
         premium: Number(dc.class_premium) || 0,
         reread: dc.reread,
-        other: estSumCents + dc.routing_estimated,
+        other: estSumCents,
         est: de,
-        routingEstimated: dc.routing_estimated,
         avoidedKey: actionSavings.avoided_search_source
       };
     }
@@ -4631,7 +4626,7 @@ var DB = (function() {
     }
     function estCents(item) {
       var key = item.key === 'avoided_search' ? exactCents.avoidedKey : item.key;
-      return key === 'routing_estimated' ? exactCents.routingEstimated : exactCents.est[key];
+      return exactCents.est[key];
     }
     // Opportunity = realizable if you act; never realized, never summed into "getting".
     // output-waste is $ here; cache-drop is shown separately in TOKENS (re-written prefix) —
@@ -4667,6 +4662,17 @@ var DB = (function() {
     var routingTarget = mr.target_model || "Sonnet";
     var unusedSkills = Number(sp.unused_skills) || 0;
     var currOpus  = Math.round((Number(mr.current_opus_share) || 0) * 100);
+    var fmtPct = function(x) { return Math.round((Number(x) || 0) * 1000) / 10; };
+    var routingRealizedMo = mo(actionSavings && actionSavings.routing_usd != null
+      ? actionSavings.routing_usd : mr.realized_cost_usd);
+    var routingBaselinePct = fmtPct(mr.baseline_opus_share);
+    var routingAssumption = mr.baseline_source === 'pretool_baseline'
+      ? 'assuming ' + routingBaselinePct + '% Opus before Token Optimizer'
+      : (mr.baseline_opus_share != null
+        ? 'against a measured ' + routingBaselinePct + '% Opus baseline'
+        : 'against a stated Opus baseline');
+    var routingAltShare = mr.measured_baseline_opus_share;
+    var routingAltMo = mr.measured_baseline_realized_cost_usd != null ? mo(mr.measured_baseline_realized_cost_usd) : null;
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
 
     var html = '<div class="section-header">' +
@@ -4807,12 +4813,15 @@ var DB = (function() {
             ((actionSavings && actionSavings.reread_prices_available === false) || cp.reread_prices_available === false ?
               'Unpriced' : '~' + (exactCents ? moneyCents(exactCents.reread) : money(periodValue(rereadMo))))) + '</strong></span>' +
         '<span>Other estimates <strong>~' + (exactCents ? moneyCents(exactCents.other) : money(periodValue(estimatedMo))) + '</strong></span></div>' +
+      (Number(routingRealizedMo) > 0
+        ? '<p class="plain-line"><strong>Model routing:</strong> ~' + money(periodValue(routingRealizedMo)) + esc(per) +
+          ' ' + esc(routingAssumption) + (currOpus ? ' (now ' + currOpus + '% Opus)' : '') + '. Not in this total.</p>' : '') +
       (actionPricingIncomplete
         ? '<p class="plain-line">Some older history has no exact price, so this is a priced subtotal.</p>'
         : (!cp.available ? '<p class="plain-line">Repeat reads are not available here. Logged actions are still counted.</p>' : '')) +
       (mr.evidence === 'pending'
         ? '<p class="plain-line routing-pending">Model routing: re-measuring (' + Number(mr.pending_sessions || 0).toLocaleString() +
-          ' session' + (Number(mr.pending_sessions) === 1 ? '' : 's') + ' left). It is added to this total when the re-measurement finishes.</p>' : '') +
+          ' session' + (Number(mr.pending_sessions) === 1 ? '' : 's') + ' left). It stays out of this total and is shown separately when the re-measurement finishes.</p>' : '') +
       // Usage without a token-class split (Cursor totals, model-daily-only
       // history, legacy rows) sits outside both routing arms. Say so instead of
       // letting an empty or partial routing figure read as complete coverage.
@@ -4847,7 +4856,7 @@ var DB = (function() {
                   money(Number(op.class_premium_usd)) + ' more, not in the total.' : '')) : '',
           !cp.available ? 'Repeat-read coverage is unavailable here; logged actions are still included.' : ''
         ]) +
-        '<p>Logged actions include output trims, context reductions, setup changes and, when your earlier model mix is priced from your own usage, routing savings. ' +
+        '<p>Logged actions include output trims, context reductions and setup changes. ' +
           'Prices may be allocated from each session’s recorded model mix.</p>' +
         '<p>Repeat reads use recorded later turns up to each session’s next compaction. ' +
           'This assumes the removed context would otherwise have stayed until that compaction. ' +
@@ -4862,7 +4871,10 @@ var DB = (function() {
         ((mr.baseline_reference_priced || []).length
           ? '<p>Routing compares your earlier and current mix on one price list, the newest card of each family (' +
             esc(mr.baseline_reference_priced.map(function(f) { return f.charAt(0).toUpperCase() + f.slice(1); }).join(', ')) +
-            '), because your earlier mix records no model generations. The figure is listed under estimates.</p>' : '') +
+            '), because your earlier mix records no model generations. It is shown separately from the totals above.</p>' : '') +
+        (routingAltShare != null
+          ? '<p>Measured alternative: your earliest tracked month had ' + fmtPct(routingAltShare) + '% Opus' +
+            (routingAltMo != null ? '; the same comparison gives ~' + money(periodValue(routingAltMo)) + esc(per) : '') + '.</p>' : '') +
         (Math.abs(mo(mr.generation_price_delta_usd)) >= 0.01
           ? '<p>At the exact cards you ran, the same work cost about ' + money(Math.abs(mo(mr.generation_price_delta_usd))) +
             (Number(mr.generation_price_delta_usd) > 0 ? ' more' : ' less') +
@@ -4890,7 +4902,12 @@ var DB = (function() {
     var sia = (si && si.all_in) || null;
     if (sia && Number(sia.total_usd) > 0) {
       var siaParts = sia.components_usd || {};
-      var siaRouting = (Number(siaParts.routing_measured) || 0) + (Number(siaParts.routing_estimated) || 0);
+      var siaRouting = Number(sia.routing_usd) || ((Number(siaParts.routing_measured) || 0) + (Number(siaParts.routing_estimated) || 0));
+      var siaRoutingNote = sia.routing_baseline_opus_share != null
+        ? ((sia.routing_baseline_source === 'pretool_baseline' ? 'assuming ' : 'against a measured ') +
+          fmtPct(sia.routing_baseline_opus_share) + '% Opus' +
+          (sia.routing_baseline_source === 'pretool_baseline' ? ' before Token Optimizer' : ' baseline'))
+        : 'a stated assumption';
       var siaPending = sia.routing_pending || sia.remeasuring;
       var siaLeft = Math.max(Number(sia.routing_pending_sessions) || 0, Number(sia.remeasuring_sessions) || 0);
       html += '<div class="card savings-history" style="flex:1;min-width:min(100%,260px);padding:var(--s-4);">' +
@@ -4899,9 +4916,12 @@ var DB = (function() {
           (siaPending ? ' <span class="remeasuring-tag" style="font-size:0.45em;color:var(--c-text-dim);">so far</span>' : '') + '</div>' +
         (siaPending ? '<p class="plain-line remeasuring">Re-measuring older history (' + siaLeft.toLocaleString() +
           ' session' + (siaLeft === 1 ? '' : 's') + ' left). This total will grow when they finish.</p>' : '') +
-        '<p class="plain-line">Same four parts as the monthly total, added up since install.</p>' +
+        '<p class="plain-line">Same parts as the monthly total, added up since install.</p>' +
         fold('Breakdown and history',
-          '<p>Model routing: <strong>' + money(siaRouting) + '</strong> (estimated).</p>' +
+          '<p>Model routing: <strong>' + money(siaRouting) + '</strong> (' + esc(siaRoutingNote) + '), not in the total above.</p>' +
+          (sia.routing_measured_baseline_opus_share != null
+            ? '<p>Measured alternative: your earliest tracked month had ' + fmtPct(sia.routing_measured_baseline_opus_share) + '% Opus' +
+              (sia.routing_measured_baseline_realized_cost_usd != null ? '; the same comparison gives ' + money(sia.routing_measured_baseline_realized_cost_usd) : '') + '.</p>' : '') +
           (Number(sia.routing_unsplit_tokens) > 0
             ? '<p>' + Number(sia.routing_unsplit_tokens).toLocaleString() +
               ' tokens without a token-class split are left out of model routing.</p>' : '') +

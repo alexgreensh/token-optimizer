@@ -9,8 +9,9 @@ from test_savings_render import render
 
 
 def snapshot():
-    # Rounded one by one these parts print 39.84 + 393.29 + 47.72 + 35.52 = 516.37,
-    # while the exact total 516.375284 prints 516.38.
+    # Rounded one by one these parts print 39.84 + 47.72 + 35.52 = 123.08,
+    # while the exact total 123.084384 also prints 123.08. Model routing is
+    # disclosed separately and never enters this sum.
     return {
         "period_days": 30,
         "total_cost_usd": 39.8352,
@@ -68,12 +69,12 @@ def test_text_lines_add_up_to_all_in(measure, monkeypatch, capsys):
     measure.savings_report()
     out = capsys.readouterr().out
     lines = [ln for ln in out.splitlines()
-             if re.search(r"^\s+\+ (model routing|repeat reads|est\.)", ln)]
+             if re.search(r"^\s+\+ (repeat reads|est\.)", ln)]
     amounts = [cents(re.search(r"~\$([\d,.]+)/mo", ln).group(1)) for ln in lines]
     monthly = cents(re.search(r"Estimated monthly: \$([\d,.]+)", out).group(1))
     all_in = cents(re.search(r"ALL IN: ~\$([\d,.]+)/mo", out).group(1))
-    assert len(amounts) == 8
-    assert monthly + sum(amounts) == all_in == 51638
+    assert len(amounts) == 7
+    assert monthly + sum(amounts) == all_in == 12308
     # The measured table adds up as well.
     table = out.split("Cost Saved")[1].split("TOTAL (measured)")[0]
     rows = [cents(m) for m in re.findall(r"\$([\d.]+)$", table, re.M)]
@@ -86,11 +87,11 @@ def test_json_display_fields_add_up_and_keep_exact_values(measure, monkeypatch, 
     measure.savings_report(as_json=True)
     action = json.loads(capsys.readouterr().out)["action_savings"]
     display = action["display"]
-    assert action["net_total_usd"] == pytest.approx(516.375284)
+    assert action["net_total_usd"] == pytest.approx(123.084384)
     assert action["logged_usd"] == 39.8352
     parts = list(display["components_cents"].values()) + list(display["estimates_cents"].values())
-    assert sum(parts) == display["total_cents"] == 51638
-    assert display["total_usd"] == 516.38
+    assert sum(parts) == display["total_cents"] == 12308
+    assert display["total_usd"] == 123.08
 
 
 def test_dashboard_hero_parts_add_up(measure, monkeypatch):
@@ -101,5 +102,5 @@ def test_dashboard_hero_parts_add_up(measure, monkeypatch):
     logged = cents(re.search(r"Logged actions <strong>\$([\d,.]+)", actions).group(1))
     repeat = cents(re.search(r"Repeat reads avoided <strong>~\$([\d,.]+)", actions).group(1))
     other = cents(re.search(r"Other estimates <strong>~\$([\d,.]+)", actions).group(1))
-    assert total == 51638
+    assert total == 12308
     assert logged + repeat + other == total

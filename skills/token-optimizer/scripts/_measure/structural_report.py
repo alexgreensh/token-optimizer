@@ -11,7 +11,7 @@ import os
 import sys
 from datetime import datetime
 
-from . import _compat, structural_ledger as ledger, structural_listing as listing, structural_value as value
+from . import _compat, structural_ledger as ledger, structural_listing as listing, structural_value as value, structural_dedupe as dedupe
 
 NO_TRIMS = "no trims recorded yet"
 
@@ -19,10 +19,10 @@ NO_TRIMS = "no trims recorded yet"
 def _local_sessions(conn, home):
     out = []
     cloud = value.cloud_sessions(conn)
-    for uuid, path, project, metrics, first_day, date in conn.execute(
-            "SELECT session_uuid, jsonl_path, project, daily_metrics_json, first_activity_day, date FROM session_log"):
-        if value.scope_matches("global", project, home) and not value.proven_foreign(uuid, path, cloud):
-            out.append((value._session_start(metrics, first_day or date), path))
+    winners, _ = dedupe.canonical_sessions(conn, lambda uuid, path: value.proven_foreign(uuid, path, cloud))
+    for row in winners:
+        if value.scope_matches("global", row["project"], home) and not row["foreign"]:
+            out.append((value._session_start(row["metrics"], row["first_day"] or row["date"]), row["path"]))
     return out
 
 

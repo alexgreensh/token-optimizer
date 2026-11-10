@@ -103,6 +103,7 @@ def apply_listing_check(trims, sessions, chars_per_token, data_dir=None):
             t["listing_observation"] = obs
             if obs.get("observed_tokens") is None:
                 t["listing_check"] = "pending"
+                t["tokens"] = 0
                 continue
             factor = min(1.0, obs["observed_tokens"] / float(estimated)) if estimated > 0 else 0.0
             t["listing_check"] = "measured"

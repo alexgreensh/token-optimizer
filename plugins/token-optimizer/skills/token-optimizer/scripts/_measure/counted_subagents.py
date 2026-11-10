@@ -25,8 +25,10 @@ The facade is passed in (helpers and constants), so this module holds no
 import-time state and imports nothing from measure.
 """
 
+import hashlib
 import json
 import re
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -239,10 +241,20 @@ def event_info(conn, keys):
             out["se:%d" % rid] = (kind, detail or "", None)
     for chunk in range(0, len(ce), 500):
         part = ce[chunk:chunk + 500]
-        for rid, feature, pattern in conn.execute(
-                "SELECT id, feature, command_pattern FROM compression_events WHERE id IN (%s)"
+        for rid, feature, pattern, detail in conn.execute(
+                "SELECT id, feature, command_pattern, detail FROM compression_events WHERE id IN (%s)"
                 % ",".join("?" * len(part)), part):
-            out["ce:%d" % rid] = (feature, pattern or "", None)
+            marker = "missing-scope" if feature == "first_read_skeleton" and str(detail or "").endswith("; subagent") else None
+            out["ce:%d" % rid] = (feature, pattern or "", marker)
+        try:
+            for rid, tool_hash in conn.execute(
+                    "SELECT event_id,tool_id_hash FROM first_read_confirmation_scopes WHERE event_id IN (%s)"
+                    % ",".join("?" * len(part)), part):
+                key = "ce:%d" % rid
+                if key in out:
+                    out[key] = (out[key][0], out[key][1], tool_hash)
+        except sqlite3.OperationalError:
+            pass
     return out
 
 
@@ -258,13 +270,20 @@ class SessionScope:
         self.facade = facade
         self.files = subagent_files(path)
         self.location = {}
+        self.required_subagents = set()
+        self.fail_closed = False
         self.stats = collect_stats()
         self._walks = {}
-        if not self.files or not events:
+        if not events:
             return
         try:
             info = event_info(conn, [key for key, _ts in events])
         except Exception:
+            self.fail_closed = True
+            return
+        self.required_subagents = {key for key, data in info.items() if data[0] == "first_read_skeleton" and data[2]}
+        if not self.files:
+            self.stats["unlocated"] += len(self.required_subagents)
             return
         results = [(dt, -1, tid, name, cmd, size) for dt, tid, name, cmd, size in index_results(path, False)]
         for index, sub in enumerate(self.files):
@@ -279,6 +298,14 @@ class SessionScope:
                 self.stats["unlocated"] += 1
                 continue
             name, detail, _ = kind
+            if key in self.required_subagents:
+                hits = [r for r in results if r[2] and hashlib.sha256(str(r[2]).encode("utf-8", "replace")).hexdigest() == kind[2]]
+                scopes = {r[1] for r in hits}
+                if len(scopes) == 1 and next(iter(scopes)) >= 0:
+                    self._place(key, hits[:1], ev_dt, used, exact_id=True)
+                else:
+                    self.stats["ambiguous" if len(scopes) > 1 else "unlocated"] += 1
+                continue
             if name == "tool_archive_reexpand":
                 match = _TOOL_USE_ID_RX.search(detail)
                 hit = by_id.get(match.group(1)) if match else None
@@ -333,6 +360,8 @@ class SessionScope:
         """(turns, compacts, scope) to score this event against."""
         index = self.location.get(key)
         if index is None:
+            if self.fail_closed or key in self.required_subagents:
+                return [], [], SCOPE_SUBAGENT
             return parent_turns, parent_compacts, SCOPE_PARENT
         if index not in self._walks:
             turns, compacts, _ = walk(self.facade, self.files[index], sidechain=True)

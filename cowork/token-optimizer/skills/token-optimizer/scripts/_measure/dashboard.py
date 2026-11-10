@@ -3353,13 +3353,12 @@ def _collect_git_commits(days=None):
 def _collect_trends_data(days=None):
     """Collect trends data, preferring SQLite DB when available.
 
-    Falls back to live JSONL parsing if DB doesn't exist or is empty.
-    """
+    Falls back to live JSONL parsing if DB doesn't exist or is empty."""
     # Try SQLite first (faster, accumulated data)
     _measure_facade = _compat.facade()
     result = _measure_facade._collect_trends_from_db(days)
     if result is not None:
-        result["git_commits"] = _measure_facade._collect_git_commits(days)
+        from . import first_call_context; result["first_call_context"] = first_call_context.collect(_measure_facade.TRENDS_DB, _measure_facade.SNAPSHOT_DIR); result["git_commits"] = _measure_facade._collect_git_commits(days)
         return result
     # Fall back to live JSONL parsing
     result = _measure_facade._collect_trends_from_jsonl(days)

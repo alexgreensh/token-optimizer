@@ -1924,14 +1924,10 @@ def main():
             _measure_facade.conn.close()
         print(_measure_facade.json.dumps(_measure_facade._counted_cumulative_summary(), indent=2))
     elif _measure_facade.args[0] == "cohorts":
-        # First-read cohort tripwire control:
-        #   cohorts                       -> show live edit-rate + demotions
-        #   cohorts promote <lang:band..> -> clear a demotion (re-promote)
-        #   cohorts evaluate [--force]    -> recompute the verdict now
         _measure_facade.sub = _measure_facade.args[1] if len(_measure_facade.args) > 1 else "status"
         if _measure_facade.sub == "promote":
             _measure_facade.cleared = _measure_facade.cohorts_promote(_measure_facade.args[2:])
-            print(f"  Re-promoted {_measure_facade.cleared} cohort(s)." if _measure_facade.cleared
+            print(f"  Re-promoted {_measure_facade.cleared} cohort(s); eligible first reads may use target outlines." if _measure_facade.cleared
                   else "  No matching demoted cohorts to promote.")
         elif _measure_facade.sub == "evaluate":
             _measure_facade.evaluate_cohort_tripwire(force="--force" in _measure_facade.args)

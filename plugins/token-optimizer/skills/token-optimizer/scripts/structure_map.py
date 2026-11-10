@@ -2745,33 +2745,11 @@ def build_periphery_skeleton(
     *,
     limit: int = PERIPHERY_MAX_FILES,
     budget: int = PERIPHERY_BUDGET_CHARS,
+    shown_paths: Optional[list] = None,
 ) -> str:
-    """Build a bounded periphery skeleton block from resolved related files
-    Reuses ``summarize_code_file`` so the skeleton format is identical
-    to the existing one -- no new skeleton format. Capped by ``budget`` chars
-    and ``limit`` files. Returns ``""`` when nothing fits or no paths resolve.
-    Never raises.
-    """
-    parts: List[str] = []
-    total = 0
-    count = 0
-    for raw in related_paths:
-        if count >= limit or total >= budget:
-            break
-        p = Path(raw)
-        try:
-            result = summarize_code_file(p)
-        except Exception:
-            continue
-        if not result.replacement_text:
-            continue
-        chunk = f"# periphery: {p.name} ({result.replacement_type})\n{result.replacement_text}"
-        if total + len(chunk) > budget:
-            break
-        parts.append(chunk)
-        total += len(chunk)
-        count += 1
-    return "\n\n".join(parts)
+    """Build bounded periphery maps and optionally record included paths."""
+    from _measure.periphery_exposure import build
+    return build(related_paths, limit, budget, summarize_code_file, shown_paths)
 
 
 # ---------------------------------------------------------------------------

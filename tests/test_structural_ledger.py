@@ -292,7 +292,7 @@ def test_listing_check_credits_only_the_observed_shrink(m, tmp_path):
     assert capped[0]["tokens"] == 0
     pending = L.load_trims_from([_trim(L, ts, tokens=300, item="d")])
     LS.apply_listing_check(pending, [], 4.0)
-    assert pending[0]["listing_check"] == "pending" and pending[0]["tokens"] == 300
+    assert pending[0]["listing_check"] == "pending" and pending[0]["tokens"] == 0
 
 
 def test_pending_listing_trim_moves_to_estimated_band(m, monkeypatch):
@@ -304,7 +304,7 @@ def test_pending_listing_trim_moves_to_estimated_band(m, monkeypatch):
     conn.commit(); conn.close()
     trims = L.load_trims_from([_trim(L, day.astimezone().isoformat(), tokens=400)])
     out = R.compute(days=30, home=HOME, trims=trims)
-    assert out["tokens_saved"] == 0 and out["estimated"]["tokens_saved"] == 400
+    assert out["tokens_saved"] == 0 and out["estimated"]["tokens_saved"] == 0
     assert out["trims"][0]["tier"] == "estimated" and out["trims"][0]["listing_check"] == "pending"
 
 

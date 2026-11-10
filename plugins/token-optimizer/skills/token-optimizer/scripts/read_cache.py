@@ -870,9 +870,9 @@ def _ensure_savings_model_column(conn: sqlite3.Connection) -> None:
     _ensure_savings_columns(conn)
 
 
-def _log_savings_event(event_type: str, tokens_saved: int, session_id: str, detail: str) -> None:
+def _log_savings_event(event_type: str, tokens_saved: int, session_id: str, detail: str) -> bool:
     if tokens_saved <= 0:
-        return
+        return False
     conn: Optional[sqlite3.Connection] = None
     try:
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -899,7 +899,7 @@ def _log_savings_event(event_type: str, tokens_saved: int, session_id: str, deta
             pass
         cost_saved = tokens_saved * cost_per_mtok / 1_000_000
         if _savings_columns_verified:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO savings_events "
                 "(timestamp, event_type, tokens_saved, cost_saved_usd, session_id, session_uuid, detail, model, unjoinable, origin) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -910,7 +910,7 @@ def _log_savings_event(event_type: str, tokens_saved: int, session_id: str, deta
         else:
             # Column migration did not complete (locked DB): keep the event,
             # without origin, rather than lose it.
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO savings_events "
                 "(timestamp, event_type, tokens_saved, cost_saved_usd, session_id, session_uuid, detail, model, unjoinable) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -918,8 +918,9 @@ def _log_savings_event(event_type: str, tokens_saved: int, session_id: str, deta
                  session_id, session_uuid, detail, model, 1 if unjoinable else 0),
             )
         conn.commit()
+        return bool(conn.execute("SELECT 1 FROM savings_events WHERE rowid=?", (cursor.lastrowid,)).fetchone())
     except Exception:
-        pass
+        return False
     finally:
         if conn is not None:
             try:
@@ -990,6 +991,7 @@ def _first_read_compress(
     cached_content: Optional[str] = None,
     save_hook_context_enabled: bool = False,
     quiet: bool = True,
+    tool_use_id: str = "", parent_session_id: str = "",
 ) -> bool:
     """First-read skeleton path. Returns True iff it SERVED a skeleton
     (active mode emitted a deny+inject and the caller must stop).
@@ -1040,15 +1042,13 @@ def _first_read_compress(
             and cohort not in _demoted_cohorts()
             and result.replacement_text
         ):
-            # retarget: the Read TARGET is served full (never denied); the
-            # compression budget moves to PERIPHERY skeletons injected as
-            # additionalContext. Returns False so the caller serves the full
-            # target via the normal allow path. No ``first_read_skeleton`` event
-            # is emitted for the target, and the target-keyed ``active_fr:``
-            # marker is no longer armed here (periphery files carry their own,
-            # armed inside _inject_periphery_skeletons once U2 populates them).
+            from _measure import first_read_revive
+            if first_read_revive.enabled(SNAPSHOT_DIR / _TRIPWIRE_SIDECAR_NAME, language, cohort[1]):
+                if first_read_revive.serve(file_path, stat, language, cohort[1], session_id, content,
+                                           result, orig_tokens, estimate_tokens, _emit_pretool_response, SNAPSHOT_DIR, tool_use_id, _additional_context_within_cap, save_hook_context_enabled, parent_session_id):
+                    return True
             return _serve_first_read_retarget(
-                file_path, size, language, session_id, store, content, quiet,
+                file_path, size, language, session_id, store, content, quiet, tool_use_id,
             )
 
         # SHADOW (cohort not yet promoted): serve full, measure the opportunity.
@@ -1085,6 +1085,11 @@ def _first_read_compress(
             original_tokens=orig_tokens,
             compressed_tokens=skel_tokens,
         )
+        try:
+            from _measure.periphery_exposure import record_control
+            record_control(SNAPSHOT_DIR, session_id, tool_use_id, file_path, language, cohort[1])
+        except Exception:
+            pass
         # U5: record a tool_outputs row with source lineage so the shadow
         # first-read is self-identifiable from the SQLite store and joinable
         # to the file-archive meta. Keyed by a derived stable id so the row
@@ -1139,24 +1144,9 @@ def _inject_periphery_skeletons(
     store: "SessionStore",
     quiet: bool,
     target_band: str = "",
+    tool_use_id: str = "",
 ) -> None:
-    """Inject bounded skeletons of periphery (one-hop) files as additionalContext.
-
-    the Read target is served full by the caller; this hook point
-    adds skeletons of related files the agent would otherwise have to explore.
-    The reference graph is computed on-read, one hop out, and never persisted
-    (no DB/cache writes beyond the periphery edit-rate marker, which lives in
-    the existing per-session store).
-
-    Resolves one-hop relationships for the just-read target, builds a bounded
-    periphery block (PageRank-ordered once U3 lands), and emits it via
-    ``_emit_pretool_response(None, None, block)`` only when it fits
-    ``_additional_context_within_cap``; otherwise the block is dropped (the
-    target is still served full). Periphery-keyed ``active_fr:<periphery_path>``
-    edit-rate markers are armed with the TARGET's lang|band so the cohort
-    tripwire attributes a periphery edit to the target's cohort. Fail-open:
-    any error drops the block.
-    """
+    """Emit bounded periphery maps while leaving the target read unchanged."""
     try:
         from structure_map import (
             build_periphery_skeleton, resolve_one_hop_relationships,
@@ -1166,7 +1156,8 @@ def _inject_periphery_skeletons(
         related = resolve_one_hop_relationships(file_path, language, content=content)
         if not related:
             return
-        block = build_periphery_skeleton(related)
+        shown = []
+        block = build_periphery_skeleton(related, shown_paths=shown)
         if not block:
             return
         message = (
@@ -1178,8 +1169,11 @@ def _inject_periphery_skeletons(
         if not _additional_context_within_cap(text, _hook_additional_context_saved()):
             # Never withhold the target: drop the periphery block over the cap.
             return
-        _arm_periphery_markers(related, language, target_band, store)
         _emit_pretool_response(None, None, text)
+        sys.stdout.flush()
+        _arm_periphery_markers(shown, language, target_band, store)
+        from _measure.periphery_exposure import record_exposures
+        record_exposures(SNAPSHOT_DIR, session_id, tool_use_id, shown, language, target_band)
     except Exception:
         return
 
@@ -1192,10 +1186,7 @@ def _arm_periphery_markers(
 ) -> None:
     """Arm periphery-keyed ``active_fr:<periphery_path>`` edit-rate markers.
 
-    The marker stores the TARGET's lang|band (not the periphery file's) so the
-    cohort tripwire attributes a subsequent edit of a periphery file to the
-    target's cohort -- the signal that the periphery skeleton omitted
-    content the model then needed. Best-effort; never raises.
+    The marker stores the target's lang|band for cohort attribution.
     """
     if store is None:
         return
@@ -1225,6 +1216,7 @@ def _serve_first_read_retarget(
     store: "SessionStore",
     content: str,
     quiet: bool,
+    tool_use_id: str = "",
 ) -> bool:
     """ACTIVE mode, retargeted Returns False so the caller serves the
     Read TARGET in full -- the target is never replaced by a skeleton.
@@ -1244,7 +1236,7 @@ def _serve_first_read_retarget(
     try:
         _inject_periphery_skeletons(
             file_path, content, language, session_id, store, quiet,
-            target_band=_first_read_size_band(size),
+            target_band=_first_read_size_band(size), tool_use_id=tool_use_id,
         )
     except Exception:
         pass
@@ -1344,6 +1336,17 @@ def _resolve_first_read_marker(
 
 
 def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
+    from _measure.structure_funnel import Funnel, append
+    funnel = Funnel(str(hook_input.get("session_id") or ""), str(hook_input.get("agent_id") or ""),
+                    str(hook_input.get("tool_use_id") or ""), lambda row: append(SNAPSHOT_DIR, row))
+    funnel.row["mode"] = mode if mode in READ_CACHE_MODES else "other"
+    try:
+        return _handle_read_impl(hook_input, mode, quiet, funnel)
+    finally:
+        funnel.finish()
+
+
+def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel) -> None:
     """Handle a PreToolUse Read event. Caller must verify tool_name == "Read"."""
 
     tool_input = hook_input.get("tool_input", {})
@@ -1366,6 +1369,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
     save_hook_context_enabled = _hook_additional_context_saved()
 
     if _is_contextignored(file_path):
+        funnel.row["exit_reason"] = "contextignore"
         reason = f"Blocked by .contextignore: {Path(file_path).name}"
         # The read is fully denied, so the tokens that would have entered context
         # are genuinely saved (measured / realized — TO performed the prevention).
@@ -1408,6 +1412,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         return
 
     if ext in BINARY_EXTENSIONS:
+        funnel.row["exit_reason"] = "binary"
         # Warn about expensive binary ingestion (PDF, images, Office docs)
         try:
             binary_stat = os.stat(file_path)
@@ -1460,14 +1465,10 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
 
     store = _make_store(session_id)
     if store is None:
+        funnel.row["exit_reason"] = "store_unavailable"
         return
 
-    # U-G3: if a proactive prior-session hint surfaced this exact file to this
-    # session, the agent reading it is observed evidence the hint was followed.
-    # Whether it spared an exploratory search is counterfactual -- we see the
-    # read, not the search that did not happen -- so the credit is a fixed
-    # avoided-search ESTIMATE (claimed once: claim_hint_follow flips the flag),
-    # filed in the estimated tier downstream. Best-effort.
+    # Hint follow-through is an estimate, not a measured avoided read.
     try:
         if store.claim_hint_follow(file_path):
             _log_savings_event(
@@ -1479,8 +1480,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
     except Exception:
         pass
 
-    # A compaction since the last Read dropped every earlier read from the
-    # model's context: forget them so this Read is judged a first read.
+    # Compaction resets the read ledger for this context.
     try:
         if _scan_for_compaction(store, hook_input.get("transcript_path")):
             if hook_input.get("agent_id"):
@@ -1498,25 +1498,19 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
     except Exception:
         pass
 
-    # U2: snapshot the reset epoch AFTER the compaction scan above; a reset
-    # landing before the record write drops the guarded upsert (reset_epoch.py).
+    # Snapshot after compaction so guarded writes respect the reset epoch.
     reset_epoch = snapshot_reset_epoch(store)
     try:
         entry = store.get_file_entry(file_path)
     except Exception:
         return
+    funnel.state(entry is not None)
 
-    # F1b: tool_use_id idempotency. The host does not expose the merged hook
-    # set, so double-registration from another settings layer can make the same
-    # PreToolUse/Read fire twice. Without this guard, fire #1 creates the
-    # file_reads entry and fire #2 denies the read as "redundant" -- even though
-    # it is the same tool call and the user has never actually read the file.
-    # The fix: store the tool_use_id on the entry and, on a subsequent fire with
-    # the SAME tool_use_id, allow the read (it is the same call, not a reread).
-    # A genuine reread has a DIFFERENT tool_use_id and is still blocked.
+    # Duplicate hook invocations for one tool use must not deny the first read.
     current_tool_use_id = str(hook_input.get("tool_use_id", "") or "")
 
     if entry is None:
+        funnel.row["exit_reason"] = "first_read"
         try:
             stat = os.stat(file_path)
         except OSError:
@@ -1553,15 +1547,12 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
                 pass
         _reset_replacement_state(entry)
         store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
-        # U5: first-read skeleton. Active cohorts serve a skeleton (returns True,
-        # we stop here); others fall through to serve the full file + shadow-log.
-        # Reuses content delta mode already read this turn (even when too large to
-        # persist) so the file is never read twice.
+        # Reuse cached content for the first-read decision when available.
         if _first_read_compress(
             file_path, stat, offset, limit, language, session_id, store, mode,
             cached_content=entry.get("cached_content") or delta_content,
             save_hook_context_enabled=save_hook_context_enabled,
-            quiet=quiet,
+            quiet=quiet, tool_use_id=current_tool_use_id, parent_session_id=str(hook_input.get("session_id") or ""),
         ):
             return
         _log_decision(
@@ -1588,14 +1579,10 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
 
     _ensure_entry_defaults(entry)
 
-    # F1b: tool_use_id idempotency guard. If the current tool_use_id matches
-    # the one stored on the entry, this is the same PreToolUse/Read firing again
-    # (double-registration from another settings layer). Allow the read -- it is
-    # NOT a genuine reread, and denying it would block a first-ever read as
-    # "redundant" (the damage from the double-hook bug). A genuine reread has a
-    # different tool_use_id and falls through to the normal redundant check.
+    # A repeated tool-use ID is the same call, not a reread.
     stored_tool_use_id = str(entry.get("last_tool_use_id", "") or "")
     if current_tool_use_id and stored_tool_use_id == current_tool_use_id:
+        funnel.row["exit_reason"] = "duplicate_tool_use"
         _log_decision(
             "allow",
             file_path,
@@ -1618,14 +1605,12 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         )
         return
 
-    # Update the stored tool_use_id so a subsequent double-fire of THIS call
-    # is also caught. This is done after the idempotency check and before the
-    # redundant-read evaluation, so the entry always reflects the latest call.
     entry["last_tool_use_id"] = current_tool_use_id
 
     try:
         current_stat = os.stat(file_path)
     except OSError:
+        funnel.row["exit_reason"] = "file_unavailable"
         store.delete_file_entry(file_path)
         _log_decision(
             "allow",
@@ -1671,7 +1656,9 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
                 range_covered = True
                 break
 
+    funnel.metadata(mtime_match, size_match, range_covered)
     if not (mtime_match and size_match and range_covered):
+        funnel.row["exit_reason"] = "metadata_or_range"
         # v5.0: Delta mode -- return diff instead of allowing full re-read
         delta_enabled = _is_v5_delta_enabled()
         cached_content_after_read = None
@@ -1890,8 +1877,10 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             file_tokens_est=tokens_est,
         )
     eligible_structure = bool(summary and summary.eligible and reason_code == "ok")
+    funnel.structure(eligible_structure, reason_code)
 
     if mode in {"shadow", "warn"} or (mode == "soft_block" and not eligible_structure):
+        funnel.row["exit_reason"] = "nonblocking"
         decision = "warn" if mode == "warn" else "allow"
         entry["last_structure_reason"] = reason_code
         entry["last_structure_confidence"] = summary.confidence if summary else 0.0
@@ -1922,6 +1911,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         return
 
     if eligible_structure and summary is not None:
+        funnel.row["exit_reason"] = "structure_eligible"
         if _check_escape_hatch(
             entry, store, file_path, session_id, mode, offset, limit,
             tokens_est, language, True, summary, save_hook_context_enabled, quiet, reset_epoch,
@@ -1981,12 +1971,6 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             save_hook_additional_context_enabled=save_hook_context_enabled,
             confidence=summary.confidence,
         )
-        _log_savings_event(
-            "structure_map",
-            net_saved_tokens_est,
-            session_id,
-            f"{Path(file_path).name}:{summary.replacement_type}:repeat={repeat_count}",
-        )
         # v5.0: Structure map beta telemetry
         if _is_v5_structure_map_beta():
             try:
@@ -2012,6 +1996,11 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
                 file=sys.stderr,
             )
         _emit_pretool_response("deny", reason, additional_context)
+        sys.stdout.flush()
+        funnel.row["output_emitted"] = True
+        funnel.row["event_written"] = _log_savings_event(
+            "structure_map", net_saved_tokens_est, session_id,
+            f"{Path(file_path).name}:{summary.replacement_type}:repeat={repeat_count}")
         return
 
     if mode == "block":

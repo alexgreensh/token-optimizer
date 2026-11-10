@@ -368,6 +368,12 @@ def _emit_session_start_stdout(parts, hook_input: dict) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _observe_setup_budget(hook_input: dict) -> None:
+    if measure.detect_runtime() == "claude":
+        from _measure.setup_budget_monitor import observe_hook
+        observe_hook(hook_input, measure.TRENDS_DB)
+
+
 def _sub_ensure_health(hook_input: dict) -> None:
     """``measure.py ensure-health --once-mark`` (hooks.json entry 1).
 
@@ -624,6 +630,7 @@ def main() -> int:
     _runner_budget(8, subcommand_count_hint=pending)
 
     _capture("ensure-health", _sub_ensure_health, hook_input)
+    _capture("setup-budget-observation", _observe_setup_budget, hook_input)
     _capture("quality-cache --force", _sub_quality_cache_force, hook_input)
     if is_compact:
         _capture("compact-restore --compact", _sub_compact_restore_compact,

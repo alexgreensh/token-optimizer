@@ -67,6 +67,16 @@ def render_savings(savings, with_story=True, extra=None):
                     'renderSavings(); process.stdout.write(el.innerHTML);', data, with_story)
 
 
+def test_first_call_chart_renders_in_savings_view():
+    context = {'months': [{'month': '2026-11', 'median': 1000, 'p25': 800, 'p75': 1200,
+                           'n': 2, 'components': {'skills': {'median': 50, 'observed': 2}}}],
+               'trim_dates': ['2026-11-03']}
+    html = render_savings({}, extra={'trends': {'first_call_context': context}})
+    assert 'Context before your first message' in html
+    assert 'Skills listing: 50 estimated tokens (2/2 observed)' in html
+    assert '2026-11-03' in html and '<svg' in html
+
+
 def effect():
     return {
         'available': True,

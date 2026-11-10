@@ -8,8 +8,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from . import _compat, structural_ledger as ledger, structural_listing as listing, structural_value as value
 
@@ -54,7 +55,7 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
             from . import structural_archives
             trims = ledger.load_trims(f.SNAPSHOT_DIR)
             trims += structural_archives.discover(f.CLAUDE_DIR, trims, estimate_tokens)
-        if not trims:
+        if not trims and not f.TRENDS_DB.exists():
             return zero
         conn = _open_db(f)
         if conn is None:
@@ -69,6 +70,14 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
                     t["tier"] = "measured"
             start, end = value.window(days, now)
             card = value.card_resolver(f)
+            from . import setup_budget_monitor, setup_connector_ledger
+            from token_estimate import estimate_tokens
+            window_start = datetime.strptime(start, "%Y-%m-%d").astimezone().isoformat()
+            window_end = (now or datetime.now()).astimezone().isoformat()
+            budget = setup_budget_monitor.measured_values(conn, trims, estimate_tokens, card, window_start, window_end)
+            connector = setup_connector_ledger.measured_values(conn, trims, estimate_tokens, card, window_start, window_end)
+            if not trims and not budget["calls"] and not connector["calls"]:
+                return {**zero, "budget_observed": budget, "connector_observed": connector}
             real = value.value_trims(conn, trims, start, end, card, home)
             pstart, pend = value.window(projection_days, now)
             proj = value.value_trims(conn, trims, pstart, pend, card, home, projected=True)
@@ -100,14 +109,16 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
                     "cost_saved_usd": round(_sum(rs, "cost_saved_usd"), 4), "trims": len(rs)}
 
         return {
-            "events": int(_sum(meas, "requests")),
-            "tokens_saved": int(_sum(meas, "tokens_saved")),
-            "cost_saved_usd": round(_sum(meas, "cost_saved_usd"), 4),
-            "read_savings_usd": round(_sum(meas, "read_usd"), 4),
-            "write_1h_savings_usd": round(_sum(meas, "write_1h_usd"), 4),
-            "write_5m_savings_usd": round(_sum(meas, "write_5m_usd"), 4),
+            "events": int(_sum(meas, "requests")) + budget["calls"] + connector["calls"],
+            "tokens_saved": int(_sum(meas, "tokens_saved")) + budget["tokens_saved"] + connector["tokens_saved"],
+            "cost_saved_usd": round(_sum(meas, "cost_saved_usd") + budget["usd"] + connector["usd"], 8),
+            "read_savings_usd": round(_sum(meas, "read_usd") + budget["read_usd"] + connector["read_usd"], 8),
+            "write_1h_savings_usd": round(_sum(meas, "write_1h_usd") + budget["write_1h_usd"] + connector["write_1h_usd"], 8),
+            "write_5m_savings_usd": round(_sum(meas, "write_5m_usd") + budget["write_5m_usd"] + connector["write_5m_usd"], 8),
             "baseline_source": "trim_ledger",
-            "baseline_date": min(r["ts"] for r in rows),
+            "baseline_date": min([r["ts"] for r in rows] +
+                                 [c["changed_at"] for c in budget["candidates"] if c["calls"]] +
+                                 [c["changed_at"] for c in connector["actions"] if c["calls"]], default=None),
             "overhead_delta": int(_sum([r for r in open_meas if r["scope"] == "global"], "tokens_per_call")),
             "evidence": "measured", "method": "trim_ledger", "status": "ok", "message": "",
             "trims": rows,
@@ -116,6 +127,7 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
             "projected_30d": {
                 k: {"tokens": int(_sum(tiers[k], "projected_30d_tokens")),
                     "usd": round(_sum(tiers[k], "projected_30d_usd"), 4)} for k in ("measured", "estimated")},
+            "budget_observed": budget, "connector_observed": connector,
             "requests": real["requests"], "unmatched_requests": real["unmatched_requests"],
             "unpriced_tokens": real["unpriced_tokens"], "by_day": real["days"],
             **cover,
@@ -194,6 +206,24 @@ def cli(argv=None):
     sd.add_argument("--ts", default="", help="when the trims took effect (default: newest README mtime)")
     sd.add_argument("--apply", action="store_true")
     sd.add_argument("--revert", default="", help="void a previous seed batch id")
+    oc = sub.add_parser("observed-change", help="compare two transcripts without booking savings")
+    oc.add_argument("--before", required=True)
+    after = oc.add_mutually_exclusive_group(required=True)
+    after.add_argument("--after")
+    after.add_argument("--after-manifest", help="JSON array of session_id and path")
+    oc.add_argument("--changed-at", required=True)
+    oc.add_argument("--component", required=True,
+                    choices=("skill_listing", "deferred_tools_delta", "mcp_instructions_delta"))
+    oc.add_argument("--target", action="append", default=[])
+    bo = sub.add_parser("budget-observations", help="show unbooked observed budget-change candidates")
+    bo.add_argument("--days", type=int, default=30)
+    cd = sub.add_parser("connector-disconnected", help="record an explicitly disconnected connector")
+    cd.add_argument("--project", required=True, help="project path or encoded project scope")
+    cd.add_argument("--before", required=True, help="transcript containing the prior listing")
+    cd.add_argument("--changed-at", required=True)
+    cd.add_argument("--component", required=True, choices=("deferred_tools_delta", "mcp_instructions_delta"))
+    cd.add_argument("--target", action="append", required=True)
+    cd.add_argument("--apply", action="store_true", help="confirm the connector was disconnected")
     a = ap.parse_args(argv)
     if a.cmd == "status":
         _print(compute(days=a.days, f=f))
@@ -215,6 +245,42 @@ def cli(argv=None):
     elif a.cmd == "seed":
         from . import structural_seed
         _print(structural_seed.run(a, f))
+    elif a.cmd == "observed-change":
+        from . import setup_attachment_counter
+        from token_estimate import estimate_tokens
+        if a.after_manifest:
+            with open(a.after_manifest, encoding="utf-8") as fh:
+                entries = json.load(fh)
+            sessions = setup_attachment_counter.manifest_sessions(entries)
+        else:
+            sessions = [{"session_id": "one", "rows": setup_attachment_counter.read_transcript(a.after)}]
+        r = setup_attachment_counter.measure_sessions(
+            setup_attachment_counter.read_transcript(a.before), sessions, a.changed_at, a.component,
+            estimate_tokens, value.card_resolver(f), targets=a.target)
+        _print({"booked": False, "attribution_verified": False,
+                "token_counts": "estimated from observed attachment text", "component": a.component, **r})
+    elif a.cmd == "budget-observations":
+        from . import setup_budget_monitor
+        from token_estimate import estimate_tokens
+        if not f.TRENDS_DB.is_file():
+            _print({"booked": False, "attribution_verified": False, "candidates": []})
+        else:
+            now = datetime.now(timezone.utc)
+            uri = f.TRENDS_DB.resolve().as_uri() + "?mode=ro"
+            with sqlite3.connect(uri, uri=True) as conn:
+                _print(setup_budget_monitor.evaluate(conn, estimate_tokens, value.card_resolver(f),
+                                                    (now - timedelta(days=max(1, a.days))).isoformat(), now.isoformat()))
+    elif a.cmd == "connector-disconnected":
+        from . import setup_connector_ledger
+        project = ledger.encode_project(os.path.realpath(a.project)) if os.path.isabs(a.project) else a.project
+        conn = f._init_trends_db() if a.apply else sqlite3.connect(":memory:")
+        try:
+            registered = setup_connector_ledger.register(conn, project, a.component, a.changed_at,
+                                                          a.before, a.target, True)
+        finally:
+            conn.close()
+        _print({"registered": registered} if a.apply else
+               {"dry_run": True, "eligible": registered, "duplicate_checked": False})
     else:
         ap.print_help()
         return 2

@@ -270,7 +270,8 @@ def test_ttl_sidecar_uses_live_clock_runtime_memo_and_facade_state(m, monkeypatc
     snapshot.mkdir()
     monkeypatch.setattr(m, 'SNAPSHOT_DIR', snapshot)
     monkeypatch.setattr(m, 'detect_runtime', Mock(return_value='fixture-runtime'))
-    compute = Mock(return_value={'period_days': 7, 'platform': 'fixture-runtime', 'waste': 1})
+    # 'engine': the sidecar only serves payloads from the current rebuild engine.
+    compute = Mock(return_value={'period_days': 7, 'platform': 'fixture-runtime', 'waste': 1, 'engine': 2})
     monkeypatch.setattr(m, '_get_cache_ttl_waste', compute)
     monkeypatch.setattr(m, '_cache_health_memo', None)
     clock = SimpleNamespace(time=Mock(return_value=1000.0))

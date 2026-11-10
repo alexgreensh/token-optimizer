@@ -256,27 +256,9 @@ def test_site2_output_fraction_includes_short_sessions(measure):
 # Site 3: _estimate_cache_drop_savings — filter excludes short drop sessions
 # ---------------------------------------------------------------------------
 
-def test_site3_cache_drop_includes_short_sessions(measure):
-    """_estimate_cache_drop_savings counts sessions with max_call_gap > TTL.
-    A short automation session that had a cache drop is still a real cache drop.
-    The filter should not exclude it.
-    """
-    mod, tmp = measure
-    # 2 big sessions with cache drops + 3 short sessions with cache drops
-    sessions = []
-    for i in range(2):
-        sessions.append(_big_session(max_call_gap_seconds=600))
-    for i in range(3):
-        sessions.append(_short_session(max_call_gap_seconds=600))
-    _seed_db(tmp, sessions)
-
-    result = mod._estimate_cache_drop_savings(days=30)
-    # With filter: drop_sessions=2 (only big sessions)
-    # Without filter: drop_sessions=5 (all sessions with gaps)
-    assert result["drop_sessions"] == 5, (
-        f"Expected 5 drop sessions (2 big + 3 short), got {result['drop_sessions']}. "
-        f"The filter excluded short sessions that had real cache drops."
-    )
+# Site 3 moved: the cache-drop estimate now reads transcripts (no quality
+# filter exists there); test_cache_rebuild_engine.py::
+# test_short_automation_session_still_counts covers a short session.
 
 
 # ---------------------------------------------------------------------------

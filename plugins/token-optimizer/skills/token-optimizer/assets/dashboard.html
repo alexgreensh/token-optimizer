@@ -4627,7 +4627,13 @@ var DB = (function() {
     // its $ is Anthropic-specific (OpenAI/OpenCode cache writes are free), but the token count
     // is a provider-neutral fact, matching Claude Code's own token-denominated display.
     var recl = s.stale_reads_reclaimable || {};
-    var cdTokensMo = Math.round((Number(cd.est_drops) || 0) * (Number(cd.prefix_tokens) || 0) / Math.max(days, 1) * 30);
+    var cdTokensMo = Math.round((Number(cd.rebuilt_tokens) > 0 ? Number(cd.rebuilt_tokens)
+      : (Number(cd.est_drops) || 0) * (Number(cd.prefix_tokens) || 0)) / Math.max(days, 1) * 30);
+    // The cache TTL this user's own writes show: 1 hour (Claude Code) or 5 minutes.
+    var cdShortTtl = Number(cd.ttl_seconds) > 0 && Number(cd.ttl_seconds) < 3600;
+    var cdCacheName = cdShortTtl ? 'the 5-minute cache' : (Number(cd.ttl_seconds) >= 3600 ? 'the 1-hour cache' : 'the cache window');
+    var cdResume = cdShortTtl ? 'Resume within 5 minutes' : 'Resume within the hour';
+    var cdRebuilds = Number(cd.est_drops) || 0;
     // The big opportunity number holds only evidence-backed items (unused skills,
     // stale re-reads, full-file Writes). Routing rests on an assumed share of your
     // Opus work, so it gets its own line below the number and is never added in.
@@ -4886,7 +4892,7 @@ var DB = (function() {
       parts.push('Route routine work to lighter models and keep Opus for the work that needs it. The routing line above shows the size of that assumption.');
     }
     if (cdTokensMo > 0) {
-      parts.push('Resume within the hour, or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past the cache window and re-wrote the prefix, about ' + cdTokensMo.toLocaleString() + ' tokens' + per + (cdCostMo > 0 ? ', worth about ' + money(cdCostMo) + per + ' at API rates' : '') + '.');
+      parts.push(cdResume + ', or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past ' + cdCacheName + ' and re-wrote the prefix' + (cdRebuilds > 0 ? ' ' + cdRebuilds.toLocaleString() + ' time' + (cdRebuilds === 1 ? '' : 's') : '') + ', about ' + cdTokensMo.toLocaleString() + ' tokens' + per + (cdCostMo > 0 ? ', worth about ' + money(cdCostMo) + per + ' at API rates' : '') + '.');
     }
     if ((Number(ow.cost_saved_usd) || 0) > 0) {
       parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + moneyCents(oppCents.output) + per + ' in output.');
@@ -4929,11 +4935,11 @@ var DB = (function() {
       }
       if (cdTokensMo > 0) {
         html += '<div class="cache-drop-opportunity" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
-          'Cache drops (an opportunity, not a measurement): ' + (Number(cd.drop_sessions) || 0) + ' sessions idled past the cache window and re-wrote ~' + fmtTok(cdTokensMo) + ' tokens' + esc(per) + ' of prefix' +
+          'Cache drops (an opportunity, not a measurement): ' + (Number(cd.drop_sessions) || 0) + ' sessions idled past ' + cdCacheName + ' and re-wrote ~' + fmtTok(cdTokensMo) + ' tokens' + esc(per) + ' of prefix' +
           (cdCostMo > 0 ? ', about <span style="color:var(--c-amber);">' + money(cdCostMo) + esc(per) + '</span> at API rates' : '') + '.' +
           '</div>';
         html += '<div class="plain-line">Not part of the savings number above.</div>';
-        html += fold('How the cache drop figure is priced', '<p>Cache write rate minus the cache read it would have cost, at the models you ran. It is not part of the number above.</p>');
+        html += fold('How the cache drop figure is priced', '<p>Each rebuild is the prefix the cache had held before the gap, priced at its own cache write rate (1 hour or 5 minutes) minus the cache read it would have cost, at the models you ran and at API rates. It is not part of the number above.</p>');
       }
       if (routingPotentialMo > 0) {
         html += '<div class="routing-assumption" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +

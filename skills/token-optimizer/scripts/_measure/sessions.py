@@ -1126,6 +1126,9 @@ def parse_session_turns(filepath):
                     "gap_since_prev_seconds": gap_since_prev_seconds,
                     "tools_used": tools,
                     "cost_usd": round(cost, 6),
+                    # Stable across copies of one transcript: cache health
+                    # dedupes a synced or copied session by it.
+                    "request_id": req_key,
                 }
                 ctx_usage = _measure_facade._context_usage(usage)
                 if ctx_usage is not usage:

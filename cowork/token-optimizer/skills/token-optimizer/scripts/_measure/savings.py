@@ -3310,105 +3310,57 @@ def _estimate_output_waste(days=None):
 
 
 def _estimate_cache_drop_savings(days=None):
-    """Estimate cost of mid-session cache drops (the 'coffee-break reload').
+    """Cache rebuilds after idle gaps (the 'coffee-break reload'), in dollars.
 
-    When a session goes quiet longer than the cache TTL, the cached prefix
-    expires and the next turn pays a full cache-WRITE again instead of a cheap
-    cache-read. Sessions whose max call gap exceeds the TTL almost certainly ate
-    at least one such reload. The avoidable cost is the re-written prefix at the
-    5-minute cache-write rate minus the cache-read rate it would have cost with
-    the cache alive, priced per exact model generation from the models those
-    sessions recorded (cache-write tokens as the weight). A model without an exact
-    rate card adds nothing and is reported as `unpriced_share`; sessions with no
-    per-model record use the window's model mix. This is the behavioral
-    opportunity Token Optimizer coaches away (compact before a break, or use the
-    1h cache). Labelled estimated/opportunity. Never raises.
+    Reads the same engine as cache health (`_cache_ttl_waste_cached`), so the
+    fold and the health check never disagree. A rebuild is a turn that, after
+    a gap longer than the cache TTL the user's own writes show (1 hour for a
+    Claude Code user writing 1h caches, 5 minutes for a 5m user), re-wrote the
+    prefix the previous turn had cached. Each one is priced on the prefix it
+    actually rebuilt (min of the resume write and the prior cached prefix), at
+    that turn's 1h/5m write rate for its model, minus the cache read it would
+    have cost with the cache alive. Only rebuilds whose resume turn falls in
+    the window count, and a transcript copied into two directories counts
+    once. Dollars are at API rates. Never raises.
 
-    Returns {drop_sessions, est_drops, prefix_tokens, cost_saved_usd, by_class,
-    rate_basis, unpriced_share, evidence}.
-    OPPORTUNITY tier: counts drops that ALREADY happened (TO does not yet prevent
-    them); the cost is reclaimable by compacting before breaks / using the 1h cache,
-    not a realized saving. Never summed into the realized total.
+    Returns {drop_sessions, est_drops, prefix_tokens, rebuilt_tokens,
+    ttl_seconds, cost_saved_usd, by_class, rate_basis, price_basis,
+    unpriced_share, evidence}. `est_drops * prefix_tokens` approximates
+    `rebuilt_tokens` (the average rebuilt prefix); prefer rebuilt_tokens.
+    OPPORTUNITY tier: rebuilds that already happened, avoidable by resuming
+    inside the TTL. Never summed into the realized total.
     """
     _measure_facade = _compat.facade()
-    zero = {"drop_sessions": 0, "est_drops": 0, "prefix_tokens": 0,
-            "cost_saved_usd": 0.0, "evidence": "opportunity"}
+    zero = {"drop_sessions": 0, "est_drops": 0, "prefix_tokens": 0, "rebuilt_tokens": 0,
+            "ttl_seconds": None, "cost_saved_usd": 0.0, "evidence": "opportunity"}
     try:
-        if not _measure_facade.TRENDS_DB.exists():
+        health = _measure_facade._cache_ttl_waste_cached(days=days) or {}
+        rebuild = health.get("rebuild") or {}
+        events = int(rebuild.get("events", 0) or 0)
+        tokens = int(rebuild.get("tokens", 0) or 0)
+        if events <= 0 or tokens <= 0:
             return zero
-        cutoff = (_measure_facade.datetime.now() - _measure_facade.timedelta(days=days)).strftime("%Y-%m-%d")
-        conn = _measure_facade._init_trends_db()
-        _measure_facade.ensure_activity_view(conn)
-        try:
-            # Quality filter removed (audit 2026-08-29): a short automation
-            # session that had a cache drop is still a real cache drop.
-            drop_where = ("FROM session_activity "
-                          "WHERE date >= ? AND max_call_gap_seconds > ? "
-                          "AND input_tokens IS NOT NULL "
-                          "AND COALESCE(is_sidechain, 0) = 0")
-            drop_sessions = conn.execute(
-                "SELECT COUNT(*) " + drop_where, (cutoff, _measure_facade._CACHE_DROP_GAP_SECONDS),
-            ).fetchone()[0] or 0
-            breakdowns = [r[0] for r in conn.execute(
-                "SELECT model_usage_breakdown_json " + drop_where,
-                (cutoff, _measure_facade._CACHE_DROP_GAP_SECONDS))] if drop_sessions > 0 else []
-        finally:
-            conn.close()
-        if drop_sessions <= 0:
-            return zero
-        # Use the measured current overhead as the prefix fallback when no JSONL
-        # session-start baselines are available, so the estimate still computes.
-        prefix = _measure_facade._per_session_prefix_tokens(fallback=_measure_facade._current_overhead_tokens() or 0)
-        if prefix <= 1:
-            return {**zero, "drop_sessions": int(drop_sessions)}
-        # Conservative: one avoidable reload per qualifying session.
-        est_drops = int(drop_sessions)
-        tier_data = _measure_facade.PRICING_TIERS.get(_measure_facade._load_pricing_tier(), _measure_facade.PRICING_TIERS["anthropic"])
-        weights = {}
-        for blob in breakdowns:
-            try:
-                recorded = _measure_facade.json.loads(blob) if blob else None
-            except (TypeError, ValueError):
-                continue
-            for model, parts in (recorded.items() if isinstance(recorded, dict) else ()):
-                written = parts.get("cache_create") if isinstance(parts, dict) else None
-                if isinstance(written, int) and not isinstance(written, bool) and written > 0:
-                    weights[model] = weights.get(model, 0) + written
-        total_weight = sum(weights.values())
-        write_rate = read_rate = 0.0
-        unpriced_share = 0.0
-        rate_basis = "session_models"
-        priced_weight = 0
-        for model, weight in weights.items():
-            card = _measure_facade._counted_exact_card(model, tier_data) or {}
-            if card.get("cache_write") is None or card.get("cache_read") is None:
-                continue
-            priced_weight += weight
-            write_rate += weight * float(card["cache_write"]) / total_weight
-            read_rate += weight * float(card["cache_read"]) / total_weight
-        if priced_weight:
-            unpriced_share = round(1 - priced_weight / total_weight, 4)
-        elif weights:
-            # Every recorded model lacks an exact card: nothing is priced, so the
-            # opportunity is zero and the whole share is reported as unpriced.
-            unpriced_share = 1.0
-        else:
-            read_rate, write_rate, _ = _measure_facade._mix_cache_rates(days)
-            rate_basis = "model_mix"
-        tokens = est_drops * int(prefix)
-        written_usd = tokens * write_rate / 1_000_000
-        read_usd = tokens * read_rate / 1_000_000
+        classes = rebuild.get("tokens_by_class") or {}
+        write_usd = float(rebuild.get("write_usd", 0.0) or 0.0)
+        read_usd = float(rebuild.get("read_instead_usd", 0.0) or 0.0)
+        by_class = {}
+        for name in ("cache_write_1h", "cache_write_5m"):
+            n = int(classes.get(name, 0) or 0)
+            if n > 0:
+                by_class[name] = {"tokens": n, "usd": round(write_usd * n / tokens, 4)}
+        by_class["cache_read_instead"] = {"tokens": tokens, "usd": round(-read_usd, 4)}
         return {
-            "drop_sessions": int(drop_sessions),
-            "est_drops": est_drops,
-            "prefix_tokens": int(prefix),
-            "cost_saved_usd": round(written_usd - read_usd, 4),
-            "by_class": {
-                "cache_write_5m": {"tokens": tokens, "usd": round(written_usd, 4)},
-                "cache_read_instead": {"tokens": tokens, "usd": round(-read_usd, 4)},
-            },
-            "rate_basis": rate_basis,
-            "unpriced_share": unpriced_share,
+            "drop_sessions": int(rebuild.get("sessions", 0) or 0),
+            "est_drops": events,
+            "prefix_tokens": int(round(tokens / events)),
+            "rebuilt_tokens": tokens,
+            "ttl_seconds": rebuild.get("ttl_seconds"),
+            "cost_saved_usd": round(float(rebuild.get("cost_usd", 0.0) or 0.0), 4),
+            "by_class": by_class,
+            "rate_basis": "observed_turns",
+            "price_basis": "api_rates",
+            # Models without a rate card are never priced (they add nothing).
+            "unpriced_share": 0.0,
             "evidence": "opportunity",
         }
     except Exception:

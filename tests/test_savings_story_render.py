@@ -197,7 +197,7 @@ def test_four_cards_in_one_grid_then_one_coverage_line():
     out = story({'savings': full()})
     grid = out.split('class="st-grid"')[1].split('class="st-cov"')[0]
     titles = re.findall(r'<h2 class="st-h">([^<]+)', grid)
-    assert titles == ['Removed once, saved on every later turn', 'Setup cleanup', 'Saved since install', 'Model routing ']
+    assert titles == ['$30 of your $95 came from re-reads avoided', 'Setup cleanup', 'Saved since install', 'Model routing ']
     cov = out.split('class="st-cov"')[1]
     assert 'ran in 150 of your 200 sessions' in cov and '12 of them are not in the ledger yet' in cov
     assert 'svg' not in cov and '%' not in cov
@@ -206,6 +206,14 @@ def test_four_cards_in_one_grid_then_one_coverage_line():
     # Limits: since-install dollars, routing never added (100+200+10+40).
     assert 'st-mega--usd st-mega--card">$310</span><span class="st-mega__unit">measured since you installed' in grid
     assert 'stretch' not in out and '$1,349' not in out
+
+
+def test_unavailable_reread_price_is_not_claimed_as_part_of_total():
+    s = full()
+    s['action_savings']['reread_available'] = False
+    out = story({'savings': s})
+    assert 'Removed once, saved on every later turn' in out
+    assert 'came from re-reads avoided' not in out
 
 
 def test_since_install_fold_names_exclusions_from_payload():
@@ -358,10 +366,11 @@ def test_setup_forecast_is_not_in_the_historical_total():
     s = full()
     s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 1,
                               'tokens_saved': 100, 'projected_30d': {'measured': {'usd': 36}},
-                              'trims': [{'item': 'Memory', 'tier': 'measured', 'tokens_per_call': 2, 'cost_saved_usd': 1}]}
+                              'trims': [{'item': 'Memory', 'tier': 'measured', 'tokens_per_call': 2, 'cost_saved_usd': 1, 'projected_30d_usd': 36}]}
     out = story({'savings': s})
-    assert 'Projected next 30 days' in out and '$36' in out
-    assert 'assuming other savings stay at their recent rate' in out
+    assert 'Projected next 30 days' not in _visible(out)
+    assert 'Estimated next 30 days at the recent rate: about $36' in out
+    assert '$36' not in _visible(out)
     bands = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
     assert bands['mUsd'] != 36
 

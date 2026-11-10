@@ -181,7 +181,6 @@ function savingsStoryHtml(data) {
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
       savingsPerSessionHeadline(ps) +
-      (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + usd(totalUsd - num(sd.cost_saved_usd) + num(sd.projected_30d.measured.usd)) + ', including setup cleanup ' + usd(sd.projected_30d.measured.usd) + ', assuming other savings stay at their recent rate.</p>' : '') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
@@ -200,7 +199,7 @@ function savingsStoryHtml(data) {
   if (removedOnce > 0 && rereads > 0) {
     var carryN = rereads / removedOnce;
     cards.push('<div class="card st-card">' +
-      '<h2 class="st-h">Removed once, saved on every later turn</h2>' +
+      '<h2 class="st-h">' + (as.reread_available !== false && has(as.reread_usd) && num(as.reread_usd) > 0 && totalUsd > 0 ? usd(as.reread_usd) + ' of your ' + usd(totalUsd) + ' came from re-reads avoided' : 'Removed once, saved on every later turn') + '</h2>' +
       '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + Math.round(carryN) + '&times;</span><span class="st-mega__unit">re-reads avoided per token removed</span></p>' +
       '<p class="st-lead"><strong>' + tok(removedOnce) + ' tokens removed</strong> became <strong>' + tok(rereads) + ' tokens not sent</strong> on later reads' + (has(cp.reread_usd) ? ', worth ' + usd(cp.reread_usd) + ' at API rates' : '') + '.</p>' +
       '</div>');
@@ -222,15 +221,14 @@ function savingsStoryHtml(data) {
     var opts = sd.attested_options || [];
     var formula = valuedTrims.map(function(t) {
       return '<li>' + esc(t.label || t.item || 'Setup cleanup') + ': ' + count(t.tokens_per_call) + ' tokens per call &times; ' + count(t.requests) +
-        ' calls since' + (num(t.projected_30d_usd) > 0 ? '. Projected at current volume: about ' + usd(t.projected_30d_usd) + ' per 30 days.' : '.') + '</li>';
+        ' calls since' + (num(t.projected_30d_usd) > 0 ? '. Estimated next 30 days at the recent rate: about ' + usd(t.projected_30d_usd) + '.' : '.') + '</li>';
     }).join('');
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Setup cleanup' + '</h2>' +
-      (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + usd(sd.projected_30d.measured.usd) + ' at recent usage levels.</p>' : '') +
       (rows
         ? '<p class="st-lead">Trimming setup reduces repeated context on calls that load it. These amounts are already in the total.</p><ul class="st-rows st-rows--card">' + rows + '</ul>' +
           f.fold('How each one is priced', '<ul>' + formula + '</ul>' + (opts.length ? '<p>Your figure can be one of these sizes, priced the same way:</p><ul>' + opts.map(function(o) {
-            return '<li>' + count(o.tokens_per_call) + ' tokens per call: about ' + usd(o.projected_30d_usd) + ' per 30 days' + (o.chosen ? ' (shown)' : '') + '</li>';
+            return '<li>' + count(o.tokens_per_call) + ' tokens per call: estimated ' + usd(o.projected_30d_usd) + ' per 30 days at the recent rate' + (o.chosen ? ' (shown)' : '') + '</li>';
           }).join('') + '</ul>' : ''))
         : '<p class="st-lead">No setup cleanup recorded yet. When an audit archives or rewrites part of your setup, it appears here with its value.</p>') +
       '</div>');

@@ -160,14 +160,10 @@ def _is_first_read_active_enabled():
 # sessions / 31,885 first-reads (edit-within-5-turns metric, first-read-per-file):
 #   * FULL-GATE cohorts (>=20 reads, >=5 sessions, edit-rate <15%):
 #       markdown/python/typescript 16-64KB, python 64-256KB.
-#   * INTERPOLATED cohorts: a low-sample cohort with ZERO observed edits in
-#     history graduates when the SAME language already passed the full gate in an
-#     ADJACENT size band. markdown 64-256KB (13 reads, 0% edits; markdown 16-64KB
-#     passed) and typescript 64-256KB (2 reads, 0% edits; typescript 16-64KB
-#     passed) qualify. This trades a thin sample for the strong language signal
-#     plus the always-recoverable `expand` safety net. New languages with no
-#     adjacent passing band (json/yaml/javascript) stay measure-only until they
-#     accumulate enough history or are promoted via `measure.py cohorts promote`.
+#   * INTERPOLATED cohorts: a low-sample cohort with ZERO observed edits graduates
+#     when the SAME language passed the full gate in an ADJACENT size band:
+#     markdown and typescript 64-256KB. `expand` keeps it recoverable; json/yaml/
+#     javascript stay measure-only until enough history or `measure.py cohorts promote`.
 FIRST_READ_ACTIVE_COHORTS = frozenset({
     ("python", "16-64KB"),
     ("python", "64-256KB"),

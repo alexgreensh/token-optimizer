@@ -1,7 +1,6 @@
 // Savings story (U9): the Savings tab, top to bottom.
 //   1. One hero card: the 30-day total as two huge numbers ($ and tokens kept
-//      out), then the measured/estimated split. No percentage above the fold:
-//      per-session shares live in its fold, each named with its base.
+//      out), the per-session context shares, then the measured/estimated split.
 //   2. One 2x2 block, each card led by one big number where a real one exists:
 //      compounding, setup cleanup, room in your limits, model routing.
 //   3. One coverage line.
@@ -198,6 +197,7 @@ function savingsStoryHtml(data) {
         '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
+      savingsPerSessionHeadline(ps) +
       (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + usd(totalUsd - num(sd.cost_saved_usd) + num(sd.projected_30d.measured.usd)) + ', including setup cleanup ' + usd(sd.projected_30d.measured.usd) + ', assuming other savings stay at their recent rate.</p>' : '') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
@@ -268,9 +268,9 @@ function savingsStoryHtml(data) {
     }
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Room in your limits</h2>' +
-      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(SI.total) + '</span><span class="st-mega__unit">since you installed</span></p>' +
-      '<p class="st-lead">This figure is everything counted since install.</p>' +
-      (statedRouting ? '<p>Estimated routing: <strong>' + usd(statedRouting) + '</strong>.</p>' : '') +
+      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(SI.total - statedRouting) + '</span><span class="st-mega__unit">since you installed</span></p>' +
+      '<p class="st-lead">This figure is everything counted since install, excluding the estimated routing shown separately below.</p>' +
+      (statedRouting ? '<div class="st-routing-band"><p>Estimated routing: <strong>' + usd(statedRouting) + '</strong>, based on your stated 95% Opus baseline.</p>' + (periodText ? '<p>Most of the routing estimate comes from ' + esc(periodText) + '.</p>' : '') + '</div>' : '') +
       f.fold('How this is valued', '<p>The same rows as the total above, summed since ' + (SI.date ? esc(SI.date) : 'install') +
         '. Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is an estimate of room, not a refund.</p>' +
         (statedRouting ? '<p>Estimated routing, based on your stated 95% Opus baseline.</p>' : '') +
@@ -286,7 +286,7 @@ function savingsStoryHtml(data) {
   cards.push('<div class="card st-card">' +
     '<h2 class="st-h">Model routing <span class="st-tag">Opportunity</span></h2>' +
     '<p class="st-lead">Using lighter models is an opportunity, not part of the action savings total.</p>' +
-    (mr.baseline_source === 'pretool_baseline' && has(mr.realized_cost_usd) ? f.fold('Routing estimate', '<p>Estimated for this period: ' + usd(mr.realized_cost_usd) + ', based on your stated 95% Opus baseline.</p>') : '') +
+    (mr.baseline_source === 'pretool_baseline' && has(mr.realized_cost_usd) ? '<p>Estimated ' + usd(mr.realized_cost_usd) + ' for this period, based on your stated 95% Opus baseline.</p>' : '') +
     '</div>');
   if (cards.length) out += '<div class="st-grid">' + cards.join('') + '</div>';
   var trend = (s.cost_per_message_trend || []).filter(function(p) {
@@ -315,6 +315,13 @@ function savingsStoryHtml(data) {
 
 // Per-session shares for the hero fold: each named with its base (that
 // session's own context), split by where the session ran. Never above the fold.
+function savingsPerSessionHeadline(ps) {
+  var f = savingsStoryFmt(), has = f.has, bp = (ps || {}).by_place || {}, local = bp.local || {}, cloud = bp.cloud || {}, lines = [];
+  if (f.num(local.sessions) > 0 && has(local.net_median)) lines.push('On this Mac: typical ' + f.pct(local.net_median) + (has(local.net_p75) ? ', top quarter ' + f.pct(local.net_p75) + '+' : '') + (local.best && has(local.best.net_max) ? ', best ' + f.pct(local.best.net_max) : ''));
+  if (f.num(cloud.sessions) > 0 && has(cloud.net_median)) lines.push('Cloud: typical ' + f.pct(cloud.net_median));
+  return lines.length ? '<p class="st-lead">Per session, share of its own context not sent. ' + lines.join('; ') + '.</p>' : '';
+}
+
 function savingsPerSessionHtml(ps, overhead) {
   var f = savingsStoryFmt(), num = f.num, has = f.has;
   ps = ps || {};

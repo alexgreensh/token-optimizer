@@ -178,7 +178,8 @@ def test_session_shares_above_fold_and_place_split_in_fold():
     h = hero(out)
     assert 'st-mega st-mega--usd">$95</span>' in h and 'st-mega st-mega--tok">' in h
     assert 'tokens kept out of context' in h
-    assert not re.search(r"\d(?:\.\d+)?%", _visible(out))
+    assert 'On this Mac: typical 3.1%, top quarter 9%+, best 25%' in _visible(h)
+    assert 'Cloud: typical 22%' in _visible(h)
     fold = h.split('<details')[1]
     assert "share of that session&rsquo;s own context" in fold
     assert 'On this Mac: typical 3.1%, top quarter 9% or more (100 sessions)' in fold
@@ -395,7 +396,7 @@ def test_routing_is_opportunity_and_limits_explain_total():
     card = out.split('<h2 class="st-h">Model routing', 1)[1].split('</div>', 1)[0]
     assert 'Opportunity' in card and 'Measuring' not in card
     assert 'not part of the action savings total' in card
-    assert 'This figure is everything counted since install.' in out
+    assert 'This figure is everything counted since install, excluding the estimated routing shown separately below.' in out
 
 
 def test_fallback_never_shows_transformation_hero():
@@ -412,7 +413,7 @@ def test_stated_routing_is_estimated_since_install_with_measured_comparison():
     s['since_install']['all_in']['routing_measured_baseline_realized_cost_usd'] = 0
     out = story({'savings': s})
     card = out.split('<h2 class="st-h">Room in your limits', 1)[1].split('</div></details>', 1)[0]
-    assert '$3,834' in card
+    assert 'st-mega--card">$350</span>' in card
     assert 'Estimated routing, based on your stated 95% Opus baseline' in card
     assert '83.69%' in card and '$0' in card
 
@@ -451,4 +452,11 @@ def test_routing_estimate_names_majority_period_inside_fold():
     s['since_install']['all_in']['routing_majority_period'] = {'start': '2026-04', 'end': '2026-07'}
     out = story({'savings': s})
     assert 'Most of the routing estimate comes from Apr–Jul 2026.' in out
-    assert 'Most of the routing estimate' not in _visible(out)
+    assert 'Most of the routing estimate' in _visible(out)
+
+
+def test_routing_opportunity_is_visible_with_stated_baseline():
+    out = story({'savings': full()})
+    card = out.split('<h2 class="st-h">Model routing', 1)[1]
+    assert 'Estimated $50' in card
+    assert 'based on your stated 95% Opus baseline' in card

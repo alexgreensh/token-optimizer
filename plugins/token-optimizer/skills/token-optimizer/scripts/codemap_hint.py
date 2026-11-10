@@ -82,8 +82,12 @@ def warm_index(root: Path) -> bool:
         lock.write_text(str(os.getpid()), encoding="utf-8")
         from spawn_utils import spawn_detached
         script = str(Path(__file__).resolve().parent / "codemap.py")
+        import subprocess
+        # DEVNULL streams: an inherited hook stdout pipe would hold the host's
+        # SessionStart/SubagentStart read open until the build finishes.
         proc = spawn_detached([sys.executable, script, "refresh", "--root", str(root),
-                               "--budget", "120", "--quiet", "--background"])
+                               "--budget", "120", "--quiet", "--background"],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return proc is not None
     except Exception:
         return False

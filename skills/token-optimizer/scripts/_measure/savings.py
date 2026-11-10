@@ -1220,6 +1220,7 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
         finally: conn.close()
     except Exception:
         savings_data["cost_per_message_trend"] = []
+    savings_data["skill_listing_budget"] = structural_report.skill_listing_budget(days or 30)
     try:
         savings_data["since_install"] = _measure_facade._savings_since_install()
     except Exception:

@@ -2764,10 +2764,7 @@ def _compute_structural_savings(days=None):
 def _unused_skill_overhead_tokens(days=None):
     """Estimate recoverable prefix tokens from skills never used in the window.
 
-    Unused skill frontmatter is the largest, most defensible structural lever:
-    each installed skill costs tokens in the startup menu every session whether
-    invoked or not. Returns (tokens, unused_count). Conservative -- counts only
-    skills with zero invocations in `days`. Never raises.
+    Claude listing savings require transcript evidence, so inventory is not priced.
     """
     _measure_facade = _compat.facade()
     try:
@@ -2802,7 +2799,7 @@ def _unused_skill_overhead_tokens(days=None):
                 else:
                     used.add(s)
         unused = installed - used
-        return len(unused) * avg_per_skill, len(unused)
+        return (0 if _measure_facade.detect_runtime() == "claude" else len(unused) * avg_per_skill), len(unused)
     except Exception:
         return 0, 0
 
@@ -2825,7 +2822,7 @@ def _compute_structural_potential(days=None):
     try:
         s_potential, unused_count = _measure_facade._unused_skill_overhead_tokens(days=days)
         if s_potential <= 0:
-            return zero
+            return {**zero, "unused_skills": int(unused_count), "basis": "no measured listing reduction"}
         current_overhead = _measure_facade._current_overhead_tokens() or s_potential
         terms = _measure_facade._compound_structural(s_potential, days, fallback_prefix=current_overhead)
         if not terms:

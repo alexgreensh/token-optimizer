@@ -14,6 +14,8 @@ import tarfile
 
 import measure_split as split
 import measure_split_golden as golden
+import measure_split_inventory as inventory
+import measure_split_postbase as postbase
 from check_measure_split import check
 from check_measure_split_payload import verify, smoke
 from measure_split_artifacts import compare_candidate, devin_install_proof_error
@@ -94,7 +96,14 @@ def main():
     # surfaces to BASE's version, then compare byte-exact (Sol audit F1 rev2).
     golden.restamp(candidate, json.loads(
         (baseline / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version'])
-    rows = json.loads(golden.CASES.read_text())['cases']
+    case_manifest = json.loads(golden.CASES.read_text())
+    base_commands, _ = inventory.dispatch_inventory(
+        (baseline / 'skills/token-optimizer/scripts/measure.py').read_text(encoding='utf-8'))
+    bad = postbase.validate(case_manifest, base_commands)
+    if bad:
+        raise RuntimeError('post-BASE exemption list is invalid:\n' + '\n'.join(bad))
+    exempt_ids = postbase.exempt_case_ids(case_manifest)
+    rows = case_manifest['cases']
     if args.case:
         rows = [row for row in rows if row['id'] in args.case]
     shard, total = (int(value) for value in args.shard.split('/'))
@@ -134,11 +143,14 @@ def main():
             raw = errors + identities
             errors, normalized = normalize_known_crashes(errors, work / 'base-1', work / actual)
             print(f'{len(normalized)} listed BASE-crash stderr line-number differences: {normalized}')
+            errors, exempted = postbase.split_errors(errors, exempt_ids)
+            print(f'{len(exempted)} byte differences exempt as post-BASE commands: {exempted}')
         else:
             errors = golden.compare(work / 'base-1', work / actual)
-            raw, normalized = list(errors), []
+            raw, normalized, exempted = list(errors), [], []
         receipt['comparisons'][actual] = {'differences': errors, 'verified_source_artifacts': identities,
                                           'normalized_known_crashes': normalized,
+                                          'exempt_post_base': exempted,
                                           'raw_differences': sorted(raw)}
         save_receipt()
         if errors:

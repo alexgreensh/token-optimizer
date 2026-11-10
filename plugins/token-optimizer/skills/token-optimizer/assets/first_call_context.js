@@ -21,8 +21,31 @@ function firstCallContextHtml(result) {
     var c = latest.components[k];
     return '<div>' + names[k] + ': ' + Number(c.median).toLocaleString() + ' estimated tokens (' + Number(c.observed) + '/' + Number(latest.n) + ' observed)</div>';
   }).join('');
+  var steps = '';
+  var ss = result.setup_steps;
+  if (ss && ss.available && Array.isArray(ss.steps) && ss.steps.length) {
+    var n = function(x) { return Number(x).toLocaleString(); };
+    steps = ss.steps.map(function(s) {
+      var day = new Date(Number(s.trim_epoch) * 1000).toISOString().slice(0, 10);
+      var line;
+      if (s.status === 'measured') {
+        line = 'first call context fell from ' + n(s.before_median) + ' to ' + n(s.after_median) + ' tokens, a step of ' + n(s.drop_tokens) +
+          ' carried by ' + n(s.calls_since) + ' calls since' + (s.usd > 0 ? ', about $' + Number(s.usd).toFixed(2) + ' at cache-read prices (measured)' : '') + '.';
+      } else if (s.status === 'no_step') {
+        line = 'no step down is visible in the first call context, so nothing is credited here and any earlier estimate stands.';
+      } else if (s.status === 'pending') {
+        line = 'waiting for ' + n(Math.max(0, s.window - s.n_after)) + ' more sessions before the before and after can be compared.';
+      } else if (s.status === 'overlap') {
+        line = 'another trim falls too close to tell them apart, so nothing is credited here.';
+      } else {
+        line = 'cannot be measured from the first call context yet (' + String(s.reason || 'not enough sessions') + ').';
+      }
+      return '<div>Trim on ' + day + ': ' + line.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</div>';
+    }).join('');
+    steps = '<p>Measured against the first call context (your first message excluded, 20 sessions before against 20 after):</p>' + steps;
+  }
   return '<div class="card wide"><div class="card-header"><span>Context before your first message</span></div>' +
     '<p>First API call, including your first message and hooks. Dots show the median; bars show p25 to p75; triangles mark recorded trims.</p><div style="overflow-x:auto">' + svg + '</div>' +
     '<p>Latest month: ' + latest.month + ', ' + Number(latest.n) + ' sessions. Components are estimated separately where observed; they may overlap and do not add to the API total.</p>' + split +
-    '<p>Recorded trim dates: ' + (dates.length ? dates.join(', ') : 'none observed') + '. A date alone does not prove a step down.</p></div>';
+    '<p>Recorded trim dates: ' + (dates.length ? dates.join(', ') : 'none observed') + '. A date alone does not prove a step down.</p>' + steps + '</div>';
 }

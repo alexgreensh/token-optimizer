@@ -1,79 +1,15 @@
 """Cache-drop opportunity carries a dollar value by token class, outside every total."""
-from _activity_fixtures import stamp_activity
 import json
 import re
-import sqlite3
-from datetime import datetime
 
 import pytest
 
-from test_counted_cumulative import m, _db
 from test_savings_card_young_install import measure
 from test_savings_render import render, fixture
 
-PREFIX = 100_000
-
-
-def _drop_session(conn, n, breakdown):
-    today = datetime.now().strftime("%Y-%m-%d")
-    conn.execute(
-        "INSERT INTO session_log (jsonl_path,date,input_tokens,max_call_gap_seconds,is_sidechain,"
-        "model_usage_breakdown_json) VALUES (?,?,?,?,0,?)",
-        (f"/synthetic/{n}.jsonl", today, 5000, 10_000, json.dumps(breakdown)))
-
-
-def _parts(created):
-    return {"fresh_input": 1, "cache_read": 5, "cache_create": created, "output": 1}
-
-
-def _estimate(m, tmp_path, monkeypatch, sessions):
-    db = _db(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_per_session_prefix_tokens", lambda fallback=0: PREFIX)
-    with sqlite3.connect(db) as conn:
-        for i, breakdown in enumerate(sessions):
-            _drop_session(conn, i, breakdown)
-        stamp_activity(conn)
-    return m._estimate_cache_drop_savings(days=30)
-
-
-def test_priced_by_class_at_the_exact_generation(m, tmp_path, monkeypatch):
-    card = m.PRICING_TIERS["anthropic"]["claude_models"]["opus_5_5"]
-    out = _estimate(m, tmp_path, monkeypatch, [{"claude-opus-5-5": _parts(900)}] * 2)
-    tokens = 2 * PREFIX
-    assert out["cost_saved_usd"] == pytest.approx(
-        tokens * (card["cache_write"] - card["cache_read"]) / 1e6, abs=1e-4)
-    assert out["by_class"]["cache_write_5m"] == {"tokens": tokens, "usd": pytest.approx(tokens * card["cache_write"] / 1e6, abs=1e-4)}
-    assert out["by_class"]["cache_read_instead"]["usd"] < 0
-    assert out["rate_basis"] == "session_models"
-    assert out["unpriced_share"] == 0
-    assert out["evidence"] == "opportunity"
-
-
-def test_models_blend_by_their_cache_write_tokens(m, tmp_path, monkeypatch):
-    cards = m.PRICING_TIERS["anthropic"]["claude_models"]
-    out = _estimate(m, tmp_path, monkeypatch,
-                    [{"claude-opus-5-5": _parts(300)}, {"claude-fable-5-1": _parts(100)}])
-    net = lambda c: c["cache_write"] - c["cache_read"]
-    expected = 2 * PREFIX * (0.75 * net(cards["opus_5_5"]) + 0.25 * net(cards["fable_5_1"])) / 1e6
-    assert out["cost_saved_usd"] == pytest.approx(expected, abs=1e-4)
-
-
-def test_unknown_generation_adds_nothing_and_is_disclosed(m, tmp_path, monkeypatch):
-    card = m.PRICING_TIERS["anthropic"]["claude_models"]["opus_5_5"]
-    out = _estimate(m, tmp_path, monkeypatch,
-                    [{"claude-opus-5-5": _parts(300), "claude-opus-5-99": _parts(100)}])
-    expected = PREFIX * 0.75 * (card["cache_write"] - card["cache_read"]) / 1e6
-    assert out["cost_saved_usd"] == pytest.approx(expected, abs=1e-4)
-    assert out["unpriced_share"] == 0.25
-
-
-def test_all_unknown_models_price_nothing_and_report_full_unpriced_share(m, tmp_path, monkeypatch):
-    out = _estimate(m, tmp_path, monkeypatch,
-                    [{"glm-4.6": _parts(900)}, {"claude-opus-5-99": _parts(100)}])
-    assert out["cost_saved_usd"] == 0
-    assert out["unpriced_share"] == 1.0
-    assert out["by_class"]["cache_write_5m"]["usd"] == 0
-    assert out["rate_basis"] == "session_models"
+# The estimator's pricing (rebuilt prefix, observed TTL, per-model rates,
+# unknown models add nothing) is covered on synthetic transcripts in
+# test_cache_rebuild_engine.py; this file keeps the text and card rendering.
 
 
 def test_text_shows_dollars_on_its_own_line_outside_the_subtotal(measure, monkeypatch, capsys):

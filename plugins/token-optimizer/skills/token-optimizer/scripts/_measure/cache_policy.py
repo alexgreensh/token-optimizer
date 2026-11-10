@@ -166,6 +166,14 @@ def _get_cache_ttl_waste(days=None, collect_sessions=None):
         base["recommendation"] = _measure_facade._cache_remedy_text("none")
         return base
 
+    # A rebuild counts only when its resume turn falls inside the window: file
+    # mtime alone would let a long-lived, recently touched file leak older ones.
+    cutoff_ts = (_measure_facade.time.time() - days * 86400) if days is not None else None
+    rebuild_events = {}   # provider key -> [event]; filtered and deduped after the scan
+    ttl_split = {}        # provider key -> [1h write tokens, 5m write tokens] in window
+    rebuild_ttl = {}      # provider key -> profile TTL, used when no split is logged
+    candidate_floor = 300  # scan at the shortest TTL; the observed boundary filters later
+
     for filepath in files:
         try:
             turns = parse_fn(filepath)
@@ -195,10 +203,27 @@ def _get_cache_ttl_waste(days=None, collect_sessions=None):
 
         detail_out = {} if collect_sessions else None
         if kind == "explicit_ttl":
-            # W5: pass the already-resolved dominant model so the detector does
-            # not re-scan the turns for it.
-            sw_tokens, sw_cost, recoverable, had = _measure_facade._detect_explicit_ttl(
-                turns, tier_data, profile, dominant_model=model, detail_out=detail_out)
+            split = ttl_split.setdefault(prof_key, [0, 0])
+            for turn in turns:
+                if cutoff_ts is not None:
+                    turn_ts = _measure_facade._keepwarm_iso_to_epoch(turn.get("timestamp"))
+                    if turn_ts is None or turn_ts < cutoff_ts:
+                        continue
+                split[0] += int(turn.get("cache_creation_1h", 0) or 0)
+                split[1] += int(turn.get("cache_creation_5m", 0) or 0)
+            # W5: pass the already-resolved dominant model. Candidates are kept
+            # at the shortest TTL; the user's observed TTL filters them below.
+            found = []
+            _measure_facade._detect_explicit_ttl(
+                turns, tier_data, profile, dominant_model=model,
+                boundary=min(candidate_floor, profile.get("effective_ttl_seconds") or candidate_floor),
+                cutoff_ts=cutoff_ts, events_out=found)
+            rebuild_ttl.setdefault(prof_key, profile.get("effective_ttl_seconds") or 3600)
+            for event in found:
+                event["session"] = str(filepath)
+                event["recoverable_kind"] = profile.get("recoverable_kind", "avoidable_behavioral")
+            rebuild_events.setdefault(prof_key, []).extend(found)
+            continue
         else:  # automatic_discount or explicit_storage
             # W2: pass the dominant model so turns missing their own `model` fall
             # back to it for rate lookup instead of being dropped.
@@ -217,6 +242,78 @@ def _get_cache_ttl_waste(days=None, collect_sessions=None):
                     "rewritten_tokens": int(sw_tokens),
                     "est_cost_usd": round(sw_cost, 4),
                 })
+
+    # Cache rebuilds: pick each provider's TTL from the user's own 1h/5m write
+    # split, keep rebuilds past it, and count a request copied into two
+    # transcript directories once (request id, else timestamp + sizes).
+    seen_requests, seen_shapes = set(), set()
+    rebuild = {"events": 0, "tokens": 0, "cost_usd": 0.0, "write_usd": 0.0,
+               "read_instead_usd": 0.0, "sessions": 0, "ttl_seconds": None,
+               "tokens_by_class": {"cache_write_1h": 0, "cache_write_5m": 0}}
+    rebuild_sessions = set()
+    top_cost = -1.0
+    for key, events in rebuild_events.items():
+        p = providers[key]
+        h1, m5 = ttl_split.get(key, (0, 0))
+        boundary = (3600 if h1 >= m5 else 300) if (h1 + m5) > 0 else rebuild_ttl.get(key, 3600)
+        p["ttl_seconds"] = boundary
+        by_session = {}
+        # Events with a request id go first, so a copy without ids always
+        # meets the shapes of the ones that have them.
+        for e in sorted(events, key=lambda ev: not ev.get("request_id")):
+            if e["gap_seconds"] is None or e["gap_seconds"] <= boundary:
+                continue
+            rid = e.get("request_id")
+            shape = (e.get("timestamp"), e["resume_write"], e["prev_cached"])
+            # A request id is authoritative; the shape only stands in for a
+            # copy that lost its ids, so two real sessions never collide.
+            if (rid in seen_requests) if rid else (shape in seen_shapes):
+                continue
+            if rid:
+                seen_requests.add(rid)
+            seen_shapes.add(shape)
+            if e.get("share_1h") is None:
+                # No TTL split on the turn: the write rate follows the boundary.
+                e["share_1h"] = 1.0 if boundary >= 3600 else 0.0
+                e["write_rate"] = e["write_1h"] if boundary >= 3600 else e["write_5m"]
+                e["cost_usd"] = max(0.0, e["tokens"] * (e["write_rate"] - e["read_rate"]) / 1e6)
+            by_session.setdefault(e["session"], []).append(e)
+        prov_cost = 0.0
+        for session, kept in by_session.items():
+            s_tokens = sum(e["tokens"] for e in kept)
+            s_cost = sum(e["cost_usd"] for e in kept)
+            if kept[0]["recoverable_kind"] == "recoverable_1h":
+                s_rec = max(0.0, sum(e["repeat_write_usd"] for e in kept) - kept[0].get("first_premium_usd", 0.0))
+            else:
+                s_rec = s_cost
+            p["affected_sessions"] += 1
+            p["wasted_tokens"] += s_tokens
+            p["wasted_cost_usd"] += s_cost
+            p["recoverable_usd"] += s_rec
+            prov_cost += s_cost
+            rebuild_sessions.add(session)
+            for e in kept:
+                rebuild["events"] += 1
+                rebuild["tokens"] += e["tokens"]
+                rebuild["cost_usd"] += e["cost_usd"]
+                rebuild["write_usd"] += e["tokens"] * e["write_rate"] / 1e6
+                rebuild["read_instead_usd"] += e["tokens"] * e["read_rate"] / 1e6
+                tokens_1h = int(round(e["tokens"] * e["share_1h"]))
+                rebuild["tokens_by_class"]["cache_write_1h"] += tokens_1h
+                rebuild["tokens_by_class"]["cache_write_5m"] += e["tokens"] - tokens_1h
+            if session_detail is not None:
+                session_detail.append({
+                    "session": _measure_facade.Path(session).name,
+                    "gap_seconds": int(max(e["gap_seconds"] for e in kept)),
+                    "rewritten_tokens": int(s_tokens),
+                    "est_cost_usd": round(s_cost, 4),
+                })
+        if prov_cost > top_cost:
+            top_cost = prov_cost
+            rebuild["ttl_seconds"] = boundary
+    rebuild["sessions"] = len(rebuild_sessions)
+    for field in ("cost_usd", "write_usd", "read_instead_usd"):
+        rebuild[field] = round(rebuild[field], 4)
 
     overall_hit_rate = (total_cache_read / total_full_input) if total_full_input > 0 else 0.0
 
@@ -246,6 +343,7 @@ def _get_cache_ttl_waste(days=None, collect_sessions=None):
             "wasted_tokens": int(p["wasted_tokens"]),
             "wasted_cost_usd": round(p["wasted_cost_usd"], 4),
             "recoverable_usd": round(p["recoverable_usd"], 4),
+            "ttl_seconds": p.get("ttl_seconds"),
             "remedy": _measure_facade._cache_remedy_text(p["remedy_key"]),
         })
 
@@ -263,6 +361,10 @@ def _get_cache_ttl_waste(days=None, collect_sessions=None):
         "no_cache_economics_sessions": no_cache_sessions,
         "overall_cache_hit_rate": round(overall_hit_rate, 4),
         "by_provider": by_provider,
+        # Cache-write rebuilds only (the fold's "Room to save more" line reads
+        # this): count, rebuilt tokens and dollars at API rates, TTL observed.
+        "rebuild": rebuild,
+        "engine": 2,
     })
     if session_detail is not None:
         # W8: biggest-waste sessions first, so the disputed numbers are on top.
@@ -302,6 +404,7 @@ def _cache_ttl_waste_cached(days=None, fresh=None):
             return (
                 int(payload.get("period_days", -1)) == int(days)
                 and payload.get("platform") == current_runtime
+                and payload.get("engine") == 2  # older sidecars predate the rebuild fix
                 and (_measure_facade.time.time() - float(payload.get("_cached_ts", 0)))
                 < _measure_facade._CACHE_HEALTH_CACHE_TTL_SECONDS
             )

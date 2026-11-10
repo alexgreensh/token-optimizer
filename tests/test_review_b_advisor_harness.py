@@ -168,7 +168,8 @@ def test_rewrite_detector_threshold_uses_executor_prefix(m):
     tokens, cost, _, had = mod._detect_explicit_ttl(
         turns, mod.PRICING_TIERS["anthropic"], profile, dominant_model=EXECUTOR)
     assert had is True
-    assert tokens == 489_100  # dollars stay on the billed aggregate
+    # Priced on the prefix it rebuilt: min(first-executor write, prior prefix).
+    assert tokens == 489_000
     assert cost > 0
 
 

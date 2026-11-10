@@ -3817,7 +3817,7 @@ def _log_resume_lean_savings(target_session_id, lean_block):
             try:
                 per_mtok = _measure_facade._counted_pricing_v5.resume_lean_log_rate(
                     conn, sid_safe, model_norm, rate_key,
-                    lambda m: _measure_facade._counted_exact_card(m, tier_data)) or per_mtok
+                    lambda m: ((_measure_facade := _compat.facade()), _measure_facade._counted_exact_card(m, tier_data))[1]) or per_mtok
             finally:
                 conn.close()
         except Exception:

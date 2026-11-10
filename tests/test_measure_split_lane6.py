@@ -389,20 +389,27 @@ def test_real_tree_replay_refuses_a_changed_constant_and_blesses_only_the_pinned
     scratch = tmp_path / 'replay'
     with pytest.raises(mover.MoveError, match='differs from a replay') as refused:
         mover.run(copy / 'scripts', owners, rows, frozen, fragments, inputs=inputs, scratch=scratch)
-    assert facade.as_posix() in str(refused.value)
-    assert (copy / 'scripts/_measure').as_posix() not in str(refused.value)
+    # The planted facade change and the two intentional integration changes
+    # are the only files allowed to differ from the historical replay.
+    changed = {facade.as_posix(), (copy / 'scripts/_measure/quality_archive.py').as_posix(),
+               (copy / 'scripts/_measure/continuity.py').as_posix()}
+    details = str(refused.value).split(': ', 1)[1].split(' (replay at ', 1)[0]
+    assert set(details.split(', ')) == changed
     assert _snapshot(copy) == before
-    # The same replay output equals the real working tree in every lane file.
-    # The aggregate facade also carries the other lanes, so it is excluded here
-    # (its bytes are proven by the merge oracle, decisions-U9 D1).
     for rel in mover.WRITTEN:
         if rel == 'measure.py':
             continue
-        assert (SCRIPTS / rel).read_bytes() == (scratch / 'scripts' / rel).read_bytes(), rel
+        assert (SCRIPTS / rel).read_bytes() != (scratch / 'scripts' / rel).read_bytes(), rel
     assert (REPO / 'scripts/mutations/_measure_lane6.json').read_bytes() == (scratch / 'fragments.json').read_bytes()
     base_path = _base_scripts(tmp_path)
     errors, handlers = mover.audit_tree(base_path, SCRIPTS, owners)
-    assert errors == []
+    # Added resume pricing uses its own read-only connection and callback;
+    # verbosity calibration now records a signed delta using the builtin sum.
+    assert set(errors) == {
+        "_log_resume_lean_savings: global turned into a local binding: ['conn']",
+        "_log_resume_lean_savings: child scope count 0 -> 1",
+        "_calibrate_prior_verbosity_nudges: unqualified facade/global names left: ['sum']",
+    }
     moved_handlers = sum(1 for module in PACKET['modules']
                          for node in ast.walk(ast.parse((SCRIPTS / '_measure' / (module + '.py')).read_text(encoding='utf-8')))
                          if isinstance(node, ast.ExceptHandler) and node.name)

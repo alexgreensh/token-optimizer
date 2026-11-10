@@ -28,17 +28,20 @@ def test_listing_prices_each_deduplicated_post_change_call():
              call("2026-01-02T00:00:01Z", "r1", 100),
              call("2026-01-02T00:00:02Z", "r2", 0, 100)]
     result = measure(before, after, "2026-01-02T00:00:00Z", "skill_listing", len, card)
-    assert result["calls"] == 2 and result["read_tokens"] == 20 and result["write_tokens"] == 20
-    assert result["usd"] == (20 * 2 + 20 * 10) / 1_000_000
+    # Setup trims are valued at each call's cache-read rate (structural_value._price):
+    # a cache-write call is credited as a read, never at the write rate.
+    assert result["calls"] == 2 and result["read_tokens"] == 40 and result["write_tokens"] == 0
+    assert result["usd"] == 40 * 2 / 1_000_000
 
 
-def test_one_hour_write_uses_the_observed_write_class():
+def test_one_hour_write_is_credited_at_the_read_rate():
     before = [attachment("2026-01-01T00:00:00Z", "skill_listing", content="x" * 40)]
     billed = call("2026-01-02T00:00:01Z", "r1", 0, 100)
     billed["message"]["usage"]["cache_creation"] = {"ephemeral_1h_input_tokens": 100, "ephemeral_5m_input_tokens": 0}
     after = [attachment("2026-01-02T00:00:00Z", "skill_listing", content="x" * 20), billed]
     result = measure(before, after, "2026-01-02T00:00:00Z", "skill_listing", len, card)
-    assert result["write_tokens"] == 20 and result["write_1h_usd"] == 20 * 20 / 1_000_000
+    assert result["write_tokens"] == 0 and result["write_1h_usd"] == 0
+    assert result["read_tokens"] == 20 and result["usd"] == 20 * 2 / 1_000_000
 
 
 def test_connector_only_credits_named_observed_removal():

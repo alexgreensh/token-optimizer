@@ -3604,84 +3604,28 @@ var DB = (function() {
     return out;
   }
 
-  // Tokens Saved card: a savings hero + a spent-vs-saved bar + a model-mix-as-
-  // usage bar + footer. Hoisted to module scope so BOTH renderTrends and
-  // renderSavings render it identically without duplicating the body logic.
-  // Reads trends data from the global `data`; the savings object is passed as
-  // `savings` (data.savings in renderTrends, the in-scope `s` in renderSavings).
-  // SPENT = deduplicated fresh input + output on actual activity days.
-  // Cache reads and writes are excluded. NOT sum(model_mix):
-  // model_mix can omit unattributed tokens. Fail-open to that sum rather than 0.
-  // SAVED = savings.total_tokens. Fail-open: measured AND estimated both ≤ 0 →
-  // return '' (omit card entirely); either > 0 → render (estimates still show
-  // when the measured floor is zero). SAVED > 0 but SPENT missing/zero →
-  // render hero + footer only.
-  // The model-mix "where the spent went" bar reconciles to SPENT via a trailing
-  // "untracked" segment for SPENT - sum(model_mix) (tokens billed without a
-  // model tag). Returns '' when the card should not render.
+  // Share the Savings story calculation and period, including its eligibility rules.
   function tokensSavedCardHtml(savings) {
     var s = savings || {};
-    var tsSavedTokens = Number(s.total_tokens) || 0;
-    // Estimated-tier tokens (kept OUT of the measured SAVED total by
-    // _get_savings_summary). Surfaced in the footer as the estimated slice,
-    // labelled with whichever estimated categories are present, and they keep
-    // the card alive when the measured floor is zero.
-    // Field names match _get_merged_savings' re-export: mcp_cap_estimated
-    // keeps its suffix; hint_followed and verbosity_steer drop the _estimated
-    // suffix (the summary's *_estimated locals are re-keyed without it).
-    // Fallback: also try the _estimated suffix in case _get_savings_summary's
-    // fallback path (no re-key) is active.
-    var tsEstItems = [];
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.mcp_cap_estimated, 'MCP caps');
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.hint_followed || s.hint_followed_estimated, 'hint-served reads');
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.verbosity_steer || s.verbosity_steer_estimated, 'verbosity nudges');
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.resume_lean_estimated, 'lean resumes');
-    (function pushEst(obj, label) {
-      var tk = Number(obj && obj.tokens_saved) || 0;
-      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
-    })(s.checkpoint_restore_estimated, 'checkpoint restores');
-    var tsEstTokens = tsEstItems.reduce(function(a, b) { return a + b.tokens; }, 0);
-    var tsEstLabelList = tsEstItems.map(function(it) { return it.label; }).join(', ');
-    if (tsSavedTokens <= 0 && tsEstTokens <= 0) return '';
-    var tsTrends = data.trends || {};
-    var tsSpentBasis = tsTrends.spent_token_basis || {};
-    var tsModelMix = tsTrends.model_mix || {};
-    var tsModelTotal = 0;
-    for (var tsMk in tsModelMix) { tsModelTotal += tsModelMix[tsMk]; }
-    var tsIsCodex = data.runtime === 'codex';
-    var tsPeriodDays = Number(tsTrends.period_days) || Number(s.period_days) || 30;
-    // Missing dated coverage must not be replaced by lifetime model totals.
-    var tsReportedTotal = Number(tsTrends.total_tokens) || 0;
-    var tsSpentTokens = Object.prototype.hasOwnProperty.call(tsTrends, 'total_tokens') ? Math.max(0, tsReportedTotal) : tsModelTotal;
-    var tsFullSaved = tsSavedTokens + tsEstTokens;
-    var tsSplitShort = fn(tsSavedTokens) + ' measured' + (tsEstTokens > 0 ? ' + ' + fn(tsEstTokens) + ' estimated' : '');
-    // U9: no share or spent-vs-saved bar here. The spent figure this card has
-    // (trends.total_tokens, /stats-compatible) is fresh input and output only,
-    // while saved tokens include cache-class reloads, so any ratio of the two
-    // mixes token classes (the retired x1.216 bug). The Savings story carries
-    // the only percentages, on the traffic-including-cache and cost bases.
+    var storyAvailable = typeof savingsStoryOn === 'function' && savingsStoryOn(data);
+    var bands = typeof savingsStoryBands === 'function' ? savingsStoryBands(data) : null;
+    var total = bands ? bands.totalTok : Number((s.token_headline || {}).total_tokens) || 0;
+    if (total <= 0) return '';
+    var formatTokens = typeof savingsStoryFmt === 'function' ? savingsStoryFmt().tok : fn;
+    var removed = Number((s.token_headline || {}).removed_tokens) || 0;
+    var trends = data.trends || {};
+    var mix = trends.model_mix || {};
+    var modelTotal = 0;
+    for (var model in mix) { modelTotal += Number(mix[model]) || 0; }
+    var spent = Object.prototype.hasOwnProperty.call(trends, 'total_tokens') ? Math.max(0, Number(trends.total_tokens) || 0) : modelTotal;
+    var days = Number(s.period_days) || 30;
     var out = '<div class="card wide"><div class="card-header"><span>Tokens Saved</span></div>';
-    out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + fn(tsFullSaved) + '</div><div class="metric-unit">tokens saved in the last ' + tsPeriodDays + ' days</div></div>';
-    out += '<div class="metric-sub tight">' + tsSplitShort + '.</div>';
-    if (tsModelTotal > 0) {
-      out += '<div class="ts-divider"></div>';
-      out += '<h3 class="ts-section-label">Which models did the work</h3>';
-      out += modelMixBodyHtml(tsModelMix, tsIsCodex, tsSpentTokens > 0 ? tsSpentTokens : tsModelTotal);
+    out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + formatTokens(total) + '</div><div class="metric-unit">tokens kept out of context in the last ' + days + ' days</div></div>';
+    if (modelTotal > 0) {
+      out += '<div class="ts-divider"></div><h3 class="ts-section-label">Which models did the work</h3>';
+      out += modelMixBodyHtml(mix, data.runtime === 'codex', spent > 0 ? spent : modelTotal);
     }
-    out += '<div class="ts-foot">' + fn(tsSavedTokens) + ' of these tokens are counted action by action' + (tsEstTokens > 0 ? '; about ' + fn(tsEstTokens) + ' are estimated (' + esc(tsEstLabelList) + ') and included, labelled.' : '.') + '</div>';
-    out += '</div>';
+    out += '<div class="ts-foot">' + (storyAvailable ? 'Same figure as the Savings card.<br>' : '') + formatTokens(removed) + ' tokens removed once.</div></div>';
     return out;
   }
 
@@ -4843,7 +4787,7 @@ var DB = (function() {
     // "Counted directly" measured-floor card below. Also rendered in the
     // Trends view — both call the shared hoisted tokensSavedCardHtml helper
     // so the card is identical across views. SPENT = trends.total_tokens
-    // (billable total), SAVED = savings.total_tokens. See tokensSavedCardHtml
+    // (billable total); the savings total comes from savingsStoryBands. See tokensSavedCardHtml
     // for the full fail-open spec. ----
     // Add only rereads to the one-shot ledger. Adding the counted-period total
     // would count its initial removals twice and discard unmatched logged events.

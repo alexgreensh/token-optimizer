@@ -241,10 +241,13 @@ def test_tokens_saved_card_has_no_fresh_only_share():
     mix = tpl[tpl.index('  function modelMixBodyHtml('):a]
     data = {'runtime': 'claude', 'trends': {'total_tokens': 80000000, 'period_days': 30,
                                             'model_mix': {'opus': 60000000, 'sonnet': 20000000}},
-            'savings': {'total_tokens': 1000000, 'resume_lean_estimated': {'tokens_saved': 9000000}}}
-    prefix = 'const data = JSON.parse(process.argv[2]);\n' + ESC
+            'savings': dict(base(), total_tokens=1000000, lean_resume_carry={'carry_tokens': 999999999, 'carry_cost_usd': 100})}
+    prefix = 'const data = JSON.parse(process.argv[2]);\n' + ESC + STORY.read_text()
     out = _node(prefix + mix + card_src + '\nprocess.stdout.write(tokensSavedCardHtml(data.savings));', data)
-    assert '10' in out and 'tokens saved' in out
+    expected = call('savingsStoryFmt().tok(savingsStoryBands(data).totalTok)', data)
+    assert expected in out and expected in story(data)
+    assert 'Same figure as the Savings card' in out and call('savingsStoryFmt().tok(data.savings.token_headline.removed_tokens)', data) in out
+    assert '999999999' not in out and 'measured + estimated' not in out
     assert '%' not in out.split('model-bar')[0]  # no share before the model-mix bar
     for banned in ('prevented', 'would otherwise', 'without Token Optimizer', 'Spent vs Saved', 'class="label"',
                    'Consider defaulting', 'defaulting agents'):

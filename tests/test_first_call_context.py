@@ -1,4 +1,6 @@
 from _measure.first_call_context import observe, summarize
+import json
+import sqlite3
 
 
 def test_observes_first_parent_call_and_private_component_sizes():
@@ -20,3 +22,19 @@ def test_missing_usage_and_sidechain_are_not_first_parent_call():
     rows = [{"type": "assistant", "isSidechain": True, "message": {"usage": {"input_tokens": 8}}},
             {"type": "assistant", "message": {"usage": {}}}]
     assert observe(rows, len) is None
+
+
+def test_collect_reads_parent_transcripts_and_dated_trims(tmp_path):
+    from _measure.first_call_context import collect
+    path = tmp_path / "session.jsonl"
+    path.write_text(json.dumps({"type": "assistant", "timestamp": "2026-11-05T00:00:00Z", "message": {"usage": {"input_tokens": 800}}}) + "\n")
+    db = tmp_path / "trends.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE session_log(jsonl_path TEXT, is_sidechain INTEGER)")
+        conn.executemany("INSERT INTO session_log VALUES (?, ?)", [(str(path), 0), (str(path), 0), ("missing", 0), ("ignored", 1)])
+    (tmp_path / "structural_trims.jsonl").write_text(json.dumps({"kind":"trim", "id":"1", "ts":"2026-11-03T00:00:00Z", "tokens_before":200, "tokens_after":100}) + "\n")
+    result = collect(db, tmp_path)
+    assert result["months"][0]["median"] == 800
+    assert result["months"][0]["n"] == 1
+    assert result["missing"] == 1
+    assert result["trim_dates"] == ["2026-11-03"]

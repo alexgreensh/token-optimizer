@@ -1,7 +1,9 @@
 """Privacy-safe first-call context observations from parent transcripts."""
 import json
+import sqlite3
 import statistics
 from collections import defaultdict
+from pathlib import Path
 
 
 def _text(value):
@@ -109,3 +111,32 @@ def transcript(path):
                 continue
             if isinstance(row, dict):
                 yield row
+
+
+def collect(db_path, data_dir):
+    """Read parent transcripts and trim dates; never write to either source."""
+    from . import structural_ledger
+    db_path = Path(db_path)
+    if not db_path.is_file():
+        return {"months": [], "trim_dates": [], "missing": 0}
+    observations, missing, seen = [], 0, set()
+    try:
+        with sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True) as conn:
+            paths = conn.execute("SELECT DISTINCT jsonl_path FROM session_log WHERE jsonl_path IS NOT NULL AND COALESCE(is_sidechain,0)=0").fetchall()
+        for (name,) in paths:
+            path = Path(name)
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                item = observe(transcript(path), lambda value: round(len(value) / 4))
+            except (OSError, ValueError, TypeError):
+                missing += 1
+                continue
+            if item:
+                observations.append(item)
+        dates = sorted({str(t.get("ts"))[:10] for t in structural_ledger.load_trims(data_dir)
+                        if t.get("ts") and int(t.get("tokens") or 0) > 0})
+        return {"months": summarize(observations), "trim_dates": dates, "missing": missing}
+    except (sqlite3.Error, OSError, ValueError, TypeError):
+        return {"months": [], "trim_dates": [], "missing": missing}

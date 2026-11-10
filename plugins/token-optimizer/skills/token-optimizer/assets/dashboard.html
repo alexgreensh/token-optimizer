@@ -2488,8 +2488,7 @@ function tokenSplitText(h, fmt) {
   parts.push(h.reread_available ? '~' + fmt(h.reread_tokens || 0) + ' re-reads avoided' : 're-reads unavailable');
   return parts.join(' &middot; ');
 }
-// U9 savings story: assets/savings_story.js, inlined here at generation.
-/*@include savings_story.js*/
+/*@include savings_story.js*//*@include first_call_context.js*/
 
 function hostRefreshHtml(data) {
   return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard --user</span>');
@@ -4685,7 +4684,7 @@ var DB = (function() {
       '</div>' +
       '<div class="last-updated">Updated ' + esc(ts) + ' &middot; refreshes after every session</div>';
 
-    html += story || runwayCardHtml();
+    html += story || runwayCardHtml(); html += firstCallContextHtml((data.trends || {}).first_call_context);
     var storyHead = html; html = '';
 
     // ---- HERO: the before/after transformation (THE headline). Current activity priced at

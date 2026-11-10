@@ -5290,6 +5290,13 @@ var DB = (function() {
         '<p style="font-size:13px;color:var(--c-text-dim);margin-bottom:0;">Codex process version comparison is not exposed reliably in local session data, so version/outdated rows are hidden. This tab focuses on running sessions, hook health, and context quality.</p></div>';
     }
 
+    // Archive replacement self-check (scripts/archive_verify.py)
+    var arc = data.archive_replacement_check;
+    if (arc && arc.status === 'warning') {
+      html += '<div class="card wide" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2)"><div class="card-header"><span>Tool archive not applied</span><span class="label">' + esc(String(arc.full_streak)) + ' in a row</span></div>' +
+        '<p style="font-size:13px;line-height:1.5;margin-bottom:0;">' + esc(arc.message || '') + '</p></div>';
+    }
+
     // Running sessions table
     var sessions = h.running_sessions || [];
     html += '<div class="card wide"><div class="card-header"><span>Running Sessions</span><span class="label">' + sessions.length + ' active</span></div>';

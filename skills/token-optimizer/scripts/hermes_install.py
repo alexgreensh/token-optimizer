@@ -69,6 +69,7 @@ _ENGINE_SCRIPTS = (
     "hermes_tool_hooks.py",
     "bash_compress_hook.py",
     "archive_result.py",
+    "archive_verify.py",
     "context_intel.py",
     "read_cache.py",
     "refetch_guard.py",

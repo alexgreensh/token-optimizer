@@ -351,3 +351,21 @@ def test_template_includes_renderer_and_payload_key():
     src = (SCRIPTS / '_measure/dashboard.py').read_text(encoding='utf-8')
     assert src.count('"coverage_funnel": coverage_report.collect(') == 2
     assert 'savings_story.js' not in (ROOT / 'skills/token-optimizer/assets/coverage_funnel.js').read_text(encoding='utf-8')
+
+
+# ---- hook-budget guard ------------------------------------------------------
+
+def test_token_count_is_bounded_on_large_non_ascii_output(monkeypatch):
+    """The shared estimator walks non-ASCII text per character; the counter must not."""
+    import token_estimate
+    seen = []
+    real = token_estimate.estimate_tokens
+    monkeypatch.setattr(token_estimate, 'estimate_tokens', lambda t: (seen.append(len(t)), real(t))[1])
+    text = 'שורה של פלט בעברית\n' * 40000
+    got = coverage_funnel.tokens_of(text)
+    assert max(seen) <= coverage_funnel._SAMPLE_CHARS
+    assert abs(got - real(text)) <= 0.02 * real(text)
+    seen.clear()
+    ascii_text = 'plain command output line\n' * 40000
+    assert coverage_funnel.tokens_of(ascii_text) == real(ascii_text)  # ASCII keeps the exact estimate
+    assert coverage_funnel.tokens_of('') == 0

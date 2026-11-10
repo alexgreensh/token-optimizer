@@ -689,8 +689,8 @@ def _shadow_bash(command: str, stdout: str, exit_code: int | None) -> None:
 def _removed_tokens(original: str, compressed: str) -> int:
     """Tokens the compressed form saves, never negative. Fail-open to 0."""
     try:
-        from token_estimate import estimate_tokens as _est
-        return max(0, _est(original) - _est(compressed))
+        from coverage_funnel import tokens_of
+        return max(0, tokens_of(original) - tokens_of(compressed))
     except Exception:
         return 0
 
@@ -699,9 +699,8 @@ def _record_coverage(gate: str, reason: str, pattern: str, text: str,
                      removed: int) -> None:
     """Write one coverage-funnel counter row (see coverage_funnel). Never raises."""
     try:
-        from coverage_funnel import record
-        from token_estimate import estimate_tokens as _est
-        record(gate, reason, pattern or "", _est(text) if text else 0, removed,
+        from coverage_funnel import record, tokens_of
+        record(gate, reason, pattern or "", tokens_of(text), removed,
                os.environ.get("CLAUDE_SESSION_ID", ""))
     except Exception:
         pass

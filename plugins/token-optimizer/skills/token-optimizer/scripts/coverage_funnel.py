@@ -81,12 +81,30 @@ def reject_category(reason) -> str:
     return text[:48] or "unknown"
 
 
-def _tokens(text: str) -> int:
+_SAMPLE_CHARS = 16384
+
+
+def tokens_of(text: str) -> int:
+    """Token estimate that stays cheap on the hook path.
+
+    The shared estimator is instant on ASCII but walks non-ASCII text one
+    character at a time (about 1 ms per 1,000 characters), which would put a
+    large Hebrew or CJK output over the hook budget for a counter. Past
+    ``_SAMPLE_CHARS`` such text is estimated from its head and scaled. The hook
+    and the replay both use this, so their figures agree.
+    """
+    if not text:
+        return 0
     try:
         from token_estimate import estimate_tokens
-        return int(estimate_tokens(text))
+        if len(text) <= _SAMPLE_CHARS or text.isascii():
+            return int(estimate_tokens(text))
+        return int(estimate_tokens(text[:_SAMPLE_CHARS]) * len(text) / _SAMPLE_CHARS)
     except Exception:
         return len(text.encode("utf-8", errors="replace")) // 4
+
+
+_tokens = tokens_of
 
 
 def _already_compressed(output: str) -> bool:

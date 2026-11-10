@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, coverage_report, dashboard_history, feature_health, structural_ledger
+from . import _compat, coverage_report, dashboard_history, feature_health, holdout_report, structural_ledger
 
 def _daemon_is_running():
     """Return True iff the dashboard daemon identity probe passes.
@@ -791,6 +791,7 @@ def generate_dashboard(coord_path):
         "cache_health": cache_health,
         "feature_health": feature_health.collect(_measure_facade.TRENDS_DB),
         "coverage_funnel": coverage_report.collect(_measure_facade.TRENDS_DB),
+        "holdout": holdout_report.collect(_measure_facade.TRENDS_DB),
         "auto_plan": auto_plan_flag,
         "generated_at": _measure_facade.datetime.now().isoformat(),
         "version": _measure_facade.TOKEN_OPTIMIZER_VERSION,
@@ -2537,6 +2538,7 @@ def generate_standalone_dashboard(days=None, quiet=None, force=None):
         "cache_health": cache_health,
         "feature_health": feature_health.collect(_measure_facade.TRENDS_DB),
         "coverage_funnel": coverage_report.collect(_measure_facade.TRENDS_DB),
+        "holdout": holdout_report.collect(_measure_facade.TRENDS_DB),
         "standalone": True,
         "auto_plan": True,
         "generated_at": _measure_facade.datetime.now().isoformat(),

@@ -214,6 +214,14 @@ def _run(payload: dict) -> None:
     except Exception:
         pass  # Fail open: the raw output stands
 
+    # Control group (TOKEN_OPTIMIZER_HOLDOUT, default 0 = off, see holdout.py): a
+    # control session replaces nothing and gets no nudge. What this hook would
+    # have done is logged at the opportunity tier. With the variable unset this
+    # is one environment lookup and no import.
+    if _holdout_control():
+        _shadow_bash(command, stdout, exit_code)
+        return
+
     # Codex-via-install perf optimization: TOKEN_OPTIMIZER_NO_UPDATED_TOOL_OUTPUT
     # skips the compression compute entirely. updatedToolOutput is ignored by
     # Codex anyway (collapse there is via archival), so skipping the compute
@@ -641,6 +649,41 @@ def _crossturn_dedup(command: str, output: str, tool_use_id: str = ""):
         except (OSError, ValueError):
             pass
         return None
+
+
+def _holdout_control() -> bool:
+    """True only when the holdout is on and this session is in the control arm."""
+    try:
+        if not os.environ.get("TOKEN_OPTIMIZER_HOLDOUT", "").strip():
+            return False
+        from holdout import is_control
+        return is_control(os.environ.get("CLAUDE_SESSION_ID", ""))
+    except Exception:
+        return False
+
+
+def _shadow_bash(command: str, stdout: str, exit_code: int | None) -> None:
+    """Control arm: record what compression would have removed. Emits nothing,
+    archives nothing, writes no coverage-funnel row. Fail-open."""
+    try:
+        from coverage_funnel import classify_result
+        verdict = classify_result(command, stdout, is_error=bool(exit_code))
+        if verdict["gate"] != "compressed":
+            return
+        from compression_log import log_compression_event
+        from credential_patterns import redact_credentials as _redact
+        log_compression_event(
+            feature=("build_output_compress" if verdict["reason"] == "build_output"
+                     else "bash_compress_pipeline"),
+            session_id=os.environ.get("CLAUDE_SESSION_ID", ""),
+            command_pattern=_redact(command)[:100],
+            original_tokens=verdict["tokens"],
+            compressed_tokens=max(0, verdict["tokens"] - verdict["removed"]),
+            quality_preserved=True, verified=False, tier="opportunity",
+            detail="holdout_control",
+        )
+    except Exception:
+        pass
 
 
 def _removed_tokens(original: str, compressed: str) -> int:

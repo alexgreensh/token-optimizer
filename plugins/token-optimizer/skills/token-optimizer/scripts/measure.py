@@ -23,8 +23,6 @@ Usage:
     python3 measure.py trends             # Usage trends (last 30 days)
     python3 measure.py trends --days 7    # Usage trends (shorter window)
     python3 measure.py trends --json      # Machine-readable output
-    python3 measure.py coverage-replay    # How much command output the hook could act on (read-only transcript replay)
-    python3 measure.py coverage-replay --days 7 --max 5000 --json
     python3 measure.py coach               # Interactive coaching data
     python3 measure.py coach --json        # Coaching data as JSON
     python3 measure.py coach --focus skills # Focus on skill optimization
@@ -275,9 +273,7 @@ _CLAUDE_TARGET_CMDS = frozenset(
         "git-context", "dashboard-diagnose", "validate-impact",
         # Usage recommendations: the refresh replays Claude transcripts and
         # reads ~/.claude/settings.json; surfaces read its record file only.
-        "recommendations",
-        # Replays Bash hook gates over CLAUDE_DIR/projects transcripts (read-only).
-        "coverage-replay",
+        "recommendations", "coverage-replay", "file-refetch",
     }
 )
 # Back-compat alias (pre-Copilot name).

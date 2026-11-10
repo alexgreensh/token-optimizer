@@ -141,59 +141,17 @@ def format_table(summary, source_note=""):
     if summary["patterns"]:
         out += ["", "Compressed, by compressor (tokens removed):"]
         out += [f"  {r['pattern']:40s} {r['removed_tokens']:>9d}" for r in summary["patterns"]]
+    if summary.get("file_refetch"):
+        from . import file_refetch
+        out += [""] + file_refetch.format_lines(summary["file_refetch"])
     return "\n".join(out)
 
 
-def _result_text(content):
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(b.get("text", "") for b in content
-                         if isinstance(b, dict) and b.get("type") == "text")
-    return ""
-
-
-def _bash_pairs(path):
-    """Yield (command, output, is_error) for each Bash call in one transcript."""
-    pending = {}
-    with open(path, encoding="utf-8", errors="replace") as stream:
-        for line in stream:
-            if '"tool_use' not in line and '"tool_result"' not in line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            message = row.get("message") if isinstance(row, dict) else None
-            content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "tool_use" and block.get("name") == "Bash":
-                    cmd = (block.get("input") or {}).get("command")
-                    if isinstance(cmd, str) and block.get("id"):
-                        pending[block["id"]] = cmd
-                elif block.get("type") == "tool_result" and block.get("tool_use_id") in pending:
-                    cmd = pending.pop(block["tool_use_id"])
-                    yield cmd, _result_text(block.get("content")), bool(block.get("is_error"))
-
-
-def replay(projects_dir, days=WINDOW_DAYS, max_results=DEFAULT_MAX_RESULTS, now=None, deadline=None):
-    """Replay the hook's gates over transcripts under ``projects_dir``. Read-only.
-
-    Newest files first, files older than ``days`` skipped by modification time.
-    Stops at ``max_results`` Bash results (reported in ``truncated``). Nothing is
-    written; no command or output text is kept past the gate decision.
-    """
-    here = str(Path(__file__).resolve().parent.parent)
-    if here not in sys.path:
-        sys.path.insert(0, here)
-    from coverage_funnel import classify_result
+def _transcripts(projects_dir, days, now=None):
+    """Transcript files modified within ``days``, newest first, or None if the folder is missing."""
     root = Path(projects_dir)
     if not root.is_dir():
-        return unavailable("no transcripts folder")
+        return None
     cutoff = ((now or datetime.now()) - timedelta(days=days)).timestamp()
     files = []
     for p in root.rglob("*.jsonl"):
@@ -204,27 +162,70 @@ def replay(projects_dir, days=WINDOW_DAYS, max_results=DEFAULT_MAX_RESULTS, now=
         if mtime >= cutoff:
             files.append((mtime, p))
     files.sort(reverse=True)
+    return [p for _, p in files]
+
+
+def replay(projects_dir, days=WINDOW_DAYS, max_results=DEFAULT_MAX_RESULTS, now=None, deadline=None):
+    """Replay the hook's gates over transcripts under ``projects_dir``. Read-only.
+
+    Newest files first, files older than ``days`` skipped by modification time.
+    Stops at ``max_results`` Bash results (reported in ``truncated``). Nothing is
+    written; no command or output text is kept past the gate decision. The same
+    walk feeds the file-content re-fetch metric (see file_refetch).
+    """
+    here = str(Path(__file__).resolve().parent.parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from coverage_funnel import classify_result
+    from . import file_refetch
+    files = _transcripts(projects_dir, days, now)
+    if files is None:
+        return unavailable("no transcripts folder")
     rows, truncated, unreadable = [], False, 0
-    for _, path in files:
+    refetch = file_refetch.new_counts()
+    for path in files:
         if truncated or (deadline and time.monotonic() > deadline):
             truncated = True
             break
         try:
-            for cmd, output, is_error in _bash_pairs(path):
-                r = classify_result(cmd, output, is_error)
-                rows.append((r["gate"], r["reason"], r["pattern"], r["tokens"], r["removed"]))
-                if len(rows) >= max_results:
-                    truncated = True
-                    break
+            sequence = file_refetch.calls(path)
         except OSError:
             unreadable += 1
+            continue
+        file_refetch.scan(sequence, refetch)
+        for entry in sequence:
+            cmd = entry["input"].get("command") if entry["name"] == "Bash" else None
+            if not entry["has_result"] or not isinstance(cmd, str):
+                continue
+            r = classify_result(cmd, entry["text"], entry["is_error"])
+            rows.append((r["gate"], r["reason"], r["pattern"], r["tokens"], r["removed"]))
+            if len(rows) >= max_results:
+                truncated = True
+                break
     result = summarize(rows, days)
-    result.update(files=len(files), unreadable=unreadable, truncated=truncated)
+    result.update(files=len(files), unreadable=unreadable, truncated=truncated,
+                  file_refetch=file_refetch.summarize(refetch))
     return result
 
 
-def replay_cli(args, projects_dir, now=None):
-    """`measure.py coverage-replay [--days N] [--max N] [--projects-dir PATH] [--json]`."""
+def refetch_only(projects_dir, days=WINDOW_DAYS, now=None):
+    """Just the file-content re-fetch metric over the same transcripts. Read-only."""
+    from . import file_refetch
+    files = _transcripts(projects_dir, days, now)
+    if files is None:
+        return unavailable("no transcripts folder")
+    acc, unreadable = file_refetch.new_counts(), 0
+    for path in files:
+        try:
+            file_refetch.scan(file_refetch.calls(path), acc)
+        except OSError:
+            unreadable += 1
+    out = file_refetch.summarize(acc)
+    out.update(available=True, files=len(files), unreadable=unreadable, window_days=days)
+    return out
+
+
+def _parse_args(args, projects_dir):
     days, max_results, as_json = WINDOW_DAYS, DEFAULT_MAX_RESULTS, False
     i = 0
     while i < len(args):
@@ -241,9 +242,18 @@ def replay_cli(args, projects_dir, now=None):
                     projects_dir = Path(args[i + 1]).expanduser()
             except ValueError:
                 print(f"[Error] Invalid {a} value: {args[i + 1]}")
-                return 1
+                return None
             i += 1
         i += 1
+    return days, max_results, as_json, projects_dir
+
+
+def replay_cli(args, projects_dir, now=None):
+    """`measure.py coverage-replay [--days N] [--max N] [--projects-dir PATH] [--json]`."""
+    parsed = _parse_args(args, projects_dir)
+    if parsed is None:
+        return 1
+    days, max_results, as_json, projects_dir = parsed
     summary = replay(projects_dir, days=days, max_results=max_results, now=now)
     if as_json:
         print(json.dumps(summary, indent=2))
@@ -255,3 +265,21 @@ def replay_cli(args, projects_dir, now=None):
                 + (" Stopped at the --max limit; newest transcripts first." if summary["truncated"] else ""))
     print(format_table(summary, note))
     return 0 if summary.get("available") else 1
+
+
+def refetch_cli(args, projects_dir, now=None):
+    """`measure.py file-refetch [--days N] [--projects-dir PATH] [--json]`: re-fetch metric only."""
+    parsed = _parse_args(args, projects_dir)
+    if parsed is None:
+        return 1
+    days, _max, as_json, projects_dir = parsed
+    out = refetch_only(projects_dir, days=days, now=now)
+    if as_json:
+        print(json.dumps(out, indent=2))
+    elif not out.get("available"):
+        print(headline(out))
+    else:
+        from . import file_refetch
+        print("\n".join([f"Read {out['files']:,} transcripts from the last {days} days (read-only; nothing stored)."]
+                        + file_refetch.format_lines(out)))
+    return 0 if out.get("available") else 1

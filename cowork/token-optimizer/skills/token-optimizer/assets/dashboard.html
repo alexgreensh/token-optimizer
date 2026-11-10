@@ -2504,6 +2504,8 @@ function tokenSplitText(h, fmt) {
 /*@include feature_health.js*/
 // Command-output coverage card (Health tab): assets/coverage_funnel.js.
 /*@include coverage_funnel.js*/
+// Control-group card (Health tab, shown only when the holdout is on): assets/holdout_card.js.
+/*@include holdout_card.js*/
 
 function hostRefreshHtml(data) {
   return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard --user</span>');
@@ -5268,6 +5270,7 @@ var DB = (function() {
       html += '<div class="empty-state">No health data available. This usually means no ' + esc(data.runtime_label || 'Claude Code') + ' processes are currently running.</div>';
       try { if (typeof featureHealthHtml === 'function') html += featureHealthHtml(data); } catch (e) {}
       try { if (typeof coverageFunnelHtml === 'function') html += coverageFunnelHtml(data); } catch (e) {}
+      try { if (typeof holdoutHtml === 'function') html += holdoutHtml(data); } catch (e) {}
       el.innerHTML = html;
       return;
     }
@@ -5497,6 +5500,7 @@ var DB = (function() {
     try { if (typeof healthNotesHtml === 'function') html += healthNotesHtml(data); } catch (e) {}
     try { if (typeof featureHealthHtml === 'function') html += featureHealthHtml(data); } catch (e) {}
     try { if (typeof coverageFunnelHtml === 'function') html += coverageFunnelHtml(data); } catch (e) {}
+    try { if (typeof holdoutHtml === 'function') html += holdoutHtml(data); } catch (e) {}
 
     el.innerHTML = html;
   }

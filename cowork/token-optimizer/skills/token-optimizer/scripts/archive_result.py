@@ -1720,7 +1720,7 @@ def archive_result(quiet: bool = False) -> None:
         })
         print(output)
         from _measure.mcp_archive_tripwire import record
-        record(TRENDS_DB, tool_name, sanitize_sid(session_id), tool_use_id)
+        record(TRENDS_DB, tool_name, sanitize_sid(session_id), tool_use_id, tokens_saved)
 
 
 if __name__ == "__main__":

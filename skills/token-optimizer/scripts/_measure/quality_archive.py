@@ -2837,8 +2837,7 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name=None,
     ``content_ranges`` carries the (start, end) char offsets of ``response_text``
     that were actually returned — a bounded ``expand --lines/--chars/--match``
     debits only those tokens, while a full expand (``None``) asks for the whole
-    response. Coverage is a growing union per (session_id, tool_use_id): a debit
-    is logged only for characters no earlier re-expansion of that item already
+    response. A debit is logged only for characters no earlier expansion already
     covered, so overlapping windows and full-then-bounded reads cannot reverse
     more than the item once. Legacy rows without a `` chars `` spec count as full
     coverage. The detail records the range set actually debited. Never raises.
@@ -2863,6 +2862,8 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name=None,
         if not wanted:
             return
         sid = _measure_facade.sanitize_session_id(session_id) if session_id else None
+        from . import mcp_archive_tripwire
+        if '__' in (tool_name or ''): mcp_archive_tripwire.record_expand(_measure_facade.TRENDS_DB, sid, tool_use_id)
         covered = []
         if _measure_facade.TRENDS_DB.exists():
             conn = _measure_facade._init_trends_db()
@@ -2878,8 +2879,7 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name=None,
                 conn.close()
             for (prior_detail,) in rows:
                 prior = _measure_facade._reexpand_detail_ranges(prior_detail, total_chars)
-                # A legacy row (no range spec) re-expanded everything; a bounded
-                # row covers exactly the ranges it returned.
+                # A legacy row covers everything; bounded rows cover their ranges.
                 if prior is None:
                     covered = [(0, total_chars)]
                     break

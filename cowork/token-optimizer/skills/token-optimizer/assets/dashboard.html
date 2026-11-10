@@ -4476,7 +4476,6 @@ var DB = (function() {
   function renderSavings() {
     var el = document.getElementById('view-savings');
     if (!el) return;
-    // Live refresh must not close the explanation someone is reading.
     var openFolds = Array.from(el.querySelectorAll('details[open] > summary')).map(function(summary) {
       return summary.textContent;
     });
@@ -4684,7 +4683,7 @@ var DB = (function() {
       '</div>' +
       '<div class="last-updated">Updated ' + esc(ts) + ' &middot; refreshes after every session</div>';
 
-    html += story || runwayCardHtml(); html += firstCallContextHtml((data.trends || {}).first_call_context);
+    html += story || runwayCardHtml(); if (typeof firstCallContextHtml === 'function') html += firstCallContextHtml((data.trends || {}).first_call_context);
     var storyHead = html; html = '';
 
     // ---- HERO: the before/after transformation (THE headline). Current activity priced at

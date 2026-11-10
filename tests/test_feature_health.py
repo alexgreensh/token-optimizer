@@ -147,6 +147,6 @@ def test_renderer_handles_unavailable_and_rows(tmp_path):
 def test_template_includes_renderer_and_calls_it():
     html = (ROOT / 'skills/token-optimizer/assets/dashboard.html').read_text(encoding='utf-8')
     assert '/*@include feature_health.js*/' in html
-    assert 'featureHealthHtml(data)' in html
+    assert html.count('html += featureHealthHtml(data)') == 2  # with and without live health data
     src = (ROOT / 'skills/token-optimizer/scripts/_measure/dashboard.py').read_text(encoding='utf-8')
     assert src.count('"feature_health": feature_health.collect(') == 2

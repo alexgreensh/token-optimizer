@@ -4,10 +4,10 @@ For every trim of S tokens and every billed request in a session where the
 trimmed component loads (scope), that started after the trim and before the
 item came back:
 
-  * cache hit  (cache_read >= S): S tokens were not re-read  -> S x cache_read
-  * cache miss (cache_read <  S, cache_write >= S): S tokens were not
-    re-written -> S x the write class that request actually paid (1h / 5m)
-  * otherwise the request was too small to have carried the component: 0
+  * each call is valued at S times its own model's cache-read rate.
+
+Claims have a day but no timestamp. Calls on the trim day in a session that
+started earlier are excluded because their order cannot be established.
 
 Requests come from usage_request_claims (one row per deduplicated request,
 with model, day and cache class), joined to session_log through the claim
@@ -98,14 +98,7 @@ def load_requests(conn, start_day, end_day):
 def _price(card, s, cr, cc, cc_1h, cc_5m):
     """(read_tokens, write_tokens, read_usd, write_1h_usd, write_5m_usd) for
     one request and S trimmed tokens."""
-    if cr >= s:
-        return s, 0, s * float(card.get("cache_read", 0) or 0) / 1e6, 0.0, 0.0
-    if cc >= s:
-        w5 = float(card.get("cache_write", 0) or 0)
-        w1 = float(card.get("cache_write_1h", w5 * 1.6) or 0)
-        share_1h = (cc_1h or 0) / max(1, (cc_1h or 0) + (cc_5m or 0)) if (cc_1h or cc_5m) else 0.0
-        return 0, s, 0.0, s * share_1h * w1 / 1e6, s * (1 - share_1h) * w5 / 1e6
-    return 0, 0, 0.0, 0.0, 0.0
+    return s, 0, s * float(card.get("cache_read", 0) or 0) / 1e6, 0.0, 0.0
 
 
 def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False):
@@ -144,9 +137,10 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False)
                 continue
             for t in group:
                 if not projected:
-                    if start is None or start < t["ts_epoch"]:
+                    trim_day = datetime.fromtimestamp(t["ts_epoch"]).strftime("%Y-%m-%d")
+                    if day < trim_day or (day == trim_day and (start is None or start < t["ts_epoch"])):
                         continue
-                    if t.get("closed_epoch") is not None and start >= t["closed_epoch"]:
+                    if t.get("closed_epoch") is not None and day >= datetime.fromtimestamp(t["closed_epoch"]).strftime("%Y-%m-%d"):
                         continue
                 acc = per[t["id"]]
                 if card is None:

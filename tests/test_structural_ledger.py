@@ -108,10 +108,9 @@ def test_hit_miss_and_small_requests_priced_at_the_exact_card(m):
     card = _card(m)
     res = V.value_trims(conn, t, d, d, lambda model, p: _card(m, model), HOME)
     a = res["trims"][t[0]["id"]]
-    assert a["requests"] == 3 and a["read_tokens"] == 1000 and a["write_tokens"] == 2000
-    assert a["read_usd"] == pytest.approx(1000 * card["cache_read"] / 1e6)
-    assert a["write_1h_usd"] == pytest.approx(1000 * card["cache_write_1h"] / 1e6)
-    assert a["write_5m_usd"] == pytest.approx(1000 * card["cache_write"] / 1e6)
+    assert a["requests"] == 4 and a["read_tokens"] == 4000 and a["write_tokens"] == 0
+    assert a["read_usd"] == pytest.approx(round(4000 * card["cache_read"] / 1e6, 4))
+    assert a["write_1h_usd"] == 0 and a["write_5m_usd"] == 0
     # the exact card, never the family mix: Opus 5.5 reads below the generic opus card
     assert card["cache_read"] < m.PRICING_TIERS["anthropic"]["claude_models"]["opus"]["cache_read"]
     conn.close()
@@ -139,6 +138,36 @@ def test_scope_start_time_and_projection(m):
     p = L.load_trims_from([_trim(L, trim_ts, tokens=500, comp="memory_md", item="MEMORY.md",
                                  scope="project:" + LOCAL)])
     assert V.value_trims(conn, p, d, d, card, HOME, projected=True)["trims"][p[0]["id"]]["requests"] == 1
+    conn.close()
+
+
+def test_realized_setup_counts_later_days_of_preexisting_session(m):
+    L, _, _, _, V = _mods()
+    conn = _db(m)
+    day = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=3)
+    _session(conn, m, 'ongoing', LOCAL, day - timedelta(hours=2))
+    for i in range(3):
+        _req(conn, m, 'ongoing', 200 + i, (day + timedelta(days=i)).strftime('%Y-%m-%d'), cr=50000)
+    conn.commit()
+    trims = L.load_trims_from([_trim(L, day.astimezone().isoformat(), tokens=500)])
+    start, end = day.strftime('%Y-%m-%d'), (day + timedelta(days=2)).strftime('%Y-%m-%d')
+    result = V.value_trims(conn, trims, start, end, lambda model, p: _card(m, model), HOME)['trims'][trims[0]['id']]
+    assert result['requests'] == 2
+    assert result['read_tokens'] == 1000
+    conn.close()
+
+
+def test_realized_setup_prices_each_call_at_its_cache_read_rate(m):
+    L, _, _, _, V = _mods()
+    conn = _db(m)
+    day = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    _session(conn, m, 'after-trim', LOCAL, day)
+    _req(conn, m, 'after-trim', 301, day.strftime('%Y-%m-%d'), cr=0, cc=50000, cc_1h=50000)
+    conn.commit()
+    trims = L.load_trims_from([_trim(L, (day - timedelta(hours=1)).astimezone().isoformat(), tokens=1000)])
+    result = V.value_trims(conn, trims, day.strftime('%Y-%m-%d'), day.strftime('%Y-%m-%d'), lambda model, p: _card(m, model), HOME)['trims'][trims[0]['id']]
+    assert result['read_tokens'] == 1000 and result['write_tokens'] == 0
+    assert result['usd'] == pytest.approx(round(1000 * _card(m)['cache_read'] / 1e6, 4))
     conn.close()
 
 
@@ -282,7 +311,7 @@ def test_compound_structural_uses_per_request_pricing(m, monkeypatch):
     terms = m._compound_structural(1000, 30, fallback_prefix=0)
     card = _card(m)
     assert terms["events"] == 2
-    assert terms["cost_saved_usd"] == pytest.approx(1000 * (card["cache_read"] + card["cache_write_1h"]) / 1e6)
+    assert terms["cost_saved_usd"] == pytest.approx(round(2000 * card["cache_read"] / 1e6, 4))
     assert m._compound_structural(0, 30, fallback_prefix=0) is None
 
 

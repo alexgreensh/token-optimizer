@@ -6269,11 +6269,11 @@ def _action_savings_components(summary, reread=None):
     """
     _measure_facade = _compat.facade()
     estimates = {
-        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated") else float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0))
+        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated") else float((((summary.get("structural_detail") or {}).get("estimated") if key == "structural_estimated" else summary.get(key)) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
             "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
             "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
-            "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
+            "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated",
         )
     }
     overhead = ((summary.get("session_effect") or {}).get("overhead") or {})
@@ -6565,7 +6565,7 @@ def _savings_since_install():
         hf = full.get("hint_followed") or {}
         rs = full.get("retrieval_serve") or {}
         avoided = hf if int(hf.get("events") or 0) > 0 else rs
-        estimated += float(avoided.get("cost_saved_usd", 0) or 0) + stated_routing - max(0.0, float(((full.get("session_effect") or {}).get("overhead") or {}).get("expand_usd") or 0))
+        estimated += float(avoided.get("cost_saved_usd", 0) or 0) + float(((full.get("structural_detail") or {}).get("estimated") or {}).get("cost_saved_usd") or 0) + stated_routing - max(0.0, float(((full.get("session_effect") or {}).get("overhead") or {}).get("expand_usd") or 0))
         # The all-in since install uses the monthly headline's own recipe
         # (logged + repeat reads + estimates); routing stays out of both.
         all_in = None

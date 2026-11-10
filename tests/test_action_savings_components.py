@@ -38,6 +38,14 @@ def snapshot(hint_events=2, hint_cost=32):
     }
 
 
+def test_attested_realized_setup_is_included_once_in_action_total(measure):
+    source = snapshot()
+    source['structural_detail'] = {'estimated': {'cost_saved_usd': 12.5}}
+    result = measure._action_savings_components(source, {'available': True, 'reread_usd': 0})
+    assert result['estimates_usd']['structural_estimated'] == 12.5
+    assert result['net_total_usd'] == 100 + 1 + 2 + 4 + 8 + 16 + 32 + 12.5
+
+
 @pytest.mark.parametrize("hint_events,hint_cost,reread,expected", [
     (2, 32, 23, 186),
     (0, 32, 23, 666),
@@ -104,7 +112,7 @@ def test_component_helper_is_pure_and_counts_only_rereads(measure):
         "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
         "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
         "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
-        "hint_followed", "expand_overhead",
+        "hint_followed", "expand_overhead", "structural_estimated",
     }
     assert sum(components["estimates_usd"].values()) == 63
     assert measure._action_savings_components({})["total_usd"] == 0

@@ -128,6 +128,16 @@ def test_since_install_marks_pending_routing(m, monkeypatch):
     assert out['excluded_usd']['routing'] is None
 
 
+def test_since_install_includes_realized_attested_setup_once(m, monkeypatch):
+    _install(m, 120)
+    full = {'total_cost_usd': 10, 'structural_detail': {'estimated': {'cost_saved_usd': 12.5}}}
+    monkeypatch.setattr(m, '_get_merged_savings', lambda **kw: dict(full))
+    monkeypatch.setattr(m, '_counted_cumulative_summary', lambda **kw: {'available': True, 'reread_usd': 5})
+    out = m._savings_since_install()
+    assert out['all_in']['estimated_usd'] == 12.5
+    assert out['all_in']['total_usd'] == 27.5
+
+
 def test_since_install_excludes_verbosity_and_reports_its_amount(m, monkeypatch):
     _install(m, 120)
     full = {'total_cost_usd': 20, 'by_category': {'verbosity_steer_measured': {'cost_saved_usd': 7}},

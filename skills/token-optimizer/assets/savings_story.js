@@ -64,7 +64,7 @@ function savingsStoryBands(data) {
     var t = trims.filter(function(x) { return (x.source === 'attested' || x.tier === 'estimated') === (tier === 'estimated'); })
       .sort(function(a, b) { return String(b.ts).localeCompare(String(a.ts)); })[0];
     var when = t ? f.day(t.ts) : '';
-    return 'Setup cleanup' + (when ? ', ' + when : '') + (tier === 'estimated' ? ' (your figure)' : ' (recorded)');
+    return 'Setup cleanup' + (when ? ', ' + when : '') + (tier === 'estimated' ? ' (realized, your figure)' : ' (realized, recorded)');
   }
   var trimMeasuredUsd = trimLedger ? num(sd.cost_saved_usd) : 0;
   var trimMeasuredTok = trimLedger ? num(sd.tokens_saved) : 0;
@@ -239,7 +239,7 @@ function savingsStoryHtml(data) {
     var opts = sd.attested_options || [];
     var formula = valuedTrims.map(function(t) {
       return '<li>' + esc(t.label || t.item || 'Setup cleanup') + ': ' + count(t.tokens_per_call) + ' tokens per call &times; ' + count(t.requests) +
-        ' calls since' + (num(t.projected_30d_usd) > 0 ? '. At current volume, about ' + usd(t.projected_30d_usd) + ' per 30 days.' : '.') + '</li>';
+        ' calls since' + (num(t.projected_30d_usd) > 0 ? '. Projected at current volume: about ' + usd(t.projected_30d_usd) + ' per 30 days.' : '.') + '</li>';
     }).join('');
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Setup cleanup' + '</h2>' +

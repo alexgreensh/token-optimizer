@@ -18,6 +18,7 @@ Pure stdlib; never imported by measure.py itself, only by the dashboard.
 from __future__ import annotations
 
 import sqlite3
+from bisect import bisect_left
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -47,6 +48,14 @@ FEATURES = (
     ("checkpoint_restore", "Checkpoint restore", "savings_events", "event_type", ("checkpoint_restore",), False),
     ("resume_lean", "Lean resume", "savings_events", "event_type", ("resume_lean",), False),
 )
+
+# Known false positives, excluded from the user's own "earlier rate" so a history
+# padded with them cannot make a healthy feature read as "went quiet".
+# feature key -> (twin feature in the same table, seconds). An event counts as a
+# false positive when the twin feature logged the SAME command within that many
+# seconds: two installs saw one call, one compressed it and the other claimed it
+# was a repeat (the duplicate-install pattern).
+FALSE_POSITIVE_TWINS = {"crossturn_dedup": ("bash_compress_pipeline", 3.0)}
 
 _SAVED_EXPR = {
     "savings_events": "COALESCE(tokens_saved, 0)",
@@ -88,6 +97,57 @@ def _where(column, names, prefix):
         return "(" + " OR ".join(parts) + ")", params
     marks = ",".join("?" for _ in names)
     return f"{column} IN ({marks})", list(names)
+
+
+def _epoch(ts):
+    try:
+        return (datetime.fromisoformat(str(ts)[:26]).replace(tzinfo=None) - datetime(1970, 1, 1)).total_seconds()
+    except (ValueError, TypeError):
+        return None
+
+
+def _without_twins(conn, table, column, names, twin, since, recent_start):
+    """Recount a feature with twin-confirmed false positives removed.
+
+    Returns (recent, zero_recent, earlier, first_earlier, last), or None when the
+    table cannot tell commands apart (then the plain counts stand).
+    """
+    twin_name, seconds = twin
+    try:
+        if "command_pattern" not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            return None
+        where, params = _where(column, names, False)
+        events = conn.execute(
+            f"SELECT timestamp, {_SAVED_EXPR[table]}, command_pattern FROM {table} "
+            f"WHERE {where} AND timestamp >= ?", params + [since]).fetchall()
+        twins = {}
+        for ts, cmd in conn.execute(
+                f"SELECT timestamp, command_pattern FROM {table} "
+                f"WHERE {column} = ? AND command_pattern IS NOT NULL AND timestamp >= ?", (twin_name, since)):
+            t = _epoch(ts)
+            if t is not None:
+                twins.setdefault(cmd, []).append(t)
+    except sqlite3.Error:
+        return None
+    for times in twins.values():
+        times.sort()
+    recent = zero_recent = earlier = 0
+    first_earlier = last = None
+    for ts, saved, cmd in events:
+        t = _epoch(ts)
+        times = twins.get(cmd) if (cmd and t is not None) else None
+        if times:
+            i = bisect_left(times, t - seconds)
+            if i < len(times) and times[i] <= t + seconds:
+                continue
+        last = ts if last is None or ts > last else last
+        if ts >= recent_start:
+            recent += 1
+            zero_recent += 1 if saved <= 0 else 0
+        else:
+            earlier += 1
+            first_earlier = ts if first_earlier is None or ts < first_earlier else first_earlier
+    return recent, zero_recent, earlier, first_earlier, last
 
 
 def _active_days(conn, tables, start, end):
@@ -170,6 +230,10 @@ def _collect(db_path, now, recent_days):
             except sqlite3.Error:
                 rows.append(row)
                 continue
+            if key in FALSE_POSITIVE_TWINS:
+                kept = _without_twins(conn, table, column, names, FALSE_POSITIVE_TWINS[key], history_start, recent_start)
+                if kept is not None:
+                    recent, zero_recent, earlier, first_earlier, last = kept
             expected = None
             if earlier and first_earlier:
                 # Earlier rate = events per active day since the feature first fired

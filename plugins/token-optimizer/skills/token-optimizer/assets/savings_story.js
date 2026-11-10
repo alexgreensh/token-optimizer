@@ -76,12 +76,10 @@ function savingsStoryBands(data) {
     ? num(th.context_removed_tokens) + num(th.output_not_generated_tokens)
     : num(th.removed_tokens) - reloadTok;
   var measured = [
-    { key: 'context', label: 'Context removed', usd: num(as.logged_usd) - trimMeasuredUsd,
+    { key: 'context', label: 'Context removed', usd: num(as.logged_usd) - trimMeasuredUsd + num(as.class_premium_usd),
       tok: Math.max(0, removedTok - trimMeasuredTok), on: has(as.logged_usd) },
     { key: 'rereads', label: 'Re-reads avoided', usd: as.reread_usd, tok: th.reread_tokens,
       on: as.reread_available !== false && has(as.reread_usd) },
-    { key: 'premium', label: 'Cheaper cache writes', usd: as.class_premium_usd, tok: 0, on: num(as.class_premium_usd) > 0,
-      why: 'Removed context would have been written to the cache on the next call, at the higher write rate.' },
     { key: 'setup_measured', label: trimName('measured'), usd: trimMeasuredUsd, tok: trimMeasuredTok, on: trimLedger && trimMeasuredUsd > 0 }
   ];
   var estimated = [
@@ -142,15 +140,17 @@ function savingsStoryHtml(data) {
   function sum(rows, k) { return rows.reduce(function(a, r) { return a + num(r[k]); }, 0); }
   if (measured.length || estimated.length) {
     var mPct = totalUsd > 0 ? Math.max(0, Math.min(100, mUsd / totalUsd * 100)) : 0;
+    function cents(rows) { return rows.reduce(function(n, r) { return n + Math.round(num(r.usd) * 100); }, 0); }
+    function moneyCents(n) { return (n < 0 ? '-$' : '$') + (Math.abs(n) / 100).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
     function top(rows) {
-      return '<ul class="st-rows">' + rows.slice(0, 2).map(function(r) {
-        return '<li><span>' + esc(r.label) + '</span><span class="st-v">' + usd(r.usd) + '</span></li>';
+      return '<ul class="st-rows">' + rows.map(function(r) {
+        return '<li><span>' + esc(r.label) + '</span><span class="st-v">' + moneyCents(Math.round(num(r.usd) * 100)) + '</span></li>';
       }).join('') + '</ul>';
     }
     function table(title, rows) {
       if (!rows.length) return '';
-      return '<p><strong>' + title + ', ' + usd(sum(rows, 'usd')) + '</strong></p><ul>' + rows.map(function(r) {
-        return '<li>' + esc(r.label) + ': ' + usd(r.usd) + (num(r.tok) > 0 ? ', ' + tok(r.tok) + ' tokens' : '') +
+      return '<p><strong>' + title + ', ' + moneyCents(cents(rows)) + '</strong></p><ul>' + rows.map(function(r) {
+        return '<li>' + esc(r.label) + ': ' + moneyCents(Math.round(num(r.usd) * 100)) + (num(r.tok) > 0 ? ', ' + tok(r.tok) + ' tokens' : '') +
           (r.why ? '. ' + esc(r.why) : '') + '</li>';
       }).join('') + '</ul>';
     }
@@ -169,16 +169,17 @@ function savingsStoryHtml(data) {
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">Saved in the last ' + days + ' days</h2>' +
       '<div class="st-mega__row">' +
-        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
+        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + moneyCents(cents(measured) + cents(estimated)) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
+      (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + moneyCents(Math.round((totalUsd - num(sd.cost_saved_usd) + num(sd.projected_30d.measured.usd)) * 100)) + ', including setup cleanup ' + moneyCents(Math.round(num(sd.projected_30d.measured.usd) * 100)) + ', assuming other savings stay at their recent rate.</p>' : '') +
       (has(local.net_median) && has(local.net_p75) ? '<p class="st-lead">On this Mac, a typical recorded session where Token Optimizer acted kept <strong>' + pct(local.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(local.net_p75) + ' or more</strong>' + (local.best && has(local.best.net_max) ? ', and the best kept out <strong>' + pct(local.best.net_max) + '</strong>' : ', best session: Measuring') + '. ' + (has(cloud.net_median) ? 'Cloud sessions: <strong>' + pct(cloud.net_median) + '</strong> typical; hooks can time out there.' : 'Cloud sessions: Measuring.') + '</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
       '<div class="st-bands">' +
-        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(mUsd) + '</span></p>' + top(measured) + '</div>' : '') +
-        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(eUsd) + '</span></p>' + top(estimated) + '</div>' : '') +
+        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + moneyCents(cents(measured)) + '</span></p>' + top(measured) + '</div>' : '') +
+        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + moneyCents(cents(estimated)) + '</span></p>' + top(estimated) + '</div>' : '') +
       '</div>' +
       f.fold('How this total is built', method) +
       '</div>';
@@ -214,6 +215,7 @@ function savingsStoryHtml(data) {
     }).join('');
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Setup cleanup' + '</h2>' +
+      (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + usd(sd.projected_30d.measured.usd) + ' at recent usage levels.</p>' : '') +
       (rows
         ? '<p class="st-lead">Trimming what loads on every call pays again on each call. These amounts are already in the total.</p><ul class="st-rows st-rows--card">' + rows + '</ul>' +
           f.fold('How each one is priced', '<ul>' + formula + '</ul>' + (opts.length ? '<p>Your figure can be one of these sizes, priced the same way:</p><ul>' + opts.map(function(o) {

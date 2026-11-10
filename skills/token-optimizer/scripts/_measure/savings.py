@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, counted_subagents, headline, structural_report
+from . import _compat, counted_orphans, counted_subagents, headline, structural_report
 
 def _counted_event_utc(ts):
     """Savings-event timestamps are naive LOCAL time (datetime.now()); transcript
@@ -553,6 +553,8 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
     """Replace only a complete continuation of the previously observed file."""
     _measure_facade = _compat.facade()
     detail = _measure_facade._counted_pricing_detail(old["pricing_detail"]) if old else {}
+    if counted_orphans.can_relocate(old, key, source, ts, tokens, identity_verified):
+        old = None  # versioned rebuild from a previously unlocated, zero-reread row
     if old:
         size = detail.get("file_size")
         if size is not None:
@@ -630,25 +632,14 @@ def _update_counted_cumulative(conn, max_sessions=None,
         stats["duplicate_rows_removed"] = max(0, duplicates.rowcount)
         if duplicates.rowcount:
             conn.commit()
-        # Derived rows whose source event is not a saving (see the counted
-        # views) are recomputable cache; drop them so they stop compounding.
-        if _measure_facade._ensure_counted_views(conn):
-            gone = conn.execute(_measure_facade._COUNTED_REREAD_PURGE_EXCLUDED_SQL)
-            stats["excluded_rows_removed"] = max(0, gone.rowcount)
-            if gone.rowcount:
-                conn.commit()
         _measure_facade._reprice_counted_rows_once(conn)
         events = _measure_facade._counted_candidate_events(conn)
         if not events:
             return stats
         stored = _measure_facade._counted_stored_rows(conn)
-        by_sess = {}
-        for key, uuid, ts, tok, cost, model in events:
-            by_sess.setdefault(uuid, []).append((key, ts, tok, cost, model))
+        by_sess, orphan_paths = counted_orphans.group_events(_measure_facade, conn, events, resolve=deadline_seconds is None)
         tier_data = _measure_facade.PRICING_TIERS.get(_measure_facade._load_pricing_tier(), _measure_facade.PRICING_TIERS["anthropic"])
 
-        # Unjoinable events (no session uuid) have no transcript to price. Keep
-        # them out of the counted ledger rather than inventing a one-shot value.
         for key, ts, tok, cost, model in by_sess.pop(None, []) + by_sess.pop("", []):
             stats["unmeasured_events"] += 1
 
@@ -672,11 +663,12 @@ def _update_counted_cumulative(conn, max_sessions=None,
                 if key not in stored:
                     return False
                 detail = _measure_facade._counted_pricing_detail(stored[key].get("pricing_detail"))
+                st = orphan_paths.get(key, path).stat(); event_stamp = [st.st_mtime_ns, st.st_size]
                 if detail.get("refresh_incomplete"):
                     return (detail.get("attempted_version") == _measure_facade._COUNTED_PRICING_VERSION
-                            and detail.get("attempted_source") == source_stamp)
-                return (stored[key]["transcript_mtime"] == mtime
-                        and detail.get("file_size") == source_stamp[1]
+                            and detail.get("attempted_source") == event_stamp)
+                return (stored[key]["transcript_mtime"] == st.st_mtime
+                        and detail.get("file_size") == event_stamp[1]
                         and detail.get("version") == _measure_facade._COUNTED_PRICING_VERSION)
             fresh = all(fresh_event(key) for key, *_ in evs)
             if not fresh:
@@ -716,8 +708,9 @@ def _update_counted_cumulative(conn, max_sessions=None,
                     media_details.update(conn.execute(
                         "SELECT id, detail FROM savings_events WHERE id IN (%s)"
                         % ",".join("?" * len(part)), part).fetchall())
-            scope = counted_subagents.SessionScope(_measure_facade, conn, path, [(e[0], e[1]) for e in evs])  # v6
+            scope = counted_orphans.apply_scope(counted_subagents.SessionScope(_measure_facade, conn, path, [(e[0], e[1]) for e in evs]), orphan_paths)
             counted_subagents.add_stats(stats, scope.stats)
+            event_proofs = {}
             for key, ts, tok, cost, model in sorted(evs, key=lambda e: ((_measure_facade := _compat.facade()), str(e[1]))[1]):
                 ev_dt = _measure_facade._counted_event_utc(ts)
                 if ev_dt is None or not turns:
@@ -729,12 +722,18 @@ def _update_counted_cumulative(conn, max_sessions=None,
                 if key.startswith("md:"):
                     tok, basis = _measure_facade._counted_media_net_tokens(
                         media_results, media_used, ev_dt, media_details.get(int(key[3:])))
+                event_path = orphan_paths.get(key, path); before_walk = event_path.stat()
                 ev_turns, ev_compacts, ev_scope = scope.turns_for(key, turns, compacts)
                 score = dict(_measure_facade._counted_score_detail(ev_turns, ev_compacts, ev_dt, int(tok or 0), tier_data,
                     oneshot_floor_only=key.startswith("md:")), scope=ev_scope)
+                old_size = (_measure_facade._counted_pricing_detail(stored[key].get("pricing_detail")).get("file_size", 0) or 0) if key in stored else 0; proof_key = (event_path, old_size, before_walk.st_mtime_ns, before_walk.st_size)
+                if proof_key not in event_proofs: event_proofs[proof_key] = _measure_facade._counted_file_proof(event_path, [old_size])
+                event_proof = event_proofs[proof_key]; event_stat = event_path.stat(); event_mtime = event_stat.st_mtime
+                if (before_walk.st_mtime_ns, before_walk.st_size) != (event_proof["mtime_ns"], event_proof["file_size"]) or (event_stat.st_mtime_ns, event_stat.st_size) != (event_proof["mtime_ns"], event_proof["file_size"]):
+                    stats["unmeasured_events"] += 1; continue
                 if not _measure_facade._counted_store_score(conn, key, key.split(":", 1)[0], uuid,
-                                             ts, int(tok or 0), score, mtime, proof,
-                                             old=stored.get(key), allow_unobserved=True,
+                                             ts, int(tok or 0), score, event_mtime, event_proof,
+                                             old=stored.get(key), allow_unobserved=True, identity_verified=key in orphan_paths,
                                              magnitude_basis=basis,
                                              append_check=lambda old, _ev=ev_dt, _tok=int(tok or 0): (
                                                  ((_measure_facade := _compat.facade()), _measure_facade._counted_legacy_append_continuous(

@@ -146,9 +146,9 @@ def test_hero_total_is_sum_of_bands_in_whole_dollars_and_excludes_routing():
     h = hero(story({'savings': full()}))
     # measured: context 44.2-4=40.2, rereads 30.4, premium 8.4, setup 4 = 83; estimated: 20+3+5+7 = 35
     assert '$118' in h and 'Measured <span class="st-v">$83' in h and 'Estimated <span class="st-v">$35' in h
-    assert not re.search(r'\$\d+\.\d\d', h)  # whole dollars only
+    assert '$118.00' in h  # cents let the displayed rows reconcile
     assert '$50' not in h  # routing never enters the total
-    assert 'Cheaper cache writes' in h and 'Write-class' not in h and 'ratio' not in h
+    assert 'Context removed' in h and 'Write-class' not in h and 'ratio' not in h
 
 
 def _visible(html):
@@ -159,7 +159,7 @@ def _visible(html):
 def test_session_shares_above_fold_and_place_split_in_fold():
     out = story({'savings': full()})
     h = hero(out)
-    assert 'st-mega st-mega--usd">$118</span>' in h and 'st-mega st-mega--tok">' in h
+    assert 'st-mega st-mega--usd">$118.00</span>' in h and 'st-mega st-mega--tok">' in h
     assert 'tokens kept out of context' in h
     assert all(x in _visible(out) for x in ('3.1%', '9%', '25%', '22%'))
     fold = h.split('<details')[1]
@@ -306,3 +306,28 @@ def test_ledger_fold_matches_hero_and_never_adds_routing():
     html = render_savings(s)
     ledger = html.split('Full ledger and history')[1]
     assert 'savings-actions' not in ledger and 'savings-history' not in ledger  # contradicting cards are gone
+
+
+def test_every_measured_row_is_visible_in_hero_and_includes_premium():
+    s = full()
+    s['action_savings']['class_premium_usd'] = 7
+    s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 3,
+                              'tokens_saved': 100, 'trims': [{'tier': 'measured', 'tokens_per_call': 1}]}
+    bands = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
+    visible = hero(story({'savings': s})).split('<details')[0]
+    for row in bands['measured']:
+        assert row['label'] in visible
+    assert sum(row['usd'] for row in bands['measured']) == pytest.approx(bands['mUsd'])
+    assert next(row['usd'] for row in bands['measured'] if row['key'] == 'context') == s['action_savings']['logged_usd'] - 3 + 7
+
+
+def test_setup_forecast_is_not_in_the_historical_total():
+    s = full()
+    s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 1,
+                              'tokens_saved': 100, 'projected_30d': {'measured': {'usd': 36}},
+                              'trims': [{'item': 'Memory', 'tier': 'measured', 'tokens_per_call': 2, 'cost_saved_usd': 1}]}
+    out = story({'savings': s})
+    assert 'Projected next 30 days' in out and '$36.00' in out
+    assert 'assuming other savings stay at their recent rate' in out
+    bands = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
+    assert bands['mUsd'] != 36

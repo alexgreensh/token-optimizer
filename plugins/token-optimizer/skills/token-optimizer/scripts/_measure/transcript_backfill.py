@@ -259,6 +259,9 @@ def _cursor(conn):
     return value if isinstance(value, dict) else {}
 
 
+from . import fixture_context
+
+
 def candidate_sessions(conn, since_date, is_fixture):
     """Distinct session_log sessions on or after since_date, newest row per session."""
     rows = conn.execute(
@@ -266,7 +269,7 @@ def candidate_sessions(conn, since_date, is_fixture):
         "ORDER BY id", (since_date,)).fetchall()
     latest = {}
     for uuid, path in rows:
-        if uuid and not is_fixture(uuid):
+        if uuid and not is_fixture(uuid) and not fixture_context.benchmark_path(path):
             latest[uuid] = path or latest.get(uuid)
     return latest
 

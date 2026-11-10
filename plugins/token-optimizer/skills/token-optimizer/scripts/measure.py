@@ -7185,10 +7185,6 @@ _sum_tool_calls = _measure_compat.bind(_measure_providers['savings']._sum_tool_c
 _estimate_output_waste = _measure_compat.bind(_measure_providers['savings']._estimate_output_waste, __name__, defaults=(30,))
 
 
-# A call gap beyond this many seconds likely dropped the prefix from cache,
-# forcing a full re-write on the next turn. Default 5m (the 5m cache TTL).
-_CACHE_DROP_GAP_SECONDS = _int_env("TOKEN_OPTIMIZER_CACHE_DROP_GAP_SECONDS", 300)
-
 
 _estimate_cache_drop_savings = _measure_compat.bind(_measure_providers['savings']._estimate_cache_drop_savings, __name__, defaults=(30,))
 

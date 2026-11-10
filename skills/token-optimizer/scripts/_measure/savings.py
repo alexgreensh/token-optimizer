@@ -7132,14 +7132,14 @@ def savings_report(days=None, as_json=None):
                   f"re-reads across {reclaimable.get('sessions', 0)} sessions — avoid re-reading or use .contextignore.")
         if len(concrete_items) > 1:
             print(f"    = ~${_measure_facade._format_cents(items_total_cents)}{per} from the items above (API-rate equivalent)")
-        if cd_tokens > 0:
-            # Cache drops are an opportunity valued at API rates; like routing
-            # they sit on their own line and are never folded into the total above.
+        if cd_tokens > 0:  # an opportunity at API rates: own line, never folded into the total above
+            ttl = float(cache_drop.get("ttl_seconds") or 0)  # the TTL the user's own cache writes show
+            cache_name, resume = ("the 5-minute cache", "5 minutes") if 0 < ttl < 3600 else ("the 1-hour cache" if ttl >= 3600 else "the cache window", "the hour")
             cd_dollars = f", about ${_mo(cd_cost):.2f}{per} at API rates" if cd_cost > 0 else ""
             print()
             print(f"    Cache drops (an opportunity, not a measurement): {cache_drop.get('drop_sessions', 0)} sessions idled "
-                  f"past the cache window and re-wrote ~{int(_mo(cd_tokens)):,} tokens{per} of prefix{cd_dollars}. "
-                  f"Compact before breaks or use the 1h cache.")
+                  f"past {cache_name} and re-wrote ~{int(_mo(cd_tokens)):,} tokens{per} of prefix{cd_dollars}. "
+                  f"Resume within {resume}, or batch related work before stepping away.")
         if routing_potential > 0:
             # Routing is an assumption about the user's own Opus work, so it sits
             # on its own line and is never folded into the total above.

@@ -120,3 +120,23 @@ def test_measured_table_total_matches_the_monthly_logged_line(measure, monkeypat
     table = re.search(r"TOTAL \(measured\)\s+\S+\s+\S+\s+\$([0-9.]+)", out).group(1)
     monthly = re.search(r"Estimated monthly: \$([0-9.]+)", out).group(1)
     assert table == monthly
+
+
+@pytest.mark.parametrize("ttl, cache_name, resume", [
+    (3600, "the 1-hour cache", "Resume within the hour"),
+    (300, "the 5-minute cache", "Resume within 5 minutes"),
+    (None, "the cache window", "Resume within the hour"),
+])
+def test_text_advice_follows_the_observed_cache_ttl(measure, monkeypatch, capsys, ttl, cache_name, resume):
+    # Claude Code already writes the 1-hour cache, so "use the 1h cache" is wrong advice.
+    summary = {"period_days": 30, "total_cost_usd": 0.0, "total_events": 0, "by_category": {},
+               "cache_drop": {"drop_sessions": 4, "est_drops": 4, "prefix_tokens": 50_000,
+                              "cost_saved_usd": 1.0, "ttl_seconds": ttl, "evidence": "opportunity"}}
+    monkeypatch.setattr(measure, "_get_merged_savings", lambda **kw: json.loads(json.dumps(summary)))
+    monkeypatch.setattr(measure, "_counted_cumulative_summary", lambda **kw: {"available": False})
+    monkeypatch.setattr(measure, "_savings_since_install", lambda: {"days": 90})
+    monkeypatch.setattr(measure, "_install_date", lambda: None)
+    measure.savings_report()
+    line = next(l for l in capsys.readouterr().out.splitlines() if "Cache drops" in l)
+    assert f"idled past {cache_name} and re-wrote" in line and resume in line
+    assert "1h cache" not in line

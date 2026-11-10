@@ -3366,6 +3366,13 @@ def _collect_trends_data(days=None):
     result = _measure_facade._collect_trends_from_db(days)
     if result is not None:
         from . import first_call_context; result["first_call_context"] = first_call_context.collect(_measure_facade.TRENDS_DB, _measure_facade.SNAPSHOT_DIR); result["git_commits"] = _measure_facade._collect_git_commits(days)
+        try:
+            from . import setup_step, structural_value
+            result["first_call_context"] = {**result["first_call_context"], "setup_steps": setup_step.collect(
+                _measure_facade.TRENDS_DB, _measure_facade.SNAPSHOT_DIR, _measure_facade.CLAUDE_DIR,
+                structural_value.card_resolver(_measure_facade))}
+        except Exception:
+            pass  # the card renders without the measured steps
         return result
     # Fall back to live JSONL parsing
     result = _measure_facade._collect_trends_from_jsonl(days)

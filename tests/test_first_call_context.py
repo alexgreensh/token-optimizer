@@ -24,6 +24,17 @@ def test_missing_usage_and_sidechain_are_not_first_parent_call():
     assert observe(rows, len) is None
 
 
+def test_instruction_files_are_split_without_exposing_paths():
+    rows = [{"type": "attachment", "attachment": {"type": "instructions", "files": [
+        {"path": "/private/CLAUDE.md", "content": "abc"},
+        {"path": "/private/memory/MEMORY.md", "content": "four"},
+        {"path": "/private/rules/other.md", "content": "five!"},
+    ]}}, {"type": "assistant", "timestamp": "2026-11-01", "message": {"usage": {"input_tokens": 100}}}]
+    result = observe(rows, len)
+    assert result["components"] == {"claude_md": 3, "memory_files": 4, "other_instructions": 5}
+    assert "/private" not in repr(result)
+
+
 def test_collect_reads_parent_transcripts_and_dated_trims(tmp_path):
     from _measure.first_call_context import collect
     path = tmp_path / "session.jsonl"

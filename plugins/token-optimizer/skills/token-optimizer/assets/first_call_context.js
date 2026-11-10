@@ -16,7 +16,7 @@ function firstCallContextHtml(result) {
     svg += '<text x="' + x + '" y="148" text-anchor="middle" fill="currentColor" font-size="10">' + m.month.slice(2) + '</text>';
   });
   svg += '</svg>';
-  var latest = months[months.length - 1], names = {skills:'Skills listing',mcp_tools:'MCP tools',mcp_instructions:'MCP instructions',agents:'Agents',instructions:'Instruction files',first_user:'First user message',SessionStart_token_optimizer:'SessionStart, Token Optimizer',SessionStart_other_or_unknown:'SessionStart, other or unknown',UserPromptSubmit_token_optimizer:'UserPromptSubmit, Token Optimizer',UserPromptSubmit_other_or_unknown:'UserPromptSubmit, other or unknown'};
+  var latest = months[months.length - 1], names = {skills:'Skills listing',mcp_tools:'MCP tools',mcp_instructions:'MCP instructions',agents:'Agents',claude_md:'CLAUDE.md',memory_files:'Memory files',other_instructions:'Other instruction files',first_user:'First user message',SessionStart_token_optimizer:'SessionStart, Token Optimizer',SessionStart_other_or_unknown:'SessionStart, other or unknown',UserPromptSubmit_token_optimizer:'UserPromptSubmit, Token Optimizer',UserPromptSubmit_other_or_unknown:'UserPromptSubmit, other or unknown'};
   var split = Object.keys(names).filter(function(k) { return latest.components && latest.components[k]; }).map(function(k) {
     var c = latest.components[k];
     return '<div>' + names[k] + ': ' + Number(c.median).toLocaleString() + ' estimated tokens (' + Number(c.observed) + '/' + Number(latest.n) + ' observed)</div>';

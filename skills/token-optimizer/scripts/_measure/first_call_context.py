@@ -67,7 +67,15 @@ def observe(rows, estimate):
         elif typ == "instructions":
             for item in a.get("files") or []:
                 if isinstance(item, dict):
-                    parts["instructions"] += estimate(_text(item.get("content")))
+                    path = str(item.get("path") or "").replace("\\", "/").lower()
+                    kind = str(item.get("type") or "").lower()
+                    if path.endswith("/claude.md") or path == "claude.md":
+                        name = "claude_md"
+                    elif "/memory/" in path or path.endswith("/memory.md") or kind == "memory":
+                        name = "memory_files"
+                    else:
+                        name = "other_instructions"
+                    parts[name] += estimate(_text(item.get("content")))
         elif typ == "hook_additional_context":
             event = a.get("hookEvent")
             if event in ("SessionStart", "UserPromptSubmit"):

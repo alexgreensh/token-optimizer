@@ -238,6 +238,8 @@ def test_hint_silent_when_off_or_no_code(sandbox):
     assert none.stdout.strip() == ""
     skip = _hint({"hook_event_name": "SubagentStart", "agent_type": "statusline-setup", "cwd": str(proj)})
     assert skip.stdout.strip() == ""
+    no_cwd = _hint({"hook_event_name": "SubagentStart", "agent_type": "Explore"})
+    assert no_cwd.stdout.strip() == ""
 
 
 def test_session_text_and_background_warm(sandbox):

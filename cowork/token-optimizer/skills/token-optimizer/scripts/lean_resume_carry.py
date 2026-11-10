@@ -454,9 +454,11 @@ def _score_verified_event(row, m, tier_data, compactions=None):
         threshold = None if None in sizes else max(sizes + [lean_resume_threshold.window_for(avoided, old_model, _resolver(m))])
         source = 'user_compaction_survival'
     else:
-        threshold, source = lean_resume_threshold.threshold(new_path, lambda usage: _prompt_tokens(m, usage), _resolver(m))
-        if threshold is not None and threshold > 500000:
-            threshold, source = 500000, 'old_session_500k_cap'
+        # Too little history: the old session would have compacted at the
+        # user's effective compaction window for its model (env, then
+        # modelSettings, then autoCompactWindow, then the model default).
+        threshold = lean_resume_threshold.compaction_window(max(avoided, old_largest), old_model, _resolver(m))
+        source = 'effective_compact_window'
     if threshold is None:
         return result
     turns, stopped = _walk(new_path, ev.replace(microsecond=0), avoided, m, threshold)

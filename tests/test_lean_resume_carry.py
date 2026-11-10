@@ -290,3 +290,25 @@ def test_verified_summary_credits_only_delivered_stopped_session(m, tmp_path, mo
     assert out['cost_saved_usd'] == pytest.approx(2 * 1000 * rate / 1e6)
     old.write_text(old.read_text() + _turn('2026-01-01T10:00:20Z', 'old2', 5200) + '\n')
     assert carry.verified_summary(days=30)['events'] == 0
+
+
+def test_verified_carry_thin_history_stops_at_users_compaction_window(m, tmp_path, monkeypatch):
+    """No fixed 500K: a user whose window is 300K stops there, a default 1M user does not."""
+    mod, carry = m
+    receiver = 'efab5678-1111-2222-3333-444455556666'
+    old = _transcript(mod, tmp_path, monkeypatch, [_turn('2026-01-01T09:50:00Z', 'old1', 120000)])
+    recv = old.parent / (receiver + '.jsonl')
+    injection = json.dumps({'type': 'attachment', 'timestamp': '2026-01-01T10:00:00Z', 'attachment': {'type': 'hook_additional_context', 'content': '[Token Optimizer] Cold-resume lean (session abcd1234, 2026-01-01): context'}})
+    recv.write_text('\n'.join([injection, _turn('2026-01-01T10:00:05Z', 'new1', 150000), _turn('2026-01-01T10:00:10Z', 'new2', 210000)]))
+    row = {'id': 1, 'timestamp': '2026-01-01T10:00:00', 'session_id': SID, 'session_uuid': SID,
+           'tokens_saved': 120000, 'cost_saved_usd': 1, 'model': 'opus', 'detail': 'warm cache-read receiver=' + receiver}
+    tier = mod.PRICING_TIERS[mod._load_pricing_tier()]
+    monkeypatch.setattr(mod, "_read_settings_json", lambda: ({}, None))
+    for key in ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"):
+        monkeypatch.delenv(key, raising=False)
+    result = carry._score_verified_event(row, mod, tier)
+    assert result['eligible'] and result['turns'] == 2 and result['threshold_source'] == 'effective_compact_window'
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "300000")
+    result = carry._score_verified_event(row, mod, tier)
+    assert result['turns'] == 1 and result['carry_tokens'] == 120000
+    assert result['stopped_by'] == 'counterfactual_compaction'

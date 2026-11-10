@@ -98,13 +98,14 @@ def test_event_above_fixed_cap_still_carries_when_history_compacts_higher(m, tmp
     assert result["carry_cost_usd"] == pytest.approx(1200000 * rate / 1e6, rel=1e-4)
 
 
-def test_thin_history_keeps_fixed_rule(m, tmp_path):
+def test_thin_history_uses_effective_compaction_window(m, tmp_path, monkeypatch):
     mod, carry = m
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "500000")
     _history(tmp_path, [700000] * 9)
     _sessions(tmp_path, 300000, [150000, 210000])
     tier = mod.PRICING_TIERS[mod._load_pricing_tier()]
     result = carry._score_verified_event(_row(300000), mod, tier)
-    assert result["threshold_source"] == "old_session_500k_cap"
+    assert result["threshold_source"] == "effective_compact_window"
     assert result["turns"] == 1 and result["carry_tokens"] == 300000
 
 
@@ -118,7 +119,7 @@ def test_history_window_sidechains_subagents_and_old_compactions_ignored(m, tmp_
     (sub / "agent-a.jsonl").write_text("\n".join(_boundary("2026-03-01T00:00:00Z", 700000) for _ in range(20)))
     _sessions(tmp_path, 300000, [150000, 210000])
     tier = mod.PRICING_TIERS[mod._load_pricing_tier()]
-    assert carry._score_verified_event(_row(300000), mod, tier)["threshold_source"] == "old_session_500k_cap"
+    assert carry._score_verified_event(_row(300000), mod, tier)["threshold_source"] == "effective_compact_window"
 
 
 def test_history_cache_reuses_unchanged_files_and_rescans_changed(tmp_path):

@@ -205,6 +205,7 @@ def _entry_budget_rules():
         ("codex_hook_bridge", _flags_exactly("user-prompt-submit"), BUDGET_CODEX_USER_PROMPT, "Codex:UserPromptSubmit"),
         ("codex_hook_bridge", _flags_exactly("subagent-start"), BUDGET_CODEX_SUBAGENT, "Codex:SubagentStart"),
         ("codex_hook_bridge", _flags_exactly("subagent-stop"), BUDGET_CODEX_SUBAGENT, "Codex:SubagentStop"),
+        ("codemap_hint", _flags_exactly(), BUDGET_CODEX_SUBAGENT, "SubagentStart:codemap-hint"),
         ("measure", _subcommand("dynamic-compact-instructions", "--quiet"), BUDGET_POSTTOOL_MEASURE, "PreCompact:dynamic-compact-instructions"),
         ("measure", _trigger("compact-capture", "auto"), BUDGET_PRECOMPACT_CAPTURE, "PreCompact:compact-capture"),
         ("measure", _flags_exactly("quality-cache", "--force", "--quiet"), BUDGET_POSTTOOL_MEASURE, "PostCompact:quality-cache"),

@@ -43,6 +43,7 @@ from hook_runtime import (  # noqa: E402
     BUDGET_PRECOMPACT_CAPTURE,
     BUDGET_PRETOOL_MEASURE,
     BUDGET_STOP,
+    BUDGET_CODEX_SUBAGENT,
     HookDeadline,
     arm_entry_budget,
     resolve_entry_budget,
@@ -141,6 +142,8 @@ EXPECTED = {
     ("PostCompact", "measure", "quality-cache"): BUDGET_POSTTOOL_MEASURE,
     ("CwdChanged", "read_cache", "--clear"): BUDGET_POSTTOOL_MEASURE,
     ("StopFailure", "measure", "compact-capture"): BUDGET_STOP,
+    # Code map hint for subagents: one small lookup, same budget as Codex's SubagentStart.
+    ("SubagentStart", "codemap_hint", ""): BUDGET_CODEX_SUBAGENT,
 }
 
 # Events whose hooks.json entries are consolidated dispatchers that arm their

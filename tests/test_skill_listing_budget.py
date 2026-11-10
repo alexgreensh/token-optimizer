@@ -42,16 +42,39 @@ def test_growth_uses_smallest_monthly_median_and_recent_week():
 
 
 def test_small_months_cannot_set_the_baseline():
-    spec = _month(2026, 3, 1000, 5) + _month(2026, 6, 8000, 30) + [(NOW - DAY + i, 30000) for i in range(3)]
+    # Median month is 30 sessions, so a month needs at least 3 (10%, floor 3).
+    spec = (_month(2026, 3, 1000, 2) + _month(2026, 6, 8000, 30) + _month(2026, 7, 9000, 30)
+            + [(NOW - DAY + i, 30000) for i in range(3)])
     sessions, read = _sessions(spec)
     g = listing.listing_growth(sessions, NOW, 4.0, read=read)
-    assert g['baseline_month'] == '2026-06' and g['growth_tokens'] == 5500
+    assert g['baseline_month'] == '2026-06' and g['growth_tokens'] == 5500 and g['month_floor'] == 3
+
+
+def test_light_user_with_few_sessions_still_gets_a_baseline():
+    spec = _month(2026, 5, 5000, 4) + _month(2026, 8, 12000, 6) + [(NOW - DAY + i, 20000) for i in range(3)]
+    sessions, read = _sessions(spec)
+    g = listing.listing_growth(sessions, NOW, 4.0, read=read)
+    assert g['baseline_month'] == '2026-05' and g['growth_tokens'] == 3750
+
+
+def test_heavy_user_floor_scales_with_volume():
+    spec = (_month(2026, 4, 2000, 15) + _month(2026, 5, 6000, 300) + _month(2026, 6, 7000, 300)
+            + [(NOW - DAY + i, 30000) for i in range(5)])
+    sessions, read = _sessions(spec)
+    g = listing.listing_growth(sessions, NOW, 4.0, read=read)
+    assert g['month_floor'] == 30 and g['baseline_month'] == '2026-05'
+
+
+def test_only_this_months_history_has_nothing_to_compare():
+    spec = [(NOW - 5 * DAY + i, 9000) for i in range(30)] + [(NOW - DAY + i, 30000) for i in range(5)]
+    sessions, read = _sessions(spec)
+    assert listing.listing_growth(sessions, NOW, 4.0, read=read) is None
 
 
 def test_thin_evidence_returns_none():
     sessions, read = _sessions(_month(2026, 6, 8000, 30) + [(NOW - DAY, 30000)] * 2)
     assert listing.listing_growth(sessions, NOW, 4.0, read=read) is None
-    sessions, read = _sessions(_month(2026, 6, 8000, 10) + [(NOW - DAY, 30000)] * 5)
+    sessions, read = _sessions(_month(2026, 6, 8000, 2) + [(NOW - DAY, 30000)] * 5)
     assert listing.listing_growth(sessions, NOW, 4.0, read=read) is None
 
 

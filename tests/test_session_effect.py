@@ -186,7 +186,7 @@ def test_cli_lines_render(tmp_path):
     lines = se.cli_lines(se.compute(db, START, END))
     text = '\n'.join(lines)
     assert lines[0] == '  Token Optimizer ran in 1 of your 1 sessions.'  # absolute first
-    assert "share of that session's own context" in text and 'this Mac: typical 10.0%' in text
+    assert "share of that session's own context" in text and 'this computer: typical 10.0%' in text
     assert 'traffic' not in text and 'Your limits' not in text  # never a share of all traffic
     assert se.cli_lines({'available': False}) == []
 
@@ -230,10 +230,11 @@ def test_headline_splits_the_removed_pool_by_what_it_is():
                         'resume_lean_estimated': {'tokens_saved': 200},
                         'checkpoint_restore_estimated': {'tokens_saved': 50},
                         'mcp_cap_estimated': {'tokens_saved': 25}})
-    assert h['removed_tokens'] == 725
+    # The MCP-cap estimate is no longer counted anywhere (dropped from totals).
+    assert h['removed_tokens'] == 700
     assert h['output_not_generated_tokens'] == 0
     assert h['reload_avoided_tokens'] == 0
-    assert h['context_removed_tokens'] == 725
+    assert h['context_removed_tokens'] == 700
     assert h['context_removed_tokens'] + h['output_not_generated_tokens'] + h['reload_avoided_tokens'] == h['removed_tokens']
 
 

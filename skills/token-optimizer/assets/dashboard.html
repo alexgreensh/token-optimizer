@@ -1755,7 +1755,6 @@ input:checked + .slider:before {
 .st-mega__note { font: 600 17px/1.3 var(--font-sans); color: var(--c-savings); }
 .st-mega--route { color: var(--c-info); text-shadow: 0 0 26px rgba(96,165,250,0.36), 0 0 2px rgba(96,165,250,0.4); }
 .st-mega--warm { color: var(--c-warning-2); text-shadow: 0 0 28px rgba(251,191,36,0.38), 0 0 2px rgba(251,191,36,0.45); }
-.st-mega--word { font-size: clamp(48px, 5vw, 72px); letter-spacing: -0.02em; }
 .st-table { border: 1px solid rgba(251,191,36,0.45); box-shadow: 0 0 0 1px rgba(251,191,36,0.10), 0 0 44px rgba(251,191,36,0.10); }
 [data-theme="light"] .st-table { border-color: var(--c-warning-2); box-shadow: none; }
 .st-table__body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: var(--s-3) var(--s-5); align-items: center; }
@@ -1784,7 +1783,7 @@ input:checked + .slider:before {
   .st-hero .st-rows { display: none; }
   .st-bands { gap: var(--s-2); }
   .st-mega, .st-mega__row--hero .st-mega { font-size: 64px; }
-  .st-mega--card, .st-mega--word { font-size: 56px; }
+  .st-mega--card { font-size: 56px; }
   .st-mega__row { gap: var(--s-3); }
   .st-morerow { flex-direction: column; }
 }
@@ -4684,7 +4683,7 @@ var DB = (function() {
       ? 'assuming ' + routingBaselinePct + '% Opus before Token Optimizer'
       : (mr.baseline_opus_share != null
         ? 'against a measured ' + routingBaselinePct + '% Opus baseline'
-        : 'against a stated Opus baseline');
+        : 'against an Opus baseline');
     var routingAltShare = mr.measured_baseline_opus_share;
     var routingAltMo = mr.measured_baseline_realized_cost_usd != null ? mo(mr.measured_baseline_realized_cost_usd) : null;
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
@@ -4822,10 +4821,10 @@ var DB = (function() {
       var siaParts = sia.components_usd || {};
       var siaRouting = Number(sia.routing_usd) || ((Number(siaParts.routing_measured) || 0) + (Number(siaParts.routing_estimated) || 0));
       var siaRoutingNote = sia.routing_baseline_opus_share != null
-        ? ((sia.routing_baseline_source === 'pretool_baseline' ? 'assuming ' : 'against a measured ') +
+        ? ((sia.routing_baseline_source === 'stated' || sia.routing_baseline_source === 'pretool_baseline' ? 'assuming ' : 'against a measured ') +
           fmtPct(sia.routing_baseline_opus_share) + '% Opus' +
-          (sia.routing_baseline_source === 'pretool_baseline' ? ' before Token Optimizer' : ' baseline'))
-        : 'a stated assumption';
+          (sia.routing_baseline_source === 'stated' || sia.routing_baseline_source === 'pretool_baseline' ? ' before Token Optimizer' : ' baseline'))
+        : 'an estimate';
       var siaPending = sia.routing_pending || sia.remeasuring;
       var siaLeft = Math.max(Number(sia.routing_pending_sessions) || 0, Number(sia.remeasuring_sessions) || 0);
       html += '<div class="card savings-history" style="flex:1;min-width:min(100%,260px);padding:var(--s-4);">' +

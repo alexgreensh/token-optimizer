@@ -14,10 +14,26 @@ class Facade:
     def _add_routing_buckets(self, dest, parts): dest['fresh_input'] = parts.get('fresh_input', 0)
 
 
-def test_routing_period_requires_reconciliation_and_finds_majority():
+import pytest
+
+
+def _conn():
     conn = sqlite3.connect(':memory:')
     conn.execute('CREATE TABLE session_log(daily_usage_json TEXT)')
     daily = {'2026-%02d-01' % i: {'sonnet': {'fresh_input': n * 1000000}} for i, n in enumerate((.1, 2, 3, 2, 2), 1)}
     conn.execute('INSERT INTO session_log VALUES(?)', (json.dumps(daily),))
-    assert routing_period.strongest(conn, Facade(), 9.1 * .95) == {'start': '2026-02', 'end': '2026-05'}
-    assert routing_period.strongest(conn, Facade(), 1000) is None
+    return conn
+
+
+@pytest.mark.parametrize('opus', [0.6, 0.8, 0.95])
+def test_routing_period_uses_the_users_own_baseline_mix(opus):
+    shares = {'opus': opus, 'sonnet': round(1 - opus, 4)}
+    # 9.1M Sonnet tokens; per token the baseline costs opus*2 + (1-opus)*1 vs 1.
+    expected = 9.1 * opus
+    assert routing_period.strongest(_conn(), Facade(), expected, shares=shares) == {'start': '2026-02', 'end': '2026-05'}
+    assert routing_period.strongest(_conn(), Facade(), 1000, shares=shares) is None
+
+
+def test_routing_period_without_a_baseline_mix_finds_nothing():
+    assert routing_period.strongest(_conn(), Facade(), 9.1 * .95) is None
+    assert routing_period.strongest(_conn(), Facade(), 9.1 * .6, shares={'opus': 0.95, 'sonnet': 0.05}) is None

@@ -202,14 +202,16 @@ function savingsStoryHtml(data) {
       '<p class="st-lead">Each cleanup is being recorded with the date it happened and the tokens it removes from every call. It joins the total once that record exists.</p>' +
       '</div>');
   } else {
-    var rows = trims.slice(0, 4).map(function(t) {
+    var valuedTrims = trims.filter(function(t) { return num(t.cost_saved_usd) > 0 || num(t.projected_30d_usd) > 0; })
+      .sort(function(a, b) { return num(b.projected_30d_usd) - num(a.projected_30d_usd); });
+    var rows = valuedTrims.slice(0, 4).map(function(t) {
       var attested = t.source === 'attested' || t.tier === 'estimated';
       return '<li><span>' + esc(t.label || t.item || t.component || 'Setup cleanup') +
         '<span class="st-sub">' + esc(f.day(t.ts) || 'undated') + ', ' + (attested ? 'your figure' : 'recorded by the audit') + '</span></span>' +
         '<span class="st-v">' + usd(t.cost_saved_usd) + '</span></li>';
     }).join('');
     var opts = sd.attested_options || [];
-    var formula = trims.map(function(t) {
+    var formula = valuedTrims.map(function(t) {
       return '<li>' + esc(t.label || t.item || 'Setup cleanup') + ': ' + count(t.tokens_per_call) + ' tokens per call &times; ' + count(t.requests) +
         ' calls since' + (num(t.projected_30d_usd) > 0 ? '. At current volume, about ' + usd(t.projected_30d_usd) + ' per 30 days.' : '.') + '</li>';
     }).join('');

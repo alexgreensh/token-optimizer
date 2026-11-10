@@ -331,3 +331,14 @@ def test_setup_forecast_is_not_in_the_historical_total():
     assert 'assuming other savings stay at their recent rate' in out
     bands = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
     assert bands['mUsd'] != 36
+
+
+def test_setup_card_prioritizes_valued_trims():
+    s = full()
+    s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 0.27,
+                              'tokens_saved': 100, 'projected_30d': {'measured': {'usd': 36}},
+                              'trims': [{'item': 'Unused listing', 'tier': 'estimated', 'tokens_per_call': 10, 'cost_saved_usd': 0, 'projected_30d_usd': 0},
+                                        {'item': 'Memory', 'tier': 'measured', 'tokens_per_call': 10, 'cost_saved_usd': 0.27, 'projected_30d_usd': 36}]}
+    setup = story({'savings': s}).split('<h2 class="st-h">Setup cleanup')[1].split('</div>')[0]
+    assert 'Memory' in setup
+    assert 'Unused listing' not in setup

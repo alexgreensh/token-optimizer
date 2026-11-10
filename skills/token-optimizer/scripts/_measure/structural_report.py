@@ -18,9 +18,10 @@ NO_TRIMS = "no trims recorded yet"
 
 def _local_sessions(conn, home):
     out = []
-    for path, project, metrics, first_day, date in conn.execute(
-            "SELECT jsonl_path, project, daily_metrics_json, first_activity_day, date FROM session_log"):
-        if value.scope_matches("global", project, home):
+    cloud = value.cloud_sessions(conn)
+    for uuid, path, project, metrics, first_day, date in conn.execute(
+            "SELECT session_uuid, jsonl_path, project, daily_metrics_json, first_activity_day, date FROM session_log"):
+        if value.scope_matches("global", project, home) and not value.proven_foreign(uuid, path, cloud):
             out.append((value._session_start(metrics, first_day or date), path))
     return out
 

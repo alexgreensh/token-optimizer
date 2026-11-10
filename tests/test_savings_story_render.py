@@ -362,3 +362,12 @@ def test_visible_dollars_are_whole_and_exact_values_remain_in_fold():
     assert 'Re-reads avoided</span><span class="st-v">$118' in h
     assert 'Context removed</span><span class="st-v">$58' in h
     assert 'Estimated <span class="st-v">$6' in h
+
+
+def test_subdollar_band_does_not_display_zero():
+    s = base()
+    s['action_savings'].update(logged_usd=0.27, class_premium_usd=0,
+                               reread_usd=0, estimated_usd=0, estimates_usd={})
+    visible = _visible(hero(story({'savings': s})))
+    assert 'Measured  under $1' in visible
+    assert 'Measured  $0' not in visible

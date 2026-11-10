@@ -195,8 +195,8 @@ function savingsStoryHtml(data) {
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
       '<div class="st-bands">' +
-        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(measuredWhole) + '</span></p>' + top(measured, measuredWhole) + '</div>' : '') +
-        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(estimatedWhole) + '</span></p>' + top(estimated, estimatedWhole) + '</div>' : '') +
+        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(Math.abs(mUsd) < 1 ? mUsd : measuredWhole) + '</span></p>' + top(measured, measuredWhole) + '</div>' : '') +
+        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(Math.abs(eUsd) < 1 ? eUsd : estimatedWhole) + '</span></p>' + top(estimated, estimatedWhole) + '</div>' : '') +
       '</div>' +
       '<p class="st-sub">Whole-dollar rows are rounded to reconcile; exact amounts are in the breakdown.</p>' +
       f.fold('How this total is built', method) +

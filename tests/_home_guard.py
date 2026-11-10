@@ -377,6 +377,83 @@ def install_guard() -> None:
     _installed = True
 
 
+# --- child processes --------------------------------------------------------
+#
+# The audit hook only sees this process. A child started with an explicit env
+# that has no HOME resolves Path.home() from the password database, i.e. the
+# REAL home, and a child handed the real HOME (or a data-dir override under it)
+# writes the real ledger. In August 2026 a hook harness wrote 532 rows into a
+# developer's live trends.db that way. Every child env is therefore rewritten
+# before spawn: a missing HOME becomes the sandbox, and any home/data-dir
+# variable that points into the real home is replaced by its sandbox
+# equivalent and reported as a hit, so the test fails without the child ever
+# seeing the real data dir.
+
+_CHILD_HOME_VARS = ("HOME", "USERPROFILE")
+_CHILD_DIR_VARS = _CHILD_HOME_VARS + tuple(v for v in _HOME_OVERRIDE_VARS if v not in ("HOMEDRIVE", "HOMEPATH"))
+_subprocess_installed = False
+
+
+def _child_real_home_rel(value: str) -> str | None:
+    """Real-home-relative path when ``value`` is the real home or user data in it.
+
+    Unlike the stat rule, an ANCESTOR of the repo or interpreter (the real home
+    itself) is not exempt here: a child given it as HOME would write there.
+    """
+    _busy.on = True
+    try:
+        full = os.path.realpath(os.path.abspath(os.path.expanduser(value)))
+    finally:
+        _busy.on = False
+    if full == REAL_HOME:
+        return "."
+    if not full.startswith(REAL_HOME + os.sep):
+        return None
+    if any(full == ex or full.startswith(ex + os.sep) for ex in _EXEMPT_PREFIXES):
+        return None
+    return full[len(REAL_HOME):].lstrip(os.sep)
+
+
+def sanitize_child_env(env):
+    """The env a child should get: never the real home, never without HOME."""
+    if env is None or SANDBOX is None:
+        return env
+    home = str(SANDBOX / "home")
+    fixed = dict(env)
+    for var in _CHILD_HOME_VARS:
+        fixed.setdefault(var, home)
+    for var in _CHILD_DIR_VARS:
+        value = fixed.get(var)
+        if not isinstance(value, str) or not value:
+            continue
+        rel = _child_real_home_rel(value)
+        if rel is None:
+            continue
+        HITS.append((_current["id"], "subprocess.env", "W", "%s=~/%s" % (var, rel)))
+        fixed[var] = home if var in _CHILD_HOME_VARS or rel == "." else os.path.join(home, rel)
+    return fixed
+
+
+def install_subprocess_guard() -> None:
+    global _subprocess_installed
+    if _subprocess_installed or not sandbox_enabled():
+        return
+    import subprocess
+
+    real_init = subprocess.Popen.__init__
+
+    def guarded_init(self, *args, **kwargs):
+        if "env" in kwargs:
+            kwargs["env"] = sanitize_child_env(kwargs["env"])
+        elif len(args) > 9:  # env is Popen's 10th positional parameter
+            args = args[:9] + (sanitize_child_env(args[9]),) + args[10:]
+        return real_init(self, *args, **kwargs)
+
+    guarded_init.__wrapped__ = real_init
+    subprocess.Popen.__init__ = guarded_init
+    _subprocess_installed = True
+
+
 def set_current(nodeid: str) -> None:
     _current["id"] = nodeid
 

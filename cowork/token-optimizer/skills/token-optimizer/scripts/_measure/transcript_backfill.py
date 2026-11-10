@@ -399,6 +399,10 @@ def collect_pass(conn, m, drain, budgets, quiet=True):
     remaining = None if deadline is None else max(0.0, deadline - (time.monotonic() - started))
     try: stats["archive_void"] = archive_void_evidence.collect(conn, max_sessions=None if drain == "full" else 8, deadline_seconds=remaining)
     except Exception as exc: stats["archive_void_error"] = type(exc).__name__
+    from . import compression_fixture_void
+    remaining = None if deadline is None else max(0.0, deadline - (time.monotonic() - started))
+    try: stats["fixture_void"] = compression_fixture_void.collect(conn, m._counted_event_utc, m.CLAUDE_DIR / "projects", deadline_seconds=remaining)
+    except Exception as exc: stats["fixture_void_error"] = type(exc).__name__
     from . import lean_resume_receivers
     remaining = None if deadline is None else max(0.0, deadline - (time.monotonic() - started))
     try: stats["lean_receivers"] = lean_resume_receivers.collect(conn, m._counted_event_utc, max_files=None if drain == "full" else 8, deadline_seconds=remaining)

@@ -603,9 +603,7 @@ def _ensure_counted_views(conn):
             statements[0] += " AND NOT EXISTS (SELECT 1 FROM main.archive_void_evidence_v2 v WHERE v.event_id=e.id AND archive_proof_current(v.path,v.size,v.mtime_ns,v.parent,v.fingerprint)=1)"
         for statement in statements:
             conn.execute(statement)
-        # SQLite resolves view columns lazily: a database missing a column the
-        # filters use (very old installs, minimal schemas) only fails on first
-        # read. Probe now and fall back to the raw tables instead.
+        # Probe lazy view resolution so older schemas can fall back safely.
         conn.execute("SELECT 1 FROM counted_savings_events LIMIT 0").fetchall()
         conn.execute("SELECT 1 FROM counted_compression_events LIMIT 0").fetchall()
         return True

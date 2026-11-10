@@ -3621,8 +3621,14 @@ var DB = (function() {
     var days = Number(s.period_days) || 30;
     var out = '<div class="card wide"><div class="card-header"><span>Tokens Saved</span></div>';
     out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + formatTokens(total) + '</div><div class="metric-unit">tokens kept out of context in the last ' + days + ' days</div></div>';
+    var types = s.token_type_breakdown || {};
+    var typeRows = [['cache_reread', 'Cache re-reads avoided'], ['cache_write', 'Cache writes avoided'], ['fresh', 'Fresh input and output avoided']];
+    out += '<div class="ts-divider"></div><h3 class="ts-section-label">Tokens by type</h3><div class="st-bands">' + typeRows.map(function(row) {
+      var value = types[row[0]];
+      return '<div class="st-band">' + row[1] + '<br><strong>' + (typeof value === 'number' && isFinite(value) ? formatTokens(value) : 'Measuring') + '</strong></div>';
+    }).join('') + '</div>';
     if (modelTotal > 0) {
-      out += '<div class="ts-divider"></div><h3 class="ts-section-label">Which models did the work</h3>';
+      out += '<div class="ts-divider"></div><h3 class="ts-section-label">Model usage</h3>';
       out += modelMixBodyHtml(mix, data.runtime === 'codex', spent > 0 ? spent : modelTotal);
     }
     out += '<div class="ts-foot">' + (storyAvailable ? 'Same figure as the Savings card.<br>' : '') + formatTokens(removed) + ' tokens removed once.</div></div>';
@@ -3644,9 +3650,7 @@ var DB = (function() {
       '</div>' +
       '<div class="last-updated">Last updated: ' + esc(ts) + '</div>';
 
-    // Runway leads here too: on a rate-limited plan "how much of my allowance is
-    // left" is the first question a trends view should answer, before any chart.
-    html += runwayCardHtml();
+    html += tokensSavedCardHtml(data.savings || {});
 
     if (!t) {
       var collectNote = isCodex
@@ -3703,10 +3707,10 @@ var DB = (function() {
       .filter(function(label) { return !!label; })
       .join(' | ');
 
-    var tokenLabel = isCodex ? 'Measured/Estimated Tokens' : 'Billable Tokens';
+    var tokenLabel = isCodex ? 'Measured/Estimated Tokens' : 'Deduplicated Fresh Input + Output';
     var tokenNote = isCodex
       ? 'Codex logs use token_count snapshots when present; older sessions fall back to local estimates.'
-      : 'Fresh input + cache writes + output (what your invoice bills at full rate).';
+      : 'Deduplicated usage; the raw token classes below use a different basis.';
     var pop = t.population_metrics || {};
     var eligibleCacheHit = Number(pop.cache_eligible_main_hit_rate);
     var avgCacheDisplay = Number.isFinite(eligibleCacheHit) && pop.cache_eligible_main_sessions
@@ -3714,10 +3718,10 @@ var DB = (function() {
     var cacheLabel = isCodex ? 'Cached Input Share' : 'Main-work cache hit rate';
     var cacheNote = isCodex
       ? 'Share of logged input tokens Codex says were cached_input_tokens. Similar to a cache hit rate, but Codex does not expose cache-write TTL or write-size fields.'
-      : 'Main-work sessions with 20+ messages. Above 90% is normal for longer sessions.';
+      : 'Main-work sessions with 20+ messages.';
     var tokenBreakdownNote = isCodex
       ? 'fresh:' + fn(t.total_fresh_input || 0) + ' · cached input:' + fn(t.total_cache_read || 0) + ' · out:' + fn(t.total_output_tokens || 0)
-      : 'fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0);
+      : 'raw fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0);
     var codexCostNote = '';
     if (isCodex && typeof t.total_cost_usd === 'number') {
       codexCostNote = '<div style="font-size:10px;color:var(--c-text-dim);margin-top:2px">API-equivalent known cost: $' + t.total_cost_usd.toFixed(2);
@@ -3747,13 +3751,6 @@ var DB = (function() {
     // Shared data for skills sections
     var skillsDetail = (data.snapshot && data.snapshot.components && data.snapshot.components.skills_detail) || {};
 
-    // Tokens Saved card: the full card (hero + spent-vs-saved + model-mix-as-
-    // usage + footer). Rendered in BOTH Trends and Savings (sharing the
-    // hoisted tokensSavedCardHtml + modelMixBodyHtml helpers). Replaces the
-    // former standalone Model Mix card — the model-mix-as-usage section is
-    // now inside the Tokens Saved card, reconciled to the billable SPENT.
-    // Fail-open: returns '' only when measured AND estimated are both ≤ 0.
-    html += tokensSavedCardHtml(data.savings || {});
 
     // Daily breakdown with date navigation
     var daily = t.daily || [];
@@ -3804,7 +3801,7 @@ var DB = (function() {
       topSkills.forEach(function(entry) {
         var w = Math.max(3, (entry[1] / maxSkill) * 100);
         var sd = skillsDetail[entry[0]];
-        var tokNote = sd ? sd.frontmatter_tokens + ' tok' : '~100 tok';
+        var tokNote = sd ? sd.frontmatter_tokens + ' frontmatter tokens' : 'Measuring';
         html += '<div class="bar-row" data-skill-name="' + esc(entry[0]) + '" style="cursor:pointer;">' +
           '<span class="bar-label" style="width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(entry[0]) + ' (' + tokNote + ')">' + esc(entry[0]) + '</span>' +
           '<div class="bar-track"><div class="bar-fill" style="width:' + w + '%"></div></div>' +
@@ -3816,11 +3813,10 @@ var DB = (function() {
     // Never-used skills with expandable detail (half-folded)
     var neverUsed = t.skills ? t.skills.never_used : [];
     if (!isCodex && neverUsed.length > 0) {
-      var overhead = t.skills.never_used_overhead || (neverUsed.length * 100);
       var PREVIEW_COUNT = 4;
-      html += '<div class="card wide"><div class="card-header"><span>Not Invoked (' + neverUsed.length + ' skills)</span><span class="label">~' + fn(overhead) + ' tokens/session</span></div>' +
+      html += '<div class="card wide"><div class="card-header"><span>Not Invoked (' + neverUsed.length + ' skills)</span><span class="label">Context impact: Measuring</span></div>' +
         '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:var(--s-2);">' +
-        'No Skill call or slash command for these in the window. Each still loads ~100 tokens of frontmatter every session. A skill you drive by slash command counts as invoked; if one you use often shows here, open an issue. Click a skill for details, or "Quick Wins" to archive.</p>';
+        'No Skill call or slash command for these in the window. A skill you drive by slash command counts as invoked; if one you use often shows here, open an issue. Click a skill for details, or "Quick Wins" to archive.</p>';
 
       function buildSkillRow(name) {
         var sd = skillsDetail[name];
@@ -3828,7 +3824,7 @@ var DB = (function() {
           '<div class="skill-detail-header">' +
           '<input type="checkbox" class="skill-archive-check" data-skill="' + esc(name) + '" title="Select to archive">' +
           '<span class="skill-name">' + esc(name) + '</span>' +
-          '<span class="skill-tokens">' + (sd ? sd.frontmatter_tokens + ' tok' : '~100 tok') + '</span>' +
+          '<span class="skill-tokens">' + (sd ? sd.frontmatter_tokens + ' frontmatter tokens' : 'Measuring') + '</span>' +
           '<span class="expand-arrow">\u25B6</span>' +
           '</div>' +
           '<div class="skill-detail-body"><div class="skill-detail-content">';
@@ -4585,7 +4581,6 @@ var DB = (function() {
       { key: 'contamination_exit', label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
       { key: 'handover_rerun', label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
       { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'trigger observed, size estimated' : rs.confidence },
-      { key: 'resume_lean_estimated', label: 'lean resumes (cold reload avoided)', amt: mo(rle.cost_saved_usd), n: Number(rle.events) || 0,           unit: 'resumes' },
       { key: 'checkpoint_restore_estimated', label: 'checkpoint restores (working-set re-reads)', amt: mo(cr.cost_saved_usd), n: Number(cr.events) || 0, unit: 'restores' },
       { key: 'verbosity_steer', label: 'concise output nudges', amt: mo(vs.cost_saved_usd), n: Number(vs.events) || 0, unit: 'nudges' },
       { key: 'verbosity_output_estimated', label: 'shorter replies and their re-reads (net of un-nudged replies)', amt: mo(vo.cost_saved_usd), n: Number(vo.events) || 0, unit: 'calibrated nudges',
@@ -4986,7 +4981,7 @@ var DB = (function() {
     // ---- SAVE MORE: suggestions, promoted right under the hero ----
     var parts = [];
     if ((Number(sp.cost_saved_usd) || 0) > 0 && unusedSkills > 0) {
-      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window. Archiving what you no longer need is worth about ' + moneyCents(oppCents.structural) + per + ', automatically, from then on.');
+      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window. Context impact: Measuring.');
     }
     if ((Number(recl.cost_usd) || 0) > 0) {
       parts.push('Avoid re-reading files that have not changed, or add them to .contextignore. ' + (Number(recl.tokens) || 0).toLocaleString() + ' tokens of stale re-reads across ' + (Number(recl.sessions) || 0).toLocaleString() + ' sessions are worth about ' + moneyCents(oppCents.reclaimable) + per + '.');
@@ -5007,9 +5002,7 @@ var DB = (function() {
       // whole-workload comparison is no longer shown here.
       if (parts.length > 0) {
         moreFolds.push('<details class="fold"><summary>Room to save more</summary><div class="fold__body">' +
-          '<p>Changes you could make to your setup or habits' +
-          (opportunityMo > 0 ? ', worth about ' + money(oppCents.total / 100) + (runRate ? ' per 30 days' : ' so far') : '') +
-          '. None of this is in any total above.</p>' +
+          '<p>Changes you could make to your setup or habits. None of this is in any total above.</p>' +
           parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
           (routingPotentialMo > 0 ? '<p>If about ' + routingFracPct + '% of your Opus work ran on ' + esc(routingTarget) +
             ', about ' + money(routingPotentialMo) + esc(per) + ' at API rates. This is an assumption about your own work.</p>' : '') +

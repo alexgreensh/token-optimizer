@@ -70,19 +70,16 @@ function savingsStoryBands(data) {
   var trimMeasuredTok = trimLedger ? num(sd.tokens_saved) : 0;
   var trimEst = (trimLedger && sd.estimated) || {};
   var est = as.estimates_usd || {};
-  var resumeUsd = num(est.resume_lean_estimated);
   var outputInEst = num(est.output_reread);
   var reloadTok = num(th.reload_avoided_tokens);
   var removedTok = has(th.context_removed_tokens)
     ? num(th.context_removed_tokens) + num(th.output_not_generated_tokens)
     : num(th.removed_tokens) - reloadTok;
   var measured = [
-    { key: 'context', label: 'Context removed', usd: num(as.logged_usd) - trimMeasuredUsd,
+    { key: 'context', label: 'Context removed', usd: num(as.logged_usd) - trimMeasuredUsd + num(as.class_premium_usd),
       tok: Math.max(0, removedTok - trimMeasuredTok), on: has(as.logged_usd) },
     { key: 'rereads', label: 'Re-reads avoided', usd: as.reread_usd, tok: th.reread_tokens,
       on: as.reread_available !== false && has(as.reread_usd) },
-    { key: 'premium', label: 'Cheaper cache writes', usd: as.class_premium_usd, tok: 0, on: num(as.class_premium_usd) > 0,
-      why: 'Removed context would have been written to the cache on the next call, at the higher write rate.' },
     { key: 'setup_measured', label: trimName('measured'), usd: trimMeasuredUsd, tok: trimMeasuredTok, on: trimLedger && trimMeasuredUsd > 0 }
   ];
   var estimated = [
@@ -91,9 +88,8 @@ function savingsStoryBands(data) {
     { key: 'output_reread', label: 'Shorter answers, not re-read', usd: orr.cost_saved_usd, tok: orr.tokens_saved,
       on: num(orr.cost_saved_usd) > 0,
       why: orr.control_net == null && orr.available ? 'Not yet compared against sessions without the nudge.' : '' },
-    { key: 'resumes', label: 'Lean resumes', usd: resumeUsd, tok: reloadTok, on: resumeUsd > 0 },
-    { key: 'other', label: 'Other estimates', usd: num(as.estimated_usd) - resumeUsd - outputInEst, tok: 0,
-      on: num(as.estimated_usd) - resumeUsd - outputInEst >= 0.5,
+    { key: 'other', label: 'Other estimates', usd: num(as.estimated_usd) - outputInEst, tok: reloadTok,
+      on: num(as.estimated_usd) - outputInEst >= 0.5,
       why: 'Loops stopped, sub-agent output, handovers and restores.' }
   ];
   function live(rows) {
@@ -116,6 +112,7 @@ function savingsStoryHtml(data) {
   var s = data.savings || {};
   var se = s.session_effect || {};
   var ps = se.per_session || {};
+  var places = ps.by_place || {}, local = places.local || {}, cloud = places.cloud || {};
   var cov = se.coverage || {};
   var fleet = se.fleet || {};
   var as = s.action_savings || {};
@@ -143,15 +140,34 @@ function savingsStoryHtml(data) {
   function sum(rows, k) { return rows.reduce(function(a, r) { return a + num(r[k]); }, 0); }
   if (measured.length || estimated.length) {
     var mPct = totalUsd > 0 ? Math.max(0, Math.min(100, mUsd / totalUsd * 100)) : 0;
-    function top(rows) {
-      return '<ul class="st-rows">' + rows.slice(0, 2).map(function(r) {
-        return '<li><span>' + esc(r.label) + '</span><span class="st-v">' + usd(r.usd) + '</span></li>';
+    function cents(rows) { return rows.reduce(function(n, r) { return n + Math.round(num(r.usd) * 100); }, 0); }
+    function moneyCents(n) { return (n < 0 ? '-$' : '$') + (Math.abs(n) / 100).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+    // Allocate rounding differences so the displayed whole-dollar rows add up.
+    // Sub-dollar amounts keep their honest "under $1" label.
+    function roundedRows(rows, target) {
+      var amounts = rows.map(function(r) { return Math.abs(num(r.usd)) < 1 ? 0 : Math.floor(num(r.usd)); });
+      var candidates = rows.map(function(r, i) { return i; }).filter(function(i) { return Math.abs(num(rows[i].usd)) >= 1; });
+      var diff = target - amounts.reduce(function(a, n) { return a + n; }, 0);
+      candidates.sort(function(a, b) {
+        var af = num(rows[a].usd) - Math.floor(num(rows[a].usd));
+        var bf = num(rows[b].usd) - Math.floor(num(rows[b].usd));
+        return diff >= 0 ? bf - af : af - bf;
+      });
+      for (var i = 0; candidates.length && i < Math.abs(diff); i++) amounts[candidates[i % candidates.length]] += diff > 0 ? 1 : -1;
+      return amounts;
+    }
+    var measuredWhole = Math.round(mUsd), estimatedWhole = Math.round(totalUsd) - measuredWhole;
+    function top(rows, total) {
+      var rounded = roundedRows(rows, total);
+      return '<ul class="st-rows">' + rows.map(function(r, i) {
+        var display = Math.abs(num(r.usd)) < 1 ? usd(r.usd) : usd(rounded[i]);
+        return '<li><span>' + esc(r.label) + '</span><span class="st-v">' + display + '</span></li>';
       }).join('') + '</ul>';
     }
     function table(title, rows) {
       if (!rows.length) return '';
-      return '<p><strong>' + title + ', ' + usd(sum(rows, 'usd')) + '</strong></p><ul>' + rows.map(function(r) {
-        return '<li>' + esc(r.label) + ': ' + usd(r.usd) + (num(r.tok) > 0 ? ', ' + tok(r.tok) + ' tokens' : '') +
+      return '<p><strong>' + title + ', ' + moneyCents(cents(rows)) + '</strong></p><ul>' + rows.map(function(r) {
+        return '<li>' + esc(r.label) + ': ' + moneyCents(Math.round(num(r.usd) * 100)) + (num(r.tok) > 0 ? ', ' + tok(r.tok) + ' tokens' : '') +
           (r.why ? '. ' + esc(r.why) : '') + '</li>';
       }).join('') + '</ul>';
     }
@@ -173,13 +189,16 @@ function savingsStoryHtml(data) {
         '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved at API rates</span></div>' +
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
+      (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + usd(totalUsd - num(sd.cost_saved_usd) + num(sd.projected_30d.measured.usd)) + ', including setup cleanup ' + usd(sd.projected_30d.measured.usd) + ', assuming other savings stay at their recent rate.</p>' : '') +
+      (has(local.net_median) && has(local.net_p75) ? '<p class="st-lead">On this Mac, a typical recorded session where Token Optimizer acted kept <strong>' + pct(local.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(local.net_p75) + ' or more</strong>' + (local.best && has(local.best.net_max) ? ', and the best kept out <strong>' + pct(local.best.net_max) + '</strong>' : ', best session: Measuring') + '. ' + (has(cloud.net_median) ? 'Cloud sessions: <strong>' + pct(cloud.net_median) + '</strong> typical; hooks can time out there.' : 'Cloud sessions: Measuring.') + '</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
       '<div class="st-bands">' +
-        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(mUsd) + '</span></p>' + top(measured) + '</div>' : '') +
-        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(eUsd) + '</span></p>' + top(estimated) + '</div>' : '') +
+        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(Math.abs(mUsd) < 1 ? mUsd : measuredWhole) + '</span></p>' + top(measured, measuredWhole) + '</div>' : '') +
+        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(Math.abs(eUsd) < 1 ? eUsd : estimatedWhole) + '</span></p>' + top(estimated, estimatedWhole) + '</div>' : '') +
       '</div>' +
+      '<p class="st-sub">Whole-dollar rows are rounded to reconcile; exact amounts are in the breakdown.</p>' +
       f.fold('How this total is built', method) +
       '</div>';
   }
@@ -191,8 +210,8 @@ function savingsStoryHtml(data) {
     var carryN = rereads / removedOnce;
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Removed once, saved on every later turn</h2>' +
-      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + tok(rereads) + '</span><span class="st-mega__unit">re-reads avoided</span></p>' +
-      '<p class="st-lead">From <strong>' + tok(removedOnce) + ' tokens removed once</strong>, each spared about <strong>' + Math.round(carryN) + ' more reads</strong> before its session compacted.</p>' +
+      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + Math.round(carryN) + '&times;</span><span class="st-mega__unit">re-reads avoided per token removed</span></p>' +
+      '<p class="st-lead"><strong>' + tok(removedOnce) + ' tokens removed</strong> became <strong>' + tok(rereads) + ' tokens not sent</strong> on later reads.</p>' +
       '</div>');
   }
   if (!trimLedger) {
@@ -201,19 +220,22 @@ function savingsStoryHtml(data) {
       '<p class="st-lead">Each cleanup is being recorded with the date it happened and the tokens it removes from every call. It joins the total once that record exists.</p>' +
       '</div>');
   } else {
-    var rows = trims.slice(0, 4).map(function(t) {
+    var valuedTrims = trims.filter(function(t) { return num(t.cost_saved_usd) > 0 || num(t.projected_30d_usd) > 0; })
+      .sort(function(a, b) { return num(b.projected_30d_usd) - num(a.projected_30d_usd); });
+    var rows = valuedTrims.slice(0, 4).map(function(t) {
       var attested = t.source === 'attested' || t.tier === 'estimated';
       return '<li><span>' + esc(t.label || t.item || t.component || 'Setup cleanup') +
         '<span class="st-sub">' + esc(f.day(t.ts) || 'undated') + ', ' + (attested ? 'your figure' : 'recorded by the audit') + '</span></span>' +
         '<span class="st-v">' + usd(t.cost_saved_usd) + '</span></li>';
     }).join('');
     var opts = sd.attested_options || [];
-    var formula = trims.map(function(t) {
+    var formula = valuedTrims.map(function(t) {
       return '<li>' + esc(t.label || t.item || 'Setup cleanup') + ': ' + count(t.tokens_per_call) + ' tokens per call &times; ' + count(t.requests) +
         ' calls since' + (num(t.projected_30d_usd) > 0 ? '. At current volume, about ' + usd(t.projected_30d_usd) + ' per 30 days.' : '.') + '</li>';
     }).join('');
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Setup cleanup' + '</h2>' +
+      (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + usd(sd.projected_30d.measured.usd) + ' at recent usage levels.</p>' : '') +
       (rows
         ? '<p class="st-lead">Trimming what loads on every call pays again on each call. These amounts are already in the total.</p><ul class="st-rows st-rows--card">' + rows + '</ul>' +
           f.fold('How each one is priced', '<ul>' + formula + '</ul>' + (opts.length ? '<p>Your figure can be one of these sizes, priced the same way:</p><ul>' + opts.map(function(o) {
@@ -230,9 +252,10 @@ function savingsStoryHtml(data) {
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Room in your limits</h2>' +
       '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(SI.total) + '</span><span class="st-mega__unit">since you installed</span></p>' +
-      '<p class="st-lead">Work your limits never had to carry over <strong>' + count(SI.days) + ' days</strong>, valued at API rates.</p>' +
+      '<p class="st-lead">Your savings make room within your usage limits.</p>' +
       f.fold('How this is valued', '<p>The same rows as the total above, summed since ' + (SI.date ? esc(SI.date) : 'install') +
         '. Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is an estimate of room, not a refund. Model routing is never part of it.</p>' +
+        (SI.excluded ? '<p>Excluded since install: routing ' + (has(SI.excluded.routing) ? usd(SI.excluded.routing) + ' (assumed)' : 'Measuring') + ', lean resumes ' + (has(SI.excluded.lean_resumes) ? usd(SI.excluded.lean_resumes) : 'Measuring') + ', and verbosity ' + (has(SI.excluded.verbosity) ? usd(SI.excluded.verbosity) : 'Measuring') + '.</p>' : '<p>Excluded since install: routing, lean resumes and verbosity; amounts are Measuring.</p>') +
         (windows.length ? '<p>Right now: ' + windows.map(function(w) {
           return esc(names[w.key] || ((w.label || 'Window') + ' limit')) + ' ' + num(w.headroom_pct) + '% left';
         }).join(', ') + ' (share of each limit window).</p>' : '') +
@@ -290,7 +313,8 @@ function savingsPerSessionHtml(ps, overhead) {
         ' (' + f.count(v.sessions) + ' sessions)</li>';
     }).join('') + '</ul><p>Medians of sessions with ledger entries, after subtracting the notes Token Optimizer itself adds' +
     (num(overhead.usd) > 0 ? ' (' + f.tok(overhead.reread_tokens) + ' tokens re-read, about ' + f.usd(overhead.usd) + ')' : '') +
-    '. Cloud means the session&rsquo;s events were rebuilt from its transcript because its hooks ran on another machine.</p>';
+    '. Cloud means the session&rsquo;s events were rebuilt from its transcript because its hooks ran on another machine.</p>' +
+    (bp.local && bp.local.best && bp.local.best.filtered ? '<p>Best local session is selected among sessions with at least 20 turns because the unfiltered best was small.</p>' : '');
 }
 
 // Since-install total from the same components as the hero, routing excluded.
@@ -304,7 +328,7 @@ function savingsSinceInstall(data) {
     .filter(function(p) { return num(p[1]) !== 0; });
   if (!parts.length) return null;
   var date = si.install_date ? new Date(si.install_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-  return { parts: parts, total: parts.reduce(function(a, p) { return a + num(p[1]); }, 0), days: num(si.days), date: date };
+  return { parts: parts, total: parts.reduce(function(a, p) { return a + num(p[1]); }, 0), days: num(si.days), date: date, excluded: si.excluded_usd || null };
 }
 
 // "Where your sessions ran" fold body, for the caller's row of folds.

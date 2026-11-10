@@ -137,7 +137,7 @@ _COLD_COMPILE_TAG = "token-optimizer-bytecode-warmup"
 _MEASURE_PACKAGE_SOURCES = (
     '__init__.py', '_compat.py', 'runtime.py', 'pricing.py', 'audit.py',
     'dashboard.py', 'lifecycle.py', 'sessions.py', 'trends.py', 'cache_policy.py',
-    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py', 'counted_position.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'structural_ledger.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'rework_metrics.py',
+    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py', 'counted_position.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'structural_ledger.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'rework_metrics.py', 'session_best.py', 'savings_story.py',
 )
 
 

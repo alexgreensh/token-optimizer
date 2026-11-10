@@ -369,6 +369,7 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
     # (a sub-agent session is a session); overhead nets only where scanned.
     weighted = [0, 0]
     place = {'local': ([], []), 'cloud': ([], [])}
+    local_ranked = []
     for su, (tok, rr, _usd) in saved.items():
         inp = sessions.get(su, {}).get('input', 0)
         if inp <= 0:
@@ -379,6 +380,8 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
         bucket = place['cloud' if su in cloud else 'local']
         bucket[0].append(gross[-1])
         bucket[1].append(net[-1])
+        if su not in cloud:
+            local_ranked.append((net[-1], su))
         weighted[0] += s
         weighted[1] += inp + s
     gross.sort()
@@ -389,6 +392,8 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
         n.sort()
         by_place[key] = {'sessions': len(g), 'median': _percentile(g, 1, 2), 'p75': _percentile(g, 3, 4),
                          'net_median': _percentile(n, 1, 2), 'net_p75': _percentile(n, 3, 4)}
+    from . import session_best
+    by_place['local']['best'] = session_best.verified_best(conn, facade, local_ranked)
     by_place['basis'] = ("cloud = the session's ledger rows were rebuilt from its transcript "
                          "(origin transcript_backfill: hooks ran elsewhere); local = logged on this machine")
     one_rate = rate[1] / rate[0] if rate[0] > 0 else 0.0
@@ -413,6 +418,7 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
             'p90': _percentile(gross, 9, 10), 'max': gross[-1] if gross else None,
             'net_median': _percentile(net, 1, 2), 'net_p75': _percentile(net, 3, 4),
             'net_p90': _percentile(net, 9, 10),
+            'net_max': net[-1] if net else None,
             'by_place': by_place,
             'basis': 'per session: (removed + rereads) / (session input incl. cache + removed + rereads), '
                      'counted ledger rows in the window; net subtracts TO injections and their rereads',

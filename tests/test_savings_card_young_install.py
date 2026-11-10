@@ -171,10 +171,8 @@ def test_since_install_sums_six_categories_hint_wins(measure, monkeypatch):
     monkeypatch.setattr(measure, "_install_date", lambda: "2026-07-01")
     monkeypatch.setattr(measure, "_get_merged_savings", lambda days: _full_fixture(hint_events=3))
     si = measure._savings_since_install()
-    # Routing is an assumption: it stays out of measured and estimated, and is
-    # carried separately for disclosure.
     assert si["measured_usd"] == 10.0
-    assert si["all_in"]["routing_usd"] == 2.0
+    assert si["excluded_usd"]["routing"] == 2.0
     # 1 + 2 + 4 + 8 + 16 + 32 (hint_followed observed; retrieval_serve excluded;
     # cache_drop/output_waste excluded; mcp_cap included — disjoint from runtime).
     assert si["estimated_usd"] == 63.0

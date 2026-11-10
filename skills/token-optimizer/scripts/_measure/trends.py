@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
+from . import _compat, fixture_context
 
 
 def _classify_jsonl_is_sidechain(filepath, max_lines=None):
@@ -556,13 +556,13 @@ def _counted_view_statements():
     return (
         "CREATE TEMP VIEW IF NOT EXISTS counted_savings_events AS "
         "SELECT e.* FROM main.savings_events e "
-        f"WHERE NOT {_measure_facade._fixture_session_sql('e.session_id')}"
+        f"WHERE NOT {_measure_facade._fixture_session_sql('e.session_id')} AND {fixture_context.excluded_session_sql('e')}"
         f" AND NOT (e.event_type IN ({media_types}) AND e.detail IS NOT NULL AND ({media}))"
         f" AND NOT (e.event_type = 'tool_archive_reexpand' AND COALESCE(e.session_id, '') != '' AND {media_pair})"
         f" AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})",
         "CREATE TEMP VIEW IF NOT EXISTS counted_compression_events AS "
         "SELECT c.* FROM main.compression_events c "
-        f"WHERE NOT {_measure_facade._fixture_session_sql('c.session_id')}"
+        f"WHERE NOT {_measure_facade._fixture_session_sql('c.session_id')} AND {fixture_context.excluded_session_sql('c')}"
         f" AND NOT (c.original_tokens > c.compressed_tokens AND COALESCE(c.session_id, '') != '' AND {ce_twin})",
     )
 
@@ -578,7 +578,7 @@ def _counted_media_candidate_statement():
         "SELECT 'md:'||e.id, e.session_uuid, e.timestamp, 0, NULL, e.model "
         "FROM main.savings_events e WHERE e.event_type = 'tool_archive' AND e.timestamp >= ? "
         f"AND e.detail IS NOT NULL AND ({media}) "
-        f"AND NOT {_measure_facade._fixture_session_sql('e.session_id')} "
+        f"AND NOT {_measure_facade._fixture_session_sql('e.session_id')} AND {fixture_context.excluded_session_sql('e')} "
         f"AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})"
     )
 

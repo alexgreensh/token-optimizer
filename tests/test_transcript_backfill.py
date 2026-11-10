@@ -280,3 +280,24 @@ def test_local_naive_matches_the_ledger_clock():
     utc = datetime(2026, 10, 20, 16, 56, 20)
     assert tb.local_naive("2026-10-20T16:56:20.000Z") == utc.replace(
         tzinfo=timezone.utc).astimezone().replace(tzinfo=None).isoformat()
+
+
+def test_candidate_sessions_excludes_optimizer_benchmark_transcripts():
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE session_log (id INTEGER, session_uuid TEXT, jsonl_path TEXT, date TEXT)')
+    conn.executemany('INSERT INTO session_log VALUES (?, ?, ?, ?)', [
+        (1, 'bench', '/projects/-private-var-folders-x-T-to-bench-M2-abc/bench.jsonl', '2026-08-01'),
+        (2, 'real', '/projects/-Users-person-work/real.jsonl', '2026-08-01'),
+    ])
+    assert set(tb.candidate_sessions(conn, '2026-01-01', lambda _: False)) == {'real'}
+
+
+def test_existing_benchmark_events_are_not_counted(m, tmp_path, monkeypatch):
+    db = _db(m, tmp_path, monkeypatch)
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO session_log (session_uuid, jsonl_path, date) VALUES (?, ?, ?)",
+                     ('bench', '/projects/-private-var-folders-x-T-to-bench-M2-abc/bench.jsonl', '2026-08-01'))
+        conn.execute("INSERT INTO compression_events (timestamp, feature, session_uuid, original_tokens, compressed_tokens, verified) VALUES (?, ?, ?, ?, ?, ?)",
+                     ('2026-08-01', 'bash_compress_pipeline', 'bench', 100, 10, 1))
+        assert m._ensure_counted_views(conn)
+        assert conn.execute('SELECT count(*) FROM counted_compression_events').fetchone()[0] == 0

@@ -72,8 +72,8 @@ def effect():
         'available': True,
         'window': {'start': '2026-01-01T00:00:00', 'end': '2026-01-31T00:00:00'},
         'per_session': {'sessions': 120, 'median': 0.05, 'p75': 0.11, 'p90': 0.2,
-                        'net_median': 0.048, 'net_p75': 0.105,
-                        'by_place': {'local': {'sessions': 100, 'net_median': 0.031, 'net_p75': 0.09},
+                        'net_median': 0.048, 'net_p75': 0.105, 'net_max': 0.25,
+                        'by_place': {'local': {'sessions': 100, 'net_median': 0.031, 'net_p75': 0.09, 'best': {'net_max': 0.25, 'filtered': False}},
                                      'cloud': {'sessions': 20, 'net_median': 0.22, 'net_p75': 0.4}}},
         'coverage': {'sessions': 200, 'ran_sessions': 150, 'ran_traffic_share': 0.75,
                      'ran_no_ledger_sessions': 12, 'unknown_sessions': 0,
@@ -146,9 +146,9 @@ def test_hero_total_is_sum_of_bands_in_whole_dollars_and_excludes_routing():
     h = hero(story({'savings': full()}))
     # measured: context 44.2-4=40.2, rereads 30.4, premium 8.4, setup 4 = 83; estimated: 20+3+5+7 = 35
     assert '$118' in h and 'Measured <span class="st-v">$83' in h and 'Estimated <span class="st-v">$35' in h
-    assert not re.search(r'\$\d+\.\d\d', h)  # whole dollars only
+    assert not re.search(r'\$[\d,]+\.\d{2}', _visible(h))
     assert '$50' not in h  # routing never enters the total
-    assert 'Cheaper cache writes' in h and 'Write-class' not in h and 'ratio' not in h
+    assert 'Context removed' in h and 'Write-class' not in h and 'ratio' not in h
 
 
 def _visible(html):
@@ -156,12 +156,12 @@ def _visible(html):
     return re.sub(r'<[^>]+>', ' ', re.sub(r'(?s)<details.*?</details>', '', html))
 
 
-def test_no_percentage_above_the_fold_and_split_lives_in_the_fold():
+def test_session_shares_above_fold_and_place_split_in_fold():
     out = story({'savings': full()})
     h = hero(out)
     assert 'st-mega st-mega--usd">$118</span>' in h and 'st-mega st-mega--tok">' in h
     assert 'tokens kept out of context' in h
-    assert '%' not in _visible(out)  # hero, 2x2 and coverage line: absolute numbers only
+    assert all(x in _visible(out) for x in ('3.1%', '9%', '25%', '22%'))
     fold = h.split('<details')[1]
     assert "share of that session&rsquo;s own context" in fold
     assert 'On this Mac: typical 3.1%, top quarter 9% or more (100 sessions)' in fold
@@ -183,12 +183,25 @@ def test_four_cards_in_one_grid_then_one_coverage_line():
     cov = out.split('class="st-cov"')[1]
     assert 'ran in 150 of your 200 sessions' in cov and '12 of them are not in the ledger yet' in cov
     assert 'svg' not in cov and '%' not in cov
-    # Compounding leads with the re-reads as the big number.
-    assert 'st-mega--tok st-mega--card">80.0M</span><span class="st-mega__unit">re-reads avoided' in grid
-    assert 'From <strong>2.0M tokens removed once</strong>, each spared about <strong>40 more reads' in grid
+    assert 'st-mega--tok st-mega--card">40&times;</span>' in grid
+    assert '<strong>2.0M tokens removed</strong> became <strong>80.0M tokens not sent</strong>' in grid
     # Limits: since-install dollars, routing never added (100+200+10+40).
     assert 'st-mega--usd st-mega--card">$350</span><span class="st-mega__unit">since you installed' in grid
     assert 'stretch' not in out and '$1,349' not in out
+
+
+def test_since_install_fold_names_exclusions_from_payload():
+    s = full()
+    s['since_install']['excluded_usd'] = {'routing': 101, 'lean_resumes': 20, 'verbosity': 9}
+    out = story({'savings': s})
+    assert 'Excluded since install: routing $101 (assumed), lean resumes $20, and verbosity $9.' in out
+
+
+def test_local_best_filter_is_explained_in_fold():
+    s = full()
+    s['session_effect']['per_session']['by_place']['local']['best']['filtered'] = True
+    out = story({'savings': s})
+    assert 'selected among sessions with at least 20 turns' in out
 
 
 def test_unfinished_pools_say_measuring_with_no_number():
@@ -222,7 +235,7 @@ def test_savings_tab_one_row_of_folds_and_quality_moves_to_health():
     assert re.findall(r'<summary>([^<]+)', row)[:3] == ['Room to save more', 'Where your sessions ran', 'Full ledger and history']
     assert 'Whole-workload' not in html and 'Context quality' not in html and 'legacy-runway' not in html
     assert '<div class="label">Value</div>' not in html and 'still on the table' not in html
-    assert 'per 30 days. None of this is in any total above' in row  # amount inside, summary stays quiet
+    assert 'None of this is in any total above' in row
     health = call('healthNotesHtml(data)', dict(extra, savings=s))
     assert 'Context quality' in health and 'scored <span class="st-num">60</span> out of 100' in health
 
@@ -258,6 +271,15 @@ def test_tokens_saved_card_has_no_fresh_only_share():
     assert 'spent_token_basis' not in STORY.read_text() and 'trends.total_tokens' not in STORY.read_text()
 
 
+def test_trends_does_not_invent_unused_skill_context_cost():
+    source = TEMPLATE.read_text()
+    assert 'Each still loads ~100 tokens' not in source
+    assert 'neverUsed.length * 100' not in source
+    assert 'Context impact: Measuring' in source
+    assert 'Deduplicated Fresh Input + Output' in source
+    assert 'Deduplicated usage; the raw token classes below use a different basis.' in source
+
+
 def test_inliner(tmp_path):
     (tmp_path / 'a.js').write_text('function a(){return "</script>";}')
     out = dashboard_assets.inline('x /*@include a.js*/ y /*@include missing.js*/', tmp_path)
@@ -284,3 +306,68 @@ def test_ledger_fold_matches_hero_and_never_adds_routing():
     html = render_savings(s)
     ledger = html.split('Full ledger and history')[1]
     assert 'savings-actions' not in ledger and 'savings-history' not in ledger  # contradicting cards are gone
+
+
+def test_every_measured_row_is_visible_in_hero_and_includes_premium():
+    s = full()
+    s['action_savings']['class_premium_usd'] = 7
+    s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 3,
+                              'tokens_saved': 100, 'trims': [{'tier': 'measured', 'tokens_per_call': 1}]}
+    bands = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
+    visible = hero(story({'savings': s})).split('<details')[0]
+    for row in bands['measured']:
+        assert row['label'] in visible
+    assert sum(row['usd'] for row in bands['measured']) == pytest.approx(bands['mUsd'])
+    assert next(row['usd'] for row in bands['measured'] if row['key'] == 'context') == s['action_savings']['logged_usd'] - 3 + 7
+
+
+def test_setup_forecast_is_not_in_the_historical_total():
+    s = full()
+    s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 1,
+                              'tokens_saved': 100, 'projected_30d': {'measured': {'usd': 36}},
+                              'trims': [{'item': 'Memory', 'tier': 'measured', 'tokens_per_call': 2, 'cost_saved_usd': 1}]}
+    out = story({'savings': s})
+    assert 'Projected next 30 days' in out and '$36' in out
+    assert 'assuming other savings stay at their recent rate' in out
+    bands = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
+    assert bands['mUsd'] != 36
+
+
+def test_setup_card_prioritizes_valued_trims():
+    s = full()
+    s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 0.27,
+                              'tokens_saved': 100, 'projected_30d': {'measured': {'usd': 36}},
+                              'trims': [{'item': 'Unused listing', 'tier': 'estimated', 'tokens_per_call': 10, 'cost_saved_usd': 0, 'projected_30d_usd': 0},
+                                        {'item': 'Memory', 'tier': 'measured', 'tokens_per_call': 10, 'cost_saved_usd': 0.27, 'projected_30d_usd': 36}]}
+    setup = story({'savings': s}).split('<h2 class="st-h">Setup cleanup')[1].split('</div>')[0]
+    assert 'Memory' in setup
+    assert 'Unused listing' not in setup
+
+
+def test_visible_dollars_are_whole_and_exact_values_remain_in_fold():
+    s = full()
+    s['action_savings'].update(logged_usd=31.4116, class_premium_usd=27.187941,
+                               reread_usd=117.358087, estimated_usd=6.5324,
+                               estimates_usd={})
+    s['structural_detail'] = {'method': 'trim_ledger', 'cost_saved_usd': 0.266,
+                              'tokens_saved': 100, 'projected_30d': {'measured': {'usd': 36.8432}},
+                              'trims': [{'item': 'Memory', 'tier': 'measured', 'tokens_per_call': 2,
+                                         'cost_saved_usd': 0.266, 'projected_30d_usd': 36.8432}]}
+    s['output_reread'] = {}
+    h = hero(story({'savings': s}))
+    visible = _visible(h)
+    assert '$182' in visible and '$176' in visible and 'under $1' in visible
+    assert not re.search(r'\$[\d,]+\.\d{2}', visible)
+    assert '$0.27' in h and '$117.36' in h
+    assert 'Re-reads avoided</span><span class="st-v">$118' in h
+    assert 'Context removed</span><span class="st-v">$58' in h
+    assert 'Estimated <span class="st-v">$6' in h
+
+
+def test_subdollar_band_does_not_display_zero():
+    s = base()
+    s['action_savings'].update(logged_usd=0.27, class_premium_usd=0,
+                               reread_usd=0, estimated_usd=0, estimates_usd={})
+    visible = _visible(hero(story({'savings': s})))
+    assert 'Measured  under $1' in visible
+    assert 'Measured  $0' not in visible

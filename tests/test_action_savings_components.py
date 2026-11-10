@@ -110,6 +110,21 @@ def test_component_helper_is_pure_and_counts_only_rereads(measure):
     assert measure._action_savings_components({})["total_usd"] == 0
 
 
+def test_lean_resume_is_diagnostic_not_savings(measure):
+    source = {"total_cost_usd": 7, "resume_lean_estimated": {"cost_saved_usd": 900, "tokens_saved": 10000}}
+    components = measure._action_savings_components(source, {"available": True, "reread_usd": 3})
+    assert components["total_usd"] == 10
+    assert "resume_lean_estimated" not in components["estimates_usd"]
+
+
+def test_verbosity_is_excluded_from_logged_and_estimated(measure):
+    source = {"total_cost_usd": 17, "by_category": {"verbosity_steer_measured": {"cost_saved_usd": 7}},
+              "verbosity_steer": {"cost_saved_usd": 4}}
+    components = measure._action_savings_components(source, {"available": True, "reread_usd": 3})
+    assert components["total_usd"] == 13
+    assert "verbosity_steer" not in components["estimates_usd"]
+
+
 def test_rotated_transcript_preserves_stored_action_rereads(measure, monkeypatch, tmp_path, capsys):
     db = tmp_path / "trends.db"
     monkeypatch.setattr(measure, "TRENDS_DB", db)

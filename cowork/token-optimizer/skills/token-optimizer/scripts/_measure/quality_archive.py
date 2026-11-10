@@ -5878,8 +5878,8 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
                             original_text=" " * (measured_tokens_recovered * 4),
                             compressed_text=f"nudge_followthrough:fill={nudge_fill}->{current_fill}",
                             session_id=ft_sid,
-                            detail=f"measured_recovery: fill {nudge_fill}%->{current_fill}% = {measured_tokens_recovered} tokens on {context_size} context",
-                            verified=True,
+                            detail=f"estimated_recovery: fill {nudge_fill}%->{current_fill}% = {measured_tokens_recovered} tokens on {context_size} context",
+                            verified=True, tier="estimated",
                         )
             except Exception:
                 pass

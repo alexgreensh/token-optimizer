@@ -4548,7 +4548,7 @@ var DB = (function() {
     var rle = {}; // The avoided reload is diagnostic, not a credited saving.
     var vs = {};
     var vo = {};
-    var cr = s.checkpoint_restore_estimated || {};
+    var cr = {}; // Historical restore sizes may include injected context.
     var cp = s.counted_period || {};
     var rereadMo = cp.available ? mo(cp.reread_usd) : 0;
     var hf = s.hint_followed || {};
@@ -4682,110 +4682,6 @@ var DB = (function() {
 
     html += story || runwayCardHtml();
     var storyHead = html; html = '';
-
-    // ---- HERO: the before/after transformation (THE headline). Current activity priced at
-    // your pre-TO per-session weight + mix vs actual — comprehensive (volume + structural +
-    // routing + sub-agents), grounded in your own earliest-vs-recent sessions. ----
-    var ba = s.before_after || {};
-    if (Number(ba.monthly_savings_usd) > 0) {
-      var wp = ba.session_weight_pool || null;
-      var wpUnit = (wp && wp.work_unit === 'message') ? 'message' : 'API call';
-      var oldCost = Number(ba.counterfactual_monthly_usd) || 0;
-      var nowCost = Number(ba.actual_monthly_usd) || 0;
-      // Use the displayed saving so a spend-capped headline cannot retain the
-      // larger, uncapped percentage implied by the counterfactual arms.
-      var shownSaving = Number(ba.monthly_savings_usd) || 0;
-      var costCut = oldCost > 0 ? Math.max(0, shownSaving / oldCost * 100) : 0;
-      // A neutral add-back reprice (routing pending or unavailable) shrinks the
-      // transformation figure without any visible reason -- say why, plainly.
-      var baRepriceBasis = ba.compression_reprice_basis;
-      var baRepriceNote = (baRepriceBasis === 'routing_pending')
-        ? 'Model-mix repricing is paused while sessions finish re-measuring, so the add-backs in this estimate show their measured value.'
-        : (baRepriceBasis === 'routing_unavailable'
-          ? 'Model-mix repricing could not be measured, so the add-backs in this estimate show their measured value.'
-          : '');
-      html += '<div class="card wide savings-transformation" style="padding:var(--s-4);margin-bottom:var(--s-3);">' +
-        '<div class="label">Transformation &middot; last ' + days + ' days &middot; estimated</div>' +
-        '<div class="savings-amount">' + money(ba.monthly_savings_usd) +
-          '<span class="savings-unit"> saved &middot; ~' + Math.round(costCut) + '% lower cost</span></div>' +
-        '<p class="lede">Your recent workload compared with your earlier way of working, at the same token prices.</p>' +
-        '<div class="savings-split"><span>Now <strong>' + money(nowCost) + '</strong></span>' +
-          '<span>Earlier workflow <strong>' + money(oldCost) + '</strong></span></div>' +
-        '<div class="plain-line">Overlaps with the action savings below. Do not add the two totals.</div>' +
-        (baRepriceNote ? '<div class="plain-line">' + baRepriceNote + '</div>' : '') +
-        fold('How this is estimated',
-          countedList([ba.savings_capped && ba.savings_cap_note ? esc(ba.savings_cap_note) : '']) +
-          (wp
-            ? '<p>Baseline: <strong>' + esc(wp.anchor_month) + '</strong>. We compare cost per ' + wpUnit +
-              ' at constant prices, then apply the difference to the <strong>' +
-              (Number(wp.now_units) || 0).toLocaleString() + '</strong> ' + wpUnit +
-              's in this period. Current cost: ' + money(Number(wp.after_cost_per_unit)) +
-              ' per ' + wpUnit + '; baseline: ' + money(Number(wp.before_cost_per_unit)) + '.</p>' +
-              '<p>More, smaller sessions are not counted as dollar savings. Changes in model prices and model mix are excluded. ' +
-              'Delegated work attached to a main session is included in its cost; it is not added again.</p>'
-            : '<p>We price your frozen baseline session using your earlier and current model and cache patterns, ' +
-              'then scale the difference to this period. Context savings and normalized delegated work complete the estimate.</p>') +
-          '<p>This comparison includes changes in your own habits. It cannot isolate Token Optimizer’s contribution. ' +
-            'An API call is a workload proxy, not a measure of task difficulty or quality.</p>' +
-          '<p>' + billingCaption + '</p>') +
-        '</div>';
-    } else if (ba.baseline_building) {
-      // New install: no frozen baseline yet, so the headline transformation can't be
-      // computed. Explain WHY (it uses the user's OWN history, never a fake anchor) and
-      // show progress, instead of silently rendering nothing and leaving only the small
-      // measured floor below (which reads as "TO only saved me $X").
-      var bb = ba.baseline_building;
-      var sNeed = Number(bb.sessions_needed) || 30;
-      var sHave = Math.min(sNeed, Number(bb.sessions_in_window) || 0);
-      var dLeft = Number(bb.days_left) || 0;
-      var pct = sNeed > 0 ? Math.min(100, Math.round(sHave / sNeed * 100)) : 0;
-      html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);border:1px solid var(--c-accent-blue);box-shadow:0 0 0 1px rgba(0,102,255,0.12);">' +
-        '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-accent-cyan);">Your savings baseline is still building</div>' +
-        '<div class="lede">Token Optimizer measures your savings against <strong>your own</strong> pre-optimization baseline, frozen from your first ' + (Number(bb.early_window_days) || 30) + ' days of real sessions. It never uses anyone else\'s numbers, and never freezes a half-formed anchor.</div>' +
-        '<div class="lede" style="margin-top:var(--s-2);"><strong>' + sHave + ' of ~' + sNeed + ' sessions</strong> collected in your baseline window' + (dLeft > 0 ? ', about <strong>' + dLeft + ' day' + (dLeft === 1 ? '' : 's') + '</strong> until it locks in' : '') + '. Until then, the figure below is the directly-metered floor, not your full savings.</div>' +
-        '<div style="margin-top:var(--s-4);height:8px;background:rgba(255,255,255,0.08);border-radius:4px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:var(--c-accent-cyan);box-shadow:0 0 12px var(--c-accent-glow);transition:width .3s;"></div></div>' +
-      '</div>';
-    } else if (ba.reason === 'net_negative') {
-      // Baseline is frozen, but efficiency was flat-to-negative this period (now costs about
-      // the same as — or slightly more than — the frozen baseline would have). We show NO
-      // counterfactual headline (a saving we didn't make), just an honest neutral note plus
-      // the arms; the directly-metered floor card below still reports realized savings. This
-      // is the net<=0 branch — parity with OpenClaw/OpenCode.
-      html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
-        '<div class="label" style="margin-bottom:var(--s-2);">At or above your baseline this period</div>' +
-        '<div class="lede">Your recent sessions cost about what your frozen baseline would have — est. <strong>' + money(ba.actual_monthly_usd) + '</strong> now vs <strong>' + money(ba.counterfactual_monthly_usd) + '</strong> the old way in the last ' + days + ' days. There is no net saving to headline this period, so we are not showing one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
-      '</div>';
-    } else if (ba.reason === 'flat') {
-      // Both work-unit methods sit within a few percent of spend: no
-      // measurable whole-workload change, so no headline and no scary number.
-      html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
-        '<div class="label" style="margin-bottom:var(--s-2);">No measurable change in cost per unit of work</div>' +
-        '<div class="plain-line">Your recent work costs about the same per request as before install (' + money(ba.actual_monthly_usd) + ' now vs ' + money(ba.counterfactual_monthly_usd) + ' the old way over ' + days + ' days). The savings below are counted action by action.</div>' +
-      '</div>';
-    } else if (ba.reason === 'methods_disagree') {
-      // The two independent work-unit methods (per-API-call and per-message)
-      // landed more than 10% apart, so neither figure is trustworthy enough to
-      // headline. Show both, headline nothing; the metered floor card below
-      // still reports realized savings. Same neutral-card shape as
-      // net_negative, with signed money for the cross-check figure.
-      var swp = ba.session_weight_pool || {};
-      var swpCross = swp.crosscheck || {};
-      var mainUsd = Number(swp.transformation_usd) || 0;
-      var crossUsd = Number(swpCross.transformation_usd) || 0;
-      var mainUnit = swp.work_unit === 'message' ? 'per-message' : 'per-API-call';
-      var crossUnit = swpCross.unit === 'api_call' ? 'per-API-call' : 'per-message';
-      var signedMoney = function (n) {
-        var v = Number(n) || 0;
-        return (v < 0 ? '-' : '') + money(Math.abs(v));
-      };
-      html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
-        '<div class="label" style="margin-bottom:var(--s-2);">Two estimates disagree this period</div>' +
-        '<div class="lede">The ' + mainUnit + ' estimate is <strong>' + signedMoney(mainUsd) + '</strong> and the ' + crossUnit +
-          ' estimate is <strong>' + signedMoney(crossUsd) + '</strong> over ' + days + ' days. They are too far apart to headline either one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
-      '</div>';
-    }
-
-    var transformHtml = html; html = '';
 
     // ---- Tokens Saved card: the full card (hero + spent-vs-saved + model-
     // mix-as-usage + footer). Rendered as the 2nd card in the Savings view,
@@ -4976,7 +4872,7 @@ var DB = (function() {
     html += '</div>';
     html += fold('Token savings and model usage', tokensSavedCardHtml(s));
     var ledgerHtml = html;
-    html = storyHead + (story ? '' : transformHtml + ledgerHtml);
+    html = storyHead + (story ? '' : ledgerHtml);
 
     // ---- SAVE MORE: suggestions, promoted right under the hero ----
     var parts = [];

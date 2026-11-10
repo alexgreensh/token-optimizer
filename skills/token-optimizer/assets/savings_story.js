@@ -70,7 +70,8 @@ function savingsStoryBands(data) {
   var trimMeasuredTok = trimLedger ? num(sd.tokens_saved) : 0;
   var trimEst = (trimLedger && sd.estimated) || {};
   var est = as.estimates_usd || {};
-  var outputInEst = num(est.output_reread);
+  var outputInEst = num(est.verbosity_output_estimated);
+  var trimInEst = num(est.structural_estimated);
   var reloadTok = num(th.reload_avoided_tokens);
   var removedTok = has(th.context_removed_tokens)
     ? num(th.context_removed_tokens) + num(th.output_not_generated_tokens)
@@ -83,13 +84,13 @@ function savingsStoryBands(data) {
     { key: 'setup_measured', label: trimName('measured'), usd: trimMeasuredUsd, tok: trimMeasuredTok, on: trimLedger && trimMeasuredUsd > 0 }
   ];
   var estimated = [
-    { key: 'setup_estimated', label: trimName('estimated'), usd: trimEst.cost_saved_usd, tok: trimEst.tokens_saved,
-      on: num(trimEst.cost_saved_usd) > 0 },
-    { key: 'output_reread', label: 'Shorter answers, not re-read', usd: orr.cost_saved_usd, tok: orr.tokens_saved,
-      on: num(orr.cost_saved_usd) > 0,
+    { key: 'setup_estimated', label: trimName('estimated'), usd: trimInEst, tok: trimEst.tokens_saved,
+      on: trimInEst > 0 },
+    { key: 'output_reread', label: 'Shorter answers, not re-read', usd: outputInEst, tok: orr.tokens_saved,
+      on: outputInEst > 0,
       why: orr.control_net == null && orr.available ? 'Not yet compared against sessions without the nudge.' : '' },
-    { key: 'other', label: 'Other estimates', usd: num(as.estimated_usd) - outputInEst, tok: reloadTok,
-      on: num(as.estimated_usd) - outputInEst >= 0.5,
+    { key: 'other', label: 'Other estimates', usd: num(as.estimated_usd) - outputInEst - trimInEst, tok: reloadTok,
+      on: Math.abs(num(as.estimated_usd) - outputInEst - trimInEst) > 0,
       why: 'Loops stopped, sub-agent output, handovers and restores.' }
   ];
   function live(rows) {
@@ -174,14 +175,22 @@ function savingsStoryHtml(data) {
     var overhead = se.overhead || {};
     var carry = s.lean_resume_carry || {};
     var incomplete = cp.pricing_complete === false || as.reread_pricing_complete === false;
-    var method = table('Measured, counted event by event', measured) +
+    var archive = (s.by_category || {}).tool_archive;
+    var bashExpand = (s.by_category || {}).bash_archive_reexpand;
+    var bashNet = Object.keys(s.by_category || {}).reduce(function(n, k) {
+      return n + ((/^bash_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
+    }, 0);
+    var method = (archive ? '<p>Tool archive, net of re-expands: ' + usd(archive.cost_saved_usd) + ' once, before repeat-reads.</p>' : '') +
+      (bashExpand ? '<p>Bash compression, net of re-expands: ' + usd(bashNet) + ' once, before repeat-reads.</p>' : '') +
+      (num((as.estimates_usd || {}).expand_overhead) ? '<p>Estimated expand-command overhead: ' + usd(as.estimates_usd.expand_overhead) + '.</p>' : '') +
+      table('Measured, counted event by event', measured) +
       table('Estimated, sized by a stated method', estimated) +
       '<p>Measured rows come from the ledger: each removal, the cache rate the next call would have paid, and every later turn that would have re-read it, up to the session&rsquo;s next compaction.</p>' +
       savingsPerSessionHtml(ps, overhead) +
       (measuringNames.length ? '<p>Still measuring, not in the total yet: ' + measuringNames.join(' and ') + '.</p>' : '') +
       (incomplete ? '<p>Some older history has no exact price, so this total understates.</p>' : '') +
-      (carry.available && num(carry.carry_cost_usd) > 0 ? '<p>Diagnostic, not counted' + ': lean resumes also keep the resumed session lighter. Followed to each session&rsquo;s first compaction that is ' +
-        tok(carry.carry_tokens) + ' tokens, about ' + usd(carry.carry_cost_usd) + '. It stays out of every total until the method is reviewed.</p>' : '') +
+      (carry.available && num(carry.carry_cost_usd) > 0 ? '<p>Diagnostic, not counted' + ': the older target-session proxy suggested ' +
+        tok(carry.carry_tokens) + ' tokens, about ' + usd(carry.carry_cost_usd) + '. That proxy stays out of totals; receiver-linked estimates are counted separately.</p>' : '') +
       '<p>Valued at API rates. On a subscription this is room inside your limits; nothing is refunded. Model routing and opportunity are never part of this total.</p>';
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">Saved in the last ' + days + ' days</h2>' +
@@ -190,7 +199,6 @@ function savingsStoryHtml(data) {
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context</span></div>' : '') +
       '</div>' +
       (num(((sd.projected_30d || {}).measured || {}).usd) > 0 ? '<p class="st-lead">Projected next 30 days: ' + usd(totalUsd - num(sd.cost_saved_usd) + num(sd.projected_30d.measured.usd)) + ', including setup cleanup ' + usd(sd.projected_30d.measured.usd) + ', assuming other savings stay at their recent rate.</p>' : '') +
-      (has(local.net_median) && has(local.net_p75) ? '<p class="st-lead">On this Mac, a typical recorded session where Token Optimizer acted kept <strong>' + pct(local.net_median) + '</strong> of its context from being sent; the top quarter kept out <strong>' + pct(local.net_p75) + ' or more</strong>' + (local.best && has(local.best.net_max) ? ', and the best kept out <strong>' + pct(local.best.net_max) + '</strong>' : ', best session: Measuring') + '. ' + (has(cloud.net_median) ? 'Cloud sessions: <strong>' + pct(cloud.net_median) + '</strong> typical; hooks can time out there.' : 'Cloud sessions: Measuring.') + '</p>' : '<p class="st-lead">Session impact: Measuring.</p>') +
       (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
@@ -249,12 +257,25 @@ function savingsStoryHtml(data) {
   if (SI && SI.total > 0) {
     var windows = ((data.runway || {}).windows || []).filter(function(w) { return isFinite(Number(w.headroom_pct)); });
     var names = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
+    var installRouting = (s.since_install || {}).all_in || {};
+    var statedRouting = num((installRouting.components_usd || {}).routing_estimated);
+    var period = installRouting.routing_majority_period || {};
+    var periodText = '';
+    if (/^\d{4}-\d{2}$/.test(period.start || '') && /^\d{4}-\d{2}$/.test(period.end || '')) {
+      var startDate = new Date(period.start + '-01T00:00:00'), endDate = new Date(period.end + '-01T00:00:00');
+      var startMonth = startDate.toLocaleDateString('en-US', {month:'short'}), endMonth = endDate.toLocaleDateString('en-US', {month:'short'});
+      periodText = startMonth + (period.start.slice(0,4) === period.end.slice(0,4) ? '' : ' ' + period.start.slice(0,4)) + '–' + endMonth + ' ' + period.end.slice(0,4);
+    }
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Room in your limits</h2>' +
       '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(SI.total) + '</span><span class="st-mega__unit">since you installed</span></p>' +
-      '<p class="st-lead">Your savings make room within your usage limits.</p>' +
+      '<p class="st-lead">This figure is everything counted since install.</p>' +
+      (statedRouting ? '<p>Estimated routing: <strong>' + usd(statedRouting) + '</strong>.</p>' : '') +
       f.fold('How this is valued', '<p>The same rows as the total above, summed since ' + (SI.date ? esc(SI.date) : 'install') +
-        '. Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is an estimate of room, not a refund. Model routing is never part of it.</p>' +
+        '. Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is an estimate of room, not a refund.</p>' +
+        (statedRouting ? '<p>Estimated routing, based on your stated 95% Opus baseline.</p>' : '') +
+        (statedRouting && periodText ? '<p>Most of the routing estimate comes from ' + esc(periodText) + '.</p>' : '') +
+        (statedRouting && has(installRouting.routing_measured_baseline_opus_share) && has(installRouting.routing_measured_baseline_realized_cost_usd) ? '<p>Using the measured starting mix (' + (num(installRouting.routing_measured_baseline_opus_share)*100).toFixed(2) + '% Opus), the routing estimate is ' + usd(installRouting.routing_measured_baseline_realized_cost_usd) + '.</p>' : '') +
         (SI.excluded ? '<p>Excluded since install: routing ' + (has(SI.excluded.routing) ? usd(SI.excluded.routing) + ' (assumed)' : 'Measuring') + ', lean resumes ' + (has(SI.excluded.lean_resumes) ? usd(SI.excluded.lean_resumes) : 'Measuring') + ', and verbosity ' + (has(SI.excluded.verbosity) ? usd(SI.excluded.verbosity) : 'Measuring') + '.</p>' : '<p>Excluded since install: routing, lean resumes and verbosity; amounts are Measuring.</p>') +
         (windows.length ? '<p>Right now: ' + windows.map(function(w) {
           return esc(names[w.key] || ((w.label || 'Window') + ' limit')) + ' ' + num(w.headroom_pct) + '% left';
@@ -262,28 +283,25 @@ function savingsStoryHtml(data) {
         (ledgerShare != null ? '<p>Counted ledger alone, as a share of the API-rate cost of the sessions where Token Optimizer ran: ' + pct(ledgerShare) + '.</p>' : '')) +
       '</div>');
   }
-  var routingUsd = has(as.routing_usd) ? num(as.routing_usd) : num(mr.realized_cost_usd);
-  if (!has(mr.measured_baseline_opus_share)) {
-    cards.push('<div class="card st-card">' +
-      '<h2 class="st-h">Model routing <span class="st-tag">Measuring</span></h2>' +
-      '<p class="st-lead">Routing is being re-based on your earliest tracked month, so it is shown here once that comparison exists. It is never part of the total.</p>' +
-      '</div>');
-  } else if (has(mr.baseline_opus_share)) {
-    var base = Math.round(num(mr.baseline_opus_share) * 100) + '%';
-    var handEntered = mr.baseline_source === 'pretool_baseline';
-    cards.push('<div class="card st-card">' +
-      '<h2 class="st-h">Model routing <span class="st-tag">Assumption</span></h2>' +
-      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(routingUsd) + '</span><span class="st-mega__unit">from lighter models</span></p>' +
-      '<p class="st-lead">' + (handEntered ? 'Against the starting model mix you entered by hand, so it stays out of the total.' : 'Against your measured starting model mix. Shown on its own, outside the total.') + '</p>' +
-      f.fold('Starting mix and measured alternative', '<p>Starting share of work on Opus: ' + base + (handEntered ? ', entered by hand' : ', measured') + '.</p>' +
-        (has(mr.current_opus_share) ? '<p>You now run ' + Math.round(num(mr.current_opus_share) * 100) + '% of your work on Opus.</p>' : '') +
-        (has(mr.measured_baseline_opus_share)
-          ? '<p>Your earliest tracked month ran ' + Math.round(num(mr.measured_baseline_opus_share) * 100) + '% Opus' +
-            '. Against that, routing saved ' + usd(mr.measured_baseline_realized_cost_usd) + '.</p>'
-          : '<p>No measured starting month is on record yet.</p>')) +
-      '</div>');
-  }
+  cards.push('<div class="card st-card">' +
+    '<h2 class="st-h">Model routing <span class="st-tag">Opportunity</span></h2>' +
+    '<p class="st-lead">Using lighter models is an opportunity, not part of the action savings total.</p>' +
+    (mr.baseline_source === 'pretool_baseline' && has(mr.realized_cost_usd) ? f.fold('Routing estimate', '<p>Estimated for this period: ' + usd(mr.realized_cost_usd) + ', based on your stated 95% Opus baseline.</p>') : '') +
+    '</div>');
   if (cards.length) out += '<div class="st-grid">' + cards.join('') + '</div>';
+  var trend = (s.cost_per_message_trend || []).filter(function(p) {
+    return p && /^\d{4}-\d{2}$/.test(String(p.month)) && isFinite(Number(p.index)) && Number(p.index) >= 0;
+  });
+  if (trend.length >= 2) {
+    var maxIndex = Math.max.apply(null, trend.map(function(p) { return Number(p.index); })) || 1;
+    var points = trend.map(function(p, i) { return (i * 500 / (trend.length - 1)).toFixed(1) + ',' + (90 - Number(p.index) / maxIndex * 80).toFixed(1); }).join(' ');
+    out += '<div class="card wide st-card"><h2 class="st-h">Cost per message</h2>' +
+      '<p class="st-lead">Indexed to the first month, using constant token prices. This trend is not attributed to Token Optimizer.</p>' +
+      '<svg viewBox="0 0 500 100" role="img" aria-label="Monthly cost per message index" style="width:100%;height:120px">' +
+      '<polyline fill="none" stroke="currentColor" stroke-width="3" points="' + points + '"></polyline></svg>' +
+      '<p>' + esc(trend[0].month) + ' to ' + esc(trend[trend.length - 1].month) + '</p></div>';
+  }
+
 
   // ---- 3. Coverage: one line ----
   if (num(cov.sessions) > 0 && num(cov.ran_sessions) > 0) {
@@ -324,7 +342,7 @@ function savingsSinceInstall(data) {
   var ai = si.all_in || {};
   var c = ai.components_usd || {};
   if (!(num(si.days) > 0)) return null;
-  var parts = [['Context removed', c.logged], ['Cheaper cache writes', c.class_premium], ['Re-reads avoided', c.reread], ['Estimates', ai.estimated_usd]]
+  var parts = [['Context removed', c.logged], ['Cheaper cache writes', c.class_premium], ['Re-reads avoided', c.reread], ['Estimates', ai.estimated_usd], ['Estimated routing, based on your stated 95% Opus baseline', c.routing_estimated]]
     .filter(function(p) { return num(p[1]) !== 0; });
   if (!parts.length) return null;
   var date = si.install_date ? new Date(si.install_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
@@ -416,7 +434,7 @@ function savingsLedgerHtml(data) {
       SI.parts.map(function(p) { return row(p[0], p[1], 0); }).join('') +
       '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(SI.total) + '</strong></span></li></ul>';
   }
-  out += '<p class="st-lead">Model routing is not part of either total; it is still being measured.</p>';
+  out += '<p class="st-lead">The since-install total includes estimated routing only when a stated baseline is available.</p>';
   var cp = s.counted_period || {};
   if (cp.pricing_note) out += '<p>' + esc(cp.pricing_note) + '</p>';
   return out;

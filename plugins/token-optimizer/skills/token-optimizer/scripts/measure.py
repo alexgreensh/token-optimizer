@@ -163,7 +163,7 @@ if __name__ in ("__main__",):
 
 from _measure import _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5, transcript_backfill as _transcript_backfill, counted_subagents as _counted_subagents, headline as _headline, structural_report as _structural_report
 _measure_providers = _measure_compat.prepare(sys.modules[__name__])
-from _measure import output_reread as _output_reread  # noqa: E402  stateless helper (U5)
+from _measure import counted_cap as _counted_cap, output_reread as _output_reread  # noqa: E402  stateless helper (U5)
 from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared
 from hook_runtime import (
     HookDeadline,
@@ -2063,7 +2063,7 @@ _COUNTED_TWIN_WINDOW_SECONDS = 3.0
 # GLOB (case-sensitive, anchored). Real ids are UUIDs, short hex agent ids, or
 # harness ids such as Codex "rollout-<date>-<uuid>"; none of them match.
 _FIXTURE_SESSION_GLOBS = (
-    "test-session-*", "failwire-*", "unit-c-never*", "torture-*",
+    "test-session-*", "test-failbuild-*", "failwire-*", "unit-c-never*", "torture-*",
     "f3bench-sess*", "sess_test*",
 )
 # Tool names whose results carry images. Matched against the archive event's
@@ -3570,11 +3570,11 @@ _EVENT_RATE_CLASS = {"verbosity_steer_measured": "output", "verbosity_steer": "o
 # One statement per (source, has model_usage_json, has all_model_usage_json, by_day,
 # session-scoped). Grouping on column 1 is a no-op when it is the constant NULL.
 _REPRICE_SQL = _sql_variants(
-    "SELECT {day}, e.event_type, SUM(e.tokens_saved), SUM(e.cost_saved_usd), {mu}, {amu}, {mdl} "
+    "SELECT {day}, " + _counted_cap.reexpand_type("e") + ", SUM(e.tokens_saved), SUM(e.cost_saved_usd), {mu}, {amu}, {mdl} "
     "FROM {table} e "
     "LEFT JOIN session_log s ON e.session_uuid = s.session_uuid "
     "WHERE e.timestamp >= ? {scope}"
-    "GROUP BY 1, e.event_type, e.session_uuid, 7",
+    "GROUP BY 1, 2, e.session_uuid, 7",
     table={"counted_savings_events": "counted_savings_events", "savings_events": "savings_events"},
     mu={True: "s.model_usage_json", False: "NULL"},
     amu={True: "s.all_model_usage_json", False: "NULL"},
@@ -3698,7 +3698,7 @@ _counted_session_path = _measure_compat.bind(_measure_providers['savings']._coun
 
 
 # Eligibility is per row. A global migration flag never certifies old prices.
-_COUNTED_PRICING_VERSION = "7"
+_COUNTED_PRICING_VERSION = "8"
 _COUNTED_META_PRICING = "counted_pricing_version"
 
 
@@ -6808,7 +6808,7 @@ _LEGACY_SAVINGS_LABELS = {
     # the full transcript cold. Counterfactual trigger -> estimated tier
     # (popped from the measured total in _get_savings_summary).
     "resume_lean": "Lean resumes",
-    "tool_archive": "Tool replacements",
+    "tool_archive": "Tool replacements", "bash_archive_reexpand": "Bash output re-expanded",
     "structure_map": "Structure maps",
     # mcp_cap: ESTIMATED (not measured). Claude Code truncates MCP output
     # before PostToolUse fires, so the true pre-cap size is invisible to TO.
@@ -6920,7 +6920,7 @@ _SAVINGS_CATEGORY_LABELS = {**_LEGACY_SAVINGS_LABELS, **_V5_COMPRESSION_LABELS, 
 # allowed to pull out of compression_events. Deriving this from the label
 # dict keeps the two in lockstep — add a key to _V5_COMPRESSION_LABELS and
 # it automatically shows up in the merged view.
-_V5_COMPRESSION_CATEGORIES = frozenset(_V5_COMPRESSION_LABELS.keys())
+_V5_COMPRESSION_CATEGORIES = frozenset(_V5_COMPRESSION_LABELS.keys()) - {"quality_nudge"}
 
 
 _estimate_compression_cost_per_mtok = _measure_compat.bind(_measure_providers['savings']._estimate_compression_cost_per_mtok, __name__, defaults=(None,))
@@ -6952,8 +6952,8 @@ _MIN_OVERAGE_USD_SHOWN = 10.0
 
 _RUNWAY_SAVED_SQL = _counted_sql(
     "savings_events",
-    "SELECT event_type, COALESCE(SUM(tokens_saved),0) FROM {table} "
-    "WHERE timestamp >= ? AND event_type != 'verbosity_steer' GROUP BY event_type")
+    "SELECT " + _counted_cap.reexpand_type() + ", COALESCE(SUM(tokens_saved),0) FROM {table} "
+    "WHERE timestamp >= ? AND event_type != 'verbosity_steer' GROUP BY 1")
 _RUNWAY_COMPRESSED_TOTAL_SQL = _counted_sql(
     "compression_events",
     "SELECT COALESCE(SUM(original_tokens-compressed_tokens),0) "
@@ -7605,9 +7605,9 @@ _BUCKET_DAY_SQL = {True: "substr(timestamp, 1, 10)", False: "''"}
 _BUCKET_SESSION_SQL = {
     True: "AND (session_uuid = ? OR (session_uuid IS NULL AND session_id = ?)) ", False: ""}
 _BUCKET_SAVINGS_SQL = _sql_variants(
-    "SELECT {day}, event_type, COUNT(*), SUM(tokens_saved), "
+    "SELECT {day}, " + _counted_cap.reexpand_type() + ", COUNT(*), SUM(tokens_saved), "
     "SUM(cost_saved_usd) FROM {table} WHERE timestamp >= ? {scope}"
-    "GROUP BY 1, event_type ORDER BY 4 DESC",
+    "GROUP BY 1, 2 ORDER BY 4 DESC",
     table={"counted_savings_events": "counted_savings_events", "savings_events": "savings_events"},
     day=_BUCKET_DAY_SQL, scope=_BUCKET_SESSION_SQL)
 _BUCKET_COMPRESSION_SQL = _sql_variants(

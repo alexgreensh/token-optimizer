@@ -92,13 +92,19 @@ def _sid_for(row, m):
 
 def _transcript_for(sid, m):
     try:
+        conn = m._open_trends_db_readonly(timeout=1.0)
+        try:
+            row = conn.execute('SELECT jsonl_path FROM session_log WHERE session_uuid=? AND jsonl_path IS NOT NULL ORDER BY id DESC LIMIT 1', (sid,)).fetchone()
+        finally:
+            conn.close()
+        if row and Path(row[0]).is_file():
+            return Path(row[0])
+    except (OSError, sqlite3.Error, AttributeError):
+        pass
+    try:
         base = m.CLAUDE_DIR / "projects"
-        if not base.exists():
-            return None
-        candidates = list(base.glob("*/" + sid + ".jsonl"))
-        if not candidates:
-            return None
-        return max(candidates, key=lambda p: p.stat().st_mtime)
+        candidates = list(base.glob("*/" + sid + ".jsonl")) if base.exists() else []
+        return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
     except (OSError, PermissionError):
         return None
 
@@ -358,3 +364,108 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _score_verified_event(row, m, tier_data):
+    """Score a delivered lean block only if the old session stayed stopped."""
+    import re
+    result = {'eligible': False, 'turns': 0, 'carry_tokens': 0, 'carry_cost_usd': 0.0}
+    target = _sid_for(row, m)
+    match = re.search(r'(?:^|\s)receiver=([0-9a-fA-F-]{36})(?:\s|$)', row.get('detail') or '')
+    ev = _event_dt(m, row.get('timestamp'))
+    if not target or not match or not ev or match.group(1) == target:
+        return result
+    receiver = match.group(1)
+    old_path, new_path = _transcript_for(target, m), _transcript_for(receiver, m)
+    if not old_path or not new_path:
+        return result
+    old_seen = False
+    old_latest = None
+    delivered = False
+    try:
+        old_stat, new_stat = old_path.stat(), new_path.stat()
+        with old_path.open(encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if '"assistant"' not in line or '"usage"' not in line:
+                    continue
+                try: obj = json.loads(line)
+                except ValueError: continue
+                stamp = _parse_ts(obj.get('timestamp'))
+                if obj.get('type') != 'assistant' or obj.get('isSidechain') or not (obj.get('message') or {}).get('usage') or not stamp:
+                    continue
+                if stamp > ev:
+                    return result
+                old_seen = True
+                if old_latest is None or stamp > old_latest[0]:
+                    msg = obj['message']
+                    old_latest = (stamp, msg.get('model'), _prompt_tokens(m, msg['usage']))
+        marker = 'Cold-resume lean (session ' + target[:8]
+        with new_path.open(encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if marker not in line:
+                    continue
+                try: obj = json.loads(line)
+                except ValueError: continue
+                stamp = _parse_ts(obj.get('timestamp'))
+                attachment = obj.get('attachment') or {}
+                if obj.get('type') == 'attachment' and attachment.get('type') == 'hook_additional_context' and stamp and abs((stamp - ev).total_seconds()) <= 180 and re.search(re.escape(marker) + r'(?=[, )])', json.dumps(attachment)):
+                    delivered = True
+                    break
+    except OSError:
+        return result
+    if not old_seen or not delivered:
+        return result
+    avoided = int(row.get('tokens_saved') or 0)
+    if avoided <= 0:
+        return result
+    threshold, source = lean_resume_threshold.threshold(new_path, lambda usage: _prompt_tokens(m, usage))
+    if threshold is None:
+        return result
+    turns, stopped = _walk(new_path, ev.replace(microsecond=0), avoided, m, threshold)
+    if not turns:
+        return result
+    from _measure import counted_pricing_v5
+    key = counted_pricing_v5.resume_rate_key(row.get('detail'))
+    old_card = m._counted_exact_card(old_latest[1], tier_data, old_latest[2]) if old_latest and old_latest[1] else None
+    if not key or not old_card or not isinstance(old_card.get(key), (int, float)):
+        return result
+    cards = [m._counted_exact_card(model, tier_data, ctx) if model else None for _dt, model, ctx in turns]
+    if any(not card or not isinstance(card.get('cache_read'), (int, float)) for card in cards):
+        return result
+    try:
+        if (old_path.stat().st_mtime_ns, old_path.stat().st_size) != (old_stat.st_mtime_ns, old_stat.st_size) or (new_path.stat().st_mtime_ns, new_path.stat().st_size) != (new_stat.st_mtime_ns, new_stat.st_size):
+            return result
+    except OSError:
+        return result
+    result.update(eligible=True, receiver=receiver, oneshot_usd=round(avoided * old_card[key] / 1e6, 6), turns=len(turns), carry_tokens=avoided * len(turns),
+                  carry_cost_usd=round(sum(avoided * card['cache_read'] / 1e6 for card in cards), 6),
+                  stopped_by=stopped, threshold_source=source)
+    return result
+
+
+def verified_summary(days=30, since=None, db_path=None):
+    """Estimated reload and carry only for receiver-linked, stopped sessions."""
+    m = _m()
+    tier_data = m.PRICING_TIERS.get(m._load_pricing_tier(), m.PRICING_TIERS['anthropic'])
+    out = {'events': 0, 'tokens_saved': 0, 'cost_saved_usd': 0.0, 'evidence': 'estimated'}
+    try:
+        from _measure import lean_resume_receivers
+        conn = _connect(db_path, m)
+        try: links = lean_resume_receivers.resolved(conn)
+        finally: conn.close()
+    except Exception:
+        links = {}
+    for row in _events(days=days, since=since, db_path=db_path):
+        if 'receiver=' not in (row.get('detail') or ''):
+            receiver = links.get(row.get('id'))
+            if not receiver:
+                continue
+            row = dict(row, detail=(row.get('detail') or '') + ' receiver=' + receiver)
+        score = _score_verified_event(row, m, tier_data)
+        if not score['eligible']:
+            continue
+        out['events'] += 1
+        out['tokens_saved'] += max(0, int(row.get('tokens_saved') or 0)) + score['carry_tokens']
+        out['cost_saved_usd'] += score['oneshot_usd'] + score['carry_cost_usd']
+    out['cost_saved_usd'] = round(out['cost_saved_usd'], 6)
+    return out

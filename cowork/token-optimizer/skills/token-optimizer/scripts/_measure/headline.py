@@ -11,7 +11,7 @@ def _number(value):
 
 def token_headline(summary):
     s = summary or {}
-    pools = ('mcp_cap_estimated', 'hint_followed', 'checkpoint_restore_estimated')
+    pools = ('mcp_cap_estimated', 'hint_followed', 'resume_lean_verified')
     verbosity = sum(max(0, _number(v.get('tokens_saved'))) for k, v in (s.get('by_category') or {}).items()
                     if str(k).startswith('verbosity') and isinstance(v, dict))
     removed = max(0, _number(s.get('total_tokens')) - verbosity)
@@ -22,7 +22,7 @@ def token_headline(summary):
             parts[name] = max(0, _number(pool.get('tokens_saved')))
             removed += parts[name]
     output = 0
-    reload_avoided = parts.get('checkpoint_restore_estimated', 0)
+    reload_avoided = parts.get('resume_lean_verified', 0)
     counted = s.get('counted_period') or {}
     available = bool(counted.get('available'))
     reread = _number(counted.get('reread_tokens')) if available else 0

@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, fixture_context
+from . import _compat, fixture_context, counted_cap, archive_void_evidence
 
 
 def _classify_jsonl_is_sidechain(filepath, max_lines=None):
@@ -557,7 +557,7 @@ def _counted_view_statements():
         "CREATE TEMP VIEW IF NOT EXISTS counted_savings_events AS "
         "SELECT e.* FROM main.savings_events e "
         f"WHERE NOT {_measure_facade._fixture_session_sql('e.session_id')} AND {fixture_context.excluded_session_sql('e')}"
-        f" AND NOT (e.event_type IN ({media_types}) AND e.detail IS NOT NULL AND ({media}))"
+        f" AND NOT COALESCE({counted_cap.contradicted('e')}, 0) AND NOT (e.event_type IN ({media_types}) AND e.detail IS NOT NULL AND ({media}))"
         f" AND NOT (e.event_type = 'tool_archive_reexpand' AND COALESCE(e.session_id, '') != '' AND {media_pair})"
         f" AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})",
         "CREATE TEMP VIEW IF NOT EXISTS counted_compression_events AS "
@@ -596,7 +596,11 @@ def _ensure_counted_views(conn):
             "SELECT name FROM sqlite_temp_master WHERE type='view'").fetchall()}
         if {"counted_savings_events", "counted_compression_events"} <= have:
             return True
-        for statement in _measure_facade._COUNTED_VIEW_SQL:
+        statements = list(_measure_facade._COUNTED_VIEW_SQL)
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_void_evidence'").fetchone():
+            conn.create_function('archive_proof_current', 3, archive_void_evidence.proof_current)
+            statements[0] += " AND NOT EXISTS (SELECT 1 FROM main.archive_void_evidence v WHERE v.event_id=e.id AND archive_proof_current(v.path,v.size,v.mtime_ns)=1)"
+        for statement in statements:
             conn.execute(statement)
         # SQLite resolves view columns lazily: a database missing a column the
         # filters use (very old installs, minimal schemas) only fails on first
@@ -1765,7 +1769,7 @@ def _get_compression_summary(days=None, since=None):
                 "SUM(CASE WHEN compressed_tokens > original_tokens "
                 "    THEN compressed_tokens - original_tokens ELSE 0 END) as gross_debit "
                 "FROM " + _measure_facade._counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
-                "AND (tier IS NULL OR tier = 'measured') "
+                "AND feature != 'quality_nudge' AND (tier IS NULL OR tier = 'measured') "
                 "GROUP BY feature, model, session_uuid, session_id ORDER BY orig DESC",
                 (cutoff,),
             ).fetchall()
@@ -1925,7 +1929,7 @@ def _get_compression_coverage(days=None):
         cnt = cnt or 0
         orig = orig or 0
         comp = comp or 0
-        safe_tier = tier if tier in _measure_facade._COMPRESSION_TIERS else "estimated"
+        safe_tier = "estimated" if feature == "quality_nudge" else (tier if tier in _measure_facade._COMPRESSION_TIERS else "estimated")
         realized = safe_tier == "measured"
         out["tiers"][safe_tier].append({
             "feature": feature,

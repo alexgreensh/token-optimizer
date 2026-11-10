@@ -85,10 +85,10 @@ def test_checkpoint_restore_is_estimated_not_measured(m):
     est = merged.get("checkpoint_restore_estimated") or {}
     assert est.get("tokens_saved") == 50000
     assert est.get("events") == 1
-    # The dashboard token split counts it on the estimated side, not the floor.
+    # Unverified restore and resume estimates are excluded from the headline.
     shown, measured = m._dashboard_saved_tokens(merged)
     assert measured == 25000
-    assert shown == measured + 50000 + 5000 + 20000  # + hint_followed + resume_lean
+    assert shown == measured + 5000  # hint_followed remains estimated
     # The runway "measured floor" leaves it out too.
     conn = sqlite3.connect(str(m.TRENDS_DB))
     try:
@@ -97,12 +97,12 @@ def test_checkpoint_restore_is_estimated_not_measured(m):
         conn.close()
 
 
-def test_checkpoint_restore_flows_through_action_savings(m):
+def test_unverified_checkpoint_restore_stays_out_of_action_savings(m):
     _seed(m)
     merged = m._get_merged_savings(days=30)
     parts = m._action_savings_components(merged, {"available": True, "reread_usd": 0})
     assert "checkpoint_restore_estimated" in parts["estimates_usd"]
-    assert parts["estimates_usd"]["checkpoint_restore_estimated"] > 0
+    assert parts["estimates_usd"]["checkpoint_restore_estimated"] == 0
     # It is never inside the logged/measured component.
     assert "checkpoint_restore" not in merged["by_category"]
 
@@ -230,3 +230,70 @@ def test_loop_warning_writer_stores_estimated_unverified_row(m, monkeypatch, tmp
     assert tier == "estimated"
     assert "observed_tokens=" in detail
     assert "measured_tokens=" not in detail
+
+
+def test_legacy_quality_nudge_is_not_measured(m):
+    _seed(m)
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    conn.execute("INSERT INTO compression_events (timestamp, session_id, session_uuid, feature, original_tokens, compressed_tokens, verified, tier) VALUES (?, ?, ?, 'quality_nudge', 9000, 1000, 1, NULL)", (_ts(), SID, SID))
+    conn.commit()
+    conn.close()
+    merged = m._get_merged_savings(days=30)
+    assert merged['total_tokens'] == 25000
+    assert 'quality_nudge' not in merged['by_category']
+    coverage = m._get_compression_coverage(days=30)
+    assert 'quality_nudge' not in {row['feature'] for row in coverage['tiers']['measured']}
+    assert 'quality_nudge' in {row['feature'] for row in coverage['tiers']['estimated']}
+
+
+def test_checkpoint_restore_does_not_credit_checkpoint_size(m, monkeypatch, tmp_path):
+    cp_dir = tmp_path / 'checkpoints'
+    cp_dir.mkdir()
+    path = cp_dir / (SID + '-checkpoint.md')
+    path.write_text('# header\nGenerated: now\n## Task\n' + 'x' * 5000)
+    cp = {'filename': path.name, 'path': path, 'created': datetime.now(), 'trigger': 'auto'}
+    monkeypatch.setattr(m, 'CHECKPOINT_DIR', cp_dir)
+    monkeypatch.setattr(m, 'list_checkpoints', lambda: [cp])
+    monkeypatch.setattr(m, '_order_checkpoints_for_restore', lambda rows: rows)
+    monkeypatch.setattr(m, '_merge_earlier_checkpoint_context', lambda *args: '')
+    monkeypatch.setattr(m, '_safe_checkpoint_file', lambda p: p)
+    floors = []
+    monkeypatch.setattr(m, '_checkpoint_restore_recovery_tokens', lambda sid, floor_tokens: floors.append(floor_tokens) or 0)
+    m.compact_restore(session_id=SID, is_compact=True)
+    assert floors == [0]
+
+
+def test_bash_reexpansion_is_not_subtracted_from_mcp_archive(m):
+    _seed(m)
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    for detail, tokens in [('abcdef0123456789 (Bash)', 7000), ('toolu_abc (mcp__docs__fetch)', 3000)]:
+        conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_id,session_uuid,detail,model) VALUES (?, 'tool_archive_reexpand', ?, ?, ?, ?, ?, 'claude-sonnet-5')", (_ts(), tokens, tokens * .000005, SID, SID, detail))
+    conn.commit()
+    conn.close()
+    summary = m._get_merged_savings(days=30)
+    assert summary['by_category']['tool_archive']['tokens_saved'] == 7000
+    assert summary['by_category']['bash_archive_reexpand']['tokens_saved'] == -7000
+    assert summary['total_tokens'] == 15000
+
+
+def test_reexpansion_attribution_matches_status_bucket(m):
+    _seed(m)
+    conn = m._init_trends_db()
+    for detail, tokens in [('abcdef0123456789 (Bash)', 7000), ('toolu_abc (mcp__docs__fetch)', 3000)]:
+        conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_id,session_uuid,detail,model) VALUES (?, 'tool_archive_reexpand', ?, ?, ?, ?, ?, 'claude-sonnet-5')", (_ts(), tokens, tokens * .000005, SID, SID, detail))
+    conn.commit()
+    cutoff = (datetime.now() - timedelta(days=30)).isoformat()
+    bucket = m._realized_savings_buckets(conn, cutoff)['']
+    assert bucket['tokens'] == m._get_merged_savings(days=30)['total_tokens']
+    assert m._runway_saved_tokens(conn, cutoff) == 15000
+    conn.close()
+
+
+def test_named_mcp_reexpansion_is_not_misclassified_by_hex_key(m):
+    _seed(m)
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_id,session_uuid,detail,model) VALUES (?, 'tool_archive_reexpand', 3000, .01, ?, ?, ?, 'claude-sonnet-5')", (_ts(), SID, SID, 'abcdef0123456789 (mcp__docs__fetch)'))
+    conn.commit(); conn.close()
+    summary = m._get_merged_savings(days=30)
+    assert summary['by_category']['tool_archive']['tokens_saved'] == 7000
+    assert 'bash_archive_reexpand' not in summary['by_category']

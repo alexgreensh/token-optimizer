@@ -3560,6 +3560,8 @@ def _realized_savings_buckets(conn, cutoff, session_uuid=None, by_day=None):
         params.extend([session_uuid, session_uuid])
     se_sql = _measure_facade._BUCKET_SAVINGS_SQL[
         _measure_facade._counted_table(conn, "savings_events"), bool(by_day), session_uuid is not None]
+    se_table = _measure_facade._counted_table(conn, "savings_events")
+    if "detail" not in {r[1] for r in conn.execute(f"PRAGMA table_info({se_table})")}: se_sql = se_sql.replace(_measure_facade._counted_cap.reexpand_type(), "event_type")
     ce_sql = _measure_facade._BUCKET_COMPRESSION_SQL[
         _measure_facade._counted_table(conn, "compression_events"), bool(by_day), session_uuid is not None]
     se_rows = conn.execute(se_sql, tuple(params)).fetchall()
@@ -3642,7 +3644,7 @@ def _dashboard_saved_tokens(summary):
 
     estimated = (tok(s.get("mcp_cap_estimated"))
                  + tok(s.get("hint_followed") or s.get("hint_followed_estimated"))
-                 + tok(s.get("checkpoint_restore_estimated")))
+                 )
     measured = num(s.get("total_tokens", 0))
     return measured + estimated, measured
 

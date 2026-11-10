@@ -38,7 +38,7 @@ import time
 
 from . import _compat
 
-SCANNER_VERSION = 1
+SCANNER_VERSION = 3
 _MARKER = b'[Token Optimizer'
 _EVIDENCE_TYPES = ('hook_additional_context', 'hook_system_message')
 _RESTORE_PREFIXES = ('[Token Optimizer] Post-compact recovery',
@@ -98,17 +98,18 @@ def scan_transcript(path):
     except OSError:
         return None
     out = {'markers': 0, 'injections': 0, 'restore_tokens': 0, 'days': {}}
-    if _MARKER not in data:
+    if _MARKER not in data and b'measure.py' not in data:
         return out
-    active = unseen = 0
+    active = unseen = active_expand = unseen_expand = 0
     seen = set()
+    expand_seen = set()
     day = ''
     for line in data.splitlines():
         m = _TS_RE.search(line)
         if m:
             day = m.group(1).decode()
         if b'"compact_boundary"' in line:
-            active = unseen = 0
+            active = unseen = active_expand = unseen_expand = 0
             continue
         if _MARKER in line and b'"attachment"' in line:
             try:
@@ -130,18 +131,43 @@ def scan_transcript(path):
             out['injections'] += 1
             active += tokens
             unseen += tokens
-            out['days'].setdefault(day, [0, 0])[0] += tokens
+            out['days'].setdefault(day, [0, 0, 0, 0])[0] += tokens
             continue
         if b'"type":"assistant"' in line and active:
             m = _REQUEST_RE.search(line) or _MESSAGE_RE.search(line)
             key = m.group(1) if m else None
-            if key is None or key in seen:
-                continue
-            seen.add(key)
-            reread = active - unseen
-            unseen = 0
-            if reread > 0:
-                out['days'].setdefault(day, [0, 0])[1] += reread
+            if key is not None and key not in seen:
+                seen.add(key)
+                reread = active - unseen
+                expand_reread = active_expand - unseen_expand
+                unseen = unseen_expand = 0
+                if reread > 0:
+                    out['days'].setdefault(day, [0, 0, 0, 0])[1] += reread
+                if expand_reread > 0:
+                    out['days'].setdefault(day, [0, 0, 0, 0])[3] += expand_reread
+        if b'measure.py' in line and b'"type":"assistant"' in line:
+            try:
+                content = (json.loads(line).get('message') or {}).get('content') or []
+                for block in content if isinstance(content, list) else []:
+                    if not isinstance(block, dict) or block.get('type') != 'tool_use' or block.get('name') != 'Bash':
+                        continue
+                    ident = block.get('id')
+                    command = (block.get('input') or {}).get('command') or ''
+                    if not ident or ident in expand_seen or not re.search(r'''(?:^|[ /])measure\.py["']?\s+(?:--runtime\s+[A-Za-z0-9_-]+\s+)?expand\s+[A-Za-z0-9_-]+(?:\s|$)''', command):
+                        continue
+                    expand_seen.add(ident)
+                    out['markers'] += 1
+                    tokens = _tokens(command)
+                    out['injections'] += 1
+                    active += tokens
+                    unseen += tokens
+                    active_expand += tokens
+                    unseen_expand += tokens
+                    out['days'].setdefault(day, [0, 0, 0, 0])[0] += tokens
+                    out['days'].setdefault(day, [0, 0, 0, 0])[2] += tokens
+            except (ValueError, TypeError, AttributeError):
+                pass
+            continue
     return out
 
 
@@ -319,19 +345,22 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
 
     def overhead(path):
         ev = evidence.get(path) or {}
-        inj = rr = 0
+        inj = rr = exp = exp_rr = 0
         for day, pair in (ev.get('days') or {}).items():
-            if start_day <= day <= end_day and isinstance(pair, list) and len(pair) == 2:
+            if start_day <= day <= end_day and isinstance(pair, list) and len(pair) >= 2:
                 inj += _int(pair[0])
                 rr += _int(pair[1])
-        return inj, rr
+                if len(pair) >= 4:
+                    exp += _int(pair[2])
+                    exp_rr += _int(pair[3])
+        return inj, rr, exp, exp_rr
 
     classes = ('ledger', 'logged_no_ledger', 'ran_unlogged', 'not_ran', 'unknown')
     cov = {c: {'sessions': 0, 'traffic_tokens': 0} for c in classes}
     fleet = {'sessions': 0, 'traffic_tokens': 0, 'actual_usd': 0.0, 'saved_tokens': 0,
              'saved_usd': 0.0, 'overhead_tokens': 0, 'overhead_reread_tokens': 0}
     oh = {'injections': 0, 'injected_tokens': 0, 'reread_tokens': 0, 'restore_tokens': 0,
-          'sessions_scanned': 0}
+          'sessions_scanned': 0, 'expand_tokens': 0, 'expand_reread_tokens': 0}
     gross, net = [], []
     session_overhead = {}
     for su, v in window.items():
@@ -348,7 +377,7 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
             cls = 'not_ran'
         cov[cls]['sessions'] += 1
         cov[cls]['traffic_tokens'] += v['traffic']
-        inj, rr = overhead(v['path']) if ev is not None else (0, 0)
+        inj, rr, exp, exp_rr = overhead(v['path']) if ev is not None else (0, 0, 0, 0)
         if ev is not None:
             oh['sessions_scanned'] += 1
             oh['injections'] += _int(ev.get('injections'))
@@ -364,6 +393,8 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
             fleet['overhead_reread_tokens'] += rr
             oh['injected_tokens'] += inj
             oh['reread_tokens'] += rr
+            oh['expand_tokens'] += exp
+            oh['expand_reread_tokens'] += exp_rr
         session_overhead[su] = inj + rr
     # Per session: every session with counted rows and input, sidechains included
     # (a sub-agent session is a session); overhead nets only where scanned.
@@ -452,6 +483,8 @@ def compute(conn, start_ts, end_ts, scan_budget_s=DEFAULT_SCAN_BUDGET_S, price=N
         'overhead': {
             'injections': oh['injections'], 'injected_tokens': oh['injected_tokens'],
             'reread_tokens': oh['reread_tokens'], 'usd': round(oh_usd, 4),
+            'expand_tokens': oh['expand_tokens'], 'expand_reread_tokens': oh['expand_reread_tokens'],
+            'expand_usd': round(oh['expand_tokens'] * one_rate + oh['expand_reread_tokens'] * rr_rate, 6),
             'restore_tokens_not_netted': oh['restore_tokens'],
             'sessions_scanned': oh['sessions_scanned'], 'tier': 'estimated',
             'basis': 'hook additionalContext starting with "[Token Optimizer", priced at the counted '

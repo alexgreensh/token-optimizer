@@ -36,6 +36,7 @@ def pointer(chars, key="0123456789abcdef", kind=None, tool=None):
     ("preview" + pointer(15675), 15675),
     ("preview" + pointer(18527, key="toolu_01ABC", kind="json", tool="mcp__x__y"), 18527),
     (pointer(900).lstrip(), 900),
+    ("preview\n[Full result archived (197,728 chars).]", 197728),
     # an older footer with the bracket on the expand line
     (f"p\n\n[Full result archived (4,275 chars) {EM} saved to disk, not lost.\nRetrieve: expand abcdef0123456789]", 4275),
 ])
@@ -164,12 +165,15 @@ def test_backfill_writes_measured_rows_once_and_never_touches_existing(m, tmp_pa
     monkeypatch.setattr(m, "CLAUDE_DIR", tmp_path / "claude")
     path, start = _session(tmp_path, CLOUD)
     _register(dbp, CLOUD, path)
-    lpath, _ = _session(tmp_path, LOCAL)
+    lpath, lstart = _session(tmp_path, LOCAL)
     _register(dbp, LOCAL, lpath)
     conn = sqlite3.connect(str(dbp))
     conn.execute("INSERT INTO compression_events(timestamp,feature,original_tokens,compressed_tokens,verified,"
                  "tier,session_uuid,session_id) VALUES(?,?,?,?,1,'measured',?,?)",
-                 (_local_iso(start), "bash_compress_pipeline", 900, 100, LOCAL, LOCAL))
+                 (_local_iso(lstart + timedelta(minutes=1)), "bash_compress_pipeline", 9091, 100, LOCAL, LOCAL))
+    conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,session_uuid,session_id,detail) VALUES(?,?,?,?,?,?)",
+                 (_local_iso(lstart + timedelta(minutes=3)), 'tool_archive', 3500, LOCAL, LOCAL,
+                  'replaced mcp__docs__fetch (12,000 chars -> 300 chars)'))
     tb.ensure_schema(conn)  # additive columns first, so the digest compares like with like
     conn.commit()
     before = _digest(dbp)
@@ -301,3 +305,21 @@ def test_existing_benchmark_events_are_not_counted(m, tmp_path, monkeypatch):
                      ('2026-08-01', 'bash_compress_pipeline', 'bench', 100, 10, 1))
         assert m._ensure_counted_views(conn)
         assert conn.execute('SELECT count(*) FROM counted_compression_events').fetchone()[0] == 0
+
+
+def test_mixed_session_repairs_only_the_lost_marker(m, tmp_path, monkeypatch):
+    dbp = _db(m, tmp_path, monkeypatch)
+    monkeypatch.setattr(m, 'CLAUDE_DIR', tmp_path / 'claude')
+    path, start = _session(tmp_path, LOCAL)
+    _register(dbp, LOCAL, path)
+    from token_estimate import estimate_tokens_from_bytes
+    conn = sqlite3.connect(str(dbp))
+    conn.execute("INSERT INTO compression_events(timestamp,feature,original_tokens,compressed_tokens,verified,tier,session_uuid,session_id) VALUES(?,?,?,?,1,'measured',?,?)", (_local_iso(start + timedelta(minutes=1)), 'bash_compress_pipeline', estimate_tokens_from_bytes(45000), 100, LOCAL, LOCAL))
+    conn.commit()
+    before = conn.execute('SELECT count(*) FROM compression_events').fetchone()[0]
+    first = tb.run(conn, m, '2000-01-01')
+    second = tb.run(conn, m, '2000-01-01')
+    assert first['rows_written'] == 1 and second['rows_written'] == 0
+    assert conn.execute('SELECT count(*) FROM compression_events').fetchone()[0] == before
+    assert conn.execute("SELECT count(*) FROM savings_events WHERE origin=?", (tb.ORIGIN,)).fetchone()[0] == 1
+    conn.close()

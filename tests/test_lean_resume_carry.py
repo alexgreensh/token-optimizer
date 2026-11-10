@@ -241,3 +241,39 @@ def test_larger_streamed_chunk_retracts_turn_at_compaction_boundary(m, tmp_path,
     item = carry.summary(days=30, since="2020-01-01")["event_details"][0]
     assert item["turns"] == 1
     assert item["stopped_by"] == "counterfactual_compaction"
+
+
+def test_verified_carry_follows_receiver_and_rejects_live_old_session(m, tmp_path, monkeypatch):
+    mod, carry = m
+    receiver = 'efab5678-1111-2222-3333-444455556666'
+    old = _transcript(mod, tmp_path, monkeypatch, [_turn('2026-01-01T09:50:00Z', 'old1', 5000)])
+    recv = old.parent / (receiver + '.jsonl')
+    injection = json.dumps({'type': 'attachment', 'timestamp': '2026-01-01T10:00:00Z', 'attachment': {'type': 'hook_additional_context', 'content': '[Token Optimizer] Cold-resume lean (session abcd1234, 2026-01-01): context'}})
+    recv.write_text('\n'.join([injection, _turn('2026-01-01T10:00:05Z', 'new1', 5000), _turn('2026-01-01T10:00:10Z', 'new2', 5100)]))
+    row = {'id': 1, 'timestamp': '2026-01-01T10:00:00', 'session_id': SID, 'session_uuid': SID,
+           'tokens_saved': 1000, 'cost_saved_usd': .01, 'model': 'opus', 'detail': 'warm cache-read receiver=' + receiver}
+    tier = mod.PRICING_TIERS[mod._load_pricing_tier()]
+    result = carry._score_verified_event(row, mod, tier)
+    assert result['eligible'] and result['turns'] == 2 and result['carry_tokens'] == 2000
+    old.write_text(old.read_text() + _turn('2026-01-01T10:00:20Z', 'old2', 5200) + '\n')
+    assert not carry._score_verified_event(row, mod, tier)['eligible']
+    row['detail'] = ''
+    assert not carry._score_verified_event(row, mod, tier)['eligible']
+
+
+def test_verified_summary_credits_only_delivered_stopped_session(m, tmp_path, monkeypatch):
+    mod, carry = m
+    receiver = 'efab5678-1111-2222-3333-444455556666'
+    old = _transcript(mod, tmp_path, monkeypatch, [_turn('2026-01-01T09:50:00Z', 'old1', 5000)])
+    recv = old.parent / (receiver + '.jsonl')
+    injection = json.dumps({'type': 'attachment', 'timestamp': '2026-01-01T10:00:00Z', 'attachment': {'type': 'hook_additional_context', 'content': '[Token Optimizer] Cold-resume lean (session abcd1234, 2026-01-01): context'}})
+    recv.write_text('\n'.join([injection, _turn('2026-01-01T10:00:05Z', 'new1', 5000)]))
+    rows = [{'id': 1, 'timestamp': '2026-01-01T10:00:00', 'session_id': SID, 'session_uuid': SID,
+             'tokens_saved': 1000, 'cost_saved_usd': .01, 'model': 'opus', 'detail': 'warm cache-read receiver=' + receiver}]
+    monkeypatch.setattr(carry, '_events', lambda **kw: rows)
+    out = carry.verified_summary(days=30)
+    assert out['events'] == 1 and out['tokens_saved'] == 2000
+    rate = mod._counted_exact_card('claude-opus-5', mod.PRICING_TIERS[mod._load_pricing_tier()])['cache_read']
+    assert out['cost_saved_usd'] == pytest.approx(2 * 1000 * rate / 1e6)
+    old.write_text(old.read_text() + _turn('2026-01-01T10:00:20Z', 'old2', 5200) + '\n')
+    assert carry.verified_summary(days=30)['events'] == 0

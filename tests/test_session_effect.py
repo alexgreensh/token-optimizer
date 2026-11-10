@@ -135,7 +135,7 @@ def test_overhead_rereads_until_compaction_and_restores_not_netted(tmp_path):
     scan = se.scan_transcript(str(path))
     t = se._tokens(big)
     assert scan['injections'] == 1 and scan['markers'] == 3
-    assert scan['days']['2026-10-05'] == [t, 2 * t]  # a is the first read; b, c re-read; d after compaction
+    assert scan['days']['2026-10-05'] == [t, 2 * t, 0, 0]  # a is the first read; b, c re-read; d after compaction
     assert scan['restore_tokens'] > 0
 
 
@@ -230,9 +230,9 @@ def test_headline_splits_the_removed_pool_by_what_it_is():
                         'resume_lean_estimated': {'tokens_saved': 200},
                         'checkpoint_restore_estimated': {'tokens_saved': 50},
                         'mcp_cap_estimated': {'tokens_saved': 25}})
-    assert h['removed_tokens'] == 775
+    assert h['removed_tokens'] == 725
     assert h['output_not_generated_tokens'] == 0
-    assert h['reload_avoided_tokens'] == 50
+    assert h['reload_avoided_tokens'] == 0
     assert h['context_removed_tokens'] == 725
     assert h['context_removed_tokens'] + h['output_not_generated_tokens'] + h['reload_avoided_tokens'] == h['removed_tokens']
 
@@ -250,3 +250,38 @@ def test_no_surface_renders_the_fresh_label_or_fresh_only_multiplier():
     assert 'consumed = traffic["tokens"]' in source
     assert "('fresh_input', 'cache_create', 'cache_read', 'output')" in (
         SCRIPTS / '_measure/headline.py').read_text(encoding='utf-8')
+
+
+def test_expand_tool_call_is_counted_as_overhead_until_compaction(tmp_path):
+    command = 'python3 /plugin/scripts/measure.py expand abcdef0123456789'
+    expand = _line({'type': 'assistant', 'requestId': 'r1', 'timestamp': '2026-10-05T10:00:00Z',
+                    'message': {'id': 'm1', 'content': [{'type': 'tool_use', 'id': 'u1', 'name': 'Bash', 'input': {'command': command}}]}})
+    path = _write(tmp_path / 'expand.jsonl', [expand, _assistant('r2'), _assistant('r3'), _line({'type': 'system', 'subtype': 'compact_boundary'}), _assistant('r4')])
+    scan = se.scan_transcript(str(path))
+    assert scan['injections'] == 1
+    assert scan['days']['2026-10-05'] == [se._tokens(command), se._tokens(command), se._tokens(command), se._tokens(command)]
+
+
+def test_expand_call_does_not_hide_previous_injection_reread(tmp_path):
+    prior = '[Token Optimizer] ' + 'p' * 300
+    command = 'python3 /plugin/scripts/measure.py expand abcdef0123456789'
+    expand = _line({'type': 'assistant', 'requestId': 'r2', 'timestamp': '2026-10-05T10:00:00Z',
+                    'message': {'id': 'm2', 'content': [{'type': 'tool_use', 'id': 'u1', 'name': 'Bash', 'input': {'command': command}}]}})
+    path = _write(tmp_path / 'both.jsonl', [_inject(prior), _assistant('r1'), expand, _assistant('r3'), _assistant('r4')])
+    a, b = se._tokens(prior), se._tokens(command)
+    assert se.scan_transcript(str(path))['days']['2026-10-05'] == [a + b, 3 * a + b, b, b]
+
+
+def test_expand_overhead_is_separately_priced_in_session_summary(tmp_path):
+    db = _db(tmp_path)
+    command = 'python3 /plugin/scripts/measure.py expand abcdef0123456789'
+    expand = _line({'type': 'assistant', 'requestId': 'r1', 'timestamp': '2026-10-05T10:00:00Z',
+                    'message': {'id': 'm1', 'content': [{'type': 'tool_use', 'id': 'u1', 'name': 'Bash', 'input': {'command': command}}]}})
+    path = _write(tmp_path / 'l.jsonl', [expand, _assistant('r2'), _assistant('r3')])
+    _session(db, 's', path, 1000, 1000)
+    _counted(db, 's', 100, 100, usd=10)
+    result = se.compute(db, START, END, scan_budget_s=None)
+    overhead = result['overhead']
+    assert overhead['expand_tokens'] == se._tokens(command)
+    assert overhead['expand_reread_tokens'] == se._tokens(command)
+    assert 0 < overhead['expand_usd'] <= overhead['usd']

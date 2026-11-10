@@ -2012,21 +2012,10 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
             merged = _measure_facade._merge_earlier_checkpoint_context(best_cp, ordered[1:4])
             _print_checkpoint_body(best_cp["path"], label, merged_body=merged)
             _print_intel_digest(sid_safe)
-            # Log the restore as an ESTIMATED credit: the working set the
-            # resumed session skips re-reading, floored at the legacy
-            # checkpoint-file-size estimate so we never regress. The re-read
-            # never happens, so nothing is metered -- _get_savings_summary
-            # files checkpoint_restore in the estimated tier.
+            # Only the estimated avoided working set is a credit. The injected
+            # checkpoint itself adds context and is never a savings floor.
             try:
-                cp_size = best_cp["path"].stat().st_size
-                # Calibrated floor (U-F: ~3.3 chars/tok), consistent with the TS
-                # ports and the rest of the estimator surface, not the legacy 4.0.
-                try:
-                    from token_estimate import estimate_tokens_from_bytes
-                    floor_tokens = estimate_tokens_from_bytes(cp_size)
-                except ImportError:
-                    floor_tokens = int(cp_size / _measure_facade.CHARS_PER_TOKEN)
-                est_tokens_recovered = _measure_facade._checkpoint_restore_recovery_tokens(sid_safe, floor_tokens)
+                est_tokens_recovered = _measure_facade._checkpoint_restore_recovery_tokens(sid_safe, 0)
                 if est_tokens_recovered > 0:
                     _measure_facade._log_savings_event("checkpoint_restore", est_tokens_recovered,
                                        session_id=sid_safe, detail=f"restored from {trigger_label}")
@@ -2880,7 +2869,7 @@ def _continuity_resume_block(text, checkpoints, sid_safe, cwd):
                 block = _measure_facade.build_lean_resume_context(cp_sid, prompt_text=text, cwd=cwd,
                                                   footer_mode=_named_footer)
                 if block:
-                    _measure_facade._log_resume_lean_savings(cp_sid, block)
+                    _measure_facade._log_resume_lean_savings(cp_sid, block, receiver_session_id=sid_safe)
                     return block
         # No checkpoint matches the named id. If the id was the WHOLE ask (no separate
         # resume verb) never substitute a different session -- return "". But when
@@ -2929,7 +2918,7 @@ def _continuity_resume_block(text, checkpoints, sid_safe, cwd):
     if block:
         # Count the cold-resume cost this lean reconstruction avoided (idempotent
         # per target session). Token-free; never blocks the injection.
-        _measure_facade._log_resume_lean_savings(sid, block)
+        _measure_facade._log_resume_lean_savings(sid, block, receiver_session_id=sid_safe)
     return block
 
 
@@ -3757,7 +3746,7 @@ def _transcript_last_turn(sid_safe):
         return None
 
 
-def _log_resume_lean_savings(target_session_id, lean_block):
+def _log_resume_lean_savings(target_session_id, lean_block, receiver_session_id=None):
     """Credit the cold-resume cost avoided by reconstructing a session lean
     instead of `claude --resume`-ing it.
 
@@ -3824,7 +3813,8 @@ def _log_resume_lean_savings(target_session_id, lean_block):
             pass
         _measure_facade._log_savings_event("resume_lean", saved, session_id=sid_safe,
                            detail=f"lean resume vs --resume reload of last-turn context "
-                                  f"({basis}, ${per_mtok}/MTok)",
+                                  f"({basis}, ${per_mtok}/MTok)"
+                                  + (f" receiver={_measure_facade.sanitize_session_id(receiver_session_id)}" if receiver_session_id else ""),
                            model=model_norm, cost_per_mtok=per_mtok)
     except Exception:
         pass

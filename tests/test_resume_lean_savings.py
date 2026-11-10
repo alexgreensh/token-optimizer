@@ -306,3 +306,12 @@ def test_advisor_resume_credit_uses_executor_context_not_billed_sum(m, tmp_path,
     rate = "cache_read" if age_minutes < 60 else "cache_write_1h"
     assert cost == pytest.approx(expected * float(_rates(m, "opus")[rate]) / 1e6)
     assert model == "opus"
+
+
+def test_resume_event_records_receiving_session(m, tmp_path, monkeypatch):
+    dbp = _db(m, tmp_path, monkeypatch)
+    _transcript(m, tmp_path, monkeypatch, ctx=500_000, age_minutes=20)
+    receiver = '12345678-1111-2222-3333-123456789abc'
+    m._log_resume_lean_savings(SID, 'context', receiver_session_id=receiver)
+    row, = _rows(dbp)
+    assert 'receiver=' + receiver in row[4]

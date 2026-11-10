@@ -10,9 +10,8 @@ Rules:
   * Only Token Optimizer's exact pointer counts (see POINTER_RX). Text that only
     mentions the marker (source code, docs, escaped JSON) does not match,
     because the real pointer is always the tail of the tool result.
-  * A session qualifies on "Token Optimizer ran here and the local ledger holds
-    nothing for it", never on its directory name.
-  * A session with any locally logged event is skipped whole (no mixing).
+  * Qualify sessions by Token Optimizer evidence, never by directory name.
+    In mixed sessions, skip markers matching a nearby native event.
   * original tokens come from the size the pointer states (measured);
     compressed tokens from the text actually in the transcript. Both go through
     the shared calibrated estimator, as the hooks themselves log them.
@@ -30,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ORIGIN = "transcript_backfill"
-META_CURSOR = "transcript_backfill_cursor"
+META_CURSOR = "transcript_backfill_cursor_mixed_v2"
 BASH_FEATURE = "bash_compress_pipeline"
 
 # archive_result.build_archive_pointer and the MCP replacement in
@@ -39,8 +38,8 @@ BASH_FEATURE = "bash_compress_pipeline"
 # the very end of the tool result.
 POINTER_RX = re.compile(
     r"\[Full result archived \((?P<chars>\d{1,3}(?:,\d{3})*|\d+) chars"
-    r"(?: \((?P<kind>[a-z]+)\))?(?P<truncated>, truncated to 5MB)?\) — saved to disk, not lost\.\n"
-    r"(?:[^\n]*\n){0,3}?[^\n]*\bexpand [\w\-]+(?:\]|\n\])\s*\Z")
+    r"(?: \((?P<kind>[a-z]+)\))?(?P<truncated>, truncated to 5MB)?\)"
+    r"(?:\.\]| — saved to disk, not lost\.\n(?:[^\n]*\n){0,3}?[^\n]*\bexpand [\w\-]+(?:\]|\n\]))\s*\Z")
 
 # Token Optimizer output that states no original size. Counted, never sized.
 UNSIZED_RX = {
@@ -185,6 +184,34 @@ def local_event_sessions(conn):
     return found
 
 
+def unmatched_markers(conn, session_uuid, scan, estimate_tokens, tokens_from_chars):
+    """Skip markers with a plausible native row, keeping ambiguous cases conservative."""
+    ce = conn.execute("SELECT timestamp, original_tokens FROM compression_events WHERE "
+                      "(session_uuid=? OR session_id=?) AND (origin IS NULL OR origin!=?) "
+                      "AND (feature LIKE 'bash_%' OR feature IN ('build_output_compress','crossturn_dedup'))", (session_uuid, session_uuid, ORIGIN)).fetchall()
+    se = conn.execute("SELECT timestamp, tokens_saved, detail FROM savings_events WHERE "
+                      "(session_uuid=? OR session_id=?) AND (origin IS NULL OR origin!=?) "
+                      "AND event_type='tool_archive'", (session_uuid, session_uuid, ORIGIN)).fetchall()
+    def near(stamp, other):
+        try:
+            return abs((datetime.fromisoformat(stamp) - datetime.fromisoformat(other)).total_seconds()) <= 20
+        except (ValueError, TypeError):
+            return False
+    missing = []
+    for event in scan['sized']:
+        stamp = local_naive(event.get('ts'))
+        if not stamp or not event.get('tool'):
+            continue
+        if event['tool'] == 'Bash':
+            match = any(near(stamp, ts) for ts, _orig in ce)
+        else:
+            match = any(near(stamp, ts) and (not detail or detail.startswith('replaced ' + event['tool'] + ' ('))
+                        for ts, _tokens, detail in se)
+        if not match:
+            missing.append(event)
+    return dict(scan, sized=missing)
+
+
 def build_rows(session_uuid, scan, estimate_tokens, tokens_from_chars, input_rate):
     """(compression rows, savings rows, skipped counts) for one session's sized markers."""
     ce_rows, se_rows = [], []
@@ -300,8 +327,6 @@ def run(conn, m, since_date, max_files=None, deadline_seconds=None, report=None)
         started = time.monotonic()
         for uuid, logged_path in candidate_sessions(conn, since_date, m._is_fixture_session_id).items():
             stats["sessions_considered"] += 1
-            if report is None and uuid in local:
-                continue  # a local session: never a target (audits still list mixed ones)
             path = Path(logged_path) if logged_path else None
             if path is None or not path.is_file():
                 path = m._counted_session_path(conn, uuid)
@@ -326,10 +351,11 @@ def run(conn, m, since_date, max_files=None, deadline_seconds=None, report=None)
                      "sized": len(scan["sized"]), "unsized": scan["unsized"], "traces": scan["traces"]}
             if ran and uuid in local:
                 stats["mixed_sessions"] += 1
-            elif ran:
-                stats["to_ran_ledger_empty"] += 1
+            if ran:
+                if uuid not in local: stats["to_ran_ledger_empty"] += 1
                 stats["sized_markers"] += len(scan["sized"])
                 stats["unsized_markers"] += sum(scan["unsized"].values())
+                if uuid in local: scan = unmatched_markers(conn, uuid, scan, estimate_tokens, estimate_tokens_from_bytes)
                 ce_rows, se_rows, skipped = build_rows(uuid, scan, estimate_tokens,
                                                        estimate_tokens_from_bytes, input_rate)
                 written = write_rows(conn, ce_rows, se_rows)
@@ -354,7 +380,17 @@ def collect_pass(conn, m, drain, budgets, quiet=True):
         max_files, deadline = None, budgets.get("counted_seconds")
     else:
         max_files, deadline = m._COUNTED_MARKER_FILES_PER_PASS, m._COUNTED_PASS_DEADLINE_SECONDS
+    import time
+    started = time.monotonic()
     stats = run(conn, m, m._COUNTED_LEDGER_ERA_START[:10], max_files=max_files, deadline_seconds=deadline)
+    from . import archive_void_evidence
+    remaining = None if deadline is None else max(0.0, deadline - (time.monotonic() - started))
+    try: stats["archive_void"] = archive_void_evidence.collect(conn, max_sessions=None if drain == "full" else 8, deadline_seconds=remaining)
+    except Exception as exc: stats["archive_void_error"] = type(exc).__name__
+    from . import lean_resume_receivers
+    remaining = None if deadline is None else max(0.0, deadline - (time.monotonic() - started))
+    try: stats["lean_receivers"] = lean_resume_receivers.collect(conn, m._counted_event_utc, max_files=None if drain == "full" else 8, deadline_seconds=remaining)
+    except Exception as exc: stats["lean_receivers_error"] = type(exc).__name__
     if not quiet and stats.get("rows_written"):
         print("[Token Optimizer] transcript backfill: %d session(s), %d row(s)."
               % (stats["to_ran_ledger_empty"], stats["rows_written"]))

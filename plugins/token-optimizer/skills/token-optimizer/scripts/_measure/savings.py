@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, counted_orphans, counted_subagents, headline, structural_report
+from . import _compat, counted_orphans, counted_subagents, headline, structural_report, savings_story
 
 def _counted_event_utc(ts):
     """Savings-event timestamps are naive LOCAL time (datetime.now()); transcript
@@ -624,14 +624,8 @@ def _update_counted_cumulative(conn, max_sessions=None,
     stats = {"sessions_walked": 0, "rows_written": 0, "pending_sessions": 0, "unmeasured_events": 0, **_compat.facade()._counted_subagents.collect_stats()}
     try:
         started = _measure_facade.time.monotonic()
-        # Delete only those derived duplicates; keep both source telemetry rows.
-        duplicates = conn.execute(
-            "DELETE FROM counted_reread WHERE event_key IN "
-            "(SELECT 'ce:'||id FROM compression_events "
-            "WHERE feature IN ('delta_read', 'structure_map'))")
-        stats["duplicate_rows_removed"] = max(0, duplicates.rowcount)
-        if duplicates.rowcount:
-            conn.commit()
+        # Duplicate derived rows remain as evidence and are excluded at read time.
+        stats['duplicate_rows_removed'] = 0
         _measure_facade._reprice_counted_rows_once(conn)
         events = _measure_facade._counted_candidate_events(conn)
         if not events:
@@ -1219,6 +1213,13 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
     if source_failed:
         return savings_data
     try:
+        from . import cost_per_message_trend
+        conn = _measure_facade._open_trends_db_readonly(timeout=1.0)
+        try: savings_data["cost_per_message_trend"] = cost_per_message_trend.query(conn)
+        finally: conn.close()
+    except Exception:
+        savings_data["cost_per_message_trend"] = []
+    try:
         savings_data["since_install"] = _measure_facade._savings_since_install()
     except Exception:
         pass
@@ -1309,9 +1310,18 @@ def _net_realized_savings(rows, reprice_deltas):
             total_cost -= float(entry.get("cost_saved_usd", 0.0) or 0.0)
             total_events -= int(entry.get("events", 0) or 0)
 
+    # Bash archive expansions reverse Bash output savings, not MCP replacements.
+    bash = by_category.get("bash_archive_reexpand")
+    if bash:
+        total_tokens -= 2 * int(bash.get("tokens_saved") or 0)
+        total_cost -= 2 * float(bash.get("cost_saved_usd") or 0)
+        total_events -= int(bash.get("events") or 0)
+        bash["tokens_saved"] = -int(bash.get("tokens_saved") or 0)
+        bash["cost_saved_usd"] = -float(bash.get("cost_saved_usd") or 0)
+
     # B6: net tool-archive re-expansions out of the tool_archive credit. A
     # re-popped result didn't stay collapsed, so its eager credit is reversed
-    # (floored at 0). tool_archive_reexpand is a DEBIT, never its own savings
+    # even if the result is negative. tool_archive_reexpand is a DEBIT, never its own savings
     # line, so it is removed from by_category and its spurious positive
     # contribution backed out of the totals. The remaining tool_archive figure
     # IS the measured progressive-disclosure win (collapsed and stayed so).
@@ -1320,11 +1330,11 @@ def _net_realized_savings(rows, reprice_deltas):
         r_tok = int(reexpand.get("tokens_saved", 0) or 0)
         r_cost = float(reexpand.get("cost_saved_usd", 0.0) or 0.0)
         r_events = int(reexpand.get("events", 0) or 0)
-        ta = by_category.get("tool_archive")
+        ta = by_category.setdefault("tool_archive", {"events": 0, "tokens_saved": 0, "cost_saved_usd": 0.0})
         c_tok = int(ta["tokens_saved"]) if ta else 0
         c_cost = float(ta["cost_saved_usd"]) if ta else 0.0
-        net_tok = max(0, c_tok - r_tok)
-        net_cost = max(0.0, c_cost - r_cost)
+        net_tok = c_tok - r_tok
+        net_cost = c_cost - r_cost
         if ta:
             ta["tokens_saved"] = net_tok
             ta["cost_saved_usd"] = round(net_cost, 4)
@@ -1354,9 +1364,11 @@ def _get_savings_summary(days=None, since=None):
                 cutoff = since
             else:
                 cutoff = (_measure_facade.datetime.now() - _measure_facade.timedelta(days=days)).isoformat()
+            table = _measure_facade._counted_table(conn, "savings_events")
+            event_expr = _measure_facade._counted_cap.reexpand_type() if "detail" in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")} else "event_type"
             rows = conn.execute(
-                "SELECT event_type, COUNT(*) as cnt, SUM(tokens_saved) as tok, SUM(cost_saved_usd) as cost "
-                "FROM " + _measure_facade._counted_table(conn, "savings_events") + " WHERE timestamp >= ? GROUP BY event_type ORDER BY tok DESC",
+                "SELECT " + event_expr + ", COUNT(*) as cnt, SUM(tokens_saved) as tok, SUM(cost_saved_usd) as cost "
+                "FROM " + table + " WHERE timestamp >= ? GROUP BY 1 ORDER BY tok DESC",
                 (cutoff,),
             ).fetchall()
             # Model-mix repair, same connection and same cutoff so the corrected
@@ -2195,14 +2207,18 @@ def _runway_saved_tokens(conn, cutoff, include_estimated=None):
     multiplier, which the card labels as an estimate.
     """
     _measure_facade = _compat.facade()
+    table = _measure_facade._counted_table(conn, "savings_events")
+    sql = _measure_facade._RUNWAY_SAVED_SQL[table]
+    if "detail" not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}: sql = sql.replace(_measure_facade._counted_cap.reexpand_type(), "event_type")
     by_event = {
         event_type: int(tokens or 0)
         for event_type, tokens in conn.execute(
-            _measure_facade._RUNWAY_SAVED_SQL[_measure_facade._counted_table(conn, "savings_events")], (cutoff,))
+            sql, (cutoff,))
         if include_estimated or event_type not in _measure_facade._RUNWAY_ESTIMATED_EVENT_TYPES}
     reexpanded = by_event.pop("tool_archive_reexpand", 0)
-    if "tool_archive" in by_event:
-        by_event["tool_archive"] = max(0, by_event["tool_archive"] - reexpanded)
+    if "bash_archive_reexpand" in by_event: by_event["bash_archive_reexpand"] *= -1
+    if reexpanded:
+        by_event["tool_archive"] = by_event.get("tool_archive", 0) - reexpanded
     saved = sum(by_event.values())
     table = _measure_facade._counted_table(conn, "compression_events")
     if "feature" not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
@@ -6253,13 +6269,15 @@ def _action_savings_components(summary, reread=None):
     """
     _measure_facade = _compat.facade()
     estimates = {
-        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated") else float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0))
+        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated") else float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
             "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
-            "contamination_exit", "handover_rerun", "resume_lean_estimated",
+            "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
             "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
         )
     }
+    overhead = ((summary.get("session_effect") or {}).get("overhead") or {})
+    estimates["expand_overhead"] = -max(0.0, float(overhead.get("expand_usd") or 0))
     hints = summary.get("hint_followed") or {}
     avoided_source = "hint_followed" if int(hints.get("events") or 0) > 0 else "retrieval_serve"
     estimates[avoided_source] = float(
@@ -6378,8 +6396,14 @@ def _get_merged_savings(days=None, since=None):
         "checkpoint_restore": savings.get("checkpoint_restore_estimated") or {},
     }, model_routing=model_routing)
     stale_reads_reclaimable = _measure_facade._estimate_stale_reads_reclaimable(days=days)
+    try:
+        import lean_resume_carry
+        verified_lean = lean_resume_carry.verified_summary(days=days, since=since)
+    except Exception:
+        verified_lean = None
 
     return {
+        "resume_lean_verified": verified_lean,
         "total_tokens": total_tokens,
         "total_cost_usd": round(total_cost, 4),
         "total_events": total_events,
@@ -6506,10 +6530,17 @@ def _savings_since_install():
         days = (_measure_facade.datetime.now() - _measure_facade.datetime.fromisoformat(d)).days + 1
         days = max(1, min(days, 3650))
         full = _measure_facade._get_merged_savings(days=days)
+        try:
+            from . import session_effect
+            full["session_effect"] = session_effect.summary(days)
+        except Exception:
+            full["session_effect"] = {}
         # Measured = logged runtime + realized structural. Model routing is an
         # assumption and stays out of every savings total.
-        measured = float(full.get("total_cost_usd", 0) or 0)
+        measured = float(full.get("total_cost_usd", 0) or 0) - savings_story.verbosity_logged(full)
         full_routing = full.get("model_routing") or {}
+        stated = (full_routing.get("baseline_source") == "pretool_baseline" and abs(float(full_routing.get("baseline_opus_share") or 0) - 0.95) < 1e-8 and full_routing.get("evidence") not in ("pending", "unavailable"))
+        stated_routing = float(full_routing.get("realized_cost_usd") or 0) if stated else 0.0
         # Estimated = genuine TO-realized counterfactuals only — the same
         # categories the dashboard's estimated tier (estItems) sums, so the two
         # cards agree about what "estimated" contains. cache_drop and
@@ -6523,8 +6554,7 @@ def _savings_since_install():
             float((full.get(k) or {}).get("cost_saved_usd", 0) or 0)
             for k in (
                 "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
-                "contamination_exit", "handover_rerun",
-                "checkpoint_restore_estimated",
+                "contamination_exit", "handover_rerun", "resume_lean_verified",
             )
         )
         # Avoided-search: prefer the hint->read estimate (hint_followed; the
@@ -6535,7 +6565,7 @@ def _savings_since_install():
         hf = full.get("hint_followed") or {}
         rs = full.get("retrieval_serve") or {}
         avoided = hf if int(hf.get("events") or 0) > 0 else rs
-        estimated += float(avoided.get("cost_saved_usd", 0) or 0)
+        estimated += float(avoided.get("cost_saved_usd", 0) or 0) + stated_routing - max(0.0, float(((full.get("session_effect") or {}).get("overhead") or {}).get("expand_usd") or 0))
         # The all-in since install uses the monthly headline's own recipe
         # (logged + repeat reads + estimates); routing stays out of both.
         all_in = None
@@ -6543,9 +6573,19 @@ def _savings_since_install():
             counted = _measure_facade._counted_cumulative_summary(days=days)
             _measure_facade._apply_counted_oneshot_pricing(full, counted)
             components = _measure_facade._action_savings_components(full, counted)
+            display_parts = dict(components["display"]["components_usd"], routing_estimated=round(stated_routing, 2))
+            majority_period = None
+            if stated_routing > 0:
+                try:
+                    from . import routing_period
+                    rconn = _measure_facade._open_trends_db_readonly(timeout=1.0)
+                    try: majority_period = routing_period.strongest(rconn, _measure_facade, stated_routing, d)
+                    finally: rconn.close()
+                except Exception:
+                    pass
             all_in = {
-                "total_usd": components["display"]["total_usd"],
-                "components_usd": components["display"]["components_usd"],
+                "total_usd": round(components["display"]["total_usd"] + stated_routing, 2),
+                "components_usd": display_parts, "routing_majority_period": majority_period,
                 "estimated_usd": round(sum(components["display"]["estimates_usd"].values()), 2),
                 "routing_usd": round(float(components.get("routing_usd", 0) or 0), 2),
                 "routing_baseline_opus_share": full_routing.get("baseline_opus_share"), "routing_baseline_source": full_routing.get("baseline_source"),
@@ -6561,7 +6601,7 @@ def _savings_since_install():
         return {
             "install_date": d,
             "days": days,
-            "excluded_usd": savings_story.excluded_since_install(full),
+            "excluded_usd": dict(savings_story.excluded_since_install(full), routing=None) if stated else savings_story.excluded_since_install(full),
             "measured_usd": round(measured, 2),
             "estimated_usd": round(estimated, 2),
             "total_usd": round(measured + estimated, 2),

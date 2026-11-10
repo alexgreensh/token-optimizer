@@ -144,8 +144,8 @@ def test_old_payload_returns_nothing_and_tab_keeps_previous_layout():
 
 def test_hero_total_is_sum_of_bands_in_whole_dollars_and_excludes_routing():
     h = hero(story({'savings': full()}))
-    # measured: context 44.2-4=40.2, rereads 30.4, premium 8.4, setup 4 = 83; estimated: 20+3+5+7 = 35
-    assert '$118' in h and 'Measured <span class="st-v">$83' in h and 'Estimated <span class="st-v">$35' in h
+    # The action total is 83 measured + 12 estimated; diagnostic pools are excluded.
+    assert '$95' in h and 'Measured <span class="st-v">$83' in h and 'Estimated <span class="st-v">$12' in h
     assert not re.search(r'\$[\d,]+\.\d{2}', _visible(h))
     assert '$50' not in h  # routing never enters the total
     assert 'Context removed' in h and 'Write-class' not in h and 'ratio' not in h
@@ -159,9 +159,9 @@ def _visible(html):
 def test_session_shares_above_fold_and_place_split_in_fold():
     out = story({'savings': full()})
     h = hero(out)
-    assert 'st-mega st-mega--usd">$118</span>' in h and 'st-mega st-mega--tok">' in h
+    assert 'st-mega st-mega--usd">$95</span>' in h and 'st-mega st-mega--tok">' in h
     assert 'tokens kept out of context' in h
-    assert all(x in _visible(out) for x in ('3.1%', '9%', '25%', '22%'))
+    assert not re.search(r"\d(?:\.\d+)?%", _visible(out))
     fold = h.split('<details')[1]
     assert "share of that session&rsquo;s own context" in fold
     assert 'On this Mac: typical 3.1%, top quarter 9% or more (100 sessions)' in fold
@@ -210,8 +210,8 @@ def test_unfinished_pools_say_measuring_with_no_number():
     cards = grid.split('class="card st-card"')[1:]
     setup = [c for c in cards if '<h2 class="st-h">Setup cleanup' in c][0]
     routing = [c for c in cards if '<h2 class="st-h">Model routing' in c][0]
-    for c in (setup, routing):
-        assert 'Measuring' in c and '$' not in c and not re.search(r'\d', c.split('</h2>')[1])
+    assert 'Measuring' in setup and '$' not in setup
+    assert 'Opportunity' in routing and 'Measuring' not in routing
     assert 'Still measuring, not in the total yet: setup cleanup and shorter answers' in hero(out)
 
 
@@ -299,9 +299,9 @@ def test_ledger_fold_matches_hero_and_never_adds_routing():
                            'routing_estimated': 999.0, 'routing_measured': 0.0},
         'estimated_usd': 40.0, 'total_usd': 1349.0}}
     out = call('savingsLedgerHtml(data)', {'savings': s})
-    assert '$118.00' in out  # same total as the hero (83 + 35), to the cent
-    assert '$350.00' in out and '$1,349' not in out and '999' not in out  # since install, routing left out
-    assert 'Model routing is not part of either total' in out
+    assert '$95.00' in out  # same total as the hero (83 + 12), to the cent
+    assert '$1,349.00' in out and '$999.00' in out  # stated routing is estimated since install
+    assert 'The since-install total includes estimated routing only when a stated baseline is available' in out
     assert 'class="label"' not in out
     html = render_savings(s)
     ledger = html.split('Full ledger and history')[1]
@@ -371,3 +371,67 @@ def test_subdollar_band_does_not_display_zero():
     visible = _visible(hero(story({'savings': s})))
     assert 'Measured  under $1' in visible
     assert 'Measured  $0' not in visible
+
+
+def test_routing_is_opportunity_and_limits_explain_total():
+    out = story({'savings': full()})
+    card = out.split('<h2 class="st-h">Model routing', 1)[1].split('</div>', 1)[0]
+    assert 'Opportunity' in card and 'Measuring' not in card
+    assert 'not part of the action savings total' in card
+    assert 'This figure is everything counted since install.' in out
+
+
+def test_fallback_never_shows_transformation_hero():
+    savings = base()
+    savings['before_after'] = {'monthly_savings_usd': 1000, 'actual_monthly_usd': 500, 'counterfactual_monthly_usd': 1500}
+    out = render_savings(savings, with_story=False)
+    assert 'class="card wide savings-transformation"' not in out
+
+
+def test_stated_routing_is_estimated_since_install_with_measured_comparison():
+    s = full()
+    s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
+    s['since_install']['all_in']['routing_measured_baseline_opus_share'] = 0.8369
+    s['since_install']['all_in']['routing_measured_baseline_realized_cost_usd'] = 0
+    out = story({'savings': s})
+    card = out.split('<h2 class="st-h">Room in your limits', 1)[1].split('</div></details>', 1)[0]
+    assert '$3,834' in card
+    assert 'Estimated routing, based on your stated 95% Opus baseline' in card
+    assert '83.69%' in card and '$0' in card
+
+
+def test_archive_fold_shows_net_and_bash_debit_separately():
+    s = full()
+    s['by_category'] = {'tool_archive': {'tokens_saved': -2000, 'cost_saved_usd': -1.25},
+                        'bash_compress_pipeline': {'tokens_saved': 5000, 'cost_saved_usd': 5},
+                        'bash_archive_reexpand': {'tokens_saved': -3000, 'cost_saved_usd': -2}}
+    out = story({'savings': s})
+    assert 'Tool archive, net of re-expands' in out and '-$1' in out
+    assert 'Bash compression, net of re-expands: $3' in out
+
+
+def test_cost_per_message_trend_is_indexed_without_a_savings_claim():
+    s = full()
+    s['cost_per_message_trend'] = [{'month': '2026-08', 'index': 100}, {'month': '2026-09', 'index': 120}]
+    out = story({'savings': s})
+    assert 'Cost per message' in out and '<polyline' in out
+    assert 'not attributed to Token Optimizer' in out
+
+
+def test_hero_matches_action_total_without_adding_diagnostic_pools():
+    s = full()
+    s['action_savings']['total_usd'] = 95.0
+    s['output_reread']['cost_saved_usd'] = 300
+    s['structural_detail']['estimated']['cost_saved_usd'] = 200
+    h = hero(story({'savings': s}))
+    assert 'st-mega st-mega--usd">$95</span>' in h
+    assert '$595' not in h
+
+
+def test_routing_estimate_names_majority_period_inside_fold():
+    s = full()
+    s['since_install']['all_in']['components_usd']['routing_estimated'] = 3484
+    s['since_install']['all_in']['routing_majority_period'] = {'start': '2026-04', 'end': '2026-07'}
+    out = story({'savings': s})
+    assert 'Most of the routing estimate comes from Apr–Jul 2026.' in out
+    assert 'Most of the routing estimate' not in _visible(out)

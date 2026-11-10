@@ -102,9 +102,9 @@ def test_component_helper_is_pure_and_counts_only_rereads(measure):
     assert components["total_usd"] == 186
     assert set(components["estimates_usd"]) == {
         "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
-        "contamination_exit", "handover_rerun", "resume_lean_estimated",
+        "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
         "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
-        "hint_followed",
+        "hint_followed", "expand_overhead",
     }
     assert sum(components["estimates_usd"].values()) == 63
     assert measure._action_savings_components({})["total_usd"] == 0
@@ -114,7 +114,7 @@ def test_lean_resume_is_diagnostic_not_savings(measure):
     source = {"total_cost_usd": 7, "resume_lean_estimated": {"cost_saved_usd": 900, "tokens_saved": 10000}}
     components = measure._action_savings_components(source, {"available": True, "reread_usd": 3})
     assert components["total_usd"] == 10
-    assert "resume_lean_estimated" not in components["estimates_usd"]
+    assert components["estimates_usd"].get("resume_lean_estimated", 0) == 0
 
 
 def test_verbosity_is_excluded_from_logged_and_estimated(measure):
@@ -122,7 +122,7 @@ def test_verbosity_is_excluded_from_logged_and_estimated(measure):
               "verbosity_steer": {"cost_saved_usd": 4}}
     components = measure._action_savings_components(source, {"available": True, "reread_usd": 3})
     assert components["total_usd"] == 13
-    assert "verbosity_steer" not in components["estimates_usd"]
+    assert components["estimates_usd"].get("verbosity_steer", 0) == 0
 
 
 def test_rotated_transcript_preserves_stored_action_rereads(measure, monkeypatch, tmp_path, capsys):
@@ -222,3 +222,24 @@ def test_verbosity_stays_out_of_savings_totals(measure):
     assert result['estimates_usd']['verbosity_output_estimated'] == 0
     assert headline.token_headline(data)['removed_tokens'] == 1000
     assert measure._dashboard_saved_tokens(data)[0] == 1000
+
+
+def test_unverified_checkpoint_restore_does_not_inflate_totals(measure):
+    source = {'total_cost_usd': 7, 'checkpoint_restore_estimated': {'cost_saved_usd': 900, 'tokens_saved': 10000}}
+    result = measure._action_savings_components(source, {'available': True, 'reread_usd': 3})
+    assert result['total_usd'] == 10
+    assert not result['estimates_usd'].get('checkpoint_restore_estimated')
+
+
+def test_verified_lean_resume_enters_estimated_total(measure):
+    source = {'total_cost_usd': 7, 'resume_lean_verified': {'cost_saved_usd': 4, 'tokens_saved': 2000, 'events': 1}}
+    parts = measure._action_savings_components(source, {'available': True, 'reread_usd': 3})
+    assert parts['total_usd'] == 14
+    assert parts['estimates_usd']['resume_lean_verified'] == 4
+
+
+def test_expand_call_overhead_reduces_action_total(measure):
+    source = {'total_cost_usd': 7, 'session_effect': {'overhead': {'expand_usd': 2}}}
+    result = measure._action_savings_components(source, {'available': True, 'reread_usd': 3})
+    assert result['total_usd'] == 8
+    assert result['estimates_usd']['expand_overhead'] == -2

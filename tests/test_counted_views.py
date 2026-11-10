@@ -144,7 +144,7 @@ def test_status_bar_buckets_match_the_summary(m):
 
 
 @pytest.mark.parametrize("sid,fixture", [
-    ("test-session-abc", True), ("failwire-1", True), ("f3bench-session-0001", True),
+    ("test-session-abc", True), ("test-failbuild-123", True), ("failwire-1", True), ("f3bench-session-0001", True),
     ("codex-sess-1", True), ("torture-session", True), ("unit-c-never-1", True),
     ("torture_test_001", False), ("s", False), ("demo", False),
     ("test-project", False), ("test_real_work", False), ("unit-c-real", False),
@@ -176,7 +176,7 @@ def test_unstamped_compression_rows_use_their_session_mix(m):
     assert c["by_feature"]["bash_compress_pipeline"]["cost_saved_usd"] == pytest.approx(opus_rate, rel=1e-6)
 
 
-def test_counted_reread_rows_for_excluded_events_are_dropped(m):
+def test_counted_reread_rows_for_excluded_events_are_preserved_but_not_counted(m):
     _seed(m)
     conn = m._init_trends_db()
     try:
@@ -201,7 +201,8 @@ def test_counted_reread_rows_for_excluded_events_are_dropped(m):
         keys = {r[0] for r in conn.execute("SELECT event_key FROM counted_reread")}
     finally:
         conn.close()
-    assert f"se:{shot_id}" not in keys and f"se:{real_id}" in keys
+    assert f"se:{shot_id}" in keys and f"se:{real_id}" in keys
+    assert summary["events"] == 1 and summary["reread_tokens"] == 0
 
 
 # Every feature string a hook writes must be either a labelled saving (so it
@@ -316,3 +317,43 @@ def test_reexpand_debit_records_the_tool_and_debits_once(m):
     conn.close()
     assert rows == ["toolu_01Legacy", "toolu_01Old", "toolu_01Shot (mcp__claude-in-chrome__computer)"]
     assert set(_counted_se_ids(m).values()) == {"toolu_01Old", "toolu_01Legacy"}
+
+
+def test_mcp_cap_untruncated_and_double_counted_rows_are_excluded(m):
+    conn = m._init_trends_db()
+    base = datetime.now() - timedelta(days=1)
+    stamp = base.isoformat()
+    _se(conn, 'mcp_cap', 5000, REAL_UUID, 'estimated: mcp__docs__fetch result at cap (36,000 chars >= 36,000 threshold, cap=10,000 tok, assumed saved ~5,000 tok [estimated])', stamp)
+    _se(conn, 'mcp_cap', 5000, REAL_UUID, 'estimated: mcp__docs__other result at cap (60,000 chars >= 36,000 threshold, cap=10,000 tok, assumed saved ~5,000 tok [estimated])', stamp)
+    _se(conn, 'tool_archive', 12000, REAL_UUID, 'replaced mcp__docs__other (60,000 chars -> 400 chars)', stamp)
+    _se(conn, 'mcp_cap', 5000, AGENT_ID, 'estimated: mcp__docs__other result at cap (60,000 chars >= 36,000 threshold, cap=10,000 tok, assumed saved ~5,000 tok [estimated])', stamp)
+    conn.commit()
+    view = m._counted_table(conn, 'savings_events')
+    assert conn.execute('SELECT count(*) FROM savings_events').fetchone()[0] == 4
+    assert conn.execute(f"SELECT count(*) FROM {view} WHERE event_type='mcp_cap'").fetchone()[0] == 1
+    conn.close()
+
+
+def test_proven_full_archive_is_excluded_without_deleting_source(m, tmp_path):
+    import json
+    from _measure import archive_void_evidence as av
+    from datetime import timezone
+    t = datetime(2026, 8, 15, 11, 0, tzinfo=timezone.utc)
+    stamp = t.astimezone().replace(tzinfo=None).isoformat()
+    path = tmp_path / 'archive.jsonl'
+    path.write_text('\n'.join(json.dumps(x) for x in [
+        {'type': 'assistant', 'timestamp': t.isoformat(), 'message': {'content': [{'type': 'tool_use', 'id': 't1', 'name': 'mcp__x__fetch'}]}},
+        {'type': 'user', 'timestamp': t.isoformat(), 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 't1', 'content': 'a' * 4000}]}},
+    ]))
+    conn = m._init_trends_db()
+    conn.execute('INSERT INTO session_log (session_uuid,jsonl_path,date) VALUES (?,?,?)', (REAL_UUID, str(path), '2026-08-15'))
+    _se(conn, 'tool_archive', 1000, REAL_UUID, 'replaced mcp__x__fetch (4,000 chars -> 300 chars)', stamp)
+    conn.commit()
+    assert av.collect(conn, max_sessions=None)['proven'] == 1
+    assert conn.execute('SELECT count(*) FROM savings_events').fetchone()[0] == 1
+    assert conn.execute('SELECT count(*) FROM ' + m._counted_table(conn, 'savings_events')).fetchone()[0] == 0
+    conn.close()
+    path.write_text(path.read_text() + '\n')
+    conn = m._init_trends_db()
+    assert conn.execute('SELECT count(*) FROM ' + m._counted_table(conn, 'savings_events')).fetchone()[0] == 1
+    conn.close()

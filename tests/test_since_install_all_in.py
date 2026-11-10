@@ -139,3 +139,17 @@ def test_since_install_excludes_verbosity_and_reports_its_amount(m, monkeypatch)
     assert out['excluded_usd'] == {'routing': 2, 'lean_resumes': 4, 'verbosity': 10}
     assert out['all_in']['components_usd']['logged'] == 13
     assert out['all_in']['estimated_usd'] == 0
+
+
+def test_since_install_includes_stated_routing_only_as_estimate(m, monkeypatch):
+    _install(m, 120)
+    routing = {'realized_cost_usd': 300.25, 'evidence': 'estimated', 'baseline_source': 'pretool_baseline',
+               'baseline_opus_share': 0.95, 'measured_baseline_opus_share': 0.8369,
+               'measured_baseline_realized_cost_usd': 0.0}
+    monkeypatch.setattr(m, '_get_merged_savings', lambda **kw: {'total_cost_usd': 12.5, 'model_routing': routing})
+    monkeypatch.setattr(m, '_counted_cumulative_summary', lambda **kw: {'available': True, 'reread_usd': 80})
+    out = m._savings_since_install()
+    assert out['measured_usd'] == 12.5
+    assert out['all_in']['components_usd']['routing_estimated'] == 300.25
+    assert out['all_in']['total_usd'] == 392.75
+    assert out['all_in']['routing_measured_baseline_realized_cost_usd'] == 0

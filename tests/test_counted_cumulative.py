@@ -386,7 +386,7 @@ def test_period_has_no_invented_foreign_rereads(m, monkeypatch, runtime):
     assert m._counted_cumulative_summary(days=30) == {'available': False}
 
 
-def test_delta_mirror_is_removed_without_deleting_source_telemetry(m, tmp_path, monkeypatch):
+def test_delta_mirror_is_excluded_without_deleting_evidence(m, tmp_path, monkeypatch):
     dbp = _db(m, tmp_path, monkeypatch)
     _, start = _transcript(m, tmp_path, monkeypatch, n_turns=5)
     ts = _local_iso(start + timedelta(seconds=30))
@@ -396,8 +396,9 @@ def test_delta_mirror_is_removed_without_deleting_source_telemetry(m, tmp_path, 
         conn.execute("INSERT INTO counted_reread(event_key, source, session_uuid, oneshot_usd, reread_usd) VALUES('ce:1','ce',?,99,999)", (SID,))
         conn.commit()
         result = m._update_counted_cumulative(conn)
-        assert result['duplicate_rows_removed'] == 1
-        assert conn.execute('SELECT event_key FROM counted_reread').fetchall() == [('se:1',)]
+        assert result['duplicate_rows_removed'] == 0
+        assert set(conn.execute('SELECT event_key FROM counted_reread').fetchall()) == {('ce:1',), ('se:1',)}
+        assert m._counted_cumulative_summary()['events'] == 1
         assert conn.execute('SELECT COUNT(*) FROM compression_events').fetchone()[0] == 1
         assert conn.execute('SELECT COUNT(*) FROM savings_events').fetchone()[0] == 1
 

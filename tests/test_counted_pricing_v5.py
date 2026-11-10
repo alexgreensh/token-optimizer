@@ -220,3 +220,20 @@ def test_partial_cache_miss_requires_position_and_no_context_shrink(m):
     out = m._counted_score_detail([first, rewrite, shrink, hit], [], t0, 1000, tier)
     assert out['reread_miss_turns'] == 1
     assert out['reread_usd'] == pytest.approx(1000 * (card['cache_write_1h'] + 2 * card['cache_read']) / 1e6)
+
+
+def test_old_pricing_is_quarantined_then_rescored_premium_is_counted(m):
+    detail = dict.fromkeys(m._COUNTED_COVERAGE_KEYS, 0)
+    detail.update(version='4', oneshot_class_premium_usd=0.75)
+    row = {'tokens': 100, 'reread_tokens': 200, 'oneshot_usd': 1.0, 'reread_usd': 2.0,
+           'pricing_detail': json.dumps(detail), 'transcript_mtime': 1.0, 'source': 'ce',
+           'session_uuid': 's', 'turns_counted': 2}
+    old = m._counted_rollup_rows([row])
+    assert old['oneshot_class_premium_usd'] == 0
+    assert old['legacy_unverified_events'] == 1
+    detail['version'] = m._COUNTED_PRICING_VERSION
+    row['pricing_detail'] = json.dumps(detail)
+    current = m._counted_rollup_rows([row])
+    assert current['oneshot_class_premium_usd'] == pytest.approx(0.75)
+    components = m._action_savings_components({'total_cost_usd': 1}, dict(current, available=True))
+    assert components['class_premium_usd'] == pytest.approx(0.75)

@@ -161,7 +161,7 @@ if __name__ in ("__main__",):
     from runtime_env import consume_runtime_flag as _consume_runtime_flag_early
     sys.argv[:] = _consume_runtime_flag_early(sys.argv, os.environ)
 
-from _measure import _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5, transcript_backfill as _transcript_backfill
+from _measure import _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5, transcript_backfill as _transcript_backfill, counted_subagents as _counted_subagents, headline as _headline, structural_report as _structural_report
 _measure_providers = _measure_compat.prepare(sys.modules[__name__])
 from _measure import output_reread as _output_reread  # noqa: E402  stateless helper (U5)
 from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared
@@ -7492,7 +7492,7 @@ _allocate_cents = _measure_compat.bind(_measure_providers['savings']._allocate_c
 _format_cents = _measure_compat.bind(_measure_providers['savings']._format_cents, __name__)
 
 
-_action_savings_display = _measure_compat.bind(_measure_providers['savings']._action_savings_display, __name__, defaults=(False,))
+_action_savings_display = _measure_compat.bind(_measure_providers['savings']._action_savings_display, __name__, defaults=(False, 0.0))
 
 
 _action_savings_components = _measure_compat.bind(_measure_providers['savings']._action_savings_components, __name__, defaults=(None,))

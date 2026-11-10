@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, counted_subagents, headline, structural_report
+from . import _compat
 
 def _counted_event_utc(ts):
     """Savings-event timestamps are naive LOCAL time (datetime.now()); transcript
@@ -17,7 +17,7 @@ def _counted_event_utc(ts):
 def _counted_walk_transcript(path, collect_markers=None):
     """Parent-transcript walk for the counted engine; see counted_subagents.walk.
     Returns (turns, compacts, markers); never raises."""
-    return counted_subagents.walk(_compat.facade(), path, collect_markers)
+    return _compat.facade()._counted_subagents.walk(_compat.facade(), path, collect_markers)
 
 
 def _claude_image_tokens(width, height):
@@ -348,7 +348,7 @@ def _counted_window_summary(conn, window_start, window_end):
             path = _measure_facade._counted_session_path(conn, session_uuid)
             turns, compacts, _ = _measure_facade._counted_walk_transcript(path) if path is not None else ([], [], [])
             if turns and session_uuid not in scopes:  # v6: a sub-agent's removal scores on its own turns
-                scopes[session_uuid] = counted_subagents.SessionScope(_measure_facade, conn, path, [(c[0], c[2]) for c in candidates if c[1] == session_uuid])
+                scopes[session_uuid] = _compat.facade()._counted_subagents.SessionScope(_measure_facade, conn, path, [(c[0], c[2]) for c in candidates if c[1] == session_uuid])
             if turns:
                 turns, compacts, _scope = scopes[session_uuid].turns_for(_key, turns, compacts)
             if not turns:
@@ -618,7 +618,7 @@ def _update_counted_cumulative(conn, max_sessions=None,
     Bounded by `max_sessions` and a soft wall-clock deadline so a hook-path
     flush is never held up; the backlog converges over passes. Fail-open."""
     _measure_facade = _compat.facade()
-    stats = {"sessions_walked": 0, "rows_written": 0, "pending_sessions": 0, "unmeasured_events": 0, **counted_subagents.collect_stats()}
+    stats = {"sessions_walked": 0, "rows_written": 0, "pending_sessions": 0, "unmeasured_events": 0, **_compat.facade()._counted_subagents.collect_stats()}
     try:
         started = _measure_facade.time.monotonic()
         # Earlier versions compounded the delta_read mirror as a second removal.
@@ -716,8 +716,8 @@ def _update_counted_cumulative(conn, max_sessions=None,
                     media_details.update(conn.execute(
                         "SELECT id, detail FROM savings_events WHERE id IN (%s)"
                         % ",".join("?" * len(part)), part).fetchall())
-            scope = counted_subagents.SessionScope(_measure_facade, conn, path, [(e[0], e[1]) for e in evs])  # v6
-            counted_subagents.add_stats(stats, scope.stats)
+            scope = _compat.facade()._counted_subagents.SessionScope(_measure_facade, conn, path, [(e[0], e[1]) for e in evs])  # v6
+            _compat.facade()._counted_subagents.add_stats(stats, scope.stats)
             for key, ts, tok, cost, model in sorted(evs, key=lambda e: ((_measure_facade := _compat.facade()), str(e[1]))[1]):
                 ev_dt = _measure_facade._counted_event_utc(ts)
                 if ev_dt is None or not turns:
@@ -1233,7 +1233,7 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
         savings_data["counted_period"] = _measure_facade._counted_cumulative_summary(days=days)
     except Exception:
         savings_data["counted_period"] = {"available": False}
-    headline.attach(savings_data, days)
+    _compat.facade()._headline.attach(savings_data, days)
     _measure_facade._apply_counted_oneshot_pricing(savings_data, savings_data["counted_period"])
     savings_data["action_savings"] = _measure_facade._action_savings_components(
         savings_data, savings_data["counted_period"])
@@ -2283,7 +2283,7 @@ def runway_snapshot(days=None, now=None):
             conn = _measure_facade._init_trends_db()
             try:
                 cutoff = (_measure_facade.datetime.now() - _measure_facade.timedelta(days=days)).isoformat()
-                traffic = headline.input_traffic(conn, cutoff[:10], _measure_facade.datetime.now().date().isoformat())
+                traffic = _compat.facade()._headline.input_traffic(conn, cutoff[:10], _measure_facade.datetime.now().date().isoformat())
                 consumed = traffic["tokens"]
                 saved = _measure_facade._runway_saved_tokens(conn, cutoff)
             finally:
@@ -2295,9 +2295,9 @@ def runway_snapshot(days=None, now=None):
         try:
             token_source = _measure_facade._get_merged_savings(days=days)
             token_source["counted_period"] = _measure_facade._counted_cumulative_summary(days=days)
-            token_parts = headline.token_headline(token_source)
+            token_parts = _compat.facade()._headline.token_headline(token_source)
         except Exception:
-            token_parts = headline.token_headline({})
+            token_parts = _compat.facade()._headline.token_headline({})
         context_saved = token_parts["total_tokens"]
         context_mult = (consumed + context_saved) / consumed if consumed > 0 else 1.0
 
@@ -2754,7 +2754,7 @@ def _compound_structural(s, days, fallback_prefix):
     """
     if s <= 0:
         return None
-    return structural_report.price_synthetic(s, days)
+    return _compat.facade()._structural_report.price_synthetic(s, days)
 
 
 def _compute_structural_savings(days=None):
@@ -2769,7 +2769,7 @@ def _compute_structural_savings(days=None):
     in their own bands and never summed here. No trims -> zeros with
     status "no_trims". Never raises.
     """
-    return structural_report.compute(days=days or 30)
+    return _compat.facade()._structural_report.compute(days=days or 30)
 
 
 def _unused_skill_overhead_tokens(days=None):
@@ -4260,7 +4260,7 @@ def _subagent_pool_savings(baseline_opus_share, days=None, tier=None, fresh=None
         # data in its own home and has no such transcripts, so this pool is an
         # honest zero there -- scanning ~/.claude anyway would price a
         # coexisting Claude Code install's delegated spend into another
-        # runtime's savings headline.
+        # runtime's savings _compat.facade()._headline.
         if _measure_facade.detect_runtime() != "claude":
             return zero
         if tier is None:
@@ -4993,7 +4993,7 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
             "Sessions are not a stable unit of work (you ran {now_n:,} this period vs "
             "{then_n:,} in {month}, {growth:.1f}x, at about the same total spend) -- "
             "that extra capacity is real, but it is capacity gained, not dollars saved, "
-            "so it is not in the headline. Model price/mix drift worth about "
+            "so it is not in the _compat.facade()._headline. Model price/mix drift worth about "
             "${drift:,.0f} this period is also excluded: it would have happened without Token "
             "Optimizer."
             + ("" if pinned else " The anchor month already had partial Token Optimizer "
@@ -5247,7 +5247,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         # there, but (unlike Copilot's opaque credits) a list-price estimate is
         # still surfaced by the collector — so the transformation renders
         # nothing with an explicit "estimated_billing" reason instead of a
-        # token-savings headline.
+        # token-savings _compat.facade()._headline.
         if _measure_facade.detect_runtime() == "antigravity":
             return {**zero, "reason": "estimated_billing"}
         if not _measure_facade.TRENDS_DB.exists():
@@ -5275,7 +5275,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         cutoff = (_measure_facade.datetime.now() - _measure_facade.timedelta(days=days)).strftime("%Y-%m-%d")
         # The transformation describes main work only. model_daily combines main and
         # sidechain tokens, so premium delegation could otherwise make the "now" arm
-        # costlier and lower the headline. Build the mix from non-sidechain rows.
+        # costlier and lower the _compat.facade()._headline. Build the mix from non-sidechain rows.
         after_shares = dict(_measure_facade._mix_from_session_rows(cutoff))
         # H3: an empty after mix would silently price the ACTUAL arm at the sonnet default
         # (via _cost_per_session's fallback), understating actual and INFLATING savings.
@@ -5302,7 +5302,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
             # Anthropic user with no MEASURED baseline. The pre-Token-Optimizer model
             # mix is not knowable here, and a mix we cannot measure is a mix we do not
             # claim: any assumed Opus share would directly scale the routing lever and
-            # inflate the headline. Price the before-arm at the user's real current mix
+            # inflate the _compat.facade()._headline. Price the before-arm at the user's real current mix
             # so the routing lever is exactly zero until a baseline is measured.
             baseline_opus_share = float(after_shares.get("opus", 0.0))
             before_shares = dict(after_shares)
@@ -5441,7 +5441,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         # SHORT-SESSION pool (below the quality gates): sub-minute / low-input
         # one-shots are excluded from recent_n because the count multiplies the
         # frozen typical-session anchor, but their billed tokens are real spend
-        # whose routing delta belongs in the headline. Priced on their own real
+        # whose routing delta belongs in the _compat.facade()._headline. Priced on their own real
         # volume, parent-thread bundles only (no overlap with the sidechain pool).
         short_pool = _measure_facade._short_session_pool_savings(
             cutoff, baseline_opus_share=baseline_opus_share, tier=tier,
@@ -5781,7 +5781,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         # redistribution). Decompose by morphing the counterfactual into the actual one
         # lever at a time. Routing is credited first (the baseline footprint, INCLUDING CW,
         # repriced from the baseline mix to today's mix), then caching at today's mix; the
-        # two UNROUNDED steps telescope to the headline. Sequential attribution is
+        # two UNROUNDED steps telescope to the _compat.facade()._headline. Sequential attribution is
         # order-dependent (fixed + disclosed via `waterfall_index`).
         # v_route_s = the typical session's baseline cache split (bfi/bcr) + CW + output
         # repriced at today's mix. CW carries the routing reprice, so the routing lever
@@ -5795,7 +5795,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         s_cache = (v_route_s - now_cps) * recent_n   # remaining gap = caching
         # s_route + s_cache telescopes to the MAIN transformation; the subagent pool is a
         # third lever whose own (cf - actual) is added so the breakdown sums to the COMBINED
-        # headline.
+        # _compat.facade()._headline.
         if weight_pool:
             # The session-weight pool replaced the frozen-anchor arms, so the
             # routing/caching decomposition of those arms no longer describes the
@@ -5949,7 +5949,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
                 f"${uncapped_transformation:,.2f}."
             )
             # Re-derive pct from the capped transformation so the percentage
-            # stays consistent with the capped headline.
+            # stays consistent with the capped _compat.facade()._headline.
             transformation_pct = (
                 transformation / combined_cf if combined_cf > 0 else 0.0
             )
@@ -6710,7 +6710,7 @@ def savings_report(days=None, as_json=None):
     except Exception:
         summary["counted_period"] = {"available": False}
     summary["reread_avoided"] = summary["counted_period"]
-    headline.attach(summary, days)
+    _compat.facade()._headline.attach(summary, days)
     _measure_facade._apply_counted_oneshot_pricing(summary, summary["counted_period"])
     summary["action_savings"] = _measure_facade._action_savings_components(
         summary, summary["reread_avoided"])
@@ -6756,7 +6756,7 @@ def savings_report(days=None, as_json=None):
     print("\n  Token Optimizer Savings Report")
     print(f"  {'=' * 58}")
     print(f"  Period: Last {days} days ({start} to {end})")
-    print(headline.cli_headline(summary["token_headline"], days, summary.get("session_effect")))
+    print(_compat.facade()._headline.cli_headline(summary["token_headline"], days, summary.get("session_effect")))
 
     # Headline transformation. With the session-weight pool live it is the
     # work-normalized (per-API-call, constant-price) figure; otherwise the legacy
@@ -6848,7 +6848,7 @@ def savings_report(days=None, as_json=None):
         print(f"    Each request now carries more context than at your baseline "
               f"(est. ${ba.get('actual_monthly_usd', 0):,.0f} now vs "
               f"${ba.get('counterfactual_monthly_usd', 0):,.0f} this period at the baseline's cost "
-              f"per request), so there is no whole-workload saving to headline. "
+              f"per request), so there is no whole-workload saving to _compat.facade()._headline. "
               f"The measured savings below are real and counted.")
     elif ba.get("reason") == "flat":
         print()

@@ -107,8 +107,12 @@ def test_facade_exports_are_fresh_provider_functions_with_frozen_signatures(m):
         exec(compile(row['signature'] + '\n    pass\n', 'frozen-signature', 'exec'), namespace)
         frozen = inspect.signature(namespace[row['name']])
         actual = inspect.signature(live)
-        assert [(p.name, p.kind, p.default) for p in frozen.parameters.values()] == \
-               [(p.name, p.kind, p.default) for p in actual.parameters.values()], row['name']
+        expected = [(p.name, p.kind, p.default) for p in frozen.parameters.values()]
+        observed = [(p.name, p.kind, p.default) for p in actual.parameters.values()]
+        if row['name'] == '_action_savings_display':
+            observed, extra = observed[:-1], observed[-1]
+            assert extra == ('class_premium', inspect.Parameter.POSITIONAL_OR_KEYWORD, 0.0)
+        assert expected == observed, row['name']
 
 
 def test_provider_module_holds_no_business_attributes(m):

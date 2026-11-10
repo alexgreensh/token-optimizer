@@ -167,8 +167,9 @@ def test_runway_window_keeps_disjoint_logged_savings(measure, tmp_path, monkeypa
     start = now - timedelta(hours=1)
     _transcript(path, start, turns=4, model="claude-sonnet-4-5")
     conn.execute(
-        "INSERT INTO session_log(session_uuid, jsonl_path, date) VALUES (?, ?, ?)",
-        (sid, str(path), now.date().isoformat()),
+        "INSERT INTO session_log(session_uuid, jsonl_path, date, daily_usage_json) VALUES (?, ?, ?, ?)",
+        (sid, str(path), now.date().isoformat(),
+         json.dumps({now.date().isoformat(): {"sonnet": {"cache_read": 100_000_000}}})),
     )
     event_utc = start + timedelta(seconds=30)
     conn.execute(

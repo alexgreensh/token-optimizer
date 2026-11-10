@@ -17,7 +17,7 @@ ALLOWED_MODULES = frozenset(Path(name).stem for name in PAYLOAD)
 
 # Repo names outside the installed closure must never fall back to sys.path.
 REPO_MODULES = frozenset((
-    '_measure', '_tomli',
+    '_measure', '_tomli', 'hook_skip_log', 'lean_resume_carry', 'structural',
     'activity_tracker', 'adapter_hook_command', 'antigravity_doctor', 'antigravity_hook_bridge', 'antigravity_install',
     'antigravity_proto', 'antigravity_session', 'antigravity_state', 'archive_result',
     'bash_compress', 'bash_search_results', 'bash_compress_hook', 'bash_hook', 'bash_whitelist', 'benchmark', 'cloud_kit',

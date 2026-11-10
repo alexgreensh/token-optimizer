@@ -155,6 +155,10 @@
     "verbosity-steer",
     "version"
   ],
+  "post_base_commands": [
+    "coverage-replay",
+    "file-refetch"
+  ],
   "dispatch_branches": [
     {
       "line": 63715,

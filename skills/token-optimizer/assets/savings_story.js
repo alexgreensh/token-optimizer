@@ -142,26 +142,9 @@ function savingsStoryHtml(data) {
     var mPct = totalUsd > 0 ? Math.max(0, Math.min(100, mUsd / totalUsd * 100)) : 0;
     function cents(rows) { return rows.reduce(function(n, r) { return n + Math.round(num(r.usd) * 100); }, 0); }
     function moneyCents(n) { return (n < 0 ? '-$' : '$') + (Math.abs(n) / 100).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
-    // Allocate rounding differences so the displayed whole-dollar rows add up.
-    // Sub-dollar amounts keep their honest "under $1" label.
-    function roundedRows(rows, target) {
-      var amounts = rows.map(function(r) { return Math.abs(num(r.usd)) < 1 ? 0 : Math.floor(num(r.usd)); });
-      var candidates = rows.map(function(r, i) { return i; }).filter(function(i) { return Math.abs(num(rows[i].usd)) >= 1; });
-      var diff = target - amounts.reduce(function(a, n) { return a + n; }, 0);
-      candidates.sort(function(a, b) {
-        var af = num(rows[a].usd) - Math.floor(num(rows[a].usd));
-        var bf = num(rows[b].usd) - Math.floor(num(rows[b].usd));
-        return diff >= 0 ? bf - af : af - bf;
-      });
-      for (var i = 0; candidates.length && i < Math.abs(diff); i++) amounts[candidates[i % candidates.length]] += diff > 0 ? 1 : -1;
-      return amounts;
-    }
-    var measuredWhole = Math.round(mUsd), estimatedWhole = Math.round(totalUsd) - measuredWhole;
-    function top(rows, total) {
-      var rounded = roundedRows(rows, total);
-      return '<ul class="st-rows">' + rows.map(function(r, i) {
-        var display = Math.abs(num(r.usd)) < 1 ? usd(r.usd) : usd(rounded[i]);
-        return '<li><span>' + esc(r.label) + '</span><span class="st-v">' + display + '</span></li>';
+    function top(rows) {
+      return '<ul class="st-rows">' + rows.map(function(r) {
+        return '<li><span>' + esc(r.label) + '</span><span class="st-v">' + usd(r.usd) + '</span></li>';
       }).join('') + '</ul>';
     }
     function table(title, rows) {
@@ -203,10 +186,10 @@ function savingsStoryHtml(data) {
         '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
         '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
       '<div class="st-bands">' +
-        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(Math.abs(mUsd) < 1 ? mUsd : measuredWhole) + '</span></p>' + top(measured, measuredWhole) + '</div>' : '') +
-        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(Math.abs(eUsd) < 1 ? eUsd : estimatedWhole) + '</span></p>' + top(estimated, estimatedWhole) + '</div>' : '') +
+        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(mUsd) + '</span></p>' + top(measured) + '</div>' : '') +
+        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(eUsd) + '</span></p>' + top(estimated) + '</div>' : '') +
       '</div>' +
-      '<p class="st-sub">Whole-dollar rows are rounded to reconcile; exact amounts are in the breakdown.</p>' +
+      '<p class="st-sub">Whole-dollar rows are rounded individually; exact amounts are in the breakdown.</p>' +
       f.fold('How this total is built', method) +
       '</div>';
   }
@@ -259,7 +242,7 @@ function savingsStoryHtml(data) {
     var names = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
     var installRouting = (s.since_install || {}).all_in || {};
     var statedRouting = num((installRouting.components_usd || {}).routing_estimated);
-    var sinceEstimate = num(installRouting.estimated_usd), sinceMeasured = SI.total - statedRouting - sinceEstimate;
+    var sinceEstimate = num(installRouting.estimated_usd), sinceMeasured = SI.total - sinceEstimate;
     var period = installRouting.routing_majority_period || {};
     var periodText = '';
     if (/^\d{4}-\d{2}$/.test(period.start || '') && /^\d{4}-\d{2}$/.test(period.end || '')) {
@@ -351,11 +334,11 @@ function savingsSinceInstall(data) {
   var ai = si.all_in || {};
   var c = ai.components_usd || {};
   if (!(num(si.days) > 0)) return null;
-  var parts = [['Context removed', c.logged], ['Cheaper cache writes', c.class_premium], ['Re-reads avoided', c.reread], ['Estimates', ai.estimated_usd], ['Estimated routing, based on your stated 95% Opus baseline', c.routing_estimated]]
+  var parts = [['Context removed', c.logged], ['Cheaper cache writes', c.class_premium], ['Re-reads avoided', c.reread], ['Estimates', ai.estimated_usd]]
     .filter(function(p) { return num(p[1]) !== 0; });
   if (!parts.length) return null;
   var date = si.install_date ? new Date(si.install_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-  return { parts: parts, total: parts.reduce(function(a, p) { return a + num(p[1]); }, 0), days: num(si.days), date: date, excluded: si.excluded_usd || null };
+  return { parts: parts, total: parts.reduce(function(a, p) { return a + num(p[1]); }, 0), routing: num(c.routing_estimated), days: num(si.days), date: date, excluded: si.excluded_usd || null };
 }
 
 // "Where your sessions ran" fold body, for the caller's row of folds.
@@ -441,9 +424,9 @@ function savingsLedgerHtml(data) {
   if (SI) {
     out += '<h3 class="ts-section-label st-gap">Since you installed' + (SI.date ? ' on ' + esc(SI.date) : '') + ' (' + f.count(SI.days) + ' days)</h3><ul class="st-rows">' +
       SI.parts.map(function(p) { return row(p[0], p[1], 0); }).join('') +
-      '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(SI.total) + '</strong></span></li></ul>';
+      '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(SI.total) + '</strong></span></li></ul>' +
+      (SI.routing ? '<ul class="st-rows">' + row('Estimated routing, based on your stated 95% Opus baseline', SI.routing, 0) + '</ul>' : '');
   }
-  out += '<p class="st-lead">The since-install total includes estimated routing only when a stated baseline is available.</p>';
   var cp = s.counted_period || {};
   if (cp.pricing_note) out += '<p>' + esc(cp.pricing_note) + '</p>';
   return out;

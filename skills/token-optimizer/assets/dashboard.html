@@ -1749,7 +1749,7 @@ input:checked + .slider:before {
 .st-rows li { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-3); padding: 9px 0; border-bottom: 1px solid var(--c-border); font-size: 16px; line-height: 1.4; color: var(--c-text-main); }
 .st-rows--card { margin-top: var(--s-3); }
 .st-sub { display: block; font: 400 14px/1.5 var(--font-sans); color: var(--c-text-main); margin-top: 2px; }
-.st-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); } .st-routing-band { background: var(--c-elev-2); border-radius: 8px; padding: 12px; margin-top: var(--s-3); }
+.st-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: var(--s-3); } .st-routing-band { background: var(--c-elev-2); border-radius: 8px; padding: 12px; margin-top: var(--s-3); }
 .st-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
 .st-ratio__track { display: block; height: 12px; border-radius: 6px; background: var(--c-elev-3); overflow: hidden; }
 .st-ratio__carry { display: block; height: 100%; border-radius: 6px; background: var(--c-accent-cyan); }
@@ -4543,7 +4543,7 @@ var DB = (function() {
     // ---- mechanism pillars (structural / runtime / behavioral). Behavioral holds only
     // what you're actually getting (realized routing + estimated loop prevention); cache-drop
     // and output-waste are OPPORTUNITY (avoidable waste TO does not yet prevent), not here. ----
-    var mce = s.mcp_cap_estimated || {}, ce = s.contamination_exit || {}, hr = s.handover_rerun || {};
+    var ce = s.contamination_exit || {}, hr = s.handover_rerun || {};
     var rs = s.retrieval_serve || {};
     var rle = {}; // The avoided reload is diagnostic, not a credited saving.
     var vs = {};
@@ -4561,7 +4561,7 @@ var DB = (function() {
     var avoidedSearchN  = hfHasData ? (Number(hf.events) || 0) : (Number(rs.served_sessions) || 0);
     var avoidedSearchUnit = hfHasData ? 'hints used' : 'served';
     var structMo  = mo(sd.cost_saved_usd);
-    var runtimeMo = Math.max(0, mo(s.total_cost_usd) - structMo) + mo(unc.cost_saved_usd) + mo(mce.cost_saved_usd);
+    var runtimeMo = Math.max(0, mo(s.total_cost_usd) - structMo) + mo(unc.cost_saved_usd);
     // behavioral holds every estimated behavioral item (loops + the cohort
     // estimators + avoided-search), so the pillars (struct + runtime + behavioral)
     // always reconcile exactly to gettingMo (measured + estimated). Every estItems
@@ -4573,11 +4573,10 @@ var DB = (function() {
     // Measured = billable events we metered (runtime compression).
     var measuredMo = mo(s.total_cost_usd);
     // Estimated = genuine TO-realized counterfactuals grounded in YOUR behavior; each carries a sample size.
-    // (Pillars + estimated reconcile to gettingMo: mcp_cap folds into runtime.)
+    // Pillars and estimated amounts reconcile to gettingMo.
     var estItems = [
       { key: 'behavioral_estimate', label: 'loops prevented',                amt: mo(beh.cost_saved_usd), n: Number(beh.loop_events) || 0,        unit: 'events' },
       { key: 'uncaptured_runtime', label: 'sub-agent runtime',              amt: mo(unc.cost_saved_usd), n: Number(unc.subagent_dispatches) || 0, unit: 'dispatches' },
-      { key: 'mcp_cap_estimated', label: 'MCP output cap',                 amt: mo(mce.cost_saved_usd), n: Number(mce.events) || 0,             unit: 'capped results' },
       { key: 'contamination_exit', label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
       { key: 'handover_rerun', label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
       { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'trigger observed, size estimated' : rs.confidence },

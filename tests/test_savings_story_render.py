@@ -318,12 +318,27 @@ def test_ledger_fold_matches_hero_and_never_adds_routing():
         'estimated_usd': 40.0, 'total_usd': 1349.0}}
     out = call('savingsLedgerHtml(data)', {'savings': s})
     assert '$95.00' in out  # same total as the hero (83 + 12), to the cent
-    assert '$1,349.00' in out and '$999.00' in out  # stated routing is estimated since install
-    assert 'The since-install total includes estimated routing only when a stated baseline is available' in out
+    assert '$350.00' in out and '$999.00' in out
+    assert '$1,349.00' not in out
+    assert out.index('$350.00') < out.index('Estimated routing') < out.index('$999.00')
     assert 'class="label"' not in out
     html = render_savings(s)
     ledger = html.split('Full ledger and history')[1]
     assert 'savings-actions' not in ledger and 'savings-history' not in ledger  # contradicting cards are gone
+
+
+def test_reread_row_rounds_independently_and_matches_card():
+    s = full()
+    s['action_savings'].update(logged_usd=21.39, class_premium_usd=12.28,
+                               reread_usd=84.01, estimated_usd=5.31)
+    s['structural_detail'].update(cost_saved_usd=0.90,
+                                  estimated={'cost_saved_usd': 2.29})
+    s['counted_period'].update(removed_tokens=1000, reread_tokens=67000,
+                               reread_usd=84.01)
+    out = story({'savings': s})
+    assert 'Re-reads avoided</span><span class="st-v">$84</span>' in out
+    assert 'worth $84 at API rates' in out
+    assert 'Re-reads avoided</span><span class="st-v">$85</span>' not in out
 
 
 def test_every_measured_row_is_visible_in_hero_and_includes_premium():
@@ -377,9 +392,9 @@ def test_visible_dollars_are_whole_and_exact_values_remain_in_fold():
     assert '$182' in visible and '$176' in visible and 'under $1' in visible
     assert not re.search(r'\$[\d,]+\.\d{2}', visible)
     assert '$0.27' in h and '$117.36' in h
-    assert 'Re-reads avoided</span><span class="st-v">$118' in h
+    assert 'Re-reads avoided</span><span class="st-v">$117' in h
     assert 'Context removed</span><span class="st-v">$58' in h
-    assert 'Estimated <span class="st-v">$6' in h
+    assert 'Estimated <span class="st-v">$7' in h
 
 
 def test_subdollar_band_does_not_display_zero():

@@ -13,16 +13,18 @@ from _measure import feature_health  # noqa: E402
 NOW = datetime(2030, 3, 1, 12, 0, 0)
 
 
-def _db(tmp_path, savings=(), compression=(), sessions=()):
+def _db(tmp_path, savings=(), compression=(), sessions=(), commands=()):
     db = tmp_path / 'trends.db'
     conn = sqlite3.connect(db)
     conn.executescript('''
     CREATE TABLE savings_events(id INTEGER PRIMARY KEY, timestamp TEXT, event_type TEXT, tokens_saved INTEGER);
     CREATE TABLE compression_events(id INTEGER PRIMARY KEY, timestamp TEXT, feature TEXT,
-        original_tokens INTEGER, compressed_tokens INTEGER);
+        original_tokens INTEGER, compressed_tokens INTEGER, command_pattern TEXT);
     CREATE TABLE session_log(id INTEGER PRIMARY KEY, date TEXT);''')
     conn.executemany('INSERT INTO savings_events(timestamp, event_type, tokens_saved) VALUES (?,?,?)', savings)
     conn.executemany('INSERT INTO compression_events(timestamp, feature, original_tokens, compressed_tokens) VALUES (?,?,?,?)', compression)
+    conn.executemany('INSERT INTO compression_events(timestamp, feature, original_tokens, compressed_tokens, command_pattern) '
+                     'VALUES (?,?,?,?,?)', commands)
     conn.executemany('INSERT INTO session_log(date) VALUES (?)', [(d,) for d in sessions])
     conn.commit()
     conn.close()
@@ -150,3 +152,73 @@ def test_template_includes_renderer_and_calls_it():
     assert html.count('html += featureHealthHtml(data)') == 2  # with and without live health data
     src = (ROOT / 'skills/token-optimizer/scripts/_measure/dashboard.py').read_text(encoding='utf-8')
     assert src.count('"feature_health": feature_health.collect(') == 2
+
+
+def _twin_pair(n, i, cmd=None, gap=1.0):
+    """A dedup claim and the pipeline event from the other install for one call."""
+    cmd = cmd or f'git log --oneline -{n}-{i}'
+    base = datetime.strptime(_day(n), '%Y-%m-%dT%H:%M:%S') + timedelta(minutes=i)
+    twin = base + timedelta(seconds=gap)
+    iso = lambda d: d.isoformat(timespec='microseconds')
+    return [(iso(base), 'crossturn_dedup', 500, 100, cmd), (iso(twin), 'bash_compress_pipeline', 500, 300, cmd)]
+
+
+def test_history_of_duplicate_install_false_positives_does_not_read_as_quiet(tmp_path):
+    # 80 days x 3 dedup events, every one with a same-command pipeline twin 1 s apart;
+    # nothing in the last 40 days. Counted naively that is "went quiet".
+    sessions = [_day(n)[:10] for n in range(120)]
+    cmds = [row for n in range(40, 120) for i in range(3) for row in _twin_pair(n, i)]
+    result = feature_health.collect(_db(tmp_path, sessions=sessions, commands=cmds), now=NOW)
+    row = _rows(result)['crossturn_dedup']
+    assert row['earlier_events'] == 0 and row['events'] == 0
+    assert row['status'] == 'never' and row['warning'] is False
+    # The same history without the twins is a genuine outage and still warns.
+    (tmp_path / 'bare').mkdir()
+    bare = [r for r in cmds if r[1] == 'crossturn_dedup']
+    naive = _rows(feature_health.collect(_db(tmp_path / 'bare', sessions=sessions, commands=bare), now=NOW))['crossturn_dedup']
+    assert naive['status'] == 'quiet' and naive['warning'] is True
+
+
+def test_mostly_false_positive_history_judged_on_the_real_events_only(tmp_path):
+    # 9 of 10 earlier events are twinned; the 10th is real. Recent: the user keeps getting real ones.
+    sessions = [_day(n)[:10] for n in range(120)]
+    cmds = []
+    for n in range(40, 120):
+        cmds += _twin_pair(n, 0)
+        cmds += _twin_pair(n, 1)
+    real = [(_day(n), 'crossturn_dedup', 500, 100, f'real {n}') for n in range(50, 120, 7)]
+    recent_real = [(_day(n), 'crossturn_dedup', 500, 100, f'recent {n}') for n in range(0, 30, 4)]
+    row = _rows(feature_health.collect(_db(tmp_path, sessions=sessions, commands=cmds + real + recent_real), now=NOW))['crossturn_dedup']
+    assert row['earlier_events'] == len(real)
+    assert row['events'] == len(recent_real)
+    assert row['warning'] is False
+
+
+def test_twin_outside_three_seconds_or_other_command_is_not_a_false_positive(tmp_path):
+    sessions = [_day(n)[:10] for n in range(120)]
+    far = [row for n in range(40, 120) for i in range(3) for row in _twin_pair(n, i, gap=5.0)]
+    other = [(a, b, c, d, 'something else' if b == 'bash_compress_pipeline' else e)
+             for n in range(40, 120) for i in range(3) for (a, b, c, d, e) in _twin_pair(n, i + 10)]
+    for cmds in (far, other):
+        sub = tmp_path / f'case{id(cmds)}'
+        sub.mkdir()
+        row = _rows(feature_health.collect(_db(sub, sessions=sessions, commands=cmds), now=NOW))['crossturn_dedup']
+        assert row['earlier_events'] == 240
+        assert row['status'] == 'quiet'
+
+
+def test_twin_filter_is_skipped_when_the_ledger_has_no_command_column(tmp_path):
+    # Older schema: cannot tell commands apart, so nothing is excluded and nothing breaks.
+    sessions = [_day(n)[:10] for n in range(120)]
+    comp = [(_day(n), 'crossturn_dedup', 500, 100) for n in range(40, 120) for _ in range(3)]
+    db = tmp_path / 'old.db'
+    conn = sqlite3.connect(db)
+    conn.executescript('''CREATE TABLE savings_events(id INTEGER PRIMARY KEY, timestamp TEXT, event_type TEXT, tokens_saved INTEGER);
+        CREATE TABLE compression_events(id INTEGER PRIMARY KEY, timestamp TEXT, feature TEXT, original_tokens INTEGER, compressed_tokens INTEGER);
+        CREATE TABLE session_log(id INTEGER PRIMARY KEY, date TEXT);''')
+    conn.executemany('INSERT INTO compression_events(timestamp, feature, original_tokens, compressed_tokens) VALUES (?,?,?,?)', comp)
+    conn.executemany('INSERT INTO session_log(date) VALUES (?)', [(d,) for d in sessions])
+    conn.commit()
+    conn.close()
+    row = _rows(feature_health.collect(db, now=NOW))['crossturn_dedup']
+    assert row['earlier_events'] == 240 and row['status'] == 'quiet'

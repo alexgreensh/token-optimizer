@@ -5391,6 +5391,7 @@ var DB = (function() {
 
     if (!h) {
       html += '<div class="empty-state">No health data available. This usually means no ' + esc(data.runtime_label || 'Claude Code') + ' processes are currently running.</div>';
+      try { if (typeof featureHealthHtml === 'function') html += featureHealthHtml(data); } catch (e) {}
       el.innerHTML = html;
       return;
     }

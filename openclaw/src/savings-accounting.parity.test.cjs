@@ -3,6 +3,24 @@ const os = require('node:os');
 const assert = require('node:assert/strict');
 const { countedEvents } = require('./counted-events.ts');
 
+test('calibrated verbosity is withheld until an un-nudged control exists', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const {readSavingsEventsByCategory, measuredSavingsFromSummary} = require('./test-source-loader.cjs').loadSource('savings.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-verbosity-control-'));
+  fs.mkdirSync(path.join(dir, 'token-optimizer'));
+  const rows = [
+    {timestamp:'2026-10-01T00:00:00Z', session_id:'a', event_type:'tool_archive', tokens_saved:10, cost_saved_usd:1},
+    {timestamp:'2026-10-01T00:00:10Z', session_id:'a', event_type:'verbosity_steer_measured', tokens_saved:100, cost_saved_usd:5},
+  ];
+  fs.writeFileSync(path.join(dir, 'token-optimizer', 'savings-events.jsonl'), rows.map(JSON.stringify).join('\n'));
+  const summary = readSavingsEventsByCategory(dir);
+  assert.equal(summary.totalCostSavedUsd, 1);
+  assert.equal(summary.totalTokensSaved, 10);
+  assert.equal(measuredSavingsFromSummary(summary), 1);
+  assert.equal(summary.verbosityOutputEstimated.basis, 'not_measured');
+  assert.equal(summary.verbosityOutputEstimated.events, 1);
+});
+
 test('filters fixtures, screenshots and twins without losing real sessions', () => {
   const row = (session, seconds, extra = {}) => ({timestamp: `2026-10-01T00:00:${String(seconds).padStart(2,'0')}Z`, session_id: session, event_type: 'tool_archive', tokens_saved: 100, cost_saved_usd: 1, detail: 'read file', ...extra});
   const rows = [row('test-session-1',0), row('codex-sess-123',0), row('codex-sess-123x',0), row('a12ef',0), row('a12ef',2), row('a12ef',10), row('',0), row('',1), row('real',0,{detail:'mcp__claude-in-chrome__computer'}), row('real',0,{detail:'mcp__computer_use__get_app_state'}), row('real',0,{detail:'',tool_name:'mcp__claude-in-chrome__computer'})];

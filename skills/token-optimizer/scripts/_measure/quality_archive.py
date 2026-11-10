@@ -6692,14 +6692,10 @@ def _format_window_note(cached):
 
 
 def _verbosity_measured_savings(baseline_avg, post_nudge_outputs):
-    """Measured output-token savings from a verbosity nudge.
+    """Estimated positive output reduction against the session's prior mean.
 
-    Computes the REAL saving from post-nudge output: max(0, baseline_avg -
-    actual_post_nudge_avg) x turns. Never an estimate, never a negative
-    saving. ``baseline_avg`` is the session's pre-nudge average output tokens
-    (recorded in the nudge event detail). ``post_nudge_outputs`` is the list of
-    output_tokens for the turns AFTER the nudge. Returns 0 when there is no
-    post-nudge data yet (no counterfactual to measure against).
+    This before/after comparison has no control and is not a causal measure.
+    Signed changes are retained separately in the calibration event detail.
     """
     _measure_facade = _compat.facade()
     try:
@@ -6767,7 +6763,11 @@ def _transcript_request_outputs(filepath):
 
 
 def _calibrate_prior_verbosity_nudges(session_id, filepath):
-    """Book the MEASURED saving of a prior verbosity nudge (U5, R5, D1).
+    """Book the before/after output change of a prior verbosity nudge (R5, D1).
+
+    The booked row is an uncontrolled comparison and stays out of the realized
+    total; the estimated tier credits only the net-of-control figure
+    (``output_reread.summary_pool``). The signed change is kept in the detail.
 
     The nudge event itself books 0 -- there is no counterfactual at fire time.
     This pass runs on a later UserPromptSubmit turn: it finds the most recent
@@ -6854,7 +6854,7 @@ def _calibrate_prior_verbosity_nudges(session_id, filepath):
             measured,
             session_id=sid,
             detail=(f"calibrates_ts={src_ts} post_turns={len(post_outputs)} "
-                    f"pre_avg_out={pre_avg}"),
+                    f"pre_avg_out={pre_avg} signed_delta={int(pre_avg * len(post_outputs) - sum(post_outputs))}"),
         )
         return measured
     except Exception:

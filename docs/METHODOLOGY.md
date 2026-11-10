@@ -56,8 +56,9 @@ the CLI as `ALL IN` and on the dashboard as the hero number.
 ### 3.1 Logged actions (measured)
 
 Token changes Token Optimizer metered itself: compressed command output, archived tool
-results that stayed collapsed, structure maps, quality and
-verbosity nudges with an observed before/after, cross-turn dedup.
+results that stayed collapsed, structure maps, quality nudges, cross-turn dedup.
+Verbosity nudges are not here: their before/after has no control, so they sit in
+the estimated tier (section 3.4) at their net-of-control size.
 
 "Measured" means observed token changes and observed actions only. A mechanism whose
 trigger was seen but whose token value is inferred — the working set a checkpoint
@@ -115,8 +116,9 @@ Removed context that the next calls would otherwise have re-read from cache.
   magnitude was metered (`_COUNTED_SE_EVENT_TYPES`). Counterfactual classes are
   deliberately excluded so an inferred size never compounds into repeat-read
   dollars: `resume_lean`, `checkpoint_restore`, `mcp_cap` and `hint_followed`
-  (plus the output-side `verbosity_*` nudges, which are generated once and never
-  re-read). Their estimated-tier values still appear in section 3.4; they just do
+  (plus the output-side `verbosity_*` nudges: a shorter reply IS re-read on every
+  later call until compaction, and `verbosity_output_estimated` scores that carry
+  turn by turn, net of the control, in the estimated tier). Their estimated-tier values still appear in section 3.4; they just do
   not ride the counted annuity. Removing `checkpoint_restore` from the counted
   set is why `counted_cumulative` / `reread_usd` can visibly drop for installs
   that used restores — the credit moved tiers, it was not deleted.
@@ -136,6 +138,7 @@ Each key below is one line in the report. All are priced at the window's input-r
 | `handover_rerun` | Re-work avoided by a continuity handover, from your own session cohorts |
 | `contamination_exit` | Sessions that heeded a fresh-session nudge, from your own cohorts |
 | `verbosity_steer` | Output shortened by a concise-output nudge, before an observed measurement exists |
+| `verbosity_output_estimated` | Nudged replies against matched replies in sessions TO ran in but never nudged (same position, reply count, running mean, context size), plus the later rereads of that difference until compaction. Signed; credits only a positive net, else $0 with the per-nudge figure and its 95% interval shown. Recomputed at most daily by a user-run or detached collect, never on the hook path. The booked `verbosity_steer_measured` rows are kept for reference and never credited |
 | `hint_followed` | Searches avoided by a followed context hint. The hint->read pair is observed; the avoided-search size is a fixed estimate (used once any hint fires) |
 | `retrieval_serve` | Cohort estimate for avoided searches, used only before any hint fires |
 

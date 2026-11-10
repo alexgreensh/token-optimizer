@@ -163,7 +163,7 @@ if __name__ in ("__main__",):
 
 from _measure import _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5, transcript_backfill as _transcript_backfill
 _measure_providers = _measure_compat.prepare(sys.modules[__name__])
-
+from _measure import output_reread as _output_reread  # noqa: E402  stateless helper (U5)
 from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared
 from hook_runtime import (
     HookDeadline,
@@ -3611,7 +3611,7 @@ _session_model_reprice = _measure_compat.bind(_measure_providers['pricing']._ses
 #   * mcp_cap / hint_followed -- estimated-MAGNITUDE (fixed 5,000/event and
 #     conservative-guess sizes; _get_savings_summary relocates both to the
 #     estimated tier, so a counted annuity here would cross tiers);
-#   * verbosity_* -- output trims: generated once, never re-read.
+#   * verbosity_* -- output reductions are estimated, not counted removals.
 _COUNTED_SE_EVENT_TYPES = (
     "tool_archive", "tool_archive_reexpand", "tool_archive_refetch_block",
     "structure_map", "delta_read",
@@ -6830,7 +6830,7 @@ _LEGACY_SAVINGS_LABELS = {
     "verbosity_steer": "Verbosity steering [est]",
     # verbosity_steer_measured: the output reduction actually observed after a
     # conciseness nudge, compared with the session's own pre-nudge replies.
-    "verbosity_steer_measured": "Concise output (measured)",
+    "verbosity_steer_measured": "Concise output [est]",
     # tool_archive_refetch_block: a repeat call for an already-archived result
     # was answered from the archive instead of re-running the tool.
     "tool_archive_refetch_block": "Re-fetches answered from archive",

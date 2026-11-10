@@ -53,11 +53,11 @@ def test_miss_turn_reprices_only_that_turn(m):
     ]
     out = m._counted_score_detail(turns, [], t0, tokens, tier)
     assert out["turns_counted"] == 4
-    assert out["reread_miss_turns"] == 1
-    expected = tokens * (3 * card["cache_read"] + card["cache_write_1h"]) / 1e6
+    assert out["reread_miss_turns"] == 2
+    expected = tokens * (2 * card["cache_read"] + 2 * card["cache_write_1h"]) / 1e6
     assert out["reread_usd"] == pytest.approx(expected)
     assert out["reread_miss_premium_usd"] == pytest.approx(
-        tokens * (card["cache_write_1h"] - card["cache_read"]) / 1e6)
+        2 * tokens * (card["cache_write_1h"] - card["cache_read"]) / 1e6)
     assert out["reread_tokens"] == 4 * tokens  # token counts never change
 
 
@@ -207,3 +207,16 @@ def test_rows_for_events_that_left_the_counted_set_are_excluded_not_deleted(m, t
     assert summary["remeasuring"] is (summary["remeasuring_events"] > 0)
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM counted_reread").fetchone()[0] == 2
+
+
+def test_partial_cache_miss_requires_position_and_no_context_shrink(m):
+    tier = m.PRICING_TIERS[m._load_pricing_tier()]
+    card = _card(m)
+    t0 = datetime(2026, 11, 1, 12)
+    first = (t0 + timedelta(seconds=1), OPUS, 10000, (1000, 1000, 0, 9000))
+    rewrite = (t0 + timedelta(seconds=2), OPUS, 11000, (3000, 3000, 0, 8000))
+    shrink = (t0 + timedelta(seconds=3), OPUS, 9000, (2000, 2000, 0, 7000))
+    hit = (t0 + timedelta(seconds=4), OPUS, 11000, (1000, 1000, 0, 10000))
+    out = m._counted_score_detail([first, rewrite, shrink, hit], [], t0, 1000, tier)
+    assert out['reread_miss_turns'] == 1
+    assert out['reread_usd'] == pytest.approx(1000 * (card['cache_write_1h'] + 2 * card['cache_read']) / 1e6)

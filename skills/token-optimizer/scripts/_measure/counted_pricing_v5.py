@@ -53,13 +53,12 @@ def class_premium_usd(counted):
 # 2. Cache-miss reread turns
 # --------------------------------------------------------------------------
 
-def is_cache_miss_turn(cache_class, tokens):
+def is_cache_miss_turn(cache_class, tokens, context_at_removal=None, context_now=None):
     """True when a reread turn rewrote its whole context.
 
-    The test is deliberately narrow: the turn read 0 tokens from the cache and
-    wrote at least as many tokens as were removed. A partial hit (some prefix
-    read, the rest written) is ambiguous, because the removed context could sit
-    on either side of the cache break, so it stays at the cache-read rate.
+    A full miss qualifies, as does a partial hit whose cache break is before
+    the removal position, provided the context has not shrunk. The 3% margin
+    avoids crediting small measurement differences around the position.
     A turn with no usage record never counts as a miss.
     """
     if not cache_class or len(cache_class) < 4:
@@ -71,10 +70,13 @@ def is_cache_miss_turn(cache_class, tokens):
         size = abs(int(tokens))
     except (TypeError, ValueError):
         return False
-    return read == 0 and written > 0 and size > 0 and written >= size
+    return (size > 0 and written >= size and (read == 0 or
+            (isinstance(context_at_removal, int) and context_at_removal > 0
+             and isinstance(context_now, int) and context_now >= context_at_removal
+             and read < context_at_removal * 0.97)))
 
 
-def reread_turn_rate(card, cache_class, tokens, oneshot_rate):
+def reread_turn_rate(card, cache_class, tokens, oneshot_rate, context_at_removal=None, context_now=None):
     """(rate per MTok or None, miss flag) for one reread turn.
 
     ``oneshot_rate`` is the counted pass's own write-class resolver
@@ -85,7 +87,7 @@ def reread_turn_rate(card, cache_class, tokens, oneshot_rate):
     base = (card or {}).get("cache_read")
     if not _finite(base) or base < 0:
         return base, False
-    if not is_cache_miss_turn(cache_class, tokens):
+    if not is_cache_miss_turn(cache_class, tokens, context_at_removal, context_now):
         return base, False
     rate, basis = oneshot_rate(card, cache_class)
     if basis not in ("class", "exact") or not _finite(rate) or rate < base:

@@ -290,7 +290,7 @@ def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data, oneshot_flo
             if oneshot_floor_only and basis == "class":
                 rate, basis = card["input"], "floor"
         else:  # v5: a full cache-miss turn rewrote the removed context at its write class
-            rate, miss = _measure_facade._counted_pricing_v5.reread_turn_rate(card, turns[i][3] if len(turns[i]) > 3 else None, tokens, _measure_facade._counted_oneshot_rate)
+            rate, miss = _measure_facade._counted_pricing_v5.reread_turn_rate(card, turns[i][3] if len(turns[i]) > 3 else None, tokens, _measure_facade._counted_oneshot_rate, turns[first][2], turns[i][2])
             out["reread_tokens"] += tokens
             out["turns_counted"] += 1
             if miss:

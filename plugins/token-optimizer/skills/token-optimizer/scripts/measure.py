@@ -3698,7 +3698,7 @@ _counted_session_path = _measure_compat.bind(_measure_providers['savings']._coun
 
 
 # Eligibility is per row. A global migration flag never certifies old prices.
-_COUNTED_PRICING_VERSION = "6"
+_COUNTED_PRICING_VERSION = "7"
 _COUNTED_META_PRICING = "counted_pricing_version"
 
 

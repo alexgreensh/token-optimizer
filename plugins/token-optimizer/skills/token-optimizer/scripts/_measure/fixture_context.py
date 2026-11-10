@@ -4,11 +4,25 @@ import json
 import os
 from functools import lru_cache
 
-_PATTERN = '*/-private-var-folders-*-T-to-bench-M[0-9]-*/*.jsonl'
+# The harness runs each benchmark session in tempfile.mkdtemp(prefix="to-bench-M<n>-"),
+# so its project key is the temp dir path with separators turned into dashes:
+#   macOS   /private/var/folders/xx/yy/T/to-bench-M1-abc -> -private-var-folders-xx-yy-T-to-bench-M1-abc
+#   Linux   /tmp/to-bench-M1-abc (or $TMPDIR)            -> -tmp-to-bench-M1-abc
+#   Windows C:\Users\u\AppData\Local\Temp\to-bench-M1-abc -> C--Users-u-AppData-Local-Temp-to-bench-M1-abc
+_PATTERNS = (
+    '*/-private-var-folders-*-T-to-bench-M[0-9]-*/*.jsonl',
+    '*/-var-folders-*-T-to-bench-M[0-9]-*/*.jsonl',
+    '*/*-tmp-to-bench-M[0-9]-*/*.jsonl',
+    '*/*-temp-to-bench-M[0-9]-*/*.jsonl',
+    '*/*-Temp-to-bench-M[0-9]-*/*.jsonl',
+    '*/*-TEMP-to-bench-M[0-9]-*/*.jsonl',
+)
+_PATTERN = _PATTERNS[0]  # kept for callers that import the macOS pattern
 
 
 def benchmark_path(path):
-    return bool(path) and fnmatch.fnmatchcase(str(path).replace('\\', '/'), _PATTERN)
+    text = str(path or '').replace('\\', '/')
+    return bool(text) and any(fnmatch.fnmatchcase(text, pattern) for pattern in _PATTERNS)
 
 
 @lru_cache(maxsize=4096)
@@ -45,6 +59,7 @@ def allowed_path(path):
 
 
 def excluded_session_sql(alias):
-    return ("COALESCE((SELECT CASE WHEN s.jsonl_path GLOB '" + _PATTERN + "' "
+    glob = " OR ".join("replace(s.jsonl_path, char(92), '/') GLOB '" + p + "'" for p in _PATTERNS)
+    return ("COALESCE((SELECT CASE WHEN " + glob + " "
             "THEN to_transcript_has_usage(s.jsonl_path) ELSE 1 END FROM session_log s "
             "WHERE s.session_uuid=COALESCE(NULLIF(" + alias + ".session_uuid,''),NULLIF(" + alias + ".session_id,'')) ORDER BY s.id DESC LIMIT 1), 1)=1")

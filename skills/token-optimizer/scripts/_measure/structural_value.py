@@ -120,6 +120,12 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False)
     by_scope = {}
     for t in live:
         by_scope.setdefault(t["scope"], []).append(t)
+    trim_days = {} if projected else {
+        t["id"]: (datetime.fromtimestamp(t["ts_epoch"]).strftime("%Y-%m-%d"),
+                  datetime.fromtimestamp(t["closed_epoch"]).strftime("%Y-%m-%d")
+                  if t.get("closed_epoch") is not None else None)
+        for t in live
+    }
     scope_cache = {}
     for owner, day, model, calls, cr, cc, cc_1h, cc_5m, inp in rows:
         sess = sessions.get(owner)
@@ -137,10 +143,10 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False)
                 continue
             for t in group:
                 if not projected:
-                    trim_day = datetime.fromtimestamp(t["ts_epoch"]).strftime("%Y-%m-%d")
+                    trim_day, closed_day = trim_days[t["id"]]
                     if day < trim_day or (day == trim_day and (start is None or start < t["ts_epoch"])):
                         continue
-                    if t.get("closed_epoch") is not None and day >= datetime.fromtimestamp(t["closed_epoch"]).strftime("%Y-%m-%d"):
+                    if closed_day is not None and day >= closed_day:
                         continue
                 acc = per[t["id"]]
                 if card is None:

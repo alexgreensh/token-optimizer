@@ -1,26 +1,5 @@
 #!/usr/bin/env python3
-"""Token Optimizer - first-read shadow BACKFILL analyzer.
-
-Replays existing Claude Code (and Codex) transcripts to answer the R9 promotion
-question from REAL history instead of waiting weeks for live shadow data:
-
-  For large structure-supported whole-file reads, what would a skeleton have
-  saved, and how often did the model edit that same file SOON after reading it
-  (the "it needed the full file" signal)?
-
-A transcript already contains both halves: the Read tool_result holds the file
-content as it entered context, and later Edit/Write/MultiEdit tool_use blocks
-name the file. So `turns_until_edit` -- impossible to know live at read time --
-is directly observable in history.
-
-Output: a per-cohort report (language x size-band) of read count, edit-within-N
-rate, and average would-be skeleton ratio. With --write-cohorts it persists the
-cohorts that pass the gate (edit-rate < threshold AND enough samples) to a gate
-file the active first-read path consults. With --write-events it writes
-opportunity-tier rows so the dashboard coverage panel reflects history.
-
-This is an offline analysis tool, NOT a hot-path hook: it may import freely.
-"""
+"""Offline first-read shadow backfill. Edits are not a promotion signal."""
 
 from __future__ import annotations
 
@@ -309,11 +288,6 @@ def build_report(cohorts, totals, edit_window):
         n_sessions = len(c["sessions"])
         edit_rate = (c["edited_within"] / reads) if reads else 0.0
         avg_ratio = (c["ratio_sum"] / reads) if reads else 0.0
-        passes = (
-            reads >= PROMOTION_MIN_SAMPLES
-            and n_sessions >= PROMOTION_MIN_SESSIONS
-            and edit_rate < PROMOTION_EDIT_RATE
-        )
         rows.append({
             "language": lang,
             "size_band": band,
@@ -324,14 +298,12 @@ def build_report(cohorts, totals, edit_window):
             "edit_rate_pct": round(100 * edit_rate, 1),
             "avg_would_be_ratio_pct": round(100 * avg_ratio, 1),
             "would_be_tokens": c["would_be_tokens"],
-            "promotion_ready": passes,
+            "promotion_ready": False,
         })
     report = {
         "edit_window_turns": edit_window,
         "metric": "first-read-only per session",
-        "promotion_gate": {"edit_rate_pct": 100 * PROMOTION_EDIT_RATE,
-                           "min_samples": PROMOTION_MIN_SAMPLES,
-                           "min_sessions": PROMOTION_MIN_SESSIONS},
+        "promotion_gate": {"mode": "shadow", "edit_rate_is_harm": False},
         "totals": totals,
         "cohorts": rows,
     }
@@ -350,11 +322,8 @@ def print_report(report):
     print(f"  Eligible (large, structure-supported, >={int(MIN_RATIO*100)}% win): {t['eligible']:,}")
     print(f"  Skipped — small: {t['skipped_small']:,}  too big: {t['skipped_big']:,}  "
           f"unsupported: {t['skipped_unsupported']:,}  low-win/ineligible: {t['skipped_ineligible']:,}")
-    g = report["promotion_gate"]
     print(f"\n  Metric: {report['metric']}")
-    print(f"  Promotion gate: edit-rate < {g['edit_rate_pct']:.0f}% within "
-          f"{report['edit_window_turns']} turns AND >= {g['min_samples']} first-reads "
-          f"across >= {g['min_sessions']} sessions\n")
+    print("  Edit rates are descriptive only and do not establish promotion safety.\n")
     if not report["cohorts"]:
         print("  No eligible cohorts found.")
         return

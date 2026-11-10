@@ -2927,7 +2927,7 @@ var DB = (function() {
       label: 'First-Read Skeleton (serve, not just measure)',
       what: "When on, validated CODE cohorts are served a structural skeleton (signatures/imports) on first read instead of the full file. When off, those cohorts are measured only and served full.",
       value: "A large first-read code file comes back as a compact API skeleton, with the full content one `expand` away. As of v5.11.27 markdown/prose is NOT skeletoned -- only code.",
-      how: "Requires the master switch on. The full original is archived first and recoverable via `expand <key>`, a ranged Read, or a direct Edit. A runtime tripwire auto-demotes a cohort back to measure-only if its live edit-rate exceeds the gate.",
+      how: "When enabled, the target is read in full and bounded maps of related files may be added. Outcome comparisons are diagnostic; existing cohort demotions remain in place.",
       risk: "Low. Code skeletons preserve structure; the full file is always recoverable. Set TOKEN_OPTIMIZER_FIRST_READ_ACTIVE=0 (or toggle here) to serve full content while keeping measurement.",
       env_var: 'TOKEN_OPTIMIZER_FIRST_READ_ACTIVE'
     }
@@ -5151,44 +5151,13 @@ var DB = (function() {
         bucket.forEach(function(e) { ccHtml += covRow(e); });
         ccHtml += '</div>';
       });
-      var pr = cc.first_read_proxy;
-      if (pr) {
-        var ready = pr.promotion_ready;
-        ccHtml += '<div style="margin-top:var(--s-3);padding-top:var(--s-2);border-top:1px solid rgba(255,255,255,0.08);">' +
-          '<div style="font-weight:500;">First-read skeleton — safety check</div>' +
-          '<div class="plain-line">' + (Number(pr.edits_after_read) || 0) + ' of ' + (Number(pr.shadow_reads) || 0) +
-            ' large files were edited soon after the read (' + (Number(pr.edit_rate_pct) || 0).toFixed(1) + '%). ' +
-            'Currently <strong>' + (ready ? 'ready to promote' : 'still measuring') + '</strong>.</div>' +
-          fold('How this check works', '<p>' +
-            'Of ' + (Number(pr.shadow_reads) || 0) + ' large files where a skeleton would have saved tokens, ' +
-            (Number(pr.edits_after_read) || 0) + ' were edited soon after the read &mdash; an edit rate of ' +
-            '<span style="font-family:var(--font-mono);color:' + (ready ? 'var(--c-accent-cyan)' : 'var(--c-text-main)') + ';">' + (Number(pr.edit_rate_pct) || 0).toFixed(1) + '%</span>. ' +
-            'Skeletons turn on automatically only once this stays under ' + (Number(pr.promotion_gate_pct) || 15) + '% (the model rarely needed the full file).</p>') +
-          '</div>';
-      }
-      // Runtime tripwire: per-cohort LIVE edit-rate + any auto-demotions.
+      // Existing demotions remain until explicitly reviewed.
       var tw = cc.cohort_tripwire || {};
-      var twCohorts = tw.cohorts || [];
       var twDemoted = tw.demoted || [];
-      if (twCohorts.length || twDemoted.length) {
+      if (twDemoted.length) {
         ccHtml += '<div style="margin-top:var(--s-3);padding-top:var(--s-2);border-top:1px solid rgba(255,255,255,0.08);">' +
-          '<div style="font-weight:500;">Active cohort tripwire &mdash; live quality guard</div>' +
-          fold('How the tripwire works', '<p>Each promoted cohort’s live edit-after-skeleton rate. A cohort auto-demotes to measure-only if it crosses 15% (no flapping &mdash; re-promote is manual or by the next backfill).</p>');
-        twCohorts.forEach(function(c) {
-          var dem = !!c.demoted;
-          // T9: interpolated cohorts (promoted on a thin sample via an adjacent
-          // passing band) carry a higher exposure risk — label them so the
-          // edit-rate is read with that context.
-          var interp = c.basis === 'interpolated';
-          ccHtml += '<div style="display:flex;justify-content:space-between;gap:var(--s-3);padding:4px 0;' + (dem ? 'opacity:0.72;' : '') + '">' +
-            '<span>' + esc(String(c.language)) + ' &middot; ' + esc(String(c.band)) +
-              (interp ? ' <span title="Promoted on a thin sample because an adjacent size band of the same language passed the full gate. Higher exposure; tighter tripwire floor." style="font-size:11px;color:var(--c-text-dim);border:1px solid var(--c-border-strong, rgba(255,255,255,0.2));border-radius:4px;padding:1px 5px;">interpolated</span>' : '') +
-              (dem ? ' <span style="font-size:11px;color:var(--c-warning);border:1px solid rgba(230,162,60,0.4);border-radius:4px;padding:1px 5px;">demoted</span>' : '') + '</span>' +
-            '<span style="font-family:var(--font-mono);color:var(--c-text-dim);">' +
-              (Number(c.skeletons) || 0) + ' reads &middot; ' + (Number(c.followups) || 0) + ' edits &middot; ' +
-              (Number(c.edit_rate_pct) || 0).toFixed(1) + '%</span>' +
-          '</div>';
-        });
+          '<div style="font-weight:500;">First-read cohorts</div>' +
+          fold('How this works', '<p>Existing demotions stay in place. Outcome comparisons run in shadow and do not automatically promote or demote cohorts.</p>');
         if (twDemoted.length) {
           var demStr = twDemoted.map(function(c) { return esc(String(c[0])) + ':' + esc(String(c[1])); }).join(', ');
           ccHtml += '<div style="font-size:13px;color:var(--c-text-dim);margin-top:4px;">' +

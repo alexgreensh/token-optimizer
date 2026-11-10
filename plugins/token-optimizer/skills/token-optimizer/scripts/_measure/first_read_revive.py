@@ -105,7 +105,12 @@ def reconcile(conn, snapshot_dir):
                 conn.execute("SAVEPOINT first_read_confirmation")
                 cursor = conn.execute("INSERT INTO compression_events(timestamp,session_id,session_uuid,feature,command_pattern,original_tokens,compressed_tokens,compression_ratio,quality_preserved,verified,detail,model,tier) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                       (timestamp, uuid, uuid, "first_read_skeleton", str(row["language"]) + "|" + str(row["band"]), original, compressed, 1 - compressed / original, 0, 1, "repromoted target outline; quality not verified", "unknown", "measured"))
-                conn.execute("INSERT INTO first_read_confirmations(exposure_id,event_id) VALUES(?,?)", (ident, cursor.lastrowid))
+                if cursor.rowcount != 1:
+                    raise RuntimeError("event was not inserted")
+                receipt = conn.execute("INSERT INTO first_read_confirmations(exposure_id,event_id) VALUES(?,?)", (ident, cursor.lastrowid))
+                stored = conn.execute("SELECT original_tokens,compressed_tokens,tier FROM compression_events WHERE id=?", (cursor.lastrowid,)).fetchone()
+                if receipt.rowcount != 1 or stored != (original, compressed, "measured"):
+                    raise RuntimeError("event readback failed")
                 conn.execute("RELEASE first_read_confirmation")
                 done.add(ident)
                 written += 1

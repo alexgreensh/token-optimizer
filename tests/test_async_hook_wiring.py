@@ -49,6 +49,9 @@ EXPECTED_ASYNC = {
     # MUST be sync: the re-fetch guard's whole job is to return a permissionDecision
     # (deny) BEFORE the duplicate MCP call runs. An async guard couldn't block it.
     ("PreToolUse", "mcp__.*", "refetch_guard.py"): False,
+    # MUST be sync: the code map hint is additionalContext for the starting
+    # subagent; an async hook's output would arrive too late to reach it.
+    ("SubagentStart", None, "codemap_hint.py"): False,
     ("PreCompact", None, "dynamic-compact-instructions"): False,
     ("PreCompact", None, "compact-capture --trigger auto"): True,
     ("PreCompact", None, "read_cache.py --clear"): False,

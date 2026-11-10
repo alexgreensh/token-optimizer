@@ -89,10 +89,11 @@ def warm_index(root: Path) -> bool:
 
 def hint_text(root: Path) -> str:
     script = shlex.quote(str(Path(__file__).resolve().parent / "codemap.py"))
+    py = shlex.quote(sys.executable or "python3")
     return (
         "[Token Optimizer] Code map available for this project (Python/JS/TS). For \"where is X "
-        "defined\", \"what calls Y\" or \"what does this file import\", run it BEFORE Grep or reading "
-        f"whole files: `python3 {script} find|show|callers <symbol>` or `outline|deps <file>`. "
+        "defined\", \"what calls Y\" or \"what does this file import\", run it BEFORE Grep, grep/rg in "
+        f"Bash, or reading whole files: `{py} {script} find|show|callers <symbol>` or `outline|deps <file>`. "
         "`show` prints one definition with Edit-ready line numbers; answers are small and match the files on disk."
     )
 

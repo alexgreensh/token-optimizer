@@ -3614,7 +3614,7 @@ _session_model_reprice = _measure_compat.bind(_measure_providers['pricing']._ses
 #   * verbosity_* -- output reductions are estimated, not counted removals.
 _COUNTED_SE_EVENT_TYPES = (
     "tool_archive", "tool_archive_reexpand", "tool_archive_refetch_block",
-    "structure_map", "delta_read",
+    "structure_map", "delta_read", "codemap_outline",
 )
 # compression_events features that are bookkeeping, not removals.
 _COUNTED_CE_EXCLUDED_FEATURES = (
@@ -6809,7 +6809,7 @@ _LEGACY_SAVINGS_LABELS = {
     # (popped from the measured total in _get_savings_summary).
     "resume_lean": "Lean resumes",
     "tool_archive": "Tool replacements", "bash_archive_reexpand": "Bash output re-expanded",
-    "structure_map": "Structure maps",
+    "structure_map": "Structure maps", "codemap_outline": "Code map re-read outlines", "codemap_lookup": "Code map lookups [est]",
     # mcp_cap: ESTIMATED (not measured). Claude Code truncates MCP output
     # before PostToolUse fires, so the true pre-cap size is invisible to TO.
     # Logged by archive_result.py when an MCP result is at/near the configured
@@ -6970,7 +6970,7 @@ _RUNWAY_COMPRESSED_SQL = _counted_sql(
 # The runway figure is the measured floor, so it leaves them out too.
 _RUNWAY_ESTIMATED_EVENT_TYPES = frozenset(
     {"setup_optimization", "mcp_cap", "hint_followed", "resume_lean",
-     "checkpoint_restore"})
+     "checkpoint_restore", "codemap_lookup"})
 
 
 _runway_saved_tokens = _measure_compat.bind(_measure_providers['savings']._runway_saved_tokens, __name__, defaults=(False,))

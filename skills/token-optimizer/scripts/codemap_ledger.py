@@ -261,6 +261,10 @@ def _book_savings(event_type: str, tokens: int, session_id: str, detail: str) ->
     """Write through read_cache's savings writer (pricing, uuid join, origin)."""
     try:
         import read_cache
+        # read_cache binds its data paths at import; point them at the current
+        # resolver so a long-lived importer never writes a stale trends.db.
+        read_cache.SNAPSHOT_DIR = _snapshot_dir()
+        read_cache.TRENDS_DB = _trends_db()
         before = _count_rows(event_type)
         read_cache._log_savings_event(event_type, int(tokens), session_id, detail)
         return _count_rows(event_type) > before

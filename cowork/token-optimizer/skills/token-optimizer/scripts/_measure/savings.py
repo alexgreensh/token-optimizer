@@ -1302,8 +1302,11 @@ def _net_realized_savings(rows, reprice_deltas):
     #     reduction, so both booked rows and the control study stay diagnostic.
     # savings_events has no tier column: this pop IS the tier=estimated stamp.
     popped = {}
+    #   codemap_lookup: a lookup answered instead of a Read; the avoided read is
+    #     a counterfactual (file not read within the follow-up window).
     for name in ("setup_optimization", "mcp_cap", "hint_followed", "verbosity_steer",
-                 "resume_lean", "checkpoint_restore", "verbosity_steer_measured"):
+                 "resume_lean", "checkpoint_restore", "verbosity_steer_measured",
+                 "codemap_lookup"):
         entry = popped[name] = by_category.pop(name, None)
         if entry:
             total_tokens -= int(entry.get("tokens_saved", 0) or 0)
@@ -1387,6 +1390,7 @@ def _get_savings_summary(days=None, since=None):
          repriced_to_session_mix) = _measure_facade._net_realized_savings(rows, reprice_deltas)
         one_time = popped["setup_optimization"]
         hint_followed_est = popped["hint_followed"]
+        codemap_lookup_est = popped["codemap_lookup"]
         verbosity_steer_est = popped["verbosity_steer"]
         resume_lean_est = popped["resume_lean"]
         if resume_lean_est and resume_fix["repriced_events"]:  # exact model card, not the family card
@@ -1412,6 +1416,8 @@ def _get_savings_summary(days=None, since=None):
             # U-G: observed-trigger / estimated-magnitude avoided-search from
             # proactive hints. Estimated tier, never in the realized total.
             "hint_followed_estimated": hint_followed_est,
+            # Code map lookups: observed lookup, counterfactual avoided read. Estimated tier.
+            "codemap_lookup_estimated": codemap_lookup_est,
             # Verbosity-steer: estimated output-token reduction from conciseness
             # nudges. Estimated tier, never in the realized total. Surfaced so
             # _estimate_before_after_savings can add it to the transformation
@@ -1457,6 +1463,7 @@ def _get_savings_summary(days=None, since=None):
             "one_time_setup": None,
             "mcp_cap_estimated": None,
             "hint_followed_estimated": None,
+            "codemap_lookup_estimated": None,
             "verbosity_steer_estimated": None,
             "resume_lean_estimated": None,
             "checkpoint_restore_estimated": None,
@@ -5561,6 +5568,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
                 "handover_rerun": _measure_facade._estimate_handover_rerun_savings(days=days),
                 "retrieval_serve": _measure_facade._estimate_retrieval_serve_savings(days=days),
                 "checkpoint_restore": (comp or {}).get("checkpoint_restore_estimated") or {},
+                "codemap_lookup": (comp or {}).get("codemap_lookup_estimated") or {},
             }
         pool_labels = {
             "uncaptured_runtime": "Compressed subagent context (estimated)",
@@ -5569,6 +5577,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
             "handover_rerun": "Continuity handovers (estimated)",
             "retrieval_serve": "Direct context retrieval (estimated)",
             "checkpoint_restore": "Checkpoint restores (estimated)",
+            "codemap_lookup": "Code map lookups (estimated)",
         }
         estimated_volume_pools = {}
         for key, label in pool_labels.items():

@@ -502,6 +502,18 @@ def _sub_compact_restore_new_session(hook_input: dict, sink: list) -> None:
     sink.append(buf.getvalue())
 
 
+def _sub_codemap_hint(hook_input: dict) -> None:
+    """Code map discovery hint (codemap_hint.py): plain text, so it lands in
+    additionalContext via the envelope. Silent when the feature is off
+    (TOKEN_OPTIMIZER_CODEMAP=0) or the cwd has no Python/JS/TS code. Takes no
+    runner budget share: a bounded directory probe plus a detached index warm."""
+    import codemap_hint  # noqa: PLC0415
+
+    text = codemap_hint.session_text(hook_input)
+    if text:
+        print(text)
+
+
 def _quality_cache_self_heal() -> None:
     """Replicate the quality-cache dispatch's self-healing block: if the
     quality-cache hook is missing from settings.json and this is NOT a plugin
@@ -632,6 +644,7 @@ def main() -> int:
         _capture("read_cache --clear-compacted", _sub_clear_compacted, hook_input)
     _capture("compact-restore --new-session-only", _sub_compact_restore_new_session,
              hook_input, _wrapped)
+    _capture("codemap hint", _sub_codemap_hint, hook_input)
 
     # Emit the compact-restore payloads and ensure-health/quality-cache
     # systemMessage lines as ONE host-valid JSON object. systemMessage values

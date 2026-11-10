@@ -13,22 +13,11 @@ product (PostToolUse fires on EVERY tool call):
   5. ``read_cache.py --invalidate --quiet``     [Edit|Write|MultiEdit|NotebookEdit] (10s, sync)
   6. ``measure.py quality-cache --quiet --throttle-only`` [the union matcher] (10s, sync)
 
-Combined declared budget: 80s. Measured cost per entry with ``__pycache__``
-wiped before every call (the container steady state -- module_runner.py warns
-that a read-only scripts dir means bytecode is never cached):
-
-  entry point                          warm    cold
-  bash_compress_hook.py --quiet        128ms   122ms
-  archive_result.py --quiet            204ms   218ms
-  context_intel.py --quiet             204ms   223ms
-  read_cache.py --invalidate           205ms   218ms
-  measure.py quality-cache -to         226ms   798ms
-
-Of each of those, 127ms is FIXED dispatch overhead (bash launcher -> run.py ->
-a second interpreter -> module_runner) paid before any hook work happens, and
-the 798ms cold outlier is the one entry that imports measure.py (682ms cold /
-99ms warm on its own). Under a sustained container workload, ``PostToolUse:Bash``
-was CANCELLED 372 times and succeeded 9.
+Combined declared budget: 80s. Measured per entry with ``__pycache__`` wiped
+before every call (the container steady state): 122-223ms each, 798ms for the one
+entry that imports measure.py, of which 127ms is FIXED dispatch overhead (bash
+launcher -> run.py -> a second interpreter -> module_runner). Under a sustained
+container workload, ``PostToolUse:Bash`` was CANCELLED 372 times and succeeded 9.
 
 This runner is invoked ONCE per tool call, pays the dispatch overhead ONCE,
 imports each hook module at most once, and runs every subcommand in-process
@@ -269,34 +258,12 @@ def _rebind_shared_stdin(module) -> None:
 # runner only ever sees a tool that at least one of the six would have seen.
 # Each subcommand then re-checks its own original matcher here.
 #
-# WHY re.search AND WHY THAT IS EXACT EITHER WAY:
-#
-# The host's own regex anchoring is not something this file should have to
-# guess at, and it does not have to. Take the two possibilities:
-#
-#   * Host uses an UNANCHORED test (regex.test / re.search). Then re.search
-#     here is literally the same operation on the same pattern, and every
-#     subcommand fires on exactly the tools its own entry fired on. Exact.
-#
-#   * Host ANCHORS (fullmatch). Then the union gate admits exactly
-#     {Bash, PowerShell, Read, Glob, Grep, Agent, Edit, Write, MultiEdit,
-#     NotebookEdit} plus mcp__*, and re.search here can only over-match INSIDE
-#     that set.
-#     Enumerated, it does not:
-#       - _MATCHER_ARCHIVE searches for
-#         Bash|PowerShell|Read|Glob|Grep|Agent|mcp__.* -- no admitted tool
-#         contains one of those as a substring without also matching it under
-#         fullmatch (MultiEdit/NotebookEdit/Edit/Write contain none of them;
-#         "PowerShell" itself contains no "Bash").
-#       - _MATCHER_CONTEXT_INTEL likewise.
-#       - _MATCHER_BASH_COMPRESS ("Bash") and _MATCHER_READ_CACHE_INV are the
-#         two where an mcp tool could contain the substring (e.g.
-#         "mcp__x__Bash"), and BOTH of those hook functions re-check the tool
-#         name themselves -- bash_compress_hook.main() returns unless
-#         tool_name == "Bash", read_cache.handle_invalidate returns unless
-#         tool_name is in ("Edit","Write","MultiEdit","NotebookEdit") -- so an
-#         over-match is a no-op, not a misfire.
-#       - _MATCHER_QUALITY_CACHE IS the union, so it is true whenever we run.
+# WHY re.search is exact either way: if the host tests unanchored, it is the
+# same operation on the same pattern. If the host anchors (fullmatch), the union
+# gate admits only the listed tool names plus mcp__*; re.search over-matches none
+# of them except an mcp tool containing "Bash" or an edit-tool name, which
+# bash_compress_hook.main() and read_cache.handle_invalidate both re-check (a
+# no-op, not a misfire). _MATCHER_QUALITY_CACHE is the union itself.
 #
 # archive_result was registered TWICE (matchers "mcp__.*" and
 # "Bash|Read|Glob|Grep|Agent") with a byte-identical command. The two matchers
@@ -450,18 +417,19 @@ def _report_budget_exhausted(name: str, seconds: float, *, skipped: bool) -> Non
         pass
 
 
-def _run_safely(name: str, fn, *args, **kwargs) -> None:
+def _run_safely(name: str, fn, *args, **kwargs):
     """Run fn, swallow any failure to stderr, never propagate.
 
     Catches handler budget exhaustion, ``Exception`` and ``SystemExit`` so one
     subcommand's overrun, bug or internal ``sys.exit()`` cannot abort the
-    others. In production the shared ``HookDeadline`` watchdog remains the
-    uncatchable hard process backstop.
+    others. Returns the budget (seconds) when the handler overran, else None.
+    The shared ``HookDeadline`` watchdog stays the hard process backstop.
     """
     try:
         fn(*args, **kwargs)
     except _HandlerBudgetExceeded as exc:
         _report_budget_exhausted(name, exc.seconds, skipped=False)
+        return exc.seconds
     except (Exception, SystemExit):
         try:
             sys.stderr.write(f"[Token Optimizer] {name} failed, continuing\n")
@@ -977,6 +945,31 @@ def _sub_quality_cache(hook_input: dict) -> None:
 # --------------------------------------------------------------------------- #
 
 
+_SKIP_LOG_BUDGET = 0.2  # seconds; the row is a 50 ms-timeout SQLite insert
+
+
+def _log_skipped_compression(name, hook_input, seconds, reason) -> None:
+    """Opportunity-tier row for a Bash compression the budget cut off (U2).
+
+    The raw output went to the model unshrunk: zero saved, so the row is
+    tier 'opportunity' with compressed == original (see scripts/hook_skip_log.py).
+    Bounded by its own small deadline and never raises.
+    """
+    if name != "bash_compress_hook":
+        return
+    remaining = _RUNNER_DEADLINE.remaining() if _RUNNER_DEADLINE is not None else _SKIP_LOG_BUDGET
+    budget = min(_SKIP_LOG_BUDGET, remaining / max(1, _SUBCOMMANDS_PENDING + 1))
+    if budget < _MIN_HANDLER_BUDGET / 2:
+        return
+
+    def _write():
+        from hook_skip_log import log_skipped_compression
+
+        log_skipped_compression(hook_input, name, seconds, reason)
+
+    _run_safely("skip-log", lambda: _run_with_handler_deadline(budget, _write))
+
+
 def _subcommand_table():
     return (
         ("bash_compress_hook", _MATCHER_BASH_COMPRESS, _sub_bash_compress),
@@ -1085,13 +1078,16 @@ def main() -> int:
         budget = _runner_budget(_subcommand_budget(name))
         if budget <= 0:
             _report_budget_exhausted(name, 0.0, skipped=True)
+            _log_skipped_compression(name, hook_input, 0.0, "budget_exhausted")
             return
         buf = io.StringIO()
         with redirect_stdout(buf):
-            _run_safely(
+            overran = _run_safely(
                 name,
                 lambda: _run_with_handler_deadline(budget, fn, *args, **kwargs),
             )
+        if overran is not None:
+            _log_skipped_compression(name, hook_input, overran, "hook_budget")
         captured = buf.getvalue()
         if captured:
             _stdout_bufs.append(captured)

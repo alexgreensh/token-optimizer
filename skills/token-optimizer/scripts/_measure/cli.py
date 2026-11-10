@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
+from . import _compat, coverage_report
 
 
 def main():
@@ -501,6 +501,14 @@ def main():
         _measure_facade.set_pretool_baseline(_measure_facade.args[1:])
     elif _measure_facade.args[0] == "compare":
         _measure_facade.compare_snapshots()
+    elif _measure_facade.args[0] == "coverage-replay":
+        # Re-run the Bash hook's gates over this user's own transcripts. Read-only:
+        # prints a gate table, stores nothing, never prints command or output text.
+        _measure_facade.sys.exit(coverage_report.replay_cli(_measure_facade.args[1:], _measure_facade.CLAUDE_DIR / "projects"))
+    elif _measure_facade.args[0] == "file-refetch":
+        # Did the agent fetch the same file range again after TO cut file content printed
+        # through the shell? Metric only, read-only over this user's own transcripts.
+        _measure_facade.sys.exit(coverage_report.refetch_cli(_measure_facade.args[1:], _measure_facade.CLAUDE_DIR / "projects"))
     elif _measure_facade.args[0] == "dashboard":
         _measure_facade._dispatch_dashboard(_measure_facade.args)
     elif _measure_facade.args[0] == "status-bar":

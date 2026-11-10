@@ -214,6 +214,14 @@ def _run(payload: dict) -> None:
     except Exception:
         pass  # Fail open: the raw output stands
 
+    # Control group (TOKEN_OPTIMIZER_HOLDOUT, default 0 = off, see holdout.py): a
+    # control session replaces nothing and gets no nudge. What this hook would
+    # have done is logged at the opportunity tier. With the variable unset this
+    # is one environment lookup and no import.
+    if _holdout_control():
+        _shadow_bash(command, stdout, exit_code)
+        return
+
     # Codex-via-install perf optimization: TOKEN_OPTIMIZER_NO_UPDATED_TOOL_OUTPUT
     # skips the compression compute entirely. updatedToolOutput is ignored by
     # Codex anyway (collapse there is via archival), so skipping the compute
@@ -231,14 +239,29 @@ def _run(payload: dict) -> None:
             print(json.dumps(_payload))
         return
 
+    # Coverage funnel (counters only, no behaviour change): every result that
+    # gets past the checks above ends in exactly one gate row. The closure
+    # records the first gate reached and ignores later calls, so no exit path
+    # can double count. Fail-open inside coverage_funnel.record().
+    _cov_done: list = []
+
+    def _cov(gate: str, reason: str = "", pattern: str = "", text: str = "",
+             removed: int = 0) -> None:
+        if _cov_done:
+            return
+        _cov_done.append(gate)
+        _record_coverage(gate, reason, pattern, text, removed)
+
     # Too small to compress
     if not stdout or len(stdout) < 100:
+        _cov("error_or_short", "short", text=stdout or "")
         if _nudge:
             _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
         return
 
     # Detect if the output was ALREADY compressed by PreToolUse bash_hook.
     if "[Full result archived" in stdout or "[bash_compress]" in stdout:
+        _cov("already_compressed", "marker", text=stdout)
         if _nudge:
             _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
         return
@@ -276,15 +299,19 @@ def _run(payload: dict) -> None:
                         _compressed_build = _try_build_output_compress(
                             command, stdout)
                         if _compressed_build is not None:
+                            _cov("compressed", "build_output", "build_output",
+                                 stdout, _removed_tokens(stdout, _compressed_build))
                             _emit_updated_tool_output(
                                 _compressed_build, stderr, nudge=_nudge)
                             return
                 except Exception:
                     pass  # Fail open: raw output stands
+            _cov("not_read_only", reason, text=stdout)
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
             return  # Not eligible, pass through raw
     except Exception:
+        _cov("not_read_only", "analyzer-error", text=stdout)
         if _nudge:
             _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
         return  # Fail open
@@ -307,6 +334,7 @@ def _run(payload: dict) -> None:
 
         # --- check for failure (exit code or stderr patterns) ---
         if _looks_like_failure(exit_code, stderr):
+            _cov("error_or_short", "failed_command", text=stdout)
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
             return  # Don't compress failure output
@@ -319,6 +347,7 @@ def _run(payload: dict) -> None:
         # on stdout. If the pipeline exits 0 but stdout contains error
         # patterns, pass through raw so the model sees the errors.
         if _stdout_has_error_patterns(cleaned_stdout):
+            _cov("error_or_short", "error_words", text=stdout)
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
             return  # Error on stdout: pass through raw
@@ -345,6 +374,7 @@ def _run(payload: dict) -> None:
             _log_feature = "crossturn_dedup"
 
         if not comp_helped:
+            _cov("under_10pct", "read_only", _detect_pattern(command), stdout)
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
             return  # nothing shrank the output -> pass through raw
@@ -394,6 +424,10 @@ def _run(payload: dict) -> None:
 
         # Log compression event to trends.db
         _log_event(command, cleaned_stdout, compressed, feature=_log_feature)
+        _cov("compressed",
+             "crossturn_dedup" if _log_feature == "crossturn_dedup" else "read_only",
+             "crossturn_dedup" if _log_feature == "crossturn_dedup" else _detect_pattern(command),
+             stdout, _removed_tokens(cleaned_stdout, compressed))
 
         # Emit updatedToolOutput to replace what Claude sees. The thrash nudge,
         # if present, goes out as additionalContext in the same envelope (every
@@ -402,6 +436,7 @@ def _run(payload: dict) -> None:
         _emit_updated_tool_output(compressed, stderr, nudge=_nudge)
 
     except Exception:
+        _cov("under_10pct", "hook_error", text=stdout)
         if _nudge:
             _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
         return  # Fail open: any error → pass through raw
@@ -614,6 +649,61 @@ def _crossturn_dedup(command: str, output: str, tool_use_id: str = ""):
         except (OSError, ValueError):
             pass
         return None
+
+
+def _holdout_control() -> bool:
+    """True only when the holdout is on and this session is in the control arm."""
+    try:
+        if not os.environ.get("TOKEN_OPTIMIZER_HOLDOUT", "").strip():
+            return False
+        from holdout import is_control
+        return is_control(os.environ.get("CLAUDE_SESSION_ID", ""))
+    except Exception:
+        return False
+
+
+def _shadow_bash(command: str, stdout: str, exit_code: int | None) -> None:
+    """Control arm: record what compression would have removed. Emits nothing,
+    archives nothing, writes no coverage-funnel row. Fail-open."""
+    try:
+        from coverage_funnel import classify_result
+        verdict = classify_result(command, stdout, is_error=bool(exit_code))
+        if verdict["gate"] != "compressed":
+            return
+        from compression_log import log_compression_event
+        from credential_patterns import redact_credentials as _redact
+        log_compression_event(
+            feature=("build_output_compress" if verdict["reason"] == "build_output"
+                     else "bash_compress_pipeline"),
+            session_id=os.environ.get("CLAUDE_SESSION_ID", ""),
+            command_pattern=_redact(command)[:100],
+            original_tokens=verdict["tokens"],
+            compressed_tokens=max(0, verdict["tokens"] - verdict["removed"]),
+            quality_preserved=True, verified=False, tier="opportunity",
+            detail="holdout_control",
+        )
+    except Exception:
+        pass
+
+
+def _removed_tokens(original: str, compressed: str) -> int:
+    """Tokens the compressed form saves, never negative. Fail-open to 0."""
+    try:
+        from coverage_funnel import tokens_of
+        return max(0, tokens_of(original) - tokens_of(compressed))
+    except Exception:
+        return 0
+
+
+def _record_coverage(gate: str, reason: str, pattern: str, text: str,
+                     removed: int) -> None:
+    """Write one coverage-funnel counter row (see coverage_funnel). Never raises."""
+    try:
+        from coverage_funnel import record, tokens_of
+        record(gate, reason, pattern or "", tokens_of(text), removed,
+               os.environ.get("CLAUDE_SESSION_ID", ""))
+    except Exception:
+        pass
 
 
 def _log_event(command: str, original: str, compressed: str,

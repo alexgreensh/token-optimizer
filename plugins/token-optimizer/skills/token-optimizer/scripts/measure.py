@@ -273,7 +273,7 @@ _CLAUDE_TARGET_CMDS = frozenset(
         "git-context", "dashboard-diagnose", "validate-impact",
         # Usage recommendations: the refresh replays Claude transcripts and
         # reads ~/.claude/settings.json; surfaces read its record file only.
-        "recommendations",
+        "recommendations", "coverage-replay", "file-refetch",
     }
 )
 # Back-compat alias (pre-Copilot name).

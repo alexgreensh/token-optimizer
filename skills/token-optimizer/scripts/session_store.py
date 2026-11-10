@@ -33,6 +33,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from hint_paths import normalize_hint_path
 from plugin_env import resolve_snapshot_dir
 from reset_epoch import ResetEpochMixin, bump_reset_epoch
 
@@ -937,11 +938,10 @@ class SessionStore(ResetEpochMixin):
         """Record that a proactive prior-session hint surfaced these files to
         this session. A later read of one of them is observed evidence the hint
         spared an exploratory search (credited once via claim_hint_follow)."""
-        paths = [str(p).strip() for p in (file_paths or []) if str(p or "").strip()]
+        paths = [normalize_hint_path(p) for p in (file_paths or []) if str(p or "").strip()]
         if not paths:
             return
-        # Defensive cap independent of the call site (which already slices to ~5):
-        # a hint never legitimately surfaces dozens of files, so bound the write.
+        # Defensive cap, independent of the call site (which slices to ~5).
         paths = paths[:25]
         conn = self._connect()
         now = time.time()
@@ -953,10 +953,8 @@ class SessionStore(ResetEpochMixin):
         )
         conn.commit()
 
-    # Only credit a hint follow when the read happens within this window of the
-    # hint being served. Beyond it, a read of the same file is more likely a
-    # coincidence than the hint doing its job -- keeps the avoided-search credit
-    # causally honest (and conservative).
+    # Credit a follow only within this window of the serve; later reads of the
+    # same file are more likely coincidence (keeps the credit conservative).
     HINT_FOLLOW_MAX_AGE_SECONDS = 4 * 60 * 60
 
     def claim_hint_follow(self, file_path: str, max_age_seconds: float = HINT_FOLLOW_MAX_AGE_SECONDS) -> bool:
@@ -972,17 +970,18 @@ class SessionStore(ResetEpochMixin):
             return False
         conn = self._connect()
         fresh_after = time.time() - max(0.0, max_age_seconds)
+        keys = (normalize_hint_path(file_path), str(file_path))  # raw: pre-normalization rows
         hit = conn.execute(
             "SELECT 1 FROM hint_serves "
-            "WHERE file_path = ? AND credited = 0 AND served_at >= ? LIMIT 1",
-            (str(file_path), fresh_after),
+            "WHERE file_path IN (?, ?) AND credited = 0 AND served_at >= ? LIMIT 1",
+            (*keys, fresh_after),
         ).fetchone()
         if not hit:
             return False
         cur = conn.execute(
             "UPDATE hint_serves SET credited = 1 "
-            "WHERE file_path = ? AND credited = 0 AND served_at >= ?",
-            (str(file_path), fresh_after),
+            "WHERE file_path IN (?, ?) AND credited = 0 AND served_at >= ?",
+            (*keys, fresh_after),
         )
         conn.commit()
         return cur.rowcount > 0

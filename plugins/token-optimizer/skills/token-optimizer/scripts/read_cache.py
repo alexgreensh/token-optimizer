@@ -991,7 +991,7 @@ def _first_read_compress(
     cached_content: Optional[str] = None,
     save_hook_context_enabled: bool = False,
     quiet: bool = True,
-    tool_use_id: str = "",
+    tool_use_id: str = "", parent_session_id: str = "",
 ) -> bool:
     """First-read skeleton path. Returns True iff it SERVED a skeleton
     (active mode emitted a deny+inject and the caller must stop).
@@ -1045,7 +1045,7 @@ def _first_read_compress(
             from _measure import first_read_revive
             if first_read_revive.enabled(SNAPSHOT_DIR / _TRIPWIRE_SIDECAR_NAME, language, cohort[1]):
                 if first_read_revive.serve(file_path, stat, language, cohort[1], session_id, content,
-                                           result, orig_tokens, estimate_tokens, _emit_pretool_response, SNAPSHOT_DIR, tool_use_id, _additional_context_within_cap, save_hook_context_enabled):
+                                           result, orig_tokens, estimate_tokens, _emit_pretool_response, SNAPSHOT_DIR, tool_use_id, _additional_context_within_cap, save_hook_context_enabled, parent_session_id):
                     return True
             return _serve_first_read_retarget(
                 file_path, size, language, session_id, store, content, quiet, tool_use_id,
@@ -1552,7 +1552,7 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
             file_path, stat, offset, limit, language, session_id, store, mode,
             cached_content=entry.get("cached_content") or delta_content,
             save_hook_context_enabled=save_hook_context_enabled,
-            quiet=quiet, tool_use_id=current_tool_use_id,
+            quiet=quiet, tool_use_id=current_tool_use_id, parent_session_id=str(hook_input.get("session_id") or ""),
         ):
             return
         _log_decision(

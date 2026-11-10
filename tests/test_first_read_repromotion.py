@@ -42,7 +42,7 @@ def test_repromotion_records_actual_replacement_and_compounds(m, tmp_path, monke
     capsys.readouterr()
     class Store:
         def set_meta(self, *args): pass
-    served = read_cache._first_read_compress(str(source), source.stat(), 0, 0, "python", SID, Store(), "soft_block", tool_use_id="read-1")
+    served = read_cache._first_read_compress(str(source), source.stat(), 0, 0, "python", SID, Store(), "soft_block", tool_use_id="read-1", parent_session_id=SID)
     response = json.loads(capsys.readouterr().out)
     assert served and response["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "expand " in response["hookSpecificOutput"]["additionalContext"]
@@ -50,6 +50,9 @@ def test_repromotion_records_actual_replacement_and_compounds(m, tmp_path, monke
     assert archive_result.archive_entry_exists(SID, key)
     exposure = json.loads((tmp_path / "diagnostics/periphery_exposures.jsonl").read_text())
     assert exposure["arm"] == "legacy_skeleton" and str(source) not in json.dumps(exposure)
+    from _measure.first_read_outcomes import _hash
+    pending = json.loads((tmp_path / "diagnostics/first_read_pending.jsonl").read_text())
+    assert pending["parent_session_id"] == _hash(SID)
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM compression_events WHERE feature='first_read_skeleton'").fetchone()[0] == 0
         start = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=10)
@@ -108,3 +111,47 @@ def test_failed_archive_or_emission_never_logs_removal(monkeypatch, tmp_path):
     def failed_emit(*args): raise BrokenPipeError()
     assert not serve(*args, failed_emit)
     assert event == []
+
+
+def test_confirmed_subagent_saving_compounds_only_its_own_turns(m, tmp_path, monkeypatch):
+    from _measure.first_read_outcomes import _hash
+    from _measure.periphery_exposure import _rows
+    db = _db(m, tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "SNAPSHOT_DIR", tmp_path)
+    start = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=10)
+    parent, _ = _transcript(m, tmp_path, monkeypatch, n_turns=8, start=start)
+    sub = parent.with_suffix("") / "subagents" / "agent-agent123.jsonl"
+    sub.parent.mkdir(parents=True)
+    stamp = (start - timedelta(seconds=5)).isoformat() + "Z"
+    reason = "large-file first read served as a code outline"
+    records = [
+        {"type":"assistant", "isSidechain":True, "timestamp":stamp, "message":{"content":[{"type":"tool_use", "name":"Read", "id":"toolu_read1"}]}},
+        {"type":"attachment", "attachment":{"toolUseID":"toolu_read1", "content":reason}},
+        {"type":"user", "isSidechain":True, "timestamp":stamp, "message":{"content":[{"type":"tool_result", "tool_use_id":"toolu_read1", "content":reason}]}},
+    ]
+    for i in range(3):
+        records.append({"type":"assistant", "isSidechain":True, "timestamp":(start + timedelta(minutes=i)).isoformat() + "Z", "requestId":f"sub-{i}", "message":{"model":"claude-opus-5", "usage":{"input_tokens":2, "cache_read_input_tokens":1000, "cache_creation_input_tokens":10}}})
+    sub.write_text("".join(json.dumps(row) + "\n" for row in records))
+    row = _rows("agent123", "toolu_read1", "/private/source.py", "python", "16-64KB", "legacy_skeleton")[0]
+    row.update(parent_session_id=_hash(SID), timestamp_local=(datetime.now().astimezone().replace(tzinfo=None)).isoformat(), original_tokens=1000, compressed_tokens=100)
+    diag = tmp_path / "diagnostics"
+    diag.mkdir()
+    (diag / "first_read_pending.jsonl").write_text(json.dumps(row) + "\n")
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO session_log(date,session_uuid,jsonl_path) VALUES(?,?,?)", (start.date().isoformat(), SID, str(parent)))
+        conn.commit()
+        m._update_counted_cumulative(conn, quiet=True)
+        row = conn.execute("SELECT tokens,reread_tokens,turns_counted FROM counted_reread").fetchone()
+        event_id = conn.execute("SELECT event_id FROM first_read_confirmation_scopes").fetchone()[0]
+        from _measure import counted_subagents
+        monkeypatch.setattr(counted_subagents, "subagent_files", lambda path: [])
+        scope = counted_subagents.SessionScope(m, conn, parent, [(f"ce:{event_id}", stamp)])
+        assert scope.turns_for(f"ce:{event_id}", [("parent",)], []) == ([], [], "subagent")
+        class MissingScope:
+            def execute(self, sql, params=()):
+                if "FROM first_read_confirmation_scopes" in sql:
+                    raise sqlite3.OperationalError("missing table")
+                return conn.execute(sql, params)
+        scope = counted_subagents.SessionScope(m, MissingScope(), parent, [(f"ce:{event_id}", stamp)])
+        assert scope.turns_for(f"ce:{event_id}", [("parent",)], []) == ([], [], "subagent")
+    assert row == (900, 1800, 2)

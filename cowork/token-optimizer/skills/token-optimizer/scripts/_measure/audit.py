@@ -2966,8 +2966,11 @@ def doctor(as_json=None):
             checks.append(("!!", "Trends DB", "exists but unreadable"))
     else:
         checks.append(("!!", "Trends DB", _measure_facade._hint("not found (fix: python3 measure.py collect)")))
-    from _measure.dashboard import _archive_replacement_check
-    _arc = _archive_replacement_check(_measure_facade)
+    try:
+        from archive_verify import replacement_check as _arc_check
+        _arc = _arc_check(_measure_facade.TRENDS_DB)
+    except Exception:
+        _arc = {"status": "unknown"}
     if _arc.get("status") in ("ok", "warning"):
         total += 1
         score += _arc["status"] == "ok"

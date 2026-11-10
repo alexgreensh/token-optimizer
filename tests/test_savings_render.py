@@ -143,11 +143,12 @@ def test_seven_day_card_does_not_project_thirty_day_value():
     assert '7 days tracked' in actions
 
 
-def test_verbosity_estimate_is_included_once():
+def test_verbosity_estimate_is_excluded():
+    baseline = render(fixture()).split('savings-actions')[1].split('savings-history')[0]
     s = fixture(); s['verbosity_steer'] = {'cost_saved_usd': 10, 'events': 2}
+    s['verbosity_output_estimated'] = {'cost_saved_usd': 20, 'events': 2}
     actions = render(s).split('savings-actions')[1].split('savings-history')[0]
-    assert '$1,180' in actions
-    assert 'Other estimates <strong>~$126' in actions
+    assert actions == baseline
 
 
 def test_repeat_read_pricing_note_shows_once_beside_its_figure():

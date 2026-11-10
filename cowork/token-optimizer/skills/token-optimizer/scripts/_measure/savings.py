@@ -1299,8 +1299,7 @@ def _net_realized_savings(rows, reprice_deltas):
     #     reload / working-set re-read never happened, so nothing was metered).
     #   verbosity_steer_measured (savings-truth U5): a before/after of output
     #     with no control. Against matched un-nudged replies it is not a
-    #     reduction, so the estimated tier credits only the net-of-control
-    #     figure (output_reread.summary_pool), never these booked rows.
+    #     reduction, so both booked rows and the control study stay diagnostic.
     # savings_events has no tier column: this pop IS the tier=estimated stamp.
     popped = {}
     for name in ("setup_optimization", "mcp_cap", "hint_followed", "verbosity_steer",
@@ -2391,7 +2390,7 @@ def runway_snapshot(days=None, now=None):
                     _rl = wm.get("resume_lean_estimated") or {}
                     _vs = wm.get("verbosity_steer") or wm.get("verbosity_steer_estimated") or {}
                     _vo = wm.get("verbosity_output_estimated") or {}
-                    est_add = sum(float(p.get("cost_saved_usd", 0.0) or 0.0) for p in (_rl, _vs, _vo))
+                    est_add = sum(float(p.get("cost_saved_usd", 0.0) or 0.0) for p in (_rl,))
                 except Exception:
                     pass
                 try:
@@ -5597,7 +5596,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         # rate: the old way would have produced the same verbose output at the
         # baseline model mix's output rate, so the avoided cost is higher.
         vs_est = (comp or {}).get("verbosity_steer_estimated") or {}
-        vs_measured = float(vs_est.get("cost_saved_usd", 0.0) or 0.0)
+        vs_measured = 0.0  # diagnostic only; no verbosity credit
         out_after = price(0.0, 0.0, 1_000_000.0, after_shares)
         out_before = price(0.0, 0.0, 1_000_000.0, before_shares)
         vs_reprice = (out_before / out_after) if out_after > 0 else 1.0
@@ -6271,7 +6270,7 @@ def _action_savings_components(summary, reread=None):
     """
     _measure_facade = _compat.facade()
     estimates = {
-        key: float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0)
+        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated") else float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
             "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
             "contamination_exit", "handover_rerun", "resume_lean_estimated",
@@ -6541,7 +6540,7 @@ def _savings_since_install():
             for k in (
                 "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
                 "contamination_exit", "handover_rerun", "resume_lean_estimated",
-                "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
+                "checkpoint_restore_estimated",
             )
         )
         # Avoided-search: prefer the hint->read estimate (hint_followed; the
@@ -7072,10 +7071,6 @@ def savings_report(days=None, as_json=None):
         cre_monthly = _money(_est_cents["checkpoint_restore_estimated"])
         print(f"  + est. checkpoint restores: ~${cre_monthly}{per} "
               f"({cr_est.get('events', 0)} restores, inferred working-set re-reads) [estimated]")
-    vo_line = _measure_facade._output_reread.cli_line(summary.get("verbosity_output_estimated"),
-                                     _money(_est_cents["verbosity_output_estimated"]) + per)
-    if vo_line:
-        print(vo_line)
 
     # Estimated tier — FLAGSHIP: contamination-exit avoided rework (cohort).
     ce = summary.get("contamination_exit") or {}

@@ -4550,8 +4550,8 @@ var DB = (function() {
     var mce = s.mcp_cap_estimated || {}, ce = s.contamination_exit || {}, hr = s.handover_rerun || {};
     var rs = s.retrieval_serve || {};
     var rle = s.resume_lean_estimated || {};
-    var vs = s.verbosity_steer || {};
-    var vo = s.verbosity_output_estimated || {};
+    var vs = {};
+    var vo = {};
     var cr = s.checkpoint_restore_estimated || {};
     var cp = s.counted_period || {};
     var rereadMo = cp.available ? mo(cp.reread_usd) : 0;

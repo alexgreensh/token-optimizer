@@ -79,6 +79,9 @@ mkdir -p ~/.claude/_backups/skills-archived-$(date +%Y%m%d)
 
 # Move identified skills
 mv ~/.claude/skills/[skill-name] ~/.claude/_backups/skills-archived-$(date +%Y%m%d)/
+
+# Capture the trim immediately after archiving
+python3 scripts/structural.py tick --force
 ```
 
 A subfolder such as `_archived/` inside `skills/` still loads as a namespace, so move archived skills outside `skills/` entirely.

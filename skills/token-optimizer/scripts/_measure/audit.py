@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
+from . import _compat, structural_ledger
 
 
 def _read_codex_config() -> dict:
@@ -3585,6 +3585,7 @@ def _auto_capture_pristine_baseline():
     snapshot_before.json exists) and never raises. Returns True on capture.
     """
     _measure_facade = _compat.facade()
+    structural_ledger.session_start_tick(_measure_facade)  # per-component history, throttled
     try:
         filepath = _measure_facade.SNAPSHOT_DIR / "snapshot_before.json"
         if filepath.exists():

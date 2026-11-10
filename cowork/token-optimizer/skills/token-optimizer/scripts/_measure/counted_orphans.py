@@ -87,13 +87,19 @@ def group_events(facade, conn, events, resolve=True):
     return groups, direct
 
 
-def apply_scope(scope, direct):
+def apply_scope(scope, direct, parent):
+    scope.unresolved = set()
+    files = {path.resolve(): index for index, path in enumerate(scope.files)}
     for key, path in direct.items():
-        if path == _parent(path):
+        if _parent(path).resolve() != parent.resolve():
+            scope.unresolved.add(key)
+        elif path == _parent(path):
             scope.location.pop(key, None)
-        elif path in scope.files:
-            scope.location[key] = scope.files.index(path)
+        elif path.resolve() in files:
+            scope.location[key] = files[path.resolve()]
             scope.stats["located_subagent"] += 1
+        else:
+            scope.unresolved.add(key)
     return scope
 
 

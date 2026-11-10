@@ -162,3 +162,23 @@ def test_existing_orphan_cache_row_is_repriced_from_proven_agent(m, tmp_path, mo
         again = m._update_counted_cumulative(conn, max_sessions=10**9, deadline_seconds=None, quiet=True)
         assert again['rows_written'] == 0
         assert conn.execute('SELECT reread_tokens FROM counted_reread').fetchone()[0] == 2000
+
+
+def test_orphan_agent_scope_survives_symlinked_projects(m, tmp_path, monkeypatch):
+    db = _db(m, tmp_path, monkeypatch)
+    parent, start = _transcript(m, tmp_path, monkeypatch, n_turns=8)
+    _agent(parent, start, tid='agent-a123')
+    alias = tmp_path / 'alias'
+    alias.mkdir()
+    (alias / 'projects').symlink_to(tmp_path / 'claude' / 'projects', target_is_directory=True)
+    monkeypatch.setattr(m, 'CLAUDE_DIR', alias)
+    ts = _local_iso(start + timedelta(seconds=30))
+    _add_event(db, 'bash_compress_pipeline', 1000, ts, table='compression_events')
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE compression_events SET session_uuid=NULL, session_id='a123', command_pattern='unknown historical command'")
+        conn.execute('INSERT INTO session_log (session_uuid, jsonl_path, date) VALUES (?, ?, ?)',
+                     (parent.stem, str(parent), ts[:10]))
+        m._update_counted_cumulative(conn, max_sessions=10**9, deadline_seconds=None, quiet=True)
+        row = conn.execute('SELECT reread_tokens, pricing_detail FROM counted_reread').fetchone()
+    assert row[0] == 2000
+    assert json.loads(row[1])['scope'] == 'subagent'

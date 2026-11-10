@@ -643,7 +643,6 @@ def _update_counted_cumulative(conn, max_sessions=None,
         for key, ts, tok, cost, model in by_sess.pop(None, []) + by_sess.pop("", []):
             stats["unmeasured_events"] += 1
 
-        # Which sessions need a walk?
         todo = []
         for uuid, evs in by_sess.items():
             path = _measure_facade._counted_session_path(conn, uuid)
@@ -708,11 +707,12 @@ def _update_counted_cumulative(conn, max_sessions=None,
                     media_details.update(conn.execute(
                         "SELECT id, detail FROM savings_events WHERE id IN (%s)"
                         % ",".join("?" * len(part)), part).fetchall())
-            scope = counted_orphans.apply_scope(counted_subagents.SessionScope(_measure_facade, conn, path, [(e[0], e[1]) for e in evs]), {e[0]: orphan_paths[e[0]] for e in evs if e[0] in orphan_paths})
+            scope = counted_orphans.apply_scope(counted_subagents.SessionScope(_measure_facade, conn, path, [(e[0], e[1]) for e in evs]), {e[0]: orphan_paths[e[0]] for e in evs if e[0] in orphan_paths}, path)
             counted_subagents.add_stats(stats, scope.stats)
             event_proofs = {}
             for key, ts, tok, cost, model in sorted(evs, key=lambda e: ((_measure_facade := _compat.facade()), str(e[1]))[1]):
                 ev_dt = _measure_facade._counted_event_utc(ts)
+                if key in scope.unresolved: stats["unmeasured_events"] += 1; continue
                 if ev_dt is None or not turns:
                     if key in stored:
                         _measure_facade._counted_mark_incomplete(conn, key, _measure_facade._counted_pricing_detail(stored[key].get("pricing_detail")), proof)

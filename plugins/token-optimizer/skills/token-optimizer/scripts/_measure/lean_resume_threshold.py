@@ -1,10 +1,18 @@
-"""Find a session-specific counterfactual auto-compaction threshold."""
+"""Find a session-specific counterfactual auto-compaction threshold.
+
+``resolve(model, largest)`` (optional) returns the user's effective compaction
+settings for a model as ``{"tokens", "model_window"}`` (env >
+modelSettings.autoCompactWindow > autoCompactWindow > model default, see
+_measure/audit._resolve_compact_window). Without it, a context-size heuristic
+stands in: 1M window when the session passed 200K, else 200K.
+"""
 import json
 
 
 def _scan(path, prompt_tokens):
     observed = []
     largest = 0
+    model = None
     with open(path, encoding="utf-8", errors="replace") as stream:
         for line in stream:
             try:
@@ -24,32 +32,45 @@ def _scan(path, prompt_tokens):
                 usage = message.get("usage") if isinstance(message, dict) else None
                 if isinstance(usage, dict):
                     largest = max(largest, prompt_tokens(usage))
-    return observed, largest
+                    model = message.get("model") or model
+    return observed, largest, model
 
 
-def _window(largest):
+def _resolved(largest, model, resolve, key):
+    if resolve is not None:
+        try:
+            value = (resolve(model, largest) or {}).get(key)
+            if isinstance(value, (int, float)) and value > 0:
+                return int(value)
+        except Exception:
+            pass
     return 967000 if largest > 200000 else 167000
 
 
-def window_for(context_tokens):
-    """Auto-compaction ceiling for a session that reached ``context_tokens``."""
-    return _window(int(context_tokens or 0))
-
-
-def threshold(path, prompt_tokens):
+def threshold(path, prompt_tokens, resolve=None):
     try:
-        observed, largest = _scan(path, prompt_tokens)
+        observed, largest, model = _scan(path, prompt_tokens)
     except OSError:
         return None, None
     if observed:
         return min(observed), "observed_auto"
-    return _window(largest), "fallback"
+    return _resolved(largest, model, resolve, "tokens"), "fallback"
 
 
-def window_limit(path, prompt_tokens):
-    """Hard ceiling from the session's context window, ignoring observed compactions."""
+def window_limit(path, prompt_tokens, resolve=None):
+    """Hard ceiling: the session model's context window, ignoring observed compactions."""
     try:
-        _observed, largest = _scan(path, prompt_tokens)
+        _observed, largest, model = _scan(path, prompt_tokens)
     except OSError:
         return None
-    return _window(largest)
+    return _resolved(largest, model, resolve, "model_window")
+
+
+def window_for(context_tokens, model=None, resolve=None):
+    """Context-window ceiling for a session that reached ``context_tokens``."""
+    return _resolved(int(context_tokens or 0), model, resolve, "model_window")
+
+
+def compaction_window(context_tokens, model=None, resolve=None):
+    """The user's effective auto-compaction point for a session's model."""
+    return _resolved(int(context_tokens or 0), model, resolve, "tokens")

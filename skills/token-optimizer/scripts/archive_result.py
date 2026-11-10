@@ -1703,15 +1703,12 @@ def archive_result(quiet: bool = False) -> None:
         original_tokens = int(original_char_count / CODE_CHARS_PER_TOKEN)
         replacement_tokens = int(len(replacement) / CODE_CHARS_PER_TOKEN)
         tokens_saved = max(0, original_tokens - replacement_tokens)
-        _log_savings_event(
-            "tool_archive",
-            tokens_saved,
-            session_id=session_id,
-            detail=(
-                f"replaced {tool_name} "
-                f"({original_char_count:,} chars -> {len(replacement):,} chars)"
-            ),
-        )
+        detail = f"replaced {tool_name} ({original_char_count:,} chars -> {len(replacement):,} chars)"
+        _log_savings_event("tool_archive", tokens_saved, session_id=session_id, detail=detail)
+        import archive_verify  # read back earlier replacements from the transcript, then queue this one
+        archive_verify.verify(TRENDS_DB, session_id)
+        if tokens_saved > 0: archive_verify.record(TRENDS_DB, session_id, raw_tool_use_id, tool_name,
+                                                   original_char_count, len(replacement), hook_input.get("transcript_path"), detail)
         output = json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",

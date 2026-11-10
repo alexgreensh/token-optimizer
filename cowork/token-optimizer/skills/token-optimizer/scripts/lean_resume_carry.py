@@ -192,6 +192,25 @@ def _walk(path, ev_floor, avoided, m, threshold):
     return turns, stopped_by
 
 
+def _resolver(m):
+    """resolve(model, largest) -> the user's effective compaction settings for a model.
+
+    Transcripts name the model without the [1m] tag, so a session seen past
+    200K is resolved as the 1M variant of its model.
+    """
+    def resolve(model, largest):
+        model = str(model or "") or None
+        out = m._resolve_compact_window(model)
+        if largest > 200000 and int(out.get("model_window") or 0) < 1_000_000 and model and "[1m]" not in model:
+            out = m._resolve_compact_window(model + "[1m]")
+        if largest > int(out.get("model_window") or 0):
+            # The session itself proves a larger window than the model table knows.
+            out = dict(out, model_window=1_000_000,
+                       tokens=out["tokens"] if out.get("user_override") else m._COMPACT_WINDOW_1M_DEFAULT)
+        return out
+    return resolve
+
+
 def _card_for(m, model, prompt_tokens, tier_data, fallback_key):
     card = None
     try:
@@ -240,7 +259,7 @@ def _score_event(row, m, tier_data):
         out["stopped_by"] = "bad_timestamp"
         return out
     ev_floor = ev_dt.replace(microsecond=0)
-    threshold, source = lean_resume_threshold.threshold(path, lambda usage: _prompt_tokens(m, usage))
+    threshold, source = lean_resume_threshold.threshold(path, lambda usage: _prompt_tokens(m, usage), _resolver(m))
     if threshold is None:
         out["stopped_by"] = "unreadable"
         return out
@@ -424,19 +443,22 @@ def _score_verified_event(row, m, tier_data, compactions=None):
     if avoided <= 0:
         return result
     from _measure import compaction_survival
+    old_model, old_largest = (old_latest[1], old_latest[2]) if old_latest else (None, 0)
     if compactions is None:
         compactions = compaction_survival.user_history(m, ev)
     survival = compaction_survival.for_event(compactions, ev, avoided)
     if survival.usable:
         # The counterfactual is the old session continuing: its context window
         # is 1M when either session (or the avoided reload itself) passed 200K.
-        sizes = [lean_resume_threshold.window_limit(p, lambda usage: _prompt_tokens(m, usage)) for p in (new_path, old_path)]
-        threshold = None if None in sizes else max(sizes + [lean_resume_threshold.window_for(avoided)])
+        sizes = [lean_resume_threshold.window_limit(p, lambda usage: _prompt_tokens(m, usage), _resolver(m)) for p in (new_path, old_path)]
+        threshold = None if None in sizes else max(sizes + [lean_resume_threshold.window_for(avoided, old_model, _resolver(m))])
         source = 'user_compaction_survival'
     else:
-        threshold, source = lean_resume_threshold.threshold(new_path, lambda usage: _prompt_tokens(m, usage))
-        if threshold is not None and threshold > 500000:
-            threshold, source = 500000, 'old_session_500k_cap'
+        # Too little history: the old session would have compacted at the
+        # user's effective compaction window for its model (env, then
+        # modelSettings, then autoCompactWindow, then the model default).
+        threshold = lean_resume_threshold.compaction_window(max(avoided, old_largest), old_model, _resolver(m))
+        source = 'effective_compact_window'
     if threshold is None:
         return result
     turns, stopped = _walk(new_path, ev.replace(microsecond=0), avoided, m, threshold)

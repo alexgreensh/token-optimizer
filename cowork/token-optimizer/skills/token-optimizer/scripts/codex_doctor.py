@@ -41,6 +41,7 @@ REQUIRED_FILES = (
     "skills/token-optimizer/scripts/bash_compress.py",
     "skills/token-optimizer/scripts/context_intel.py",
     "skills/token-optimizer/scripts/archive_result.py",
+    "skills/token-optimizer/scripts/archive_verify.py",
     "skills/token-optimizer/scripts/measure.py",
     "skills/token-optimizer/scripts/outline.py",
     "skills/token-optimizer/scripts/runtime_env.py",

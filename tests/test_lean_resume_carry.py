@@ -213,14 +213,27 @@ def test_counterfactual_compaction_uses_lowest_observed_auto_threshold(m, tmp_pa
     assert result["threshold_source_counts"]["observed_auto"] == 1
 
 
-@pytest.mark.parametrize("context,threshold", [(100000, 167000), (201000, 967000)])
-def test_counterfactual_fallback_depends_on_session_context(m, tmp_path, monkeypatch, context, threshold):
+@pytest.mark.parametrize("model,context,env,settings,threshold", [
+    ("claude-sonnet-4-5", 100000, {}, {}, 200000),                      # 200K model default
+    ("claude-opus-5", 100000, {}, {}, 967000),                          # 1M user who never passed 200K
+    ("claude-sonnet-4-5", 201000, {}, {}, 967000),                      # the session proves a 1M window
+    ("claude-opus-5", 100000, {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000"}, {}, 300000),
+    ("claude-opus-5", 100000, {}, {"autoCompactWindow": 400000}, 400000),
+    ("claude-opus-5", 100000, {}, {"modelSettings": {"claude-opus-5": {"autoCompactWindow": 450000}}}, 450000),
+    ("claude-opus-5", 100000, {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"}, {}, 483500),
+])
+def test_counterfactual_fallback_is_the_users_effective_window(m, tmp_path, monkeypatch, model, context, env, settings, threshold):
     mod, carry = m
+    for key in ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(mod, "_read_settings_json", lambda: (settings, None))
     _db(mod, tmp_path, monkeypatch, [_event_row(tokens=1000)])
     _transcript(mod, tmp_path, monkeypatch, [
-        _turn("2026-01-01T09:00:00Z", "before", context),
-        _turn("2026-01-01T10:00:05Z", "r1", threshold - 1001),
-        _turn("2026-01-01T10:00:10Z", "r2", threshold - 1000),
+        _turn("2026-01-01T09:00:00Z", "before", context, model=model),
+        _turn("2026-01-01T10:00:05Z", "r1", threshold - 1001, model=model),
+        _turn("2026-01-01T10:00:10Z", "r2", threshold - 1000, model=model),
     ])
     result = carry.summary(days=30, since="2020-01-01")
     item = result["event_details"][0]
@@ -234,9 +247,9 @@ def test_larger_streamed_chunk_retracts_turn_at_compaction_boundary(m, tmp_path,
     mod, carry = m
     _db(mod, tmp_path, monkeypatch, [_event_row(tokens=1000)])
     _transcript(mod, tmp_path, monkeypatch, [
-        _turn("2026-01-01T10:00:05Z", "r1", 165000),
-        _turn("2026-01-01T10:00:10Z", "r2", 165999),
-        _turn("2026-01-01T10:00:10Z", "r2", 166000),
+        _turn("2026-01-01T10:00:05Z", "r1", 198000, model="claude-sonnet-4-5"),
+        _turn("2026-01-01T10:00:10Z", "r2", 198999, model="claude-sonnet-4-5"),
+        _turn("2026-01-01T10:00:10Z", "r2", 199000, model="claude-sonnet-4-5"),
     ])
     item = carry.summary(days=30, since="2020-01-01")["event_details"][0]
     assert item["turns"] == 1
@@ -279,16 +292,23 @@ def test_verified_summary_credits_only_delivered_stopped_session(m, tmp_path, mo
     assert carry.verified_summary(days=30)['events'] == 0
 
 
-def test_verified_carry_stops_at_old_sessions_500k_limit(m, tmp_path, monkeypatch):
+def test_verified_carry_thin_history_stops_at_users_compaction_window(m, tmp_path, monkeypatch):
+    """No fixed 500K: a user whose window is 300K stops there, a default 1M user does not."""
     mod, carry = m
     receiver = 'efab5678-1111-2222-3333-444455556666'
-    old = _transcript(mod, tmp_path, monkeypatch, [_turn('2026-01-01T09:50:00Z', 'old1', 300000)])
+    old = _transcript(mod, tmp_path, monkeypatch, [_turn('2026-01-01T09:50:00Z', 'old1', 120000)])
     recv = old.parent / (receiver + '.jsonl')
     injection = json.dumps({'type': 'attachment', 'timestamp': '2026-01-01T10:00:00Z', 'attachment': {'type': 'hook_additional_context', 'content': '[Token Optimizer] Cold-resume lean (session abcd1234, 2026-01-01): context'}})
     recv.write_text('\n'.join([injection, _turn('2026-01-01T10:00:05Z', 'new1', 150000), _turn('2026-01-01T10:00:10Z', 'new2', 210000)]))
     row = {'id': 1, 'timestamp': '2026-01-01T10:00:00', 'session_id': SID, 'session_uuid': SID,
-           'tokens_saved': 300000, 'cost_saved_usd': 1, 'model': 'opus', 'detail': 'warm cache-read receiver=' + receiver}
+           'tokens_saved': 120000, 'cost_saved_usd': 1, 'model': 'opus', 'detail': 'warm cache-read receiver=' + receiver}
     tier = mod.PRICING_TIERS[mod._load_pricing_tier()]
+    monkeypatch.setattr(mod, "_read_settings_json", lambda: ({}, None))
+    for key in ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"):
+        monkeypatch.delenv(key, raising=False)
     result = carry._score_verified_event(row, mod, tier)
-    assert result['eligible'] and result['turns'] == 1 and result['carry_tokens'] == 300000
+    assert result['eligible'] and result['turns'] == 2 and result['threshold_source'] == 'effective_compact_window'
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "300000")
+    result = carry._score_verified_event(row, mod, tier)
+    assert result['turns'] == 1 and result['carry_tokens'] == 120000
     assert result['stopped_by'] == 'counterfactual_compaction'

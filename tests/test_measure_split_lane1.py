@@ -198,16 +198,17 @@ def _quiet(*_):
 def test_rerun_is_a_no_op_because_tree_matches_the_replay_byte_for_byte(mover, frozen, base):
     inputs, outputs, root = mover.replay(base, frozen, _quiet)
     assert set(outputs) == set(mover.WRITTEN) and root.is_relative_to(mover.REPLAY_ROOT)
-    # The aggregate facade also carries the other lanes, so run() refuses naming
-    # it alone; every lane-owned file must still equal the replay byte for byte
-    # (the facade half is proven by the merge oracle, decisions-U9 D1).
+    # The aggregate facade and current pricing intentionally differ from the
+    # historical replay; every other lane-owned file remains byte-identical.
+    pricing = 'skills/token-optimizer/scripts/_measure/pricing.py'
     for relative in mover.WRITTEN[1:]:
-        assert (REPO / relative).read_bytes() == outputs[relative], relative
+        matches = (REPO / relative).read_bytes() == outputs[relative]
+        assert matches is (relative != pricing), relative
     with pytest.raises(mover.Refused) as refused:
         mover.run(dry_run=True, log=_quiet, frozen=frozen, base=base)
     listed = [line.split(' (replay: ')[0].strip() for line in str(refused.value).splitlines()
               if '(replay: ' in line]
-    assert listed == [mover.WRITTEN[0]]
+    assert listed == [mover.WRITTEN[0], pricing]
 
 
 def test_untouched_inputs_receive_exactly_the_replay(mover, frozen, base, tmp_path):
@@ -300,12 +301,13 @@ def test_completed_state_hole_refuses_without_writes(mover, frozen, base, tmp_pa
     with pytest.raises(mover.Refused, match='differs from the replayed move') as refused:
         mover.run(scripts, fragments, log=_quiet, frozen=frozen, base=base)
     assert relative in str(refused.value)
-    # The aggregate facade differs from the single-lane replay by construction, so
-    # the differing list always heads with it, then the planted hole.
+    # Current routing intentionally changes pricing; the planted hole must
+    # still be reported alongside the known facade and pricing differences.
     replay_root = mover.replay(base, frozen, _quiet)[2]
-    expected = [f'  {mover.WRITTEN[0]} (replay: {replay_root / mover.WRITTEN[0]})']
-    if relative != mover.WRITTEN[0]:
-        expected.append(f'  {relative} (replay: {replay_root / relative})')
+    pricing = 'skills/token-optimizer/scripts/_measure/pricing.py'
+    changed = {mover.WRITTEN[0], pricing, relative}
+    expected = [f'  {path} (replay: {replay_root / path})'
+                for path in mover.WRITTEN if path in changed]
     assert [line for line in str(refused.value).splitlines() if '(replay: ' in line] == expected
     if diagnostic:
         assert diagnostic in str(refused.value)

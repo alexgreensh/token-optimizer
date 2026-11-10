@@ -10,7 +10,7 @@ import measure_split as split
 
 PASS1_PROVIDER_CEILING = 9000
 # Pure helper modules: imported by domain modules, never facade providers.
-HELPER_NAMES = ('dashboard_history', 'weekly_activity', 'headline', 'structural_ledger', 'structural_listing', 'structural_report', 'structural_seed', 'structural_value', 'counted_pricing_v5', 'transcript_backfill', 'counted_subagents', 'lean_resume_threshold', 'output_reread', 'session_effect', 'rework_metrics', 'periphery_exposure', 'structure_funnel', 'first_read_outcomes')
+HELPER_NAMES = ('dashboard_history', 'weekly_activity', 'headline', 'structural_ledger', 'structural_listing', 'structural_report', 'structural_seed', 'structural_value', 'counted_pricing_v5', 'transcript_backfill', 'counted_subagents', 'lean_resume_threshold', 'output_reread', 'session_effect', 'rework_metrics', 'periphery_exposure', 'structure_funnel', 'setup_attachment_counter', 'first_read_outcomes', 'setup_budget_monitor', 'setup_connector_ledger')
 HELPERS = {name + '.py' for name in HELPER_NAMES}
 
 def check(root=split.REPO):

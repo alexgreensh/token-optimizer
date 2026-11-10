@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, dashboard_history, structural_ledger
+from . import _compat, dashboard_history, structural_ledger, archive_health
 
 def _daemon_is_running():
     """Return True iff the dashboard daemon identity probe passes.
@@ -2531,7 +2531,7 @@ def generate_standalone_dashboard(days=None, quiet=None, force=None):
         "manage": management,
         "hooks": hook_status,
         "savings": savings_data,
-        "archive_replacement_check": _archive_replacement_check(_measure_facade),
+        "archive_replacement_check": archive_health.replacement_check(_measure_facade),
         "cache_health": cache_health,
         "standalone": True,
         "auto_plan": True,
@@ -4394,15 +4394,3 @@ def _status_bar_finite(v):
         return [_measure_facade._status_bar_finite(x) for x in v]
     return v
 
-
-def _archive_replacement_check(facade):
-    """Health of archive replacements, read back from transcripts (archive_verify)."""
-    try:
-        import archive_verify
-        conn = facade.sqlite3.connect(facade.TRENDS_DB.resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0)
-        try:
-            return archive_verify.health(conn)
-        finally:
-            conn.close()
-    except Exception:
-        return {"status": "unknown", "verified": 0, "full": 0, "full_streak": 0}

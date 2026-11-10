@@ -151,7 +151,9 @@
     "v5",
     "validate-impact",
     "verbosity-steer",
-    "version"
+    "version",
+    "coverage-replay",
+    "file-refetch"
   ],
   "dispatch_branches": [
     {
@@ -2060,6 +2062,22 @@
       "lhs": "a",
       "values": [
         "--session"
+      ]
+    },
+    {
+      "line": 63864,
+      "expression": "args[0] == 'coverage-replay'",
+      "lhs": "args[0]",
+      "values": [
+        "coverage-replay"
+      ]
+    },
+    {
+      "line": 63868,
+      "expression": "args[0] == 'file-refetch'",
+      "lhs": "args[0]",
+      "values": [
+        "file-refetch"
       ]
     }
   ],
@@ -4311,6 +4329,20 @@
         "__unknown__"
       ],
       "line": null
+    },
+    {
+      "expression": "args[0] == 'coverage-replay'",
+      "argv": [
+        "coverage-replay"
+      ],
+      "line": 63864
+    },
+    {
+      "expression": "args[0] == 'file-refetch'",
+      "argv": [
+        "file-refetch"
+      ],
+      "line": 63868
     }
   ],
   "hooks": [
@@ -19004,6 +19036,64 @@
       "stdout": "cli-cursor-home---help/stdout",
       "stderr": "cli-cursor-home---help/stderr",
       "side_effects": "cli-cursor-home---help/effects.json"
+    },
+    {
+      "id": "cli-coverage-replay",
+      "entry": "cli",
+      "argv": [
+        "coverage-replay"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-coverage-replay/stdout",
+      "stderr": "cli-coverage-replay/stderr",
+      "side_effects": "cli-coverage-replay/effects.json"
+    },
+    {
+      "id": "cli-coverage-replay---json",
+      "entry": "cli",
+      "argv": [
+        "coverage-replay",
+        "--json"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-coverage-replay---json/stdout",
+      "stderr": "cli-coverage-replay---json/stderr",
+      "side_effects": "cli-coverage-replay---json/effects.json"
+    },
+    {
+      "id": "cli-file-refetch",
+      "entry": "cli",
+      "argv": [
+        "file-refetch"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-file-refetch/stdout",
+      "stderr": "cli-file-refetch/stderr",
+      "side_effects": "cli-file-refetch/effects.json"
+    },
+    {
+      "id": "cli-file-refetch---json",
+      "entry": "cli",
+      "argv": [
+        "file-refetch",
+        "--json"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-file-refetch---json/stdout",
+      "stderr": "cli-file-refetch---json/stderr",
+      "side_effects": "cli-file-refetch---json/effects.json"
     }
   ]
 }

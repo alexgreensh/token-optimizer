@@ -2,7 +2,9 @@
 import json
 import sqlite3
 import statistics
+import time
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -115,6 +117,12 @@ def transcript(path):
 
 def collect(db_path, data_dir):
     """Read parent transcripts and trim dates; never write to either source."""
+    return _collect_cached(str(db_path), str(data_dir), int(time.monotonic() // 60))
+
+
+@lru_cache(maxsize=4)
+def _collect_cached(db_path, data_dir, minute):
+    # Dashboard refreshes can share one read-only scan for up to one minute.
     from . import structural_ledger
     db_path = Path(db_path)
     if not db_path.is_file():

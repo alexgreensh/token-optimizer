@@ -138,12 +138,14 @@ def _wilson(k, n):
     return [max(0.0, center - radius), min(1.0, center + radius)]
 
 
-def compare(observations):
+def compare(observations, treatment="map"):
     """Match independent sessions within exact cohort, project and task labels."""
+    if treatment not in ("map", "legacy_skeleton"):
+        raise ValueError("unknown treatment")
     groups = defaultdict(lambda: {"map": [], "no_map": []})
     seen_sessions = set()
     for row in observations:
-        if not row.get("confirmed") or not row.get("complete") or row.get("arm") not in ("map", "no_map"):
+        if not row.get("confirmed") or not row.get("complete") or row.get("arm") not in (treatment, "no_map"):
             continue
         if not all(row.get(k) for k in ("cohort", "project", "task_type", "session_id", "tool_use_id")):
             continue
@@ -151,7 +153,8 @@ def compare(observations):
         if session_key in seen_sessions:
             continue
         seen_sessions.add(session_key)
-        groups[(row["cohort"], row["project"], row["task_type"])][row["arm"]].append(
+        group_arm = "map" if row["arm"] == treatment else "no_map"
+        groups[(row["cohort"], row["project"], row["task_type"])][group_arm].append(
             (row["session_id"], bool(row.get("harm"))))
     pairs = defaultdict(list)
     used_sessions = set()
@@ -175,7 +178,7 @@ def compare(observations):
         off = sum(b for _, b in values)
         difference = (on - off) / n
         radius = math.sqrt(2 * math.log(40) / n)
-        result[cohort] = {"pairs": n, "map_harm": on, "control_harm": off,
+        result[cohort] = {"treatment": treatment, "pairs": n, "map_harm": on, "control_harm": off,
                           "map_rate": on / n, "control_rate": off / n,
                           "map_interval_95": _wilson(on, n), "control_interval_95": _wilson(off, n),
                           "difference": difference,
@@ -220,7 +223,7 @@ def analyse_sessions(sessions, exposures, window=10):
     return {"unique_observations": len(observations),
             "unconfirmed": sum(not x["confirmed"] for x in observations),
             "censored": sum(x["confirmed"] and not x["complete"] for x in observations),
-            "cohorts": compare(observations)}
+            "cohorts": compare(observations), "target_outline_cohorts": compare(observations, treatment="legacy_skeleton")}
 
 
 def _read_jsonl(path):

@@ -66,6 +66,15 @@ def test_legacy_skeleton_requires_denial_reason_and_hook_marker():
     assert not inspect([rows[0], denied, rows[-1]], {"tool_use_id": hashed("read"), "arm": "legacy_skeleton"}, window=1)["confirmed"]
 
 
+def test_target_outline_outcomes_are_compared_separately():
+    base = {"cohort": "python|16-64KB", "project": "p", "task_type": "t", "confirmed": True, "complete": True}
+    rows = [{**base, "arm": "legacy_skeleton", "session_id": "a", "tool_use_id": "1", "harm": True},
+            {**base, "arm": "no_map", "session_id": "b", "tool_use_id": "2", "harm": False},
+            {**base, "arm": "map", "session_id": "c", "tool_use_id": "3", "harm": False}]
+    assert compare(rows, treatment="legacy_skeleton")["python|16-64KB"]["map_harm"] == 1
+    assert compare(rows)["python|16-64KB"]["map_harm"] == 0
+
+
 def test_parallel_tools_in_exposure_turn_are_not_followup():
     rows = [assistant("m0", tool("t1", "Bash", command="pytest"), tool("read", "Read", file_path="/a.py")),
             result("read"), result("t1", True), assistant("m1", tool("x", "Read", file_path="/b.py"))]

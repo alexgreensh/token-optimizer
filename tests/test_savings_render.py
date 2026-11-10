@@ -25,7 +25,8 @@ const tokensSavedCardHtml = () => '';
 const isCodex = false;
 const runtimeLabel = 'Claude Code';
 '''
-    script = prefix + body + '\nrenderSavings(); process.stdout.write(el.innerHTML);'
+    helper = html[html.index('function tokenSplitText('):html.index('function hostRefreshHtml(')]
+    script = prefix + helper + body + '\nrenderSavings(); process.stdout.write(el.innerHTML);'
     # Windows limits CreateProcess command lines to about 32 KiB. Send the
     # extracted renderer over stdin so the test exercises the real code there.
     result = subprocess.run(

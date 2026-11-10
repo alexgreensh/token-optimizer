@@ -1233,7 +1233,7 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
         savings_data["counted_period"] = _measure_facade._counted_cumulative_summary(days=days)
     except Exception:
         savings_data["counted_period"] = {"available": False}
-    savings_data["token_headline"] = headline.token_headline(savings_data)
+    headline.attach(savings_data, days)
     _measure_facade._apply_counted_oneshot_pricing(savings_data, savings_data["counted_period"])
     savings_data["action_savings"] = _measure_facade._action_savings_components(
         savings_data, savings_data["counted_period"])
@@ -6710,7 +6710,7 @@ def savings_report(days=None, as_json=None):
     except Exception:
         summary["counted_period"] = {"available": False}
     summary["reread_avoided"] = summary["counted_period"]
-    summary["token_headline"] = headline.token_headline(summary)
+    headline.attach(summary, days)
     _measure_facade._apply_counted_oneshot_pricing(summary, summary["counted_period"])
     summary["action_savings"] = _measure_facade._action_savings_components(
         summary, summary["reread_avoided"])
@@ -6756,7 +6756,7 @@ def savings_report(days=None, as_json=None):
     print("\n  Token Optimizer Savings Report")
     print(f"  {'=' * 58}")
     print(f"  Period: Last {days} days ({start} to {end})")
-    print(headline.cli_headline(summary["token_headline"], days))
+    print(headline.cli_headline(summary["token_headline"], days, summary.get("session_effect")))
 
     # Headline transformation. With the session-weight pool live it is the
     # work-normalized (per-API-call, constant-price) figure; otherwise the legacy

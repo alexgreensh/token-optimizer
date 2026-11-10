@@ -2405,6 +2405,21 @@ function memCountSuffix(mr) { return mr && mr.scan_partial ? '+' : ''; }
 function isNoInstructionHost(data) {
   return !!data && (data.runtime === 'cursor' || data.runtime === 'antigravity');
 }
+// U8: the removed pool is split by what it is, never called "fresh" (it holds
+// resume and output tokens). Old payloads without the split keep one total.
+function tokenSplitText(h, fmt) {
+  var parts = [];
+  if (h.context_removed_tokens != null) {
+    parts.push('~' + fmt(h.context_removed_tokens || 0) + ' context removed');
+    if (h.output_not_generated_tokens) parts.push('~' + fmt(h.output_not_generated_tokens) + ' output not generated');
+    if (h.reload_avoided_tokens) parts.push('~' + fmt(h.reload_avoided_tokens) + ' reload avoided');
+  } else {
+    parts.push('~' + fmt(h.removed_tokens || 0) + ' removed');
+  }
+  parts.push(h.reread_available ? '~' + fmt(h.reread_tokens || 0) + ' re-reads avoided' : 're-reads unavailable');
+  return parts.join(' &middot; ');
+}
+
 function hostRefreshHtml(data) {
   return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard --user</span>');
 }
@@ -4365,7 +4380,7 @@ var DB = (function() {
         : 'Context &times;' + rw.context_multiplier + ' and ' + rwRoutingMethod + ' give a per-token throughput multiplier, shown separately from the window headroom and dollar figures.';
       rwEfficiencyMethod += rwRoutingScope;
       var rwTokenFloorDetail = (rwTokenFloorPct !== null)
-        ? '<div class="plain-line">Estimated <strong>~' + fn(rwSavedTokens) + '</strong> tokens kept out of context &middot; ~' + fn((rw.token_headline || {}).removed_tokens || 0) + ' fresh &middot; ' + ((rw.token_headline || {}).reread_available ? '~' + fn(rw.token_headline.reread_tokens) + ' cached' : 'cached unavailable') + ', roughly ' + rwTokenFloorPct + '% of would-be input and output including cache.' + (rw.tokens_consumed_basis_complete === false ? ' Traffic coverage is incomplete.' : '') + '</div>'
+        ? '<div class="plain-line">Estimated <strong>~' + fn(rwSavedTokens) + '</strong> tokens kept out of context &middot; ' + tokenSplitText(rw.token_headline || {}, fn) + ', roughly ' + rwTokenFloorPct + '% of would-be input and output including cache.' + (rw.tokens_consumed_basis_complete === false ? ' Traffic coverage is incomplete.' : '') + '</div>'
         : '';
       var rwTokenFloorMethod = (rwTokenFloorPct !== null)
         ? 'Estimated savings on ' + fn(rwSpentTokens) + ' input and output tokens, including cache reads and writes; repeat reads assume the same trajectory until compaction.'
@@ -4806,7 +4821,7 @@ var DB = (function() {
     html += '<div class="card savings-actions" style="flex:2;min-width:min(100%,320px);padding:var(--s-4);">' +
       '<div class="label">Action savings &middot; ' + periodLabel + '</div>' +
       '<div class="savings-amount">' + (exactCents ? moneyCents(exactCents.total) : money(periodValue(heroAmt))) + '<span class="savings-unit"> logged + estimated</span></div>' +
-      (s.token_headline ? '<p class="plain-line">~' + fmtTok(s.token_headline.total_tokens) + ' tokens kept out of context &middot; ~' + fmtTok(s.token_headline.removed_tokens) + ' fresh &middot; ' + (s.token_headline.reread_available ? '~' + fmtTok(s.token_headline.reread_tokens) + ' cached' : 'cached unavailable') + ' (estimated)' + (s.token_headline.refresh_incomplete_events || s.token_headline.unmeasured_events ? ', incomplete coverage' : '') + '.</p>' : '') +
+      (s.token_headline ? '<p class="plain-line">~' + fmtTok(s.token_headline.total_tokens) + ' tokens kept out of context &middot; ' + tokenSplitText(s.token_headline, fmtTok) + ' (estimated)' + (s.token_headline.refresh_incomplete_events || s.token_headline.unmeasured_events ? ', incomplete coverage' : '') + '.</p>' : '') +
       '<div class="savings-split"><span>Logged actions <strong>' + (exactCents ? moneyCents(exactCents.logged) : money(periodValue(measuredMo))) + '</strong></span>' +
         '<span>Repeat reads avoided <strong>' +
           (actionSavings && actionSavings.reread_available === false ? 'Unavailable' :

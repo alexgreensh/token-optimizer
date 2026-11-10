@@ -24,7 +24,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta
 
-from . import _compat
+from . import _compat, structural_dedupe as dedupe
 
 
 def _hash63(text):
@@ -98,17 +98,18 @@ def _session_start(metrics_json, first_day):
 
 
 def load_sessions(conn):
-    """owner_hash -> (project, start_epoch, foreign) for every session row."""
+    """owner_hash -> (project, start_epoch, foreign), one canonical row per real
+    session: copies of a session (uuid, else first request) resolve to the most
+    complete one, so scope comes from a single row (see structural_dedupe)."""
     out = {}
     cloud = cloud_sessions(conn)
-    for uuid, path, project, metrics, first_day, date in conn.execute(
-            "SELECT session_uuid, jsonl_path, project, daily_metrics_json, first_activity_day, date "
-            "FROM session_log"):
-        start = _session_start(metrics, first_day or date)
-        foreign = proven_foreign(uuid, path, cloud)
-        for key in (uuid, path):
+    _, canon = dedupe.canonical_sessions(conn, lambda uuid, path: proven_foreign(uuid, path, cloud))
+    for path, win in canon.items():
+        value = (win["project"] or "", _session_start(win["metrics"], win["first_day"] or win["date"]),
+                 win["foreign"])
+        for key in (win["uuid"], path):
             if key:
-                out[_hash63(key)] = (project or "", start, foreign)
+                out[_hash63(key)] = value
     return out
 
 
@@ -160,7 +161,9 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False)
             continue
         project, start, foreign = sess
         card = card_fn(model, (cr or 0) + (cc or 0) + (inp or 0))
-        n = int(calls or 1)
+        n = dedupe.request_weight(calls)
+        if not n:
+            continue  # duplicate share of a request another session copy already owns
         for scope, group in by_scope.items():
             if foreign and scope == "global":
                 continue

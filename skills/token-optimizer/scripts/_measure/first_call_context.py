@@ -22,7 +22,7 @@ def observe(rows, estimate):
     """Return estimates and measured API input for the first parent call only."""
     parts = defaultdict(int)
     first_user = False
-    hook_owners = {}
+    hook_outputs = []
     for row in rows:
         if row.get("isSidechain"):
             continue
@@ -54,7 +54,14 @@ def observe(rows, estimate):
         typ = a.get("type")
         if typ == "hook_success":
             command = str(a.get("command") or "").lower()
-            hook_owners[a.get("toolUseID")] = "token_optimizer" if "token-optimizer" in command else "other_or_unknown"
+            if any(name in command for name in ("token-optimizer", "token_optimizer", "sessionstart_runner", "userpromptsubmit_runner")):
+                try:
+                    output = json.loads(a.get("stdout") or "{}")
+                    context = (output.get("hookSpecificOutput") or {}).get("additionalContext")
+                    if isinstance(context, str) and context:
+                        hook_outputs.append((a.get("hookEvent"), context))
+                except (ValueError, TypeError, AttributeError):
+                    pass
         mapping = {"skill_listing": ("skills", "content"),
                    "deferred_tools_delta": ("mcp_tools", "addedLines"),
                    "mcp_instructions_delta": ("mcp_instructions", "addedBlocks"),
@@ -79,9 +86,13 @@ def observe(rows, estimate):
         elif typ == "hook_additional_context":
             event = a.get("hookEvent")
             if event in ("SessionStart", "UserPromptSubmit"):
-                # The hook name is evidence, not a path or content to expose.
-                owner = hook_owners.get(a.get("toolUseID"), "other_or_unknown")
-                parts[event + "_" + owner] += estimate(_text(a.get("content")))
+                content = _text(a.get("content"))
+                for item in hook_outputs[:]:
+                    if item[0] == event and item[1] in content:
+                        parts[event + "_token_optimizer"] += estimate(item[1])
+                        content = content.replace(item[1], "", 1)
+                        hook_outputs.remove(item)
+                parts[event + "_other_or_unknown"] += estimate(content)
     return None
 
 

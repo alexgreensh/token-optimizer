@@ -7,13 +7,13 @@ def test_observes_first_parent_call_and_private_component_sizes():
     rows = [
         {"type": "user", "message": {"role": "user", "content": "hello"}},
         {"type": "attachment", "attachment": {"type": "skill_listing", "content": "abcdefgh"}},
-        {"type": "attachment", "attachment": {"type": "hook_success", "toolUseID": "1", "command": "token-optimizer hook"}},
-        {"type": "attachment", "attachment": {"type": "hook_additional_context", "toolUseID": "1", "hookEvent": "SessionStart", "content": [{"text": "abc"}]}},
+        {"type": "attachment", "attachment": {"type": "hook_success", "toolUseID": "1", "hookEvent": "SessionStart", "command": "token-optimizer hook", "stdout": json.dumps({"hookSpecificOutput": {"additionalContext": "abc"}})}},
+        {"type": "attachment", "attachment": {"type": "hook_additional_context", "toolUseID": "2", "hookEvent": "SessionStart", "content": [{"text": "abc"}]}},
         {"type": "assistant", "timestamp": "2026-11-01T00:00:00Z", "message": {"usage": {"input_tokens": 5, "cache_read_input_tokens": 20, "cache_creation_input_tokens": 7}}},
         {"type": "attachment", "attachment": {"type": "skill_listing", "content": "later"}},
     ]
     item = observe(rows, len)
-    assert item == {"month": "2026-11", "total": 32, "components": {"first_user": 5, "skills": 8, "SessionStart_token_optimizer": 3}}
+    assert item == {"month": "2026-11", "total": 32, "components": {"first_user": 5, "skills": 8, "SessionStart_token_optimizer": 3, "SessionStart_other_or_unknown": 0}}
     assert summarize([item])[0]["p25"] == 32
     assert summarize([item])[0]["components"]["skills"] == {"median": 8, "observed": 1}
 
@@ -33,6 +33,13 @@ def test_instruction_files_are_split_without_exposing_paths():
     result = observe(rows, len)
     assert result["components"] == {"claude_md": 3, "memory_files": 4, "other_instructions": 5}
     assert "/private" not in repr(result)
+
+
+def test_unmatched_hook_output_is_not_attributed():
+    rows = [{"type": "attachment", "attachment": {"type": "hook_success", "hookEvent": "SessionStart", "command": "token_optimizer", "stdout": json.dumps({"hookSpecificOutput": {"additionalContext": "not delivered"}})}},
+            {"type": "attachment", "attachment": {"type": "hook_additional_context", "hookEvent": "SessionStart", "content": "different"}},
+            {"type": "assistant", "timestamp": "2026-11-01", "message": {"usage": {"input_tokens": 1}}}]
+    assert observe(rows, len)["components"] == {"SessionStart_other_or_unknown": 9}
 
 
 def test_collect_reads_parent_transcripts_and_dated_trims(tmp_path):

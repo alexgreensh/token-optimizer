@@ -49,8 +49,10 @@ def _has_code(root: Path) -> bool:
 
 def _project_root(cwd: str) -> Optional[Path]:
     import codemap_index as ci
+    if not cwd:
+        return None  # hosts always send cwd; never guess (and never index) an unknown dir
     try:
-        p = Path(cwd or os.getcwd()).expanduser().resolve()
+        p = Path(cwd).expanduser().resolve()
     except OSError:
         return None
     if p == Path.home().resolve() or p.parent == p or not p.is_dir():

@@ -1472,11 +1472,10 @@ def archive_result(quiet: bool = False) -> None:
             print("[Tool Archive] Missing tool_use_id or session_id, skipping.", file=sys.stderr)
         return
 
-    # Map tool_use_id to a filesystem-safe archive key. Unsafe characters (+,
-    # space, /, ., ') used to skip archiving entirely — the full result passed
-    # through uncompressed with no expand path and nothing on disk. A
-    # deterministic digest keeps the archive, satisfies expand's own key
-    # validation, and makes path traversal impossible by construction.
+    if '__' in tool_name and not _is_archive_exempt(tool_name):
+        from _measure.mcp_archive_tripwire import decide
+        if decide(TRENDS_DB, tool_name, active=os.environ.get('TOKEN_OPTIMIZER_MCP_ARCHIVE_TRIPWIRE') == 'active'):
+            return
     raw_tool_use_id = tool_use_id
     tool_use_id = _safe_archive_key(tool_use_id)
     if tool_use_id != raw_tool_use_id and not quiet:
@@ -1671,10 +1670,7 @@ def archive_result(quiet: bool = False) -> None:
         if store is not None:
             store.close()
 
-    # Allowlisted tools are documented large-payload
-    # fetchers: skip the replacement so the full verbatim result reaches
-    # context. It's still archived to disk above, so `expand <id>` works —
-    # same treatment as _AGENT_RESULT_TOOL_NAMES (archive, don't replace).
+    # Allowlisted tools serve their full result.
     if "__" in tool_name and _is_archive_exempt(tool_name):
         if not quiet:
             print(f"[Tool Archive] {tool_name} is allowlisted; serving full result (archived for expand).", file=sys.stderr)
@@ -1691,7 +1687,8 @@ def archive_result(quiet: bool = False) -> None:
 
     if "__" in tool_name:
         output_type = _detect_output_type(safe_response)
-        preview = _compress_mcp_preview(safe_response, output_type)
+        from _measure.mcp_archive_tripwire import structured_preview
+        preview = structured_preview(safe_response, breaks_cluster=_breaks_cluster)
         suffix = f" ({output_type})" if output_type != "text" else ""
         if original_char_count > _ARCHIVE_MAX_SIZE:
             replacement = preview + (
@@ -1722,6 +1719,8 @@ def archive_result(quiet: bool = False) -> None:
             }
         })
         print(output)
+        from _measure.mcp_archive_tripwire import record
+        record(TRENDS_DB, tool_name, sanitize_sid(session_id), tool_use_id)
 
 
 if __name__ == "__main__":

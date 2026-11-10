@@ -10,7 +10,7 @@ import sys
 
 from measure_split import REPO, DOMAINS
 
-SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS) + ('dashboard_history.py', 'weekly_activity.py', 'headline.py', 'structural_ledger.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'rework_metrics.py')
+SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS) + ('dashboard_history.py', 'weekly_activity.py', 'headline.py', 'structural_ledger.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'rework_metrics.py', 'mcp_archive_tripwire.py')
 
 
 def verify(payload, canonical=REPO):

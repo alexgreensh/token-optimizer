@@ -210,3 +210,20 @@ def test_window_does_not_trust_replaced_agent_transcript(m, tmp_path, monkeypatc
         window = m._counted_window_summary(conn, start, start + timedelta(hours=1))
     assert window['reread_tokens'] == 0
     assert window['unmeasured_events'] == 1
+
+
+def test_orphan_match_never_uses_benchmark_transcript(m, tmp_path, monkeypatch):
+    from _measure import counted_orphans
+    db = _db(m, tmp_path, monkeypatch)
+    parent, start = _transcript(m, tmp_path, monkeypatch)
+    bench = parent.parent.parent / '-private-var-folders-x-T-to-bench-M2-abc' / parent.name
+    bench.parent.mkdir()
+    bench.write_text(parent.read_text())
+    _agent(bench, start, tid='agent-a123')
+    ts = _local_iso(start + timedelta(seconds=30))
+    _add_event(db, 'bash_compress_pipeline', 1000, ts, table='compression_events')
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE compression_events SET session_uuid=NULL, session_id='a123', command_pattern='make test'")
+        groups, direct = counted_orphans.group_events(m, conn, m._counted_candidate_events(conn))
+    assert 'ce:1' not in direct
+    assert len(groups[None]) == 1

@@ -2490,6 +2490,8 @@ function tokenSplitText(h, fmt) {
 }
 // U9 savings story: assets/savings_story.js, inlined here at generation.
 /*@include savings_story.js*/
+// Feature health card (Health tab): assets/feature_health.js.
+/*@include feature_health.js*/
 
 function hostRefreshHtml(data) {
   return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard --user</span>');
@@ -5609,6 +5611,7 @@ var DB = (function() {
     }
     // U9: context quality and hook time limits moved here from the Savings tab.
     try { if (typeof healthNotesHtml === 'function') html += healthNotesHtml(data); } catch (e) {}
+    try { if (typeof featureHealthHtml === 'function') html += featureHealthHtml(data); } catch (e) {}
 
     el.innerHTML = html;
   }

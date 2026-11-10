@@ -48,16 +48,16 @@ def test_miss_turn_reprices_only_that_turn(m):
         (t0 + timedelta(seconds=10), OPUS, 90_000, (500, 500, 0, 89_000)),   # first call: oneshot
         (t0 + timedelta(seconds=20), OPUS, 91_000, (300, 300, 0, 90_000)),   # hit: cache_read
         (t0 + timedelta(seconds=30), OPUS, 91_000, (91_000, 91_000, 0, 0)),  # full miss, 1h write
-        (t0 + timedelta(seconds=40), OPUS, 92_000, (60_000, 60_000, 0, 32_000)),  # partial: cache_read
+        (t0 + timedelta(seconds=40), OPUS, 92_000, (60_000, 60_000, 0, 32_000)),  # partial rebuild reaches removal position
         (t0 + timedelta(seconds=50), OPUS, 92_000, (1_500, 0, 1_500, 0)),    # wrote < removed: cache_read
     ]
     out = m._counted_score_detail(turns, [], t0, tokens, tier)
     assert out["turns_counted"] == 4
-    assert out["reread_miss_turns"] == 1
-    expected = tokens * (3 * card["cache_read"] + card["cache_write_1h"]) / 1e6
+    assert out["reread_miss_turns"] == 2
+    expected = tokens * (2 * card["cache_read"] + 2 * card["cache_write_1h"]) / 1e6
     assert out["reread_usd"] == pytest.approx(expected)
     assert out["reread_miss_premium_usd"] == pytest.approx(
-        tokens * (card["cache_write_1h"] - card["cache_read"]) / 1e6)
+        2 * tokens * (card["cache_write_1h"] - card["cache_read"]) / 1e6)
     assert out["reread_tokens"] == 4 * tokens  # token counts never change
 
 

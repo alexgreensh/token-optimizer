@@ -23,9 +23,9 @@ def sample():
 def test_headline_adds_only_counted_rereads_and_retains_coverage():
     from _measure.headline import token_headline
     result = token_headline(sample())
-    assert result['removed_tokens'] == 1200
+    assert result['removed_tokens'] == 1000
     assert result['reread_tokens'] == 5000
-    assert result['total_tokens'] == 6200
+    assert result['total_tokens'] == 6000
     assert result['removed_priced_tokens'] == 900
     assert result['refresh_incomplete_events'] == 2
     assert result['pricing_note'] == 'Incomplete prices'
@@ -36,7 +36,7 @@ def test_unavailable_cohort_never_adds_lifetime_or_raw_rows():
     s = sample(); s['counted_period'] = {'available': False, 'reread_tokens': 999}
     s['counted_cumulative'] = {'available': True, 'reread_tokens': 1000000}
     result = token_headline(s)
-    assert result['total_tokens'] == 1200
+    assert result['total_tokens'] == 1000
     assert not result['reread_available']
 
 
@@ -47,7 +47,7 @@ def test_actual_dashboard_renderer():
     out = render(s).split('savings-actions')[1].split('savings-history')[0]
     assert '~6K tokens kept out of context' in out
     assert '~1K context removed' in out and '~5K re-reads avoided' in out
-    assert 'reload avoided' in out and ' fresh' not in out
+    assert 'reload avoided' not in out and ' fresh' not in out
     assert 'incomplete coverage' in out and 'estimated' in out
 
 
@@ -57,10 +57,10 @@ def test_cli_json_and_text_show_same_components(m, monkeypatch, capsys):
     monkeypatch.setattr(m, '_counted_cumulative_summary', lambda **kw: s['counted_period'])
     m.savings_report(days=30, as_json=True)
     data = json.loads(capsys.readouterr().out)
-    assert data['token_headline']['total_tokens'] == 6200
+    assert data['token_headline']['total_tokens'] == 6000
     m.savings_report(days=30, as_json=False)
     text = capsys.readouterr().out
-    assert '6,200' in text and '1,000 context removed' in text and '200 reload avoided' in text
+    assert '6,000' in text and '1,000 context removed' in text and '0 reload avoided' in text
     assert '5,000 re-reads avoided' in text and ' fresh' not in text
 
 

@@ -4549,7 +4549,7 @@ var DB = (function() {
     // and output-waste are OPPORTUNITY (avoidable waste TO does not yet prevent), not here. ----
     var mce = s.mcp_cap_estimated || {}, ce = s.contamination_exit || {}, hr = s.handover_rerun || {};
     var rs = s.retrieval_serve || {};
-    var rle = s.resume_lean_estimated || {};
+    var rle = {}; // The avoided reload is diagnostic, not a credited saving.
     var vs = {};
     var vo = {};
     var cr = s.checkpoint_restore_estimated || {};

@@ -39,10 +39,10 @@ def snapshot(hint_events=2, hint_cost=32):
 
 
 @pytest.mark.parametrize("hint_events,hint_cost,reread,expected", [
-    (2, 32, 23, 250),
-    (0, 32, 23, 730),
-    (2, 0, 23, 218),
-    (2, 32, -23, 204),
+    (2, 32, 23, 186),
+    (0, 32, 23, 666),
+    (2, 0, 23, 154),
+    (2, 32, -23, 140),
     (2, 32, -500, 0),
 ])
 def test_same_snapshot_cli_json_dashboard(
@@ -69,7 +69,7 @@ def test_same_snapshot_cli_json_dashboard(
     if reread < 0:
         assert f"+ repeat reads avoided: ~${reread:.2f}/mo" in cli
     if expected == 0:
-        assert "net total of ~$-273.00/mo; the headline has a $0 floor" in cli
+        assert "net total of ~$-337.00/mo; the headline has a $0 floor" in cli
 
     measure.savings_report(as_json=True)
     payload = json.loads(capsys.readouterr().out)
@@ -80,7 +80,7 @@ def test_same_snapshot_cli_json_dashboard(
     assert components["logged_usd"] == 100
     assert components["routing_usd"] == 7
     assert components["reread_usd"] == reread
-    estimated = 95 + (hint_cost if hint_events else 512)
+    estimated = 31 + (hint_cost if hint_events else 512)
     assert components["estimated_usd"] == estimated
     assert components["net_total_usd"] == 100 + reread + estimated
     assert components["total_clamped"] is (expected == 0)
@@ -91,7 +91,7 @@ def test_same_snapshot_cli_json_dashboard(
     assert f'"savings-amount">${amount}<' in actions
     assert f'Other estimates <strong>~${estimated}' in actions
     if expected == 0:
-        assert 'net total of $-273.00; the headline has a $0 floor' in actions
+        assert 'net total of $-337.00; the headline has a $0 floor' in actions
 
 
 def test_component_helper_is_pure_and_counts_only_rereads(measure):
@@ -99,14 +99,14 @@ def test_component_helper_is_pure_and_counts_only_rereads(measure):
     before = copy.deepcopy(source)
     components = measure._action_savings_components(source, {"available": True, "reread_usd": 23})
     assert source == before
-    assert components["total_usd"] == 250
+    assert components["total_usd"] == 186
     assert set(components["estimates_usd"]) == {
         "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
         "contamination_exit", "handover_rerun", "resume_lean_estimated",
         "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
         "hint_followed",
     }
-    assert sum(components["estimates_usd"].values()) == 127
+    assert sum(components["estimates_usd"].values()) == 63
     assert measure._action_savings_components({})["total_usd"] == 0
 
 
@@ -144,7 +144,7 @@ def test_rotated_transcript_preserves_stored_action_rereads(measure, monkeypatch
     dashboard = measure._dashboard_savings_data()
     assert cli["action_savings"] == dashboard["action_savings"]
     assert cli["action_savings"]["reread_usd"] == 23
-    assert cli["action_savings"]["total_usd"] == 250
+    assert cli["action_savings"]["total_usd"] == 186
 
 
 def test_unavailable_rereads_are_explicit_on_both_surfaces(measure, monkeypatch, capsys):
@@ -155,12 +155,12 @@ def test_unavailable_rereads_are_explicit_on_both_surfaces(measure, monkeypatch,
     measure.savings_report()
     cli = capsys.readouterr().out
     assert "repeat reads avoided: unavailable" in cli
-    assert "ALL IN: ~$227.00/mo" in cli
+    assert "ALL IN: ~$163.00/mo" in cli
     dashboard = measure._dashboard_savings_data()
     assert dashboard["action_savings"]["reread_available"] is False
     actions = render(dashboard).split('savings-actions')[1].split('savings-history')[0]
     assert 'Repeat reads avoided <strong>Unavailable' in actions
-    assert '"savings-amount">$227.00<' in actions
+    assert '"savings-amount">$163.00<' in actions
 
 
 def test_dashboard_prefers_server_computed_components():
@@ -187,13 +187,13 @@ def test_routing_evidence_changes_tier_without_changing_total(measure, evidence,
     assert components["routing_usd"] == 7
     assert components["routing_measured_usd"] == measured
     assert components["routing_estimated_usd"] == estimated
-    assert components["estimated_usd"] == 127
-    assert components["total_usd"] == 250
+    assert components["estimated_usd"] == 63
+    assert components["total_usd"] == 186
     source["action_savings"] = components
     actions = render(source).split('savings-actions')[1].split('savings-history')[0]
-    assert '"savings-amount">$250.00<' in actions
+    assert '"savings-amount">$186.00<' in actions
     assert 'Logged actions <strong>$100' in actions
-    assert 'Other estimates <strong>~$127' in actions
+    assert 'Other estimates <strong>~$63' in actions
 
 
 def test_verbosity_stays_out_of_savings_totals(measure):
@@ -202,7 +202,7 @@ def test_verbosity_stays_out_of_savings_totals(measure):
     data['verbosity_steer']['tokens_saved'] = 400
     data['verbosity_output_estimated'] = {'cost_saved_usd': 30, 'tokens_saved': 600}
     result = measure._action_savings_components(data, {'available': True, 'reread_usd': 23})
-    assert result['total_usd'] == 250
+    assert result['total_usd'] == 186
     assert result['estimates_usd']['verbosity_steer'] == 0
     assert result['estimates_usd']['verbosity_output_estimated'] == 0
     assert headline.token_headline(data)['removed_tokens'] == 1000

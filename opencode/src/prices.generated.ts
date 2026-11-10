@@ -8,6 +8,7 @@ export const GENERATED_PRICING: Record<string, ModelPricing> = {
   "fable": { input: 10.0 / 1e6, output: 50.0 / 1e6, cacheRead: 1.0 / 1e6, cacheWrite: 12.5 / 1e6, cacheWrite1h: 20.0 / 1e6 },
   "fable-5": { input: 10.0 / 1e6, output: 50.0 / 1e6, cacheRead: 1.0 / 1e6, cacheWrite: 12.5 / 1e6, cacheWrite1h: 20.0 / 1e6 },
   "fable-5-1": { input: 10.0 / 1e6, output: 50.0 / 1e6, cacheRead: 0.25 / 1e6, cacheWrite: 12.5 / 1e6, cacheWrite1h: 20.0 / 1e6 },
+  "fable-5-2": { input: 8.0 / 1e6, output: 40.0 / 1e6, cacheRead: 0.2 / 1e6, cacheWrite: 10.0 / 1e6, cacheWrite1h: 16.0 / 1e6 },
   "haiku": { input: 1.0 / 1e6, output: 5.0 / 1e6, cacheRead: 0.1 / 1e6, cacheWrite: 1.25 / 1e6, cacheWrite1h: 2.0 / 1e6 },
   "haiku-3": { input: 0.25 / 1e6, output: 1.25 / 1e6, cacheRead: 0.03 / 1e6, cacheWrite: 0.3 / 1e6, cacheWrite1h: 0.5 / 1e6 },
   "haiku-3-5": { input: 0.8 / 1e6, output: 4.0 / 1e6, cacheRead: 0.08 / 1e6, cacheWrite: 1.0 / 1e6, cacheWrite1h: 1.6 / 1e6 },

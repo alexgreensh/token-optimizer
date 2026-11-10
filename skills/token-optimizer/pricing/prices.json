@@ -32,6 +32,7 @@
    "cache_read": 0.25,
    "output": 50.0
   },
+  "fable_5_2": {"input": 8.0, "output": 40.0, "cache_read": 0.2, "cache_write": 10.0, "cache_write_1h": 16.0},
   "haiku": {
    "input": 1.0,
    "cache_write": 1.25,

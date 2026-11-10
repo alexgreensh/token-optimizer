@@ -289,8 +289,8 @@ def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data, oneshot_flo
             rate, basis = _measure_facade._counted_oneshot_rate(card, cache_class)
             if oneshot_floor_only and basis == "class":
                 rate, basis = card["input"], "floor"
-        else:  # v5: a full cache-miss turn rewrote the removed context at its write class
-            rate, miss = _measure_facade._counted_pricing_v5.reread_turn_rate(card, turns[i][3] if len(turns[i]) > 3 else None, tokens, _measure_facade._counted_oneshot_rate)
+        else:  # Rebuilds reaching the removal position use the write class.
+            rate, miss = _measure_facade._counted_pricing_v5.reread_turn_rate(card, turns[i][3] if len(turns[i]) > 3 else None, tokens, _measure_facade._counted_oneshot_rate, turns[i][2] if len(turns[i]) > 2 else None, turns[first][2] if len(turns[first]) > 2 else None)
             out["reread_tokens"] += tokens
             out["turns_counted"] += 1
             if miss:
@@ -2381,16 +2381,7 @@ def runway_snapshot(days=None, now=None):
                     merged_ctx = float(wm.get("total_cost_usd", 0.0) or 0.0)
                     rt = float((wm.get("model_routing") or {}).get("realized_cost_usd", 0.0) or 0.0)
                     repriced = bool(wm.get("repriced_to_session_mix"))
-                    # Counterfactual-but-priced levers that _get_merged_savings
-                    # relocates OUT of total_cost_usd into the estimated tier
-                    # (resume_lean, verbosity_steer). The counted window excludes
-                    # resume_lean too, so both the counted and legacy ctx omit them
-                    # -- real, magnitude-metered (v5.13.1) savings that were simply
-                    # unlabelled. Window-scoped already (days/since passed above).
-                    _rl = wm.get("resume_lean_estimated") or {}
-                    _vs = wm.get("verbosity_steer") or wm.get("verbosity_steer_estimated") or {}
-                    _vo = wm.get("verbosity_output_estimated") or {}
-                    est_add = sum(float(p.get("cost_saved_usd", 0.0) or 0.0) for p in (_rl,))
+                    est_add = 0.0  # Lean resume is diagnostic until the avoided reload is established.
                 except Exception:
                     pass
                 try:
@@ -5561,7 +5552,6 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
                 "hint_followed": (comp or {}).get("hint_followed_estimated") or {},
                 "handover_rerun": _measure_facade._estimate_handover_rerun_savings(days=days),
                 "retrieval_serve": _measure_facade._estimate_retrieval_serve_savings(days=days),
-                "resume_lean": (comp or {}).get("resume_lean_estimated") or {},
                 "checkpoint_restore": (comp or {}).get("checkpoint_restore_estimated") or {},
             }
         pool_labels = {
@@ -5570,7 +5560,6 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
             "hint_followed": "Followed context hints (estimated)",
             "handover_rerun": "Continuity handovers (estimated)",
             "retrieval_serve": "Direct context retrieval (estimated)",
-            "resume_lean": "Lean session resumes (estimated)",
             "checkpoint_restore": "Checkpoint restores (estimated)",
         }
         estimated_volume_pools = {}
@@ -6270,7 +6259,7 @@ def _action_savings_components(summary, reread=None):
     """
     _measure_facade = _compat.facade()
     estimates = {
-        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated") else float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0))
+        key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated") else float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
             "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
             "contamination_exit", "handover_rerun", "resume_lean_estimated",
@@ -6539,7 +6528,7 @@ def _savings_since_install():
             float((full.get(k) or {}).get("cost_saved_usd", 0) or 0)
             for k in (
                 "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
-                "contamination_exit", "handover_rerun", "resume_lean_estimated",
+                "contamination_exit", "handover_rerun",
                 "checkpoint_restore_estimated",
             )
         )
@@ -7053,15 +7042,6 @@ def savings_report(days=None, as_json=None):
         mce_monthly = _money(_est_cents["mcp_cap_estimated"])
         print(f"  + est. MCP output cap: ~${mce_monthly}{per} "
               f"({mcp_cap_est.get('events', 0)} capped MCP results) [estimated]")
-
-    # Estimated tier — lean resumes (cold `--resume` reload avoided; the trigger
-    # is a counterfactual, the magnitude is the target's real last-turn context).
-    rl_est = summary.get("resume_lean_estimated") or {}
-    rle_cost = float(rl_est.get("cost_saved_usd", 0.0) or 0.0)
-    if rle_cost > 0:
-        rle_monthly = _money(_est_cents["resume_lean_estimated"])
-        print(f"  + est. lean resumes: ~${rle_monthly}{per} "
-              f"({rl_est.get('events', 0)} cold-resume reloads avoided) [estimated]")
 
     # Estimated tier — checkpoint restores (avoided working-set re-reads; the
     # restore is observed, the credited re-read is inferred, never metered).

@@ -109,8 +109,8 @@ def test_since_install_all_in_uses_the_headline_parts(m, monkeypatch):
     parts = all_in["components_usd"]
     assert parts["logged"] == 12.5 and parts["routing_estimated"] == 0.0 and parts["reread"] == pytest.approx(80.13, abs=0.011)
     assert all_in["routing_usd"] == pytest.approx(300.25)
-    assert all_in["estimated_usd"] == pytest.approx(4.01)
-    assert all_in["total_usd"] == pytest.approx(12.5 + 80.125 + 4.01, abs=0.011)
+    assert all_in["estimated_usd"] == pytest.approx(0.01)
+    assert all_in["total_usd"] == pytest.approx(12.5 + 80.125 + 0.01, abs=0.011)
     total_cents = round(all_in["total_usd"] * 100)
     assert total_cents == round(sum(parts.values()) * 100) + round(all_in["estimated_usd"] * 100)
     assert all_in["routing_pending"] is False

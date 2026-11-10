@@ -591,7 +591,7 @@ _FALLBACK_CLAUDE_MODELS = {
     "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
     "fable_5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5, "cache_write_1h": 20.0},
     # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-    "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
+    "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0}, "fable_5_2": {"input": 8.0, "output": 40.0, "cache_read": 0.2, "cache_write": 10.0, "cache_write_1h": 16.0},
     "mythos_5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5, "cache_write_1h": 20.0},
     "mythos_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
     # Opus 5.5 is $4/$20 with 0.05x cache reads; Opus 4.5+ is $5/$25; Opus <=4.1 is $15/$75.
@@ -3698,7 +3698,7 @@ _counted_session_path = _measure_compat.bind(_measure_providers['savings']._coun
 
 
 # Eligibility is per row. A global migration flag never certifies old prices.
-_COUNTED_PRICING_VERSION = "6"
+_COUNTED_PRICING_VERSION = "7"
 _COUNTED_META_PRICING = "counted_pricing_version"
 
 

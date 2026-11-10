@@ -120,7 +120,7 @@ def propose(backup_dir, skills_archive, commands_archive, claude_dir, ts, est_fm
             int(est_file(os.path.join(claude_dir, "CLAUDE.md"))), bk)
     # per-project MEMORY.md (only loads in its own project's sessions)
     for fn in sorted(os.listdir(backup_dir)):
-        if not (fn.startswith("MEMORY--") and fn.endswith(".md")):
+        if not (fn.startswith("MEMORY-") and fn.endswith(".md")):
             continue
         proj = fn[len("MEMORY-"):-3]
         live = os.path.join(claude_dir, "projects", proj, "memory", "MEMORY.md")

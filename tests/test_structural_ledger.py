@@ -373,6 +373,23 @@ def test_seed_is_dry_run_by_default_and_reversible(m, tmp_path):
     assert L.load_trims(m.SNAPSHOT_DIR) == []
 
 
+def test_seed_reads_windows_project_memory_backups(m, tmp_path):
+    """Windows project keys start with a drive letter (C--Users-...), not '-'."""
+    _, _, _, S, _ = _mods()
+    cdir = m.CLAUDE_DIR
+    bk = tmp_path / "bk" / "token-optimizer-20260101-120000"
+    _write(bk / "MEMORY-C--Users-tester-app.md", "line\n" * 50)
+    _write(bk / "MEMORY--home-tester.md", "line\n" * 40)
+    _write(cdir / "projects" / "C--Users-tester-app" / "memory" / "MEMORY.md", "line\n" * 10)
+
+    class A:
+        backup_dir = str(bk); skills_archive = str(tmp_path / "none"); commands_archive = str(tmp_path / "none")
+        ts = "2026-01-01T13:00:00+00:00"; revert = ""; apply = False
+    out = S.run(A, m)
+    scopes = {i["scope"] for i in out["items"] if i["component"] == "memory_md"}
+    assert scopes == {"project:C--Users-tester-app", "project:-home-tester"}
+
+
 def test_memory_is_measured_as_loaded(m, tmp_path):
     _, _, _, S, _ = _mods()
     p = tmp_path / "MEMORY.md"

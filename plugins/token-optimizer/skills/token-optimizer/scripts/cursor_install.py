@@ -102,6 +102,7 @@ _PAYLOAD_MODULES = (
     "cursor_thrash.py",
     "thrash_guard.py",
     "session_store.py",
+    "hint_paths.py",  # session_store imports it at module load
     "delta_diff.py",
     "archive_result.py",
     "recovery_output.py",

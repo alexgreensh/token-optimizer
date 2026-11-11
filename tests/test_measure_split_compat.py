@@ -165,7 +165,9 @@ def _moved_consumer(name, domain, tmp_path):
     body, _ = measure_split.extract_definition(measure_source(Path(sys.modules['measure'].__file__)), name, domain)
     path = tmp_path / (name + '_provider.py')
     path.write_text('from _measure import _compat\n' + body, encoding='utf-8')
-    spec = importlib.util.spec_from_file_location(name + '_provider', path)
+    # Real providers live inside the _measure package, so give the extracted body
+    # that parent: sibling imports (`from . import mod_fresh_booking`) must resolve.
+    spec = importlib.util.spec_from_file_location('_measure.' + name + '_provider', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     from _measure import _compat

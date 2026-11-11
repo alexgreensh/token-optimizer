@@ -480,16 +480,14 @@ def render_run_sh(root: Path, pycache: Path, version: str) -> str:
 
 # -------------------------------------------------------------------- install
 
-# What the package carries and the install copies. Everything else in the
-# extracted tarball (package.json, README, LICENSE files) is copied too; this
-# list is what must exist for a usable install.
+# Required files for a usable install; the extracted package carries the rest.
 _REQUIRED = ("hooks/hooks.json", "hooks/python-launcher.sh", "hooks/run.py",
-             "skills/token-optimizer/scripts/measure.py") + tuple(
+             "skills/token-optimizer/scripts/measure.py", "skills/token-optimizer/scripts/session_store.py", "skills/token-optimizer/scripts/session_store_guard.py") + tuple(
     "skills/token-optimizer/scripts/_measure/" + name for name in (
         '__init__.py', '_compat.py', 'runtime.py', 'pricing.py', 'audit.py',
         'dashboard.py', 'lifecycle.py', 'sessions.py', 'trends.py', 'cache_policy.py',
         'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py', 'counted_position.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'structural_ledger.py', 'structural_archives.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'rework_metrics.py', 'session_best.py', 'savings_story.py', 'counted_orphans.py', 'counted_cap.py', 'archive_void_evidence.py', 'cost_per_message_trend.py', 'lean_resume_receivers.py', 'routing_period.py', 'fixture_context.py', 'transcript_product.py', 'periphery_exposure.py', 'structure_funnel.py', 'setup_attachment_counter.py', 'first_read_outcomes.py', 'setup_budget_monitor.py', 'setup_connector_ledger.py', 'first_call_context.py', 'first_read_revive.py', 'mcp_archive_tripwire.py', 'compaction_survival.py', 'archive_void_codex.py', 'compression_fixture_void.py', 'feature_health.py', 'archive_health.py', 'coverage_report.py', 'file_refetch.py', 'holdout_report.py', 'structural_dedupe.py', 'setup_step.py',
-    )
+    ) + ('transcript_stream.py', 'checkpoint_direction.py', 'checkpoint_retention.py')
 )
 
 

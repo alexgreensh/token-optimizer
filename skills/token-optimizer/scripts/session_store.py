@@ -30,6 +30,7 @@ import re
 import sqlite3
 import time
 import uuid
+import session_store_guard
 from pathlib import Path
 from typing import Any, Optional
 
@@ -70,7 +71,7 @@ CREATE TABLE IF NOT EXISTS file_reads (
     last_structure_confidence REAL DEFAULT 0.0,
     last_tool_use_id TEXT DEFAULT ''
 );
-
+CREATE INDEX IF NOT EXISTS idx_file_reads_last_access ON file_reads(last_access DESC);
 CREATE TABLE IF NOT EXISTS tool_outputs (
     tool_use_id TEXT PRIMARY KEY,
     tool_name TEXT NOT NULL,
@@ -131,7 +132,7 @@ CREATE TABLE IF NOT EXISTS context_intel_events (
     output_chars INTEGER NOT NULL,
     timestamp REAL NOT NULL
 );
-
+CREATE INDEX IF NOT EXISTS idx_intel_timestamp ON context_intel_events(timestamp DESC); CREATE INDEX IF NOT EXISTS idx_intel_tool_use ON context_intel_events(tool_use_id);
 CREATE TABLE IF NOT EXISTS activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tool_name TEXT NOT NULL,
@@ -221,10 +222,8 @@ class SessionStore(ResetEpochMixin):
         if self._conn is not None:
             return self._conn
         self._store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # Align the connect timeout (seconds) with the PRAGMA busy_timeout (ms)
-        # so the schema init AND later writes honor the same lock-wait budget.
         timeout_s = max(0.05, self._busy_timeout_ms / 1000.0)
-        self._conn = sqlite3.connect(str(self.db_path), timeout=timeout_s)
+        self._conn = session_store_guard.connect(self, timeout_s)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(f"PRAGMA busy_timeout={int(self._busy_timeout_ms)}")
         self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -269,8 +268,6 @@ class SessionStore(ResetEpochMixin):
         # U6/fix-1: probe + setup the external-content FTS5 mirror (LIKE
         # fallback). Backfills legacy rows once, gated on prior_version < 2.
         self._ensure_fts5_index(conn, prior_version)
-        # Stamp the current schema version last (INSERT OR REPLACE so the bump
-        # actually lands on pre-existing DBs, not just brand-new ones).
         conn.execute(
             "INSERT OR REPLACE INTO session_meta (key, value) VALUES (?, ?)",
             ("_schema_version", str(_SCHEMA_VERSION)),
@@ -511,8 +508,9 @@ class SessionStore(ResetEpochMixin):
             try:
                 self._conn.close()
             except Exception:
-                pass
+                return
             self._conn = None
+            session_store_guard.release(self)
 
     _cap_warned = False
 
@@ -868,8 +866,8 @@ class SessionStore(ResetEpochMixin):
         conn.execute(
             """INSERT INTO context_intel_events
                (tool_name, tool_use_id, summary, output_chars, timestamp)
-               VALUES (?, ?, ?, ?, ?)""",
-            (tool_name, tool_use_id, summary, output_chars, time.time()),
+               SELECT ?, ?, ?, ?, ? WHERE ? = '' OR NOT EXISTS (SELECT 1 FROM context_intel_events WHERE tool_use_id = ?)""",
+            (tool_name, tool_use_id, summary, output_chars, time.time(), tool_use_id, tool_use_id),
         )
         conn.commit()
 
@@ -1042,18 +1040,4 @@ def context_reset_at(session_id: str, snapshot_dir: Optional[Path] = None) -> fl
 
 def cleanup_old_stores(max_age_hours: int = CLEANUP_AGE_HOURS) -> int:
     """Delete session store DBs older than max_age_hours. Returns count deleted."""
-    if not SESSION_STORE_DIR.exists():
-        return 0
-    cutoff = time.time() - (max_age_hours * 3600)
-    deleted = 0
-    for db_file in SESSION_STORE_DIR.glob("*.db"):
-        try:
-            if db_file.stat().st_mtime < cutoff:
-                db_file.unlink()
-                for wal in (db_file.with_suffix(".db-wal"), db_file.with_suffix(".db-shm")):
-                    if wal.exists():
-                        wal.unlink()
-                deleted += 1
-        except OSError:
-            pass
-    return deleted
+    return session_store_guard.prune_old_stores(SESSION_STORE_DIR, time.time() - max_age_hours * 3600)

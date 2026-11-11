@@ -232,7 +232,7 @@ def _install_call_recorder(monkeypatch, runner, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_all_five_subcommands_run_in_one_process(monkeypatch, tmp_path):
+def test_compact_subcommands_run_in_one_process_without_fresh_hint(monkeypatch, tmp_path):
     runner = _load_runner(monkeypatch, tmp_path)
     _install_fake_deadline(monkeypatch, runner)
     calls, _marker_dir = _install_call_recorder(monkeypatch, runner, tmp_path)
@@ -251,9 +251,7 @@ def test_all_five_subcommands_run_in_one_process(monkeypatch, tmp_path):
     assert len(calls["quality_cache_force"]) == 1, "quality-cache --force must run"
     assert len(calls["compact_restore_compact"]) == 1, "compact-restore --compact must run"
     assert len(calls["clear_compacted"]) == 1, "read_cache --clear-compacted must run"
-    assert len(calls["compact_restore_new_session"]) == 1, (
-        "compact-restore --new-session-only must run"
-    )
+    assert not calls["compact_restore_new_session"]
 
     # Real call shapes, pinned against the measure.py __main__ dispatch.
     qc = calls["quality_cache_force"][0]
@@ -264,9 +262,6 @@ def test_all_five_subcommands_run_in_one_process(monkeypatch, tmp_path):
     }
     assert calls["compact_restore_compact"][0] == {
         "session_id": "sess-ss-compact", "is_compact": True,
-    }
-    assert calls["compact_restore_new_session"][0] == {
-        "session_id": "sess-ss-compact", "new_session_only": True,
     }
     assert calls["clear_compacted"][0][1] is True, "--quiet must be preserved"
 
@@ -311,7 +306,8 @@ def test_once_mark_still_runs_when_the_marker_already_exists(monkeypatch, tmp_pa
     assert runner.main() == 0
     assert len(calls["ensure_health"]) == 1
     assert len(calls["quality_cache_force"]) == 1
-    assert len(calls["compact_restore_new_session"]) == 1
+    assert not calls["compact_restore_new_session"]
+    assert runner.measure._once_per_session_marker("compact-restore-new-session", sid).exists()
 
     # Second SessionStart of the SAME session: markers already exist.
     _install_fake_deadline(monkeypatch, runner)
@@ -322,9 +318,7 @@ def test_once_mark_still_runs_when_the_marker_already_exists(monkeypatch, tmp_pa
     assert len(calls["quality_cache_force"]) == 2, (
         "a resume/compact SessionStart must still re-warm the quality cache"
     )
-    assert len(calls["compact_restore_new_session"]) == 2, (
-        "a resume/compact SessionStart must still re-emit the checkpoint pointer"
-    )
+    assert not calls["compact_restore_new_session"]
 
 
 def test_quality_cache_marker_is_claimed_only_after_a_result(monkeypatch, tmp_path):
@@ -433,7 +427,7 @@ def test_one_failing_subcommand_does_not_abort_the_others(monkeypatch, tmp_path,
     assert len(calls["quality_cache_force"]) == 1
     assert len(calls["compact_restore_compact"]) == 1
     assert len(calls["clear_compacted"]) == 1
-    assert len(calls["compact_restore_new_session"]) == 1
+    assert not calls["compact_restore_new_session"]
 
     err = capsys.readouterr().err
     assert "ensure-health failed, continuing" not in err, (
@@ -464,7 +458,7 @@ def test_a_subcommand_calling_sys_exit_does_not_abort_the_others(
     assert len(calls["compact_restore_compact"]) == 1, (
         "a SystemExit in quality-cache must not abort compact-restore"
     )
-    assert len(calls["compact_restore_new_session"]) == 1
+    assert not calls["compact_restore_new_session"]
 
 
 # --------------------------------------------------------------------------- #
@@ -624,19 +618,12 @@ def test_stdout_is_emitted_in_dispatch_order(monkeypatch, tmp_path):
         assert runner.main() == 0
     out = cap.getvalue()
 
-    # compact-restore marks are in the envelope additionalContext.
-    for mark in ("MARK-compact", "MARK-new-session"):
-        assert mark in out, f"{mark} missing from consolidated stdout"
+    assert "MARK-compact" in out
+    assert "MARK-new-session" not in out
 
     payload = json.loads(out)
     context = payload["hookSpecificOutput"]["additionalContext"]
-    positions = [
-        context.index("MARK-compact"),
-        context.index("MARK-new-session"),
-    ]
-    assert positions == sorted(positions), (
-        f"stdout order must match hooks.json dispatch order, got {positions}"
-    )
+    assert "MARK-compact" in context and "MARK-new-session" not in context
 
     # The quality-cache systemMessage survives as the object's systemMessage
     # (user-facing, tax-free), NOT folded into additionalContext.
@@ -663,9 +650,7 @@ def test_stdout_is_emitted_in_dispatch_order(monkeypatch, tmp_path):
 def test_codex_compact_start_emits_one_valid_additional_context_envelope(
     monkeypatch, tmp_path,
 ):
-    """On Codex, SessionStart stdout must be empty or valid JSON. Both
-    compact-restore subcommands fire on a compact start, so their payloads must
-    land in ONE additionalContext envelope, not two JSON documents."""
+    """On Codex, compact restore emits one valid JSON envelope without a sibling hint."""
     runner = _load_runner(monkeypatch, tmp_path)
     _install_fake_deadline(monkeypatch, runner)
     _calls, _marker_dir = _install_call_recorder(monkeypatch, runner, tmp_path)
@@ -704,12 +689,7 @@ def test_codex_compact_start_emits_one_valid_additional_context_envelope(
         "the envelope event must come from the firing hook's stdin payload"
     )
     ctx = envelope["additionalContext"]
-    assert "RESTORE-compact" in ctx and "RESTORE-new-session" in ctx, (
-        "both compact-restore payloads must survive in the single envelope"
-    )
-    assert ctx.index("RESTORE-compact") < ctx.index("RESTORE-new-session"), (
-        "envelope content must keep dispatch order"
-    )
+    assert "RESTORE-compact" in ctx and "RESTORE-new-session" not in ctx
 
 
 def test_clear_compacted_never_writes_to_stdout(monkeypatch, tmp_path, capsys):

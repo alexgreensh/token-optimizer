@@ -491,14 +491,13 @@ def _sub_clear_compacted(hook_input: dict) -> None:
 def _sub_compact_restore_new_session(hook_input: dict, sink: list) -> None:
     """``measure.py compact-restore --new-session-only --once-mark`` (entry 5).
 
-    Mirrors the ``compact-restore`` dispatch (measure.py ~L42582) with
-    ``--new-session-only --once-mark``: _mark_ran_this_session (WRITE, never
-    check -- a resume/compact SessionStart is NOT latched out), then
-    compact_restore(new_session_only=True), with the same Codex/Cowork wrap
-    routed into the shared ``sink``.
+    Mark every start so the first-prompt fallback stays quiet; offer a
+    cross-session pointer only on a fresh startup, never resume or compact.
     """
     sid = hook_input.get("session_id")
     measure._mark_ran_this_session("compact-restore-new-session", sid)
+    if hook_input.get("source", "startup") != "startup" or _is_compact_start(hook_input):
+        return
     budget = _runner_budget(measure._int_env("TOKEN_OPTIMIZER_COMPACT_RESTORE_BUDGET", 8))
     if budget < 0.1:
         return

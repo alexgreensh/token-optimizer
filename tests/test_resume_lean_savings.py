@@ -28,6 +28,7 @@ import importlib
 import json
 import sqlite3
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -120,6 +121,22 @@ def _rows(dbp):
             "FROM savings_events").fetchall()
     finally:
         conn.close()
+
+
+def test_duplicate_resume_ledger_writes_are_idempotent(m, tmp_path, monkeypatch):
+    dbp = _db(m, tmp_path, monkeypatch)
+    for _ in range(2):
+        m._log_savings_event("resume_lean", 100, session_id=SID, model="sonnet", cost_per_mtok=1.0)
+    assert len(_rows(dbp)) == 1
+
+
+def test_concurrent_resume_ledger_writes_are_idempotent(m, tmp_path, monkeypatch):
+    dbp = _db(m, tmp_path, monkeypatch)
+    def write(_):
+        m._log_savings_event("resume_lean", 100, session_id=SID, model="sonnet", cost_per_mtok=1.0)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(write, range(8)))
+    assert len(_rows(dbp)) == 1
 
 
 # ---------------------------------------------------------------------------

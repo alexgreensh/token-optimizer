@@ -100,9 +100,33 @@ def test_pruned_checkpoint_takes_its_sidecar(m):
 
 def test_age_window_still_applies(m):
     old = _save(m, QUIET, 8 * 86400)
+    older = _save(m, QUIET, 9 * 86400)
     fresh = _save(m, BUSY, 60)
     m._cleanup_checkpoints()
-    assert not old.exists() and fresh.exists()
+    assert old.exists() and not older.exists() and fresh.exists()
+
+
+def test_old_latest_checkpoints_survive_even_without_recent_activity(m, tmp_path, monkeypatch):
+    old_active = _save(m, QUIET, 8 * 86400)
+    old_inactive = _save(m, BUSY, 8 * 86400)
+    claude_dir = tmp_path / "claude"
+    transcript = claude_dir / "projects" / "project" / f"{QUIET}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{}\n')
+    monkeypatch.setattr(m, "CLAUDE_DIR", claude_dir)
+    m._cleanup_checkpoints()
+    assert old_active.exists()
+    assert old_inactive.exists()
+
+
+def test_invalid_newest_cannot_evict_last_restorable_checkpoint(m):
+    valid = _save(m, QUIET, 8 * 86400, sidecar=False)
+    valid.write_text("# checkpoint\nGenerated: old\n## Active Task\nKeep this work safe\n")
+    old = time.time() - 8 * 86400
+    os.utime(valid, (old, old))
+    placeholder = _save(m, QUIET, 60, sidecar=False)
+    m._cleanup_checkpoints()
+    assert placeholder.exists() and valid.exists()
 
 
 def test_ceiling_drops_extras_before_any_sessions_newest(m):
@@ -119,14 +143,13 @@ def test_ceiling_drops_extras_before_any_sessions_newest(m):
     assert {m._checkpoint_session(c["filename"]) for c in kept} == {f"{s:08d}-aaaa" for s in range(4)}
 
 
-def test_ceiling_below_session_count_keeps_the_newest_sessions(m):
+def test_ceiling_below_session_count_keeps_each_sessions_newest(m):
     now = datetime.now()
     cps = [{"path": None, "filename": f"{s:08d}-aaaa-20261004-120000.md",
             "created": now - timedelta(minutes=s), "trigger": "auto"} for s in range(5)]
     prune = m._checkpoints_to_prune(cps, now=now, days=7, total_max=2, per_session=5)
-    assert [c["filename"] for c in cps if c not in prune] == [cps[0]["filename"], cps[1]["filename"]]
-    # Zero or negative settings never remove everything.
-    assert len(m._checkpoints_to_prune(cps, now=now, days=7, total_max=0, per_session=0)) == 4
+    assert not prune
+    assert not m._checkpoints_to_prune(cps, now=now, days=7, total_max=0, per_session=0)
 
 
 def test_session_ids_parse_from_every_name_shape(m):

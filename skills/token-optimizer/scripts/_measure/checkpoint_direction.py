@@ -54,7 +54,7 @@ def scan(path, user_text, redact, checkpoint_state, max_line):
                 record = json.loads(line)
             except (ValueError, UnicodeDecodeError):
                 continue
-            if not isinstance(record, dict) or record.get('type') != 'user':
+            if not isinstance(record, dict) or record.get('type') != 'user' or record.get('isSidechain'):
                 continue
             raw = user_text(record)
             if not raw.strip():

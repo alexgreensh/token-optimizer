@@ -892,11 +892,9 @@ def _init_trends_db():
     _measure_facade.ensure_activity_schema(conn)
     # Backfill session_uuid from jsonl_path basename stem for existing rows,
     # then create an index so joins are O(log n) instead of full-table LIKE scans.
-    # Done in Python (not a single SQL UPDATE) because SQLite lacks a basename
-    # function and the path separator can vary on Windows.
     try:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_session_log_uuid ON session_log (session_uuid)"
+        conn.executescript(
+            "CREATE INDEX IF NOT EXISTS idx_session_log_uuid_date ON session_log (session_uuid, date DESC); CREATE INDEX IF NOT EXISTS idx_session_log_resume_activity ON session_log (COALESCE(NULLIF(last_activity_day,''),NULLIF(date,'')) DESC, COALESCE(collected_at,'') DESC, id DESC) WHERE session_uuid IS NOT NULL AND session_uuid != '';"
         )
         rows = conn.execute(
             "SELECT id, jsonl_path FROM session_log "
@@ -1480,7 +1478,6 @@ def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, m
     """
     _measure_facade = _compat.facade()
     try:
-        # Derive the stable join key before opening the DB connection.
         session_uuid, unjoinable = _measure_facade._extract_session_uuid(session_id)
 
         # Calculate cost saved using input token rate for the active model.
@@ -1518,9 +1515,9 @@ def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, m
             conn.execute(
                 "INSERT INTO savings_events "
                 "(timestamp, event_type, tokens_saved, cost_saved_usd, session_id, session_uuid, detail, model, unjoinable"
-                + o_col + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?" + o_mark + ")",
+                + o_col + ") SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?" + o_mark + (" WHERE NOT EXISTS (SELECT 1 FROM savings_events WHERE event_type='resume_lean' AND (session_id=? OR session_uuid=?))" if event_type == "resume_lean" and session_id else ""),
                 (_measure_facade.datetime.now().isoformat(), event_type, tokens_saved, cost_saved,
-                 session_id, session_uuid, detail, normalized, 1 if unjoinable else 0) + o_val,
+                 session_id, session_uuid, detail, normalized, 1 if unjoinable else 0) + o_val + ((session_id, session_id) if event_type == "resume_lean" and session_id else ()),
             )
             conn.commit()
         finally:

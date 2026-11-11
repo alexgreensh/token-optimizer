@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, transcript_stream, checkpoint_direction
+from . import _compat, transcript_stream, checkpoint_direction, checkpoint_retention
 
 
 def _iter_tail_lines(filepath, tail_lines, chunk_size=None):
@@ -91,7 +91,7 @@ def _first_task_user_message(filepath):
                     rec = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
                     continue
-                if not isinstance(rec, dict) or rec.get("type") != "user":
+                if not isinstance(rec, dict) or rec.get("type") != "user" or rec.get("isSidechain"):
                     continue
                 text = _measure_facade._task_user_text(rec).strip()
                 if text:
@@ -174,7 +174,7 @@ def _extract_session_state(filepath, tail_lines=None):
     file_count = 0
 
     for record in tail:
-        if not isinstance(record, dict):
+        if not isinstance(record, dict) or record.get("isSidechain"):
             continue
         rec_type = record.get("type")
 
@@ -767,7 +767,7 @@ def compact_capture(transcript_path=None, session_id=None, trigger=None, cwd=Non
     # stale. The offset suffix keeps it unambiguous; selection/age still use mtime.
     now = _measure_facade.datetime.now().astimezone()
     ts = now.strftime("%Y-%m-%dT%H:%M:%S%z")
-    ts_file = now.strftime("%Y%m%d-%H%M%S")
+    ts_file = now.strftime("%Y%m%d-%H%M%S") + "-u" + _measure_facade.os.urandom(8).hex()
 
     if _trusted_transcript is not None:
         filepath = _measure_facade.Path(_trusted_transcript)
@@ -1827,24 +1827,24 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
         # CHECKPOINT_RELEVANCE_THRESHOLD. A home-dir / generic cwd yields no
         # opening context -> no score -> no pointer. The cross-session label,
         # the "NOT your own prior work" framing, the filename-format warning path,
-        # the 30-min age gate, and own-session exclusion are all preserved.
+        # the 24-hour age gate, and own-session exclusion are preserved.
         try:
             cur = _measure_facade.Path(cwd) if cwd else _measure_facade.Path.cwd()
         except Exception:
             cur = None
-        # Filter candidates once: own-session excluded, 30-min age gate applied.
+        # Filter candidates once: own-session excluded, 24-hour age gate applied.
         # The age gate and own-session exclusion are evaluated here (before
         # selection) so a stale or own-session checkpoint can never be the
         # relevance winner either.
         candidates = []
         for cp in checkpoints:
-            if sid_safe and sid_safe in cp["filename"]:
+            if sid_safe and sid_safe == _measure_facade._checkpoint_session(cp["filename"]):
                 continue
             try:
                 age_seconds = (_measure_facade.datetime.now() - cp["created"]).total_seconds()
             except Exception:
                 continue
-            if age_seconds > 1800:
+            if age_seconds > 86400:
                 continue
             candidates.append(cp)
         if not candidates:
@@ -1936,24 +1936,11 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
         return
 
     if is_compact and sid_safe:
-        # Post-compaction: find best checkpoint for this session.
-        # Progressive checkpoints (captured at 50/65/80% fill) are preferred because
-        # they contain richer context than emergency checkpoints at ~98%.
-        # All checkpoint types use the retention-days window here: this path is
-        # both session-matched (sid_safe in filename) and post-compaction, so the
-        # most recent stop/end checkpoint from THIS session is the best continuity
-        # source after a compact regardless of wall-clock age. The old 5-min TTL
-        # gated out stop/end (the common triggers) and produced 0 restores.
-        # Selection is module-level (_order_checkpoints_for_restore) so the
-        # cold-resume-lean path shares the same "latest valid checkpoint"
-        # preference order.
+        # Exact-session restore can use an older save retained for an active session.
         now = _measure_facade.datetime.now()
-        retention_cutoff = now - _measure_facade.timedelta(days=_measure_facade._CHECKPOINT_RETENTION_DAYS)
         session_checkpoints = []
         for cp in checkpoints:
-            if sid_safe not in cp["filename"]:
-                continue
-            if cp["created"] < retention_cutoff:
+            if sid_safe != _measure_facade._checkpoint_session(cp["filename"]):
                 continue
             session_checkpoints.append(cp)
 
@@ -1991,12 +1978,7 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
                 pass
             return
 
-        # No matching checkpoint found for this session. Never auto-restore a
-        # different session's body into post-compaction context; only surface a
-        # short pointer so the user can opt in if it is actually relevant.
-        latest = checkpoints[0]
-        if latest["created"] >= retention_cutoff:
-            print(f"[Token Optimizer] No matching checkpoint. Recent: {latest['path']}. Load if relevant.")
+        # No matching checkpoint: do not suggest a sibling during compaction.
         return
 
 
@@ -2849,7 +2831,7 @@ def _continuity_resume_block(text, checkpoints, sid_safe, cwd):
 
     same_project = []
     for cp in checkpoints[:50]:
-        if sid_safe and sid_safe in cp.get("filename", ""):
+        if sid_safe and sid_safe == _measure_facade._checkpoint_session(cp.get("filename", "")):
             continue  # same-session recovery is SessionStart/compact's job
         sidecar = _measure_facade._read_checkpoint_sidecar(cp["path"])
         if not _measure_facade._checkpoint_in_project(sidecar, cwd):
@@ -3048,7 +3030,7 @@ def _continuity_prompt_hint(prompt_text=None, session_id=None, cwd=None, max_age
         # but among similar-relevance sessions the more active one wins.
         activity_weight = 1.0 + 0.5 * min(density, 20) / 20.0
         for checkpoint in _cps[:_per_session_scan]:
-            if sid_safe and sid_safe in checkpoint.get("filename", ""):
+            if sid_safe and sid_safe == _measure_facade._checkpoint_session(checkpoint.get("filename", "")):
                 continue
             score, sidecar = _measure_facade._checkpoint_topic_score(text, checkpoint, cwd=cwd)
             # Collect from the teaser floor (default 0.3); the full-block gate
@@ -3289,7 +3271,7 @@ def _best_checkpoint_for_session(session_id, within_retention=None):
     cutoff = _measure_facade.datetime.now() - _measure_facade.timedelta(days=_measure_facade._CHECKPOINT_RETENTION_DAYS)
     cands = []
     for cp in _measure_facade.list_checkpoints():
-        if sid_safe not in cp.get("filename", ""):
+        if sid_safe != _measure_facade._checkpoint_session(cp.get("filename", "")):
             continue
         if within_retention and cp["created"] < cutoff:
             continue
@@ -4389,9 +4371,9 @@ def list_checkpoints(max_age_minutes=None):
 
             # Parse trigger type from filename suffix.
             trigger = "auto"
-            match = _measure_facade.re.search(r'-\d{8}-\d{6}-(.+)\.md$', safe_cp.name)
+            match = _measure_facade.re.search(r'-\d{8}-\d{6}-(?:u[0-9a-f]{16}(?:-(.+))?|(.+))\.md$', safe_cp.name)
             if match:
-                trigger = match.group(1)
+                trigger = match.group(1) or match.group(2) or "auto"
 
             checkpoints.append({
                 "path": safe_cp,
@@ -4420,9 +4402,8 @@ def _checkpoints_to_prune(checkpoints, now=None, days=None, total_max=None, per_
     - older than the retention window: removed;
     - per session: the newest `per_session`, plus the newest of each trigger
       (restore prefers earlier, richer saves over late stop saves), are kept;
-    - over the disk ceiling: extra saves go oldest first, then sessions' newest
-      saves oldest first, so a session's newest checkpoint is the last to go.
-    A session's newest checkpoint is removed only by age or the ceiling, never
+    - over the disk ceiling: extra saves go oldest first; newest saves survive.
+    A session's newest checkpoint is removed only by age, never
     by another session's activity. A file a writer has not seen yet is never in
     its list, so it cannot be removed by that writer.
     """
@@ -4457,8 +4438,6 @@ def _checkpoints_to_prune(checkpoints, now=None, days=None, total_max=None, per_
         drop_extra = extra[::-1][:over]
         prune.extend(drop_extra)
         over -= len(drop_extra)
-    if over > 0:
-        prune.extend(newest[::-1][:over])
     return prune
 
 
@@ -4477,12 +4456,11 @@ def _cleanup_checkpoints():
     if not checkpoints:
         return
 
-    for cp in _measure_facade._checkpoints_to_prune(checkpoints):
+    for cp in checkpoint_retention.exclude_latest(_measure_facade._checkpoints_to_prune(checkpoints), checkpoints, _measure_facade._checkpoint_session, _measure_facade._checkpoint_has_restorable_body):
         try:
             cp["path"].unlink()
         except OSError:
             continue
-        # Also delete the sibling JSON sidecar if present.
         try:
             cp["path"].with_suffix(".json").unlink()
         except OSError:

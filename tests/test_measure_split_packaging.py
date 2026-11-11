@@ -20,7 +20,14 @@ def _tree_version():
 sys.path.insert(0, str(SCRIPTS))
 
 
-def test_cloud_payload_refuses_missing_domain(tmp_path):
+@pytest.mark.parametrize('missing', [
+    'skills/token-optimizer/scripts/_measure/pricing.py',
+    'skills/token-optimizer/scripts/_measure/transcript_stream.py',
+    'skills/token-optimizer/scripts/_measure/checkpoint_direction.py',
+    'skills/token-optimizer/scripts/_measure/checkpoint_retention.py',
+    'skills/token-optimizer/scripts/session_store_guard.py',
+])
+def test_cloud_payload_refuses_missing_domain(tmp_path, missing):
     import cloud_kit
     from _measure import RUNTIME_SOURCES
     for relative in cloud_kit._REQUIRED:
@@ -30,13 +37,14 @@ def test_cloud_payload_refuses_missing_domain(tmp_path):
     cloud_kit._validate_tree(tmp_path)
     package = tmp_path / 'skills/token-optimizer/scripts/_measure'
     assert all((package / name).is_file() for name in RUNTIME_SOURCES)
-    (package / 'pricing.py').unlink()
-    with pytest.raises(cloud_kit.KitError, match='pricing.py'):
+    (tmp_path / missing).unlink()
+    with pytest.raises(cloud_kit.KitError, match=Path(missing).name):
         cloud_kit._validate_tree(tmp_path)
 
 
 def test_runtime_manifest_and_hook_warmer_match():
     from _measure import RUNTIME_SOURCES
+    assert {'transcript_stream.py', 'checkpoint_direction.py', 'checkpoint_retention.py'} <= set(RUNTIME_SOURCES)
     spec = importlib.util.spec_from_file_location('split_gate_manifest', REPO / 'hooks/module_runner.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -56,7 +64,8 @@ def test_devin_closed_set_refuses_package_and_every_provider():
 
 @pytest.mark.parametrize('missing', ['__init__.py', '_compat.py', 'runtime.py', 'pricing.py',
     'audit.py', 'dashboard.py', 'lifecycle.py', 'sessions.py', 'trends.py', 'cache_policy.py',
-    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py'])
+    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py',
+    'transcript_stream.py', 'checkpoint_direction.py', 'checkpoint_retention.py'])
 def test_native_completeness_refuses_each_missing_provider(tmp_path, monkeypatch, missing):
     import codex_doctor
     import hermes_doctor

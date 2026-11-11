@@ -73,7 +73,7 @@ def _precompact(home, project, tpath, log) -> Path:
                     payload("PreCompact", None, tpath, project), home, log)
     assert proc.returncode == 0, proc.stderr[-2000:]
     ckpt_dir = home / ".claude" / "token-optimizer" / "checkpoints"
-    autos = sorted(ckpt_dir.glob(f"{SESSION_ID}-*-??????.md"))
+    autos = [cp for cp in ckpt_dir.glob(f"{SESSION_ID}-*.md") if "-progressive-" not in cp.name]
     assert autos, sorted(p.name for p in ckpt_dir.glob("*"))
     return autos[-1]
 
@@ -88,8 +88,9 @@ def _restore(home, project, tpath, log) -> str:
 
 def _active_task(ctx: str) -> str:
     lines = ctx.splitlines()
-    i = lines.index("## Active Task")
-    return lines[i + 1].strip()
+    heading = "## Current direction" if "## Current direction" in lines else "## Active Task"
+    i = lines.index(heading)
+    return lines[i + 1].removeprefix("- ").strip()
 
 
 @posix_only

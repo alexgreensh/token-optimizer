@@ -46,7 +46,7 @@ MARKER_RES = [re.compile(p) for p in (
     r"^$",
     r"^\[Full result archived \([0-9,]+ chars\) — saved to disk, not lost\.$",
     r"^Do NOT re-run the original tool to get this data — read the saved copy by running this in Bash:$",
-    r"^\s*python3 \S*measure\.py expand KEY$",
+    r"^\s*python3? \S*measure\.py expand KEY$",  # Windows prints `python`, not `python3`
     r"^\]$",
     r"^\s*\.\.\. \d+ more matches in \S+ \(content omitted\) \.\.\.$",
     r"^\s*\S+: \d+ matches$",

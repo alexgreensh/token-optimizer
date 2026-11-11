@@ -1,6 +1,8 @@
 """The Stop hook resolves the owning Claude process once per session, not per turn."""
 import os
 import sys
+
+import pytest
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'
@@ -15,6 +17,7 @@ def _counting_finder(monkeypatch, result):
     return calls
 
 
+@pytest.mark.skipif(os.name != 'posix', reason='keep-warm is POSIX-only: _pid_exists is False off POSIX, so no cached owner is ever reused')
 def test_live_owner_is_found_once_per_session(tmp_path, monkeypatch):
     owner = {'pid': os.getpid(), 'start': 'fixture-start'}
     calls = _counting_finder(monkeypatch, owner)
@@ -55,3 +58,17 @@ def test_missing_session_id_never_caches(tmp_path, monkeypatch):
     keepwarm_safety.session_owner(tmp_path, None)
     keepwarm_safety.session_owner(tmp_path, None)
     assert len(calls) == 2 and not list(tmp_path.iterdir())
+
+
+def test_no_process_is_spawned_to_find_an_owner_off_posix(monkeypatch):
+    # Windows has no `ps`: the Stop hook must answer "no owner" without starting one (hot-path budget).
+    class Off:
+        name = 'nt'
+        def __getattr__(self, attr):
+            return getattr(os, attr)
+    monkeypatch.setattr(keepwarm_safety, 'os', Off())
+    def forbidden(*args, **kwargs):
+        raise AssertionError('a process was started')
+    monkeypatch.setattr(keepwarm_safety.subprocess, 'run', forbidden)
+    assert keepwarm_safety.process_info(os.getpid()) is None
+    assert keepwarm_safety.find_owner() is None

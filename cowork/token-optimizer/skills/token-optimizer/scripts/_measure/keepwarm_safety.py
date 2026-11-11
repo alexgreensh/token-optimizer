@@ -12,6 +12,10 @@ import time
 
 
 def process_info(pid):
+    # Keep-warm watches a terminal Claude through `ps`/`lsof`; Windows has neither, so there is no
+    # owner to find. Answering here keeps the Stop hook from spawning a `ps` that cannot exist.
+    if os.name != 'posix':
+        return None
     try:
         proc = subprocess.run(['ps', '-p', str(int(pid)), '-o', 'ppid=', '-o', 'lstart=', '-o', 'comm='],
                               capture_output=True, text=True, timeout=1, check=True)

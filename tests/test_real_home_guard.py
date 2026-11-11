@@ -173,6 +173,10 @@ def test_temp_ancestor_git_probe_is_stat_exempt_only_for_dot_git(monkeypatch):
     assert _home_guard._stat_exempt(os.path.join(real, ".git"))
     assert not _home_guard._stat_exempt(os.path.join(real, ".claude"))
     assert not _home_guard._stat_exempt(os.path.join(real, ".claude", ".git"))
+    # The code map's project-root walk probes the same ancestors for these names.
+    for marker in ("pyproject.toml", "package.json", "setup.py", "setup.cfg", "go.mod", "Cargo.toml"):
+        assert _home_guard._stat_exempt(os.path.join(real, marker)), marker
+    assert not _home_guard._stat_exempt(os.path.join(real, "notes.txt"))
 
 
 

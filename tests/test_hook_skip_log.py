@@ -179,9 +179,17 @@ def test_real_runner_overrun_writes_the_row_end_to_end(tmp_path):
            "TOKEN_OPTIMIZER_SNAPSHOT_DIR": str(snap), "TOKEN_OPTIMIZER_HOOK_BUDGET_MS": "1",
            "PYTHONPYCACHEPREFIX": str(tmp_path / "pyc")}
     payload = dict(_bash(), hook_event_name="PostToolUse")
-    proc = subprocess.run([sys.executable, str(REPO / "hooks" / "posttooluse_runner.py")],
-                          input=json.dumps(payload), capture_output=True, text=True,
-                          env=env, timeout=60)
+
+    def run(environment):
+        return subprocess.run([sys.executable, str(REPO / "hooks" / "posttooluse_runner.py")],
+                              input=json.dumps(payload), capture_output=True, text=True,
+                              env=environment, timeout=60)
+
+    # The skip row is written under a 0.2 s deadline (best effort, fail-open). A cold bytecode cache
+    # spends that on compiling the hook's modules, which a starved CI core (Python 3.9, 5.13.70)
+    # cannot do in time. Warm the cache in a throwaway run so this run measures the write, not the compiler.
+    run(dict(env, TOKEN_OPTIMIZER_SNAPSHOT_DIR=str(tmp_path / "warm-snap")))
+    proc = run(env)
     assert proc.returncode == 0
     assert "bash_compress_hook budget exceeded" in proc.stderr
     assert "updatedToolOutput" not in proc.stdout

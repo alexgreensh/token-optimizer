@@ -17,7 +17,7 @@ MANIFEST = json.loads((ROOT / 'tests/fixtures/measure_split/cases.json').read_te
 def base_commands():
     sha = MANIFEST['base']
     run = subprocess.run(['git', '-C', str(ROOT), 'show', f'{sha}:skills/token-optimizer/scripts/measure.py'],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding='utf-8')
     if run.returncode != 0:
         pytest.skip('BASE commit is not available in this checkout')
     commands, _ = inventory.dispatch_inventory(run.stdout)

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -296,6 +297,13 @@ def test_replay_counts_each_gate_and_is_read_only(tmp_path):
     assert s['truncated'] is False
 
 
+def test_a_window_reaching_before_the_epoch_admits_every_file():
+    # Windows rejects pre-epoch local timestamps (OSError); an absurd --days overflows the date math.
+    assert coverage_report._cutoff(None, 36500) == 0.0
+    assert coverage_report._cutoff(None, 10 ** 12) == 0.0
+    assert coverage_report._cutoff(datetime(2026, 1, 11), 10) == datetime(2026, 1, 1).timestamp()
+
+
 def test_replay_limit_and_missing_folder(tmp_path):
     root = _projects(tmp_path)
     s = coverage_report.replay(root, days=36500, max_results=3)
@@ -334,7 +342,7 @@ def test_cli_command_runs_end_to_end_under_a_scratch_home(tmp_path):
 # ---- dashboard wiring -----------------------------------------------------
 
 def test_renderer_handles_states(tmp_path):
-    node = subprocess.run(['which', 'node'], capture_output=True, text=True).stdout.strip()
+    node = shutil.which('node') or ''
     if not node:
         pytest.skip('node not installed')
     js = (ROOT / 'skills/token-optimizer/assets/coverage_funnel.js').read_text(encoding='utf-8')

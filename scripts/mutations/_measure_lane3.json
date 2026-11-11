@@ -43,8 +43,8 @@
     "mutation": "a flat whole-workload week hides the measured savings",
     "edit": 1,
     "file": "skills/token-optimizer/scripts/_measure/savings.py",
-    "old": "if wdays == 7 and weekly_full and float(weekly_full.get(\"saved_usd\") or 0.0) > ctx + rt:",
-    "new": "if wdays == 7 and weekly_full:",
+    "old": "; weekly_full = None  # Do not surface the counterfactual dollars.",
+    "new": "; weekly_full = _measure_facade._weekly_full_savings(resets_at=meters.get(\"seven_day_resets_at\"), now=now)",
     "symbol": "runway_snapshot"
   },
   {

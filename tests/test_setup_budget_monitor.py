@@ -1,4 +1,5 @@
 """Budget observation is append-only and never changes the user's setting."""
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -7,6 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/token-optim
 from _measure.setup_budget_monitor import record, decreases, observe_hook, evaluate
 from test_setup_attachment_counter import attachment, call, card
 import json
+
+# Hook paths must be absolute, and "/project" is not absolute on Windows (Python 3.13+).
+PROJECT = os.path.abspath("/project")
 
 
 def test_only_a_real_numeric_decrease_within_scope_is_a_candidate():
@@ -47,13 +51,13 @@ def test_simultaneous_conflicting_budgets_break_the_comparison_chain():
 
 def test_hook_observes_without_mutating_environment_or_creating_database(tmp_path):
     db_path = tmp_path / "trends.db"
-    hook = {"session_id": "s1", "cwd": "/project", "transcript_path": "/transcript-one"}
+    hook = {"session_id": "s1", "cwd": PROJECT, "transcript_path": os.path.abspath("/transcript-one")}
     env = {"SLASH_COMMAND_TOOL_CHAR_BUDGET": "10000"}
     assert not observe_hook(hook, db_path, env, "2026-01-01T00:00:00Z")
     sqlite3.connect(str(db_path)).close()
     assert observe_hook(hook, db_path, env, "2026-01-01T00:00:00Z")
     assert env == {"SLASH_COMMAND_TOOL_CHAR_BUDGET": "10000"}
-    hook["session_id"], hook["transcript_path"] = "s2", "/transcript-two"
+    hook["session_id"], hook["transcript_path"] = "s2", os.path.abspath("/transcript-two")
     env["SLASH_COMMAND_TOOL_CHAR_BUDGET"] = "5000"
     assert observe_hook(hook, db_path, env, "2026-01-02T00:00:00Z")
     with sqlite3.connect(str(db_path)) as conn:
@@ -63,7 +67,7 @@ def test_hook_observes_without_mutating_environment_or_creating_database(tmp_pat
 def test_remote_hook_does_not_record_local_budget(tmp_path):
     db_path = tmp_path / "trends.db"
     sqlite3.connect(str(db_path)).close()
-    hook = {"session_id": "s", "cwd": "/project", "transcript_path": "/transcript"}
+    hook = {"session_id": "s", "cwd": PROJECT, "transcript_path": os.path.abspath("/transcript")}
     assert not observe_hook(hook, db_path, {"CLAUDE_CODE_REMOTE": "true"}, "2026-01-01T00:00:00Z")
 
 
@@ -75,7 +79,7 @@ def test_sessionstart_wires_the_budget_observer(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.measure, "TRENDS_DB", db_path)
     monkeypatch.setattr(runner.measure, "detect_runtime", lambda: "claude")
     monkeypatch.setenv("SLASH_COMMAND_TOOL_CHAR_BUDGET", "10000")
-    runner._observe_setup_budget({"session_id": "s", "cwd": "/project", "transcript_path": "/transcript"})
+    runner._observe_setup_budget({"session_id": "s", "cwd": PROJECT, "transcript_path": os.path.abspath("/transcript")})
     with sqlite3.connect(str(db_path)) as conn:
         assert conn.execute("SELECT budget FROM setup_budget_observations").fetchall() == [(10000,)]
 

@@ -1,6 +1,7 @@
 """Feature-health card: synthetic ledgers only."""
 import os
 import sqlite3
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -124,7 +125,7 @@ def test_collect_never_writes(tmp_path):
 
 
 def test_renderer_handles_unavailable_and_rows(tmp_path):
-    node = subprocess.run(['which', 'node'], capture_output=True, text=True).stdout.strip()
+    node = shutil.which('node') or ''
     if not node:
         import pytest
         pytest.skip('node not installed')

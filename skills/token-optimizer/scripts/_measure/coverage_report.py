@@ -147,12 +147,22 @@ def format_table(summary, source_note=""):
     return "\n".join(out)
 
 
+def _cutoff(now, days):
+    """Oldest modification time the window admits. A window reaching before the epoch (``--days 36500``)
+    admits every file: Windows rejects pre-epoch local timestamps (OSError) and an absurd ``days``
+    overflows the date arithmetic on every platform."""
+    try:
+        return max(0.0, ((now or datetime.now()) - timedelta(days=days)).timestamp())
+    except (OverflowError, OSError, ValueError):
+        return 0.0
+
+
 def _transcripts(projects_dir, days, now=None):
     """Transcript files modified within ``days``, newest first, or None if the folder is missing."""
     root = Path(projects_dir)
     if not root.is_dir():
         return None
-    cutoff = ((now or datetime.now()) - timedelta(days=days)).timestamp()
+    cutoff = _cutoff(now, days)
     files = []
     for p in root.rglob("*.jsonl"):
         try:

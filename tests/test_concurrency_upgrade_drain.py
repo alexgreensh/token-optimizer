@@ -368,6 +368,12 @@ def test_drain_owner_handoff_is_never_partial(m, tmp_path, monkeypatch):
         while not stop.is_set():
             try:
                 value = marker.read_text()
+            except PermissionError:
+                # Windows refuses to open a file while it is being replaced (sharing violation).
+                # That is a refused read, not a partial one; POSIX never refuses, so there it still fails.
+                if os.name == 'nt':
+                    continue
+                value = None
             except OSError:
                 value = None
             if value != owner:
@@ -630,3 +636,18 @@ def test_interrupted_batch_retry_does_not_duplicate_first_update(m, tmp_path, mo
     assert conn.execute("SELECT value FROM session_log ORDER BY id").fetchall() == [(1,), (1,)]
     assert len(attempts) == 2
     conn.close()
+
+
+def test_drain_run_does_not_leave_drain_mode_on_for_later_collects(m, tmp_path, monkeypatch):
+    # The flag is set for the run only: left on, every later in-process collect skipped the drain hand-off
+    # (test_hook_pass_hands_capped_backlog_to_the_drain failed whenever this file ran before it).
+    monkeypatch.setattr(m, "SNAPSHOT_DIR", tmp_path / "snap")
+    monkeypatch.delenv("TOKEN_OPTIMIZER_UPGRADE_DRAIN", raising=False)
+    seen = []
+    monkeypatch.setattr(m, "collect_sessions", lambda **kw: seen.append(os.environ.get("TOKEN_OPTIMIZER_UPGRADE_DRAIN")) or 0)
+    m._run_upgrade_drain(days=30, quiet=True)
+    assert seen == ["1"]
+    assert "TOKEN_OPTIMIZER_UPGRADE_DRAIN" not in os.environ
+    monkeypatch.setenv("TOKEN_OPTIMIZER_UPGRADE_DRAIN", "keep")
+    m._run_upgrade_drain(days=30, quiet=True)
+    assert os.environ["TOKEN_OPTIMIZER_UPGRADE_DRAIN"] == "keep"

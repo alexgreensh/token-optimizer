@@ -121,6 +121,7 @@ def test_forked_transcript_restores_its_own_continuation(measure, monkeypatch, t
     assert "Parent private direction" not in result
 
 
+@pytest.mark.skipif(os.name == "nt", reason="drives the hooks.json command through /bin/sh, which native Windows lacks")
 def test_interleaved_parallel_sessions_restore_their_own_transcripts(tmp_path):
     from _hook_harness import REPO, SESSION_ID, consented_home, hook_command, payload, run_hook, transcript
 

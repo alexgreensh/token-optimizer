@@ -194,13 +194,27 @@ def test_failed_native_compressor_allows_fallback_nudge(plugin, monkeypatch):
 
 def test_nudge_grade_matches_stored_grade_at_high_fill(plugin):
     """The nudge must grade with live occupancy, same as the stored rollup.
-    ~90% full is a D (fill 10*.40 + msg 100*.35 + oi 15*.25 = 43) — the
-    fill-blind renormalized path would report a softer C (65)."""
+    Quality v3 scores context fill alone (message count no longer moves the grade),
+    so ~90% full is an F. The invariant is agreement with the stored grade for the
+    same live occupancy, and that the fill-blind path (occupancy unset) is not used."""
+    import hermes_session  # noqa: PLC0415
+
     _call(plugin, "s-grade", input_tokens=900_000)
     nudge = _nudge(plugin, "s-grade")
     assert nudge is not None
-    assert "Grade: D" in nudge["context"]
-
+    ctx_win = plugin._context_window("any-model")
+    stored = hermes_session.compute_quality_score(
+        input_tokens=900_000, output_tokens=0, message_count=1, model="any-model",
+        context_window=ctx_win, context_tokens=900_000,
+    )
+    assert stored["measured"] is True
+    assert f"Grade: {stored['grade']}." in nudge["context"]
+    assert stored["grade"] == "F"
+    blind = hermes_session.compute_quality_score(
+        input_tokens=900_000, output_tokens=0, message_count=1, model="any-model",
+        context_window=ctx_win,
+    )
+    assert blind["measured"] is False  # the fill-blind path has no grade to show
 
 
 def _load_unpatched_plugin():

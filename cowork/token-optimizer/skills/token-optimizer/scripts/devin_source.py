@@ -49,7 +49,7 @@ REPO_MODULES = frozenset((
     'cursor_transcript',
     # Added by the 5.13.69 merges (pristine, codemap, quiet, coverage).
     'archive_verify', 'codemap', 'codemap_hint', 'codemap_index', 'codemap_ledger', 'codemap_reread',
-    'coverage_funnel', 'hint_paths', 'holdout', 'post_run_classify', 'large_transcripts', 'preserved_reinject',
+    'coverage_funnel', 'hint_paths', 'holdout', 'post_run_classify', 'large_transcripts', 'preserved_reinject', 'session_store_guard',
 ))
 
 class SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):

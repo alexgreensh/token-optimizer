@@ -129,10 +129,29 @@ def classify_result(command: str, output: str, is_error: bool = False) -> dict:
         row.update(gate="already_compressed", reason="marker")
         return row
     try:
+        from post_run_classify import unsafe_compound_output
+        if unsafe_compound_output(command):
+            row.update(gate="not_read_only", reason="mixed_output")
+            return row
+    except Exception:
+        pass  # the hook fails open on this check too
+    compress_command = command
+    try:
         from pipeline_analyzer import is_read_only_pipeline
         is_ro, why = is_read_only_pipeline(command)
     except Exception:
         is_ro, why = False, "analyzer-error"
+    if not is_ro:
+        # Same step as the hook: a harmless prefix (`cd /p;`, `export X=1 &&`)
+        # does not hide the command from its pattern-specific compressor.
+        try:
+            from post_run_classify import eligible_effective, mode as _prc_mode
+            if _prc_mode() == "on":
+                effective = eligible_effective(command)
+                if effective is not None:
+                    is_ro, compress_command = True, effective
+        except Exception:
+            pass
     from bash_compress import _strip_ansi
     cleaned = _strip_ansi(output)
     if not is_ro:
@@ -154,7 +173,7 @@ def classify_result(command: str, output: str, is_error: bool = False) -> dict:
     pattern = _safe_pattern(_detect_pattern, command)
     row["pattern"] = pattern
     try:
-        packed = compress(command, cleaned, returncode=0, stderr="")
+        packed = compress(compress_command, cleaned, returncode=0, stderr="")
         packed = packed if isinstance(packed, str) else (
             packed[0] if isinstance(packed, (tuple, list)) and packed else str(packed))
     except Exception:

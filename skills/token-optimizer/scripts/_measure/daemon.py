@@ -3316,6 +3316,11 @@ try:
     class _DaemonServer(socketserver.ThreadingTCPServer):
         daemon_threads = True
         allow_reuse_address = True
+        # socketserver's default backlog is 5. A burst of connections (a dashboard
+        # page opening parallel requests, a probe storm) larger than the backlog
+        # is reset at connect before the accept loop can answer 200 or 503. Keep
+        # the backlog above the worker cap so saturation is always answered 503.
+        request_queue_size = 64
 
         def process_request(self, request, client_address):
             # Bound concurrent workers.

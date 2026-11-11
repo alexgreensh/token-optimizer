@@ -84,6 +84,8 @@ def _extract_skills_and_agents_from_subagent(filepath):
     try:
         with transcript_stream.open_transcript(filepath) as f:
             for line in f:
+                if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:
+                    continue  # bounded per-line work, same limit as the Codex adapter
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
@@ -215,6 +217,8 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=None):
     try:
         with transcript_stream.open_transcript(jsonl_path) as f:
             for line in f:
+                if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:
+                    continue  # bounded per-line work, same limit as the Codex adapter
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
@@ -613,6 +617,8 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
     try:
         with transcript_stream.open_transcript(filepath) as f:
             for line in f:
+                if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:
+                    continue  # bounded per-line work, same limit as the Codex adapter
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
@@ -1013,6 +1019,8 @@ def parse_session_turns(filepath):
     try:
         with transcript_stream.open_transcript(filepath) as f:
             for line in f:
+                if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:
+                    continue  # bounded per-line work, same limit as the Codex adapter
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:

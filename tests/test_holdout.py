@@ -141,8 +141,10 @@ def test_control_session_archives_nothing(tmp_path):
     sid = _sid(7)
     _hook(tmp_path, '1', sid)
     names = sorted(p.name for p in (tmp_path / 'snap').rglob('*') if p.is_file())
-    # The ledger, plus the existing per-session thrash-guard state. No archived original.
-    assert all(n.startswith('trends.db') or n == f'{sid}.db' for n in names), names
+    # The ledger, plus the existing per-session thrash-guard state and its cleanup-lock
+    # sidecar (session_store_guard, added with the parallel-session store lock: it is
+    # created whenever that store is opened, never separately). No archived original.
+    assert all(n.startswith('trends.db') or n in (f'{sid}.db', f'{sid}.db.guard') for n in names), names
     assert not any('archive' in str(p.relative_to(tmp_path / 'snap')) for p in (tmp_path / 'snap').rglob('*'))
 
 

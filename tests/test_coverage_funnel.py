@@ -38,7 +38,10 @@ CASES = {
     'failed': ('ls', PLAIN, 1, 'error_or_short', 'failed_command'),
     'error_words': ('ls', ERRORS, None, 'error_or_short', 'error_words'),
     'marker': ('ls', 'x' * 120 + '\n[bash_compress] done', None, 'already_compressed', 'marker'),
-    'not_read_only': (f'cd /{SENTINEL}; ls', PLAIN, None, 'not_read_only', 'glued-operator-in-token'),
+    # `cd /p; ls` used to be the not-read-only example. The post-run classifier is on by
+    # default now, so that prefix no longer hides `ls` from its compressor; a redirect still does.
+    'not_read_only': (f'ls > /{SENTINEL}/out', PLAIN, None, 'not_read_only', 'file-redirect-write'),
+    'prefixed_but_eligible': (f'cd /{SENTINEL}; ls', PLAIN, None, 'under_10pct', 'read_only'),
     'under_10pct': ('ls', PLAIN, None, 'under_10pct', 'read_only'),
     'compressed': ('ls -la', LONG_LS, None, 'compressed', 'read_only'),
     'build_compressed': ('make all', BUILD, None, 'compressed', 'build_output'),
@@ -120,6 +123,16 @@ def _hook_without_counting(tmp_path, command, stdout):
             "import bash_compress_hook as h; h.main()")
     return subprocess.run([sys.executable, '-c', code], input=json.dumps(payload), capture_output=True,
                           text=True, env=env, timeout=60)
+
+
+def test_replay_keeps_the_hooks_mixed_output_safety(tmp_path):
+    """Two producers in one command are never rendered as one: hook and replay both say mixed_output."""
+    command = f'ls /{SENTINEL}; rm /{SENTINEL}'
+    _hook(tmp_path, command, LONG_LS, None)
+    hook_row = _rows(tmp_path)[0]
+    replay = coverage_funnel.classify_result(command, LONG_LS)
+    assert (hook_row[0], hook_row[1]) == ('not_read_only', 'mixed_output')
+    assert (replay['gate'], replay['reason']) == ('not_read_only', 'mixed_output')
 
 
 @pytest.mark.parametrize('name', ['compressed', 'under_10pct', 'not_read_only', 'build_compressed', 'error_words'])
@@ -277,7 +290,7 @@ def test_replay_counts_each_gate_and_is_read_only(tmp_path):
     assert _tree_hash(root) == before
     assert s['results'] == len(CASES) + 1 and s['files'] == 2
     by = {g['gate']: g['results'] for g in s['gates']}
-    assert by == {'not_read_only': 1, 'under_10pct': 1, 'already_compressed': 1,
+    assert by == {'not_read_only': 1, 'under_10pct': 2, 'already_compressed': 1,
                   'compressed': 3, 'error_or_short': 3}
     assert abs(sum(g['share'] for g in s['gates']) - 1.0) < 1e-9
     assert s['truncated'] is False

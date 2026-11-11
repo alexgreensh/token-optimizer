@@ -267,9 +267,28 @@ def _run(payload: dict) -> None:
         return
 
     # Check pipeline read-only eligibility
+    compress_command = command  # command used to pick a compressor
+    _post_run_shadow = None  # effective command, shadow mode only
     try:
         from pipeline_analyzer import is_read_only_pipeline
         is_ro, reason = is_read_only_pipeline(command)
+        if not is_ro:
+            # W2: the command already ran, so a harmless prefix (`cd /p &&`,
+            # `export X=1;`, `git -C /p`) should not hide it from the same
+            # pattern-specific compressor its bare form gets. post_run_classify
+            # returns that bare form, or None. Shadow mode only measures.
+            try:
+                from post_run_classify import mode as _prc_mode
+                _prc = _prc_mode()
+                if _prc != "off":
+                    from post_run_classify import eligible_effective
+                    _eff = eligible_effective(command)
+                    if _eff is not None and _prc == "on":
+                        is_ro, compress_command = True, _eff
+                    elif _eff is not None:
+                        _post_run_shadow = _eff
+            except Exception:
+                pass  # Fail open: the baseline path below runs unchanged
         if not is_ro:
             # --- K1: build/test/run output compression (PostToolUse) ---
             # The command is not read-only, so the standard compression path
@@ -307,6 +326,13 @@ def _run(payload: dict) -> None:
                 except Exception:
                     pass  # Fail open: raw output stands
             _cov("not_read_only", reason, text=stdout)
+            if _post_run_shadow is not None:
+                try:
+                    from post_run_classify import shadow_measure
+                    shadow_measure(command, _post_run_shadow, stdout, stderr,
+                                   exit_code, _stdout_has_error_patterns)
+                except Exception:
+                    pass  # Shadow never changes what the model sees
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
             return  # Not eligible, pass through raw
@@ -353,7 +379,7 @@ def _run(payload: dict) -> None:
             return  # Error on stdout: pass through raw
 
         # Run the standard compression pipeline
-        compressed = compress(command, cleaned_stdout, returncode=exit_code, stderr=stderr)
+        compressed = compress(compress_command, cleaned_stdout, returncode=exit_code, stderr=stderr)
 
         # Best single-output representation: the compressed preview when it
         # actually shrank the output by >=10%, else the raw output.
@@ -411,7 +437,7 @@ def _run(payload: dict) -> None:
 
         # Search matches must remain recoverable even below the archive floor
         # or when the archive write fails. Other handlers keep their contracts.
-        if _archive_key is None and _detect_pattern(command) == "search_results":
+        if _archive_key is None and _detect_pattern(compress_command) == "search_results":
             compressed = stdout
 
         # --- enforce the baseline-size invariant ---

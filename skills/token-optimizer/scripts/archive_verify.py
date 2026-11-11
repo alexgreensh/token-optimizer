@@ -18,6 +18,7 @@ import json
 import os
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 TABLE = "archive_verifications"
 MIN_STREAK = 3
@@ -150,3 +151,15 @@ def view_filter(alias):
     """SQL clause leaving out archive rows whose transcript kept the full result."""
     return ("NOT EXISTS (SELECT 1 FROM main." + TABLE + " w WHERE w.event_id=" + alias
             + ".id AND w.verdict='full')")
+
+
+def replacement_check(trends_db):
+    """Health of archive replacements for the dashboard and audit. Never raises."""
+    try:
+        conn = sqlite3.connect(Path(trends_db).resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0)
+        try:
+            return health(conn)
+        finally:
+            conn.close()
+    except Exception:
+        return {"status": "unknown", "verified": 0, "full": 0, "full_streak": 0}

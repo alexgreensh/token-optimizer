@@ -1836,31 +1836,15 @@ def _compute_model_routing_savings(days=None, since=None):
         if not cur_shares or cur_total <= 0:
             return zero
 
-        # Baseline mix: explicit pre-TO baseline (user knows it) first, then
-        # snapshot capture, else earliest measured history.
-        baseline_shares = None
-        baseline_source = None
-        early_mix = None
+        # Baseline mix: the user's stated pre-TO baseline first, then the mix
+        # captured at install, the frozen baseline, else earliest history.
+        baseline_shares, baseline_source, baseline_stated, early_mix = None, None, False, None
         explicit = _measure_facade._pretool_baseline_mix()
         if explicit:
-            baseline_shares = explicit
-            baseline_source = "pretool_baseline"
-        if not baseline_shares:
-            try:
-                snap_path = _measure_facade.SNAPSHOT_DIR / "snapshot_before.json"
-                if snap_path.exists():
-                    snap = _measure_facade.json.loads(snap_path.read_text(encoding="utf-8"))
-                    mm = ((snap.get("model_mix") or {}).get("shares") or {}) if (snap.get("model_mix") or {}).get("activity_basis") == 1 else {}
-                    if mm:
-                        baseline_shares = mm
-                        baseline_source = "snapshot"
-            except (_measure_facade.json.JSONDecodeError, OSError, ValueError):
-                pass
-        if not baseline_shares:
-            early_mix = _measure_facade._earliest_model_mix()
-            if early_mix:
-                baseline_shares = early_mix["shares"]
-                baseline_source = "history"
+            baseline_shares, baseline_source, baseline_stated = explicit, "pretool_baseline", True
+        else:
+            from . import baseline_provenance
+            baseline_shares, baseline_source, baseline_stated, early_mix = baseline_provenance.routing_baseline(_measure_facade)
         if not baseline_shares:
             return zero
 
@@ -2158,7 +2142,7 @@ def _compute_model_routing_savings(days=None, since=None):
             "measured_baseline_realized_cost_usd": measured_baseline.get("realized_cost_usd"),
             "measured_baseline_source": measured_baseline.get("source"),
             "measured_baseline_first_date": measured_baseline.get("first_date"),
-            "baseline_source": baseline_source,
+            "baseline_source": baseline_source, "baseline_stated": baseline_stated,
             "routable_fraction": _measure_facade._ROUTABLE_OPUS_FRACTION,
             # Realized routing is a standardized comparison on a fixed price
             # schedule (newest card per family) in both arms, because the baseline

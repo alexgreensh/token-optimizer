@@ -4695,7 +4695,8 @@ var DB = (function() {
     var routingRealizedMo = mo(actionSavings && actionSavings.routing_usd != null
       ? actionSavings.routing_usd : mr.realized_cost_usd);
     var routingBaselinePct = fmtPct(mr.baseline_opus_share);
-    var routingAssumption = mr.baseline_source === 'pretool_baseline'
+    var routingAssumption = (mr.baseline_provenance && mr.baseline_provenance.short) ? String(mr.baseline_provenance.short)
+      : mr.baseline_source === 'pretool_baseline'
       ? 'assuming ' + routingBaselinePct + '% Opus before Token Optimizer'
       : (mr.baseline_opus_share != null
         ? 'against a measured ' + routingBaselinePct + '% Opus baseline'
@@ -4832,7 +4833,8 @@ var DB = (function() {
     if (sia && Number(sia.total_usd) > 0) {
       var siaParts = sia.components_usd || {};
       var siaRouting = Number(sia.routing_usd) || ((Number(siaParts.routing_measured) || 0) + (Number(siaParts.routing_estimated) || 0));
-      var siaRoutingNote = sia.routing_baseline_opus_share != null
+      var siaRoutingNote = (sia.routing_baseline_provenance && sia.routing_baseline_provenance.short) ? String(sia.routing_baseline_provenance.short)
+        : sia.routing_baseline_opus_share != null
         ? ((sia.routing_baseline_source === 'stated' || sia.routing_baseline_source === 'pretool_baseline' ? 'assuming ' : 'against a measured ') +
           fmtPct(sia.routing_baseline_opus_share) + '% Opus' +
           (sia.routing_baseline_source === 'stated' || sia.routing_baseline_source === 'pretool_baseline' ? ' before Token Optimizer' : ' baseline'))

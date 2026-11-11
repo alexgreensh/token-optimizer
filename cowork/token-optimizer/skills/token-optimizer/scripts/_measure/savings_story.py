@@ -84,9 +84,9 @@ def routing_baseline_kind(routing, runtime):
     if share <= 0:
         return None
     source = routing.get("baseline_source")
-    if source == "pretool_baseline":
+    if source == "pretool_baseline" or routing.get("baseline_stated"):
         return "stated"
-    if source in ("snapshot", "history"):
+    if source in ("snapshot", "frozen_baseline", "history"):
         return "measured_at_install"
     return None
 

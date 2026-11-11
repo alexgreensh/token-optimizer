@@ -4461,7 +4461,7 @@ var DB = (function() {
             : '';
           return '<div style="margin-top:var(--s-3);font-size:13px;color:' + col + ';">' +
             (stale ? '⚠ ' : '') + 'Window reading as of ' + esc(whenStr) + ' (' + ageStr + ').' + staleNote +
-            (window.location.protocol === 'file:' && !window.__TOKEN_REGEN_LIVE ? ' Run <code>python3 skills/token-optimizer/scripts/measure.py setup-daemon</code> to see live numbers.' : ' <button id="to-regen-btn" onclick="window.__TOKEN_REGENERATE&&window.__TOKEN_REGENERATE()" ' +
+            (window.location.protocol === 'file:' ? (window.__TOKEN_FILE_DAEMON_LIVE ? ' Open ' + DAEMON_URL + '/token-optimizer for live numbers.' : ' Run <code>python3 skills/token-optimizer/scripts/measure.py setup-daemon</code> to see live numbers.') : ' <button id="to-regen-btn" onclick="window.__TOKEN_REGENERATE&&window.__TOKEN_REGENERATE()" ' +
             'style="margin-left:8px;padding:2px 10px;font:inherit;font-size:12px;cursor:pointer;' +
             'background:transparent;color:inherit;border:1px solid currentColor;border-radius:4px;">' +
             'Regenerate savings</button>') +
@@ -7524,15 +7524,15 @@ document.addEventListener('DOMContentLoaded', function() {
     }, 60000);
   }
 
-  // Probe the daemon; file pages keep all controls except regeneration read-only.
+  // Probe the daemon; file pages stay read-only.
   var DAEMON_URL = data.runtime === 'codex' ? 'http://localhost:24843' : 'http://localhost:24842';
   function _setApiLive(baseUrl) {
-    if (window.location.protocol === 'file:') window.__TOKEN_REGEN_LIVE = true;
-    else window.__TOKEN_API_LIVE = true;
+    window.__TOKEN_API_LIVE = true;
     window.__TOKEN_API_BASE = baseUrl || '';
   }
   // All mutations carry the per-install token and surface authorization failures.
   window.__TOKEN_API_POST = function(path, body) {
+    if (window.location && window.location.protocol === 'file:') return Promise.reject(new Error('Open the live dashboard to make changes.'));
     var base = window.__TOKEN_API_BASE || '';
     var headers = { 'Content-Type': 'application/json' };
     if (window.__TOKEN_API_TOKEN) headers['X-TO-Token'] = window.__TOKEN_API_TOKEN;
@@ -7624,8 +7624,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     function succeed(d) {
       return waitForRegen(d || {}, msg).then(function() {
-        if (window.location.protocol === 'file:') window.location.href = window.__TOKEN_API_BASE + '/';
-        else location.reload();
+        location.reload();
       }).catch(fail);
     }
     // At most ONE 403->refetch->retry. Without the cap a persistently-bad token
@@ -7673,14 +7672,13 @@ document.addEventListener('DOMContentLoaded', function() {
     var base = isHttp ? '' : DAEMON_URL;
     var probe = base + '/api/health';
     try {
-      fetch(probe, { method: 'GET' })
-        .then(function(r) { return r.json(); })
+      fetch(probe, isHttp ? { method: 'GET' } : { method: 'GET', mode: 'no-cors' })
+        .then(function(r) { return !isHttp && r.type === 'opaque' ? {ok: true} : r.json(); })
         .then(function(d) {
           if (d && d.ok) {
-            if (isHttp) _setApiLive(base);
-            return _fetchToken(base).then(function() {
-              if (!isHttp && window.__TOKEN_API_TOKEN) _setApiLive(base);
-            });
+            if (!isHttp) { window.__TOKEN_FILE_DAEMON_LIVE = true; return; }
+            _setApiLive(base);
+            return _fetchToken(base);
           }
         })
         .catch(function() {})

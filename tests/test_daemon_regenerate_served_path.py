@@ -27,6 +27,23 @@ def _replace_constant(source, name, value):
     return updated
 
 
+def _await_regen_job(port, job_id, timeout=60):
+    """Regenerate runs in the background (202 + job id); poll the status endpoint to the end."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/regenerate/status", method="POST",
+            data=json.dumps({"job_id": job_id}).encode("utf-8"),
+            headers={"Host": f"localhost:{port}", "Origin": f"http://localhost:{port}",
+                     "X-TO-Token": "test-token", "Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=10) as status:
+            job = json.loads(status.read().decode("utf-8"))
+        if job["state"] != "running":
+            return job
+        time.sleep(0.05)
+    raise AssertionError("regeneration job did not finish")
+
+
 def test_regenerate_advances_served_dashboard_mtime_and_uses_served_install(tmp_path):
     scripts = Path(__file__).resolve().parents[1] / "skills" / "token-optimizer" / "scripts"
     sys.path.insert(0, str(scripts))
@@ -95,8 +112,10 @@ def test_regenerate_advances_served_dashboard_mtime_and_uses_served_install(tmp_
             detail = proc.stderr.read().decode("utf-8", "replace") if proc.poll() is not None else "still running"
             raise AssertionError("daemon did not start: " + detail)
         payload = json.loads(response.read().decode("utf-8"))
-        assert payload["ok"] is True
-        assert payload["measure_py"] == str(claude_measure)
+        assert response.status == 202 and payload["ok"] is True
+        assert _await_regen_job(24991, payload["job_id"])["state"] == "done"
+        # The refreshed file is written only by the served install's measure.py (the
+        # baked .codex fallback exits "wrong install"), so it proves which install ran.
         assert dashboard.stat().st_mtime_ns > before
         assert dashboard.read_text(encoding="utf-8") == "claude-refresh"
         argv = json.loads((tmp_path / "regen-argv.json").read_text())
@@ -178,8 +197,9 @@ def test_regenerate_resolves_served_install_despite_mismatched_marketplace_ident
             detail = proc.stderr.read().decode("utf-8", "replace") if proc.poll() is not None else "still running"
             raise AssertionError("daemon did not start: " + detail)
         payload = json.loads(response.read().decode("utf-8"))
-        assert payload["ok"] is True
-        assert payload["measure_py"] == str(claude_measure)
+        assert response.status == 202 and payload["ok"] is True
+        assert _await_regen_job(24992, payload["job_id"])["state"] == "done"
+        # Only the served runtime's measure.py writes this; the stale codex one exits.
         assert dashboard.stat().st_mtime_ns > before
         assert dashboard.read_text(encoding="utf-8") == "claude-refresh"
     finally:

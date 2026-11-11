@@ -186,7 +186,10 @@ def test_unavailable_rereads_are_explicit_on_both_surfaces(measure, monkeypatch,
     dashboard = measure._dashboard_savings_data()
     assert dashboard["action_savings"]["reread_available"] is False
     actions = render(dashboard).split('savings-actions')[1].split('savings-history')[0]
-    assert 'Repeat reads avoided <strong>Unavailable' in actions
+    # Value-or-drop: no "Unavailable" placeholder row. The row is gone and one plain line says why.
+    assert 'Repeat reads avoided' not in actions
+    assert 'Repeat-read coverage is unavailable here; logged actions are still included.' in actions
+    assert 're-reads unavailable' in actions
     assert '"savings-amount">$159.00<' in actions
 
 
@@ -196,6 +199,8 @@ def test_dashboard_prefers_server_computed_components():
         "logged_usd": 200, "routing_usd": 11, "reread_usd": 31,
         "routing_measured_usd": 11, "routing_estimated_usd": 0,
         "estimated_usd": 131, "total_usd": 362,
+        # The server always states whether repeat reads exist; the card shows the row only then.
+        "reread_available": True, "reread_prices_available": True,
     }
     actions = render(source).split('savings-actions')[1].split('savings-history')[0]
     assert '"savings-amount">$362<' in actions

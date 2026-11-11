@@ -41,6 +41,6 @@ def test_cache_statusline_cli_dashboard_agree(tmp_path, monkeypatch, capsys, mea
     assert cli['grade'] == detail['quality_grade'] == cache['grade']
     assert cli['measured'] == detail['quality_measured'] == measured
     if measured:
-        assert f"{cache['grade']}({round(cache['score'])})" in status
+        assert f"Quality {cache['grade']} {round(cache['score'])}" in status
     else:
-        assert 'ContextQ:~56' in status
+        assert 'Quality ~56' in status

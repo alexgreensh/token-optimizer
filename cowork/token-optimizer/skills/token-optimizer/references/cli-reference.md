@@ -86,7 +86,7 @@
 
 ### Efficiency Grading
 Grades: S (90-100), A (80-89), B (70-79), C (55-69), D (40-54), F (0-39).
-Shown in status line (`ContextQ:A(82)`), dashboard, coach, and CLI.
+Shown in status line (`Quality A 82`), dashboard, coach, and CLI.
 
 ### .contextignore
 Create `.contextignore` in project root or `~/.claude/.contextignore` (global). Uses gitignore-style glob patterns. Hard-blocks regardless of read-cache mode.

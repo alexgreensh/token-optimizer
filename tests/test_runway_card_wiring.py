@@ -56,17 +56,15 @@ def test_template_reads_runway_from_the_payload():
     assert "data.runway" in html, "template no longer reads data.runway"
 
 
-def test_runway_card_is_shared_by_savings_and_trends():
-    """One definition, two call sites. Duplicated markup drifts."""
+def test_runway_card_lives_on_savings_only():
+    """One definition, rendered by Savings. Trends lost its twin copy so the two never disagree."""
     html = (ASSETS / "dashboard.html").read_text(encoding="utf-8")
     assert html.count("function runwayCardHtml(") == 1, "expected one definition"
-    assert html.count("runwayCardHtml()") >= 3, (
-        "expected the definition plus a call from renderSavings and renderTrends"
-    )
-    for fn in ("renderSavings", "renderTrends"):
-        start = html.index("function " + fn + "(")
-        body = html[start:start + 40000]
-        assert "runwayCardHtml()" in body, f"{fn} does not render the runway card"
+    start = html.index("function renderSavings(")
+    assert "runwayCardHtml()" in html[start:start + 40000], "renderSavings does not render the runway card"
+    start = html.index("function renderTrends(")
+    end = html.index("\n  function ", start + 10)
+    assert "runwayCardHtml()" not in html[start:end], "Trends renders a second copy of the limits card"
 
 
 def test_runway_headline_carries_no_dark_glow():

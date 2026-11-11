@@ -177,6 +177,45 @@ def _rewrite_effective(stmt: str) -> str | None:
     return text.strip() or None
 
 
+def _literal_echo_boundary(statements):
+    """A single literal echo may label one producer's output."""
+    echoes = [s for s in statements if re.fullmatch(r"echo\s+[A-Za-z0-9_][A-Za-z0-9_.-]*", s)]
+    return echoes[0].split()[1] if len(echoes) == 1 else None
+
+
+def echo_boundary_preserved(command, raw, compressed):
+    statements = _split_statements(command)
+    if not statements:
+        return True
+    boundary = _literal_echo_boundary(statements)
+    if boundary is None:
+        return True
+    return boundary in raw.splitlines() and boundary in compressed.splitlines()
+
+
+def unsafe_compound_output(command: str) -> bool:
+    """Avoid using single-output renderers on mixed command output."""
+    statements = _split_statements(command)
+    if statements is None:
+        return True
+    producers = []
+    for statement in statements:
+        try:
+            tokens = shlex.split(statement)
+        except ValueError:
+            return True
+        if not _is_harmless(tokens):
+            producers.append(statement)
+    if len(producers) < 2:
+        return False
+    if len(producers) == 2 and _literal_echo_boundary(producers) is not None:
+        return False
+    from bash_compress import _detect_pattern
+    from build_output_compress import classify as build_command, _command_eligible_for_shape_fallback
+    return any(_detect_pattern(stmt) is not None or build_command(stmt)
+               or _command_eligible_for_shape_fallback(stmt) for stmt in producers)
+
+
 def classify(command: str) -> str | None:
     """Return the single effective command, or ``None``.
 

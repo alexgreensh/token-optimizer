@@ -2153,6 +2153,10 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     patterns on stderr even with exit 0, return raw output verbatim. Never
     compress failure output — the user needs the full signal to debug.
     """
+    from post_run_classify import unsafe_compound_output, echo_boundary_preserved
+    if unsafe_compound_output(command_str):
+        return raw_output
+
     if _looks_like_failure(returncode, stderr):
         return raw_output  # fail-open tee: full output, unchanged
 
@@ -2162,15 +2166,8 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     # Strip ANSI codes (always safe)
     cleaned = _strip_ansi(raw_output)
 
-    # PRE-compression token preservation scan (credentials + errors), plus
-    # rarity-based needle preservation: a line carrying a distinctive token
-    # (UUID/URL/hash/id) that the user is likely grepping FOR must survive the
-    # summarizer, or the model re-runs a narrower query and spends back the
-    # tokens we just saved. Both feed the shared re-injection path below (capped
-    # at _MAX_REINJECTED_LINES, so a needle-dense log still compresses).
-    # The git log / find summarizers keep every hash and path themselves, so
-    # re-injecting "rare token" lines would only paste raw "commit <hash>" lines
-    # back; they keep only the credential/error scan.
+    # Preserve credentials, errors, and distinctive tokens before summarizing.
+    # Git log and find keep their own hashes and paths.
     _summarizer_pattern = False
     try:
         _summarizer_pattern = _detect_pattern(command_str) in ("git_log", "find")
@@ -2182,7 +2179,6 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     from preserved_reinject import find_priority_lines, reinject
     priority_lines = find_priority_lines(cleaned, _ERROR_STDERR_PATTERNS + _FOREIGN_ERROR_PATTERNS)
     preserved_lines = preserved_lines | priority_lines
-
     # Detect pattern
     pattern = _detect_pattern(command_str)
     if pattern is None:
@@ -2212,18 +2208,12 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
         except Exception:
             return cleaned  # fail open
 
-    # Re-inject preserved lines that were stripped by compression.
-    # Uses exact-line membership (not substring) so a short preserved
-    # line that happens to be contained inside a longer compressed line
-    # is still emitted on its own rather than silently folded into the
-    # larger line.
-    #
-    # Cap at _MAX_REINJECTED_LINES: when a credential pattern appears on
-    # most lines (e.g. grep for API keys), re-injecting all of them
-    # defeats compression. The first N are re-injected; the full original
-    # is already archived via progressive disclosure for retrieval.
+    # Cap credential reinjection; the full original remains archived.
     if preserved_lines:
         compressed = reinject(compressed, cleaned, preserved_lines, priority_lines, _summarizer_pattern)
+
+    if not echo_boundary_preserved(command_str, cleaned, compressed):
+        return raw_output
 
     try:
         from token_estimate import estimate_tokens as _est

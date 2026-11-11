@@ -309,7 +309,9 @@ def _extract_session_state(filepath, tail_lines=None):
                     error_context.append((recent_errors[-1][:200], assistant_text[:200].strip()))
                     recent_errors = []
 
-    objective, direction, constraints = checkpoint_direction.scan(
+    _obj_text, _obj_id = _measure_facade._first_task_user_message(filepath)
+    objective = {"text": _ingest_redact(_obj_text), "source": {"kind": "user_message", "id": _obj_id}} if _obj_text else None
+    _, direction, constraints = checkpoint_direction.scan(
         filepath, _measure_facade._task_user_text, _ingest_redact,
         _measure_facade.checkpoint_state, _measure_facade.codex_session.MAX_JSONL_LINE_CHARS)
 
@@ -814,8 +816,6 @@ def compact_capture(transcript_path=None, session_id=None, trigger=None, cwd=Non
             return None
         return str(checkpoint_path)
 
-    # Parse session state. The extractor redacts as it reads; a configured-but-
-    # broken custom pattern file makes it raise, and then nothing is written.
     try:
         from credential_patterns import RedactionConfigError as _ExtractCfgErr
     except Exception:
@@ -826,6 +826,12 @@ def compact_capture(transcript_path=None, session_id=None, trigger=None, cwd=Non
         return None
     if not state:
         return None
+    _sid = _measure_facade.sanitize_session_id(session_id or filepath.stem)
+    _cached = checkpoint_direction.previous_state(_measure_facade.CHECKPOINT_DIR, _sid)
+    _task = state.get("task_state") or {}
+    _task["user_constraints"] = checkpoint_direction.merge_constraints(_task.get("user_constraints"), _cached.get("user_constraints"))
+    if not _task.get("current_direction"):
+        _task["current_direction"] = _cached.get("current_direction") or []
 
     # Redact credentials from the whole checkpoint state (SEC-004). One
     # recursive pass over every string — including dict keys, tuples, and any
@@ -973,12 +979,6 @@ def compact_capture(transcript_path=None, session_id=None, trigger=None, cwd=Non
         return None
 
     # JSON sidecar: structured companion for precise recovery. The MD is for
-    # Claude to read cold; the JSON lets Claude re-hydrate exact fields on
-    # demand. version 2 adds the versioned task_state (objective, constraints,
-    # requirements, verified facts vs assumptions, checks, dead ends, next
-    # action, done condition, archive pointers) — every field source-backed or
-    # explicitly listed in unknown_fields. All v1 keys are unchanged so older
-    # readers keep working.
     try:
         sidecar = {
             "version": 2,

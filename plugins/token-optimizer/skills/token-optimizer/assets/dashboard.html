@@ -3239,10 +3239,11 @@ var DB = (function() {
       memoryExists = true;
     }
     var barsHtml = vals.map(function(v, i) {
+      if (i === 1 && !memoryExists) return '';
       var w = logBar(v);
       var fixedClass = i === vals.length - 1 ? ' fixed' : '';
       var pctText = (v / ctxWindow * 100).toFixed(1) + '%';
-      var valText = (i === 1 && !memoryExists) ? '—' : fn(v) + ' (' + pctText + ')';
+      var valText = fn(v) + ' (' + pctText + ')';
       return '<div class="bar-row">' +
         '<span class="bar-label">' + barLabels[i] + '</span>' +
         '<div class="bar-track"><div class="bar-fill' + fixedClass + '" style="width:' + w + '%"></div></div>' +
@@ -3289,15 +3290,15 @@ var DB = (function() {
         fn(ctrl) + ' of your ' + fn(total) + ' tokens are controllable. No specific token-saving optimizations identified, but check the behavioral recommendations below.';
     }
 
-    // Component cards (expandable)
     var componentData = getComponentDetails(data);
     var cardsHtml = '';
     componentData.forEach(function(comp, ci) {
+      if (comp.key === 'memory_md' && comp.tokens === 0 && c.memory_md && c.memory_md.exists === false) return;
       cardsHtml += '<div class="component-card" data-comp="' + ci + '">' +
         '<div class="component-card-header">' +
         '<span class="cc-name">' + esc(comp.name) + '</span>' +
         '<span class="cc-right">' +
-        '<span class="cc-tokens">' + (comp.key === 'memory_md' && comp.tokens === 0 && c.memory_md && c.memory_md.exists === false ? '—' : fn(comp.tokens) + ' tokens') + '</span>' +
+        '<span class="cc-tokens">' + fn(comp.tokens) + ' tokens</span>' +
         '<span class="chevron">&#9662;</span></span></div>' +
         '<div class="component-card-sub">' + esc(comp.sub) + '</div>' +
         '<div class="component-card-detail" id="comp-detail-' + ci + '">' +
@@ -3644,10 +3645,10 @@ var DB = (function() {
     var out = '<div class="card wide"><div class="card-header"><span>Tokens Saved</span></div>';
     out += '<div style="display:flex;align-items:baseline;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2)"><div class="metric-large savings-hero">' + formatTokens(total) + '</div><div class="metric-unit">tokens kept out of context in the last ' + days + ' days</div></div>';
     var types = s.token_type_breakdown || {};
-    var typeRows = [['cache_reread', 'Cache re-reads avoided'], ['cache_write', 'Cache writes avoided'], ['fresh', 'Fresh input and output avoided']];
-    out += '<div class="ts-divider"></div><h3 class="ts-section-label">Tokens by type</h3><div class="st-bands">' + typeRows.map(function(row) {
-      var value = types[row[0]];
-      return '<div class="st-band">' + row[1] + '<br><strong>' + (typeof value === 'number' && isFinite(value) ? formatTokens(value) : 'Measuring') + '</strong></div>';
+    var typeRows = [['cache_reread', 'Modeled cache re-reads avoided'], ['cache_write', 'Modeled cache writes avoided'], ['fresh', 'Fresh input and output avoided']];
+    typeRows = typeRows.filter(function(row) { return typeof types[row[0]] === 'number' && isFinite(types[row[0]]); });
+    if (typeRows.length) out += '<div class="ts-divider"></div><h3 class="ts-section-label">Tokens by type, partial ledger</h3><div class="st-bands">' + typeRows.map(function(row) {
+      return '<div class="st-band">' + row[1] + '<br><strong>' + formatTokens(types[row[0]]) + '</strong></div>';
     }).join('') + '</div>';
     if (modelTotal > 0) {
       out += '<div class="ts-divider"></div><h3 class="ts-section-label">Model usage</h3>';
@@ -3778,10 +3779,9 @@ var DB = (function() {
       '<div class="stat-row" style="grid-template-columns:repeat(3,1fr)">' +
       '<div class="stat-card"><div class="stat-card-value">' + Math.round(t.avg_duration_minutes || 0) + 'm</div><div class="stat-card-label">Avg duration, all logged</div></div>' +
       '<div class="stat-card"><div class="stat-card-value">' + fn((t.avg_input_tokens || 0) + (t.avg_output_tokens || 0)) + '</div><div class="stat-card-label">Avg tokens, all logged sessions</div></div>' +
-      '<div class="stat-card"><div class="stat-card-value" style="color:var(--c-savings-strong, #22c55e)">' + avgCacheDisplay + (avgCacheDisplay !== 'N/A' ? '%' : '') + '</div><div class="stat-card-label">' + cacheLabel + '</div>' + cacheSessionLines + cacheExtra + '</div>' +
+      (avgCacheDisplay === 'N/A' ? '' : '<div class="stat-card"><div class="stat-card-value" style="color:var(--c-savings-strong, #22c55e)">' + avgCacheDisplay + '%</div><div class="stat-card-label">' + cacheLabel + '</div>' + cacheSessionLines + cacheExtra + '</div>') +
       '</div>';
 
-    // Shared data for skills sections
     var skillsDetail = (data.snapshot && data.snapshot.components && data.snapshot.components.skills_detail) || {};
 
 
@@ -3834,9 +3834,9 @@ var DB = (function() {
       topSkills.forEach(function(entry) {
         var w = Math.max(3, (entry[1] / maxSkill) * 100);
         var sd = skillsDetail[entry[0]];
-        var tokNote = sd ? sd.frontmatter_tokens + ' frontmatter tokens' : 'Measuring';
+        var tokNote = sd && typeof sd.frontmatter_tokens === 'number' ? ' (' + sd.frontmatter_tokens + ' frontmatter tokens)' : '';
         html += '<div class="bar-row" data-skill-name="' + esc(entry[0]) + '" style="cursor:pointer;">' +
-          '<span class="bar-label" style="width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(entry[0]) + ' (' + tokNote + ')">' + esc(entry[0]) + '</span>' +
+          '<span class="bar-label" style="width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(entry[0] + tokNote) + '">' + esc(entry[0]) + '</span>' +
           '<div class="bar-track"><div class="bar-fill" style="width:' + w + '%"></div></div>' +
           '<span class="bar-value" style="width:60px;text-align:right;">' + entry[1] + ' sess</span></div>';
       });
@@ -3847,7 +3847,7 @@ var DB = (function() {
     var neverUsed = t.skills ? t.skills.never_used : [];
     if (!isCodex && neverUsed.length > 0) {
       var PREVIEW_COUNT = 4;
-      html += '<div class="card wide"><div class="card-header"><span>Not Invoked (' + neverUsed.length + ' skills)</span><span class="label">Context impact: Measuring</span></div>' +
+      html += '<div class="card wide"><div class="card-header"><span>Not Invoked (' + neverUsed.length + ' skills)</span></div>' +
         '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:var(--s-2);">' +
         'No Skill call or slash command for these in the window. A skill you drive by slash command counts as invoked; if one you use often shows here, open an issue. Click a skill for details, or "Quick Wins" to archive.</p>';
 
@@ -3857,7 +3857,7 @@ var DB = (function() {
           '<div class="skill-detail-header">' +
           '<input type="checkbox" class="skill-archive-check" data-skill="' + esc(name) + '" title="Select to archive">' +
           '<span class="skill-name">' + esc(name) + '</span>' +
-          '<span class="skill-tokens">' + (sd ? sd.frontmatter_tokens + ' frontmatter tokens' : 'Measuring') + '</span>' +
+          (sd && typeof sd.frontmatter_tokens === 'number' ? '<span class="skill-tokens">' + sd.frontmatter_tokens + ' frontmatter tokens</span>' : '') +
           '<span class="expand-arrow">\u25B6</span>' +
           '</div>' +
           '<div class="skill-detail-body"><div class="skill-detail-content">';
@@ -4043,7 +4043,7 @@ var DB = (function() {
   }
 
   function gapSummary(avgGap, maxGap) {
-    if (avgGap == null && maxGap == null) return 'n/a';
+    if (avgGap == null && maxGap == null) return '';
     if (avgGap == null) return 'max ' + fmtGap(maxGap);
     if (maxGap == null) return 'avg ' + fmtGap(avgGap);
     return 'avg ' + fmtGap(avgGap) + ' | max ' + fmtGap(maxGap);
@@ -4461,10 +4461,10 @@ var DB = (function() {
             : '';
           return '<div style="margin-top:var(--s-3);font-size:13px;color:' + col + ';">' +
             (stale ? '⚠ ' : '') + 'Window reading as of ' + esc(whenStr) + ' (' + ageStr + ').' + staleNote +
-            ' <button id="to-regen-btn" onclick="window.__TOKEN_REGENERATE&&window.__TOKEN_REGENERATE()" ' +
+            (window.location.protocol === 'file:' && !window.__TOKEN_REGEN_LIVE ? ' Run <code>python3 skills/token-optimizer/scripts/measure.py setup-daemon</code> to see live numbers.' : ' <button id="to-regen-btn" onclick="window.__TOKEN_REGENERATE&&window.__TOKEN_REGENERATE()" ' +
             'style="margin-left:8px;padding:2px 10px;font:inherit;font-size:12px;cursor:pointer;' +
             'background:transparent;color:inherit;border:1px solid currentColor;border-radius:4px;">' +
-            'Regenerate savings</button>' +
+            'Regenerate savings</button>') +
             '<span id="to-regen-msg" style="margin-left:8px;"></span>' +
             '<span id="to-live-stamp" hidden style="margin-left:8px;font-size:12px;color:var(--c-savings-alt, #10b981);"></span>' +
             // Persistent regenerate failure surfaces here, not in the tiny
@@ -4734,10 +4734,8 @@ var DB = (function() {
       '<div class="savings-amount">' + (exactCents ? moneyCents(exactCents.total) : money(periodValue(heroAmt))) + '<span class="savings-unit"> logged + estimated</span></div>' +
       (s.token_headline ? '<p class="plain-line">~' + fmtTok(s.token_headline.total_tokens) + ' tokens kept out of context &middot; ' + tokenSplitText(s.token_headline, fmtTok) + ' (estimated)' + (s.token_headline.refresh_incomplete_events || s.token_headline.unmeasured_events ? ', incomplete coverage' : '') + '.</p>' : '') +
       '<div class="savings-split"><span>Logged actions <strong>' + (exactCents ? moneyCents(exactCents.logged) : money(periodValue(measuredMo))) + '</strong></span>' +
-        '<span>Repeat reads avoided <strong>' +
-          (actionSavings && actionSavings.reread_available === false ? 'Unavailable' :
-            ((actionSavings && actionSavings.reread_prices_available === false) || cp.reread_prices_available === false ?
-              'Unpriced' : '~' + (exactCents ? moneyCents(exactCents.reread) : money(periodValue(rereadMo))))) + '</strong></span>' +
+        ((!cp.available && !(actionSavings && actionSavings.reread_available === true)) || (actionSavings && (actionSavings.reread_available === false || actionSavings.reread_prices_available === false)) || cp.reread_prices_available === false ? '' :
+          '<span>Repeat reads avoided <strong>~' + (exactCents ? moneyCents(exactCents.reread) : money(periodValue(rereadMo))) + '</strong></span>') +
         '<span>Other estimates <strong>~' + (exactCents ? moneyCents(exactCents.other) : money(periodValue(estimatedMo))) + '</strong></span></div>' +
       (Number(routingRealizedMo) > 0
         ? '<p class="plain-line"><strong>Model routing:</strong> ~' + money(periodValue(routingRealizedMo)) + esc(per) +
@@ -4745,9 +4743,6 @@ var DB = (function() {
       (actionPricingIncomplete
         ? '<p class="plain-line">Some older history has no exact price, so this is a priced subtotal.</p>'
         : (!cp.available ? '<p class="plain-line">Repeat reads are not available here. Logged actions are still counted.</p>' : '')) +
-      (mr.evidence === 'pending'
-        ? '<p class="plain-line routing-pending">Model routing: re-measuring (' + Number(mr.pending_sessions || 0).toLocaleString() +
-          ' session' + (Number(mr.pending_sessions) === 1 ? '' : 's') + ' left). It stays out of this total and is shown separately when the re-measurement finishes.</p>' : '') +
       // Usage without a token-class split (Cursor totals, model-daily-only
       // history, legacy rows) sits outside both routing arms. Say so instead of
       // letting an empty or partial routing figure read as complete coverage.
@@ -4756,6 +4751,7 @@ var DB = (function() {
           ' tokens without a token-class split are left out of model routing.</p>' : '') +
       fold('Breakdown and method',
         countedList([
+          s.token_type_breakdown && Object.keys(s.token_type_breakdown).length ? 'Token types cover only ledger events with recorded turn classes. Repeat reads are modeled as cache reads except for detected cache rebuilds; write totals include detected rebuilds and initial removals recorded at a write rate. Unclassified tokens are excluded.' : '',
           'Includes the later benefit of context removed during this period. Initial removals are counted once.',
           cp.reread_pricing_note ? esc(cp.reread_pricing_note) : '',
           actionSavings && actionSavings.total_clamped ? 'Signed adjustments give a net total of ' +
@@ -4840,7 +4836,7 @@ var DB = (function() {
         '<div class="label">Saved since ' + esc(prettyDate(si.install_date)) + '</div>' +
         '<div class="savings-amount">' + money(sia.total_usd) +
           (siaPending ? ' <span class="remeasuring-tag" style="font-size:0.45em;color:var(--c-text-dim);">so far</span>' : '') + '</div>' +
-        (siaPending ? '<p class="plain-line remeasuring">Re-measuring older history (' + siaLeft.toLocaleString() +
+        (siaPending ? '<p class="plain-line remeasuring">Updating older history (' + siaLeft.toLocaleString() +
           ' session' + (siaLeft === 1 ? '' : 's') + ' left). This total will grow when they finish.</p>' : '') +
         '<p class="plain-line">Same parts as the monthly total, added up since install.</p>' +
         fold('Breakdown and history',
@@ -4854,9 +4850,9 @@ var DB = (function() {
           '<p>Repeat reads avoided: <strong>' + money(siaParts.reread) + '</strong> (modeled).</p>' +
           '<p>Logged actions: <strong>' + money((Number(siaParts.logged) || 0) + (Number(siaParts.class_premium) || 0)) + '</strong>.</p>' +
           '<p>Other estimates: <strong>' + money(sia.estimated_usd) + '</strong>.</p>' +
-          ((Number(cc.total_usd) > 0 || cc.available) ?
+          ((Number(cc.total_usd) > 0 || cc.available) && cc.prices_available !== false ?
             '<p>Context trimming on its own (initial removals + repeat reads): ' +
-              (cc.prices_available === false ? 'Unpriced' : money(Math.max(0, Number(cc.total_usd) || 0))) + '.</p>' : '') +
+              money(Math.max(0, Number(cc.total_usd) || 0)) + '.</p>' : '') +
           countedList([
             cc.pricing_note ? esc(cc.pricing_note) : '',
             cc.media_note ? esc(cc.media_note) : ''
@@ -4864,14 +4860,14 @@ var DB = (function() {
           '<p>Tracked over ' + Number(si.days || 0).toLocaleString() + ' days. Historical entries remain after their source transcripts rotate.</p>' +
           '<p>' + billingCaption + '</p>') +
         '</div>';
-    } else if (Number(cc.total_usd) > 0 || (cc.available && Number(cc.events) > 0)) {
+    } else if (cc.prices_available !== false && (Number(cc.total_usd) > 0 || (cc.available && Number(cc.events) > 0))) {
       html += '<div class="card savings-history" style="flex:1;min-width:min(100%,260px);padding:var(--s-4);">' +
         '<div class="label">Context savings &middot; all time</div>' +
-        '<div class="savings-amount">' + (cc.prices_available === false ? 'Unpriced' : money(Math.max(0, Number(cc.total_usd) || 0))) +
+        '<div class="savings-amount">' + money(Math.max(0, Number(cc.total_usd) || 0)) +
           (cc.remeasuring ? ' <span class="remeasuring-tag" style="font-size:0.45em;color:var(--c-text-dim);">so far</span>' : '') + '</div>' +
-        (cc.remeasuring ? '<p class="plain-line remeasuring">Re-measuring (' + Number(cc.remeasuring_sessions || 0).toLocaleString() +
+        (cc.remeasuring ? '<p class="plain-line remeasuring">Updating history (' + Number(cc.remeasuring_sessions || 0).toLocaleString() +
           ' session' + (Number(cc.remeasuring_sessions) === 1 ? '' : 's') + ' left). This subtotal is in progress and will change when they finish.</p>' : '') +
-        '<p class="plain-line">' + (cp.available ? '<strong>' + (cp.prices_available === false ? 'Unpriced' : money(cp.total_usd)) + '</strong> from removals in the last ' + days + ' days. ' : '') +
+        '<p class="plain-line">' + (cp.available && cp.prices_available !== false ? '<strong>' + money(cp.total_usd) + '</strong> from removals in the last ' + days + ' days. ' : '') +
           'Overlaps with action savings.</p>' +
         fold('History and coverage',
           countedList([
@@ -4881,8 +4877,8 @@ var DB = (function() {
             Number(cc.total_usd) < 0 ? 'Signed net: ' + money(cc.total_usd) + '. Savings headline is floored at zero.' : '',
             'Excludes routing, setup and other estimates.'
           ]) +
-          '<p>' + (cc.oneshot_prices_available === false ? 'Unpriced' : money(cc.oneshot_usd)) + ' initial removals + ' +
-            (cc.reread_prices_available === false ? 'Unpriced' : money(cc.reread_usd)) + ' modeled repeat reads.</p>' +
+          (cc.oneshot_prices_available === false ? '' : '<p>' + money(cc.oneshot_usd) + ' initial removals.</p>') +
+          (cc.reread_prices_available === false ? '' : '<p>' + money(cc.reread_usd) + ' modeled repeat reads.</p>') +
           '<p>Stored history since ' + esc(prettyDate(cc.window_start)) + '. ' +
             'Same removal-date method as the period total. Historical entries remain after their source transcripts rotate.</p>' +
           '<p>Repeat reads assume the removed context would otherwise have stayed until the session’s next compaction. ' +
@@ -4905,7 +4901,7 @@ var DB = (function() {
     // ---- SAVE MORE: suggestions, promoted right under the hero ----
     var parts = [];
     if ((Number(sp.cost_saved_usd) || 0) > 0 && unusedSkills > 0) {
-      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window. Context impact: Measuring.');
+      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window.');
     }
     if ((Number(recl.cost_usd) || 0) > 0) {
       parts.push('Avoid re-reading files that have not changed, or add them to .contextignore. ' + (Number(recl.tokens) || 0).toLocaleString() + ' tokens of stale re-reads across ' + (Number(recl.sessions) || 0).toLocaleString() + ' sessions are worth about ' + moneyCents(oppCents.reclaimable) + per + '.');
@@ -5208,8 +5204,8 @@ var DB = (function() {
             '<div style="font-family:var(--font-mono);font-size:20px;color:var(--c-text-dim);">$' + (Number(kw.spend_usd) || 0).toFixed(2) + '</div></div>' +
           '<div><div style="font-size:12px;color:var(--c-text-dim);">NET (30d)</div>' +
             '<div style="font-family:var(--font-mono);font-size:20px;color:' + netColor + ';">$' + net.toFixed(2) + '</div></div>' +
-          '<div><div style="font-size:12px;color:var(--c-text-dim);">Tripwire ratio (7d)</div>' +
-            '<div style="font-family:var(--font-mono);font-size:20px;">' + (kw.tripwire_ratio_7d == null ? 'n/a' : (Number(kw.tripwire_ratio_7d)).toFixed(2)) + '</div></div>' +
+          (kw.tripwire_ratio_7d == null ? '' : '<div><div style="font-size:12px;color:var(--c-text-dim);">Tripwire ratio (7d)</div>' +
+            '<div style="font-family:var(--font-mono);font-size:20px;">' + (Number(kw.tripwire_ratio_7d)).toFixed(2) + '</div></div>') +
         '</div>';
         if (!kw.has_pings) {
           kwHtml += '<div style="margin-top:var(--s-2);font-size:12px;color:var(--c-text-dim);">No keep-warm pings yet — numbers fill in once an eligible paused session is probe-refreshed.</div>';
@@ -5539,15 +5535,13 @@ var DB = (function() {
         return it && it.state !== 'not_applicable';
       });
       var urWins = ur.wins || [];
-      if (urItems.length > 0 || !ur.present) {
+      if (urItems.length > 0) {
         html += '<div class="card wide"><div class="card-header"><span>From your own usage</span>' +
           (ur.measured_ts
             ? '<span class="label">measured ' + esc(timeAgo(new Date(ur.measured_ts * 1000))) + ', last ' + esc(String(ur.window_days || 30)) + ' days</span>'
             : '') +
           '</div>' +
-          (!ur.present || urItems.length === 0
-            ? '<div style="color:var(--c-text-dim);font-size:14px;">Measuring in the background, check back after your next session</div>'
-            : '');
+          '';
         var urCap = function(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); };
         urItems.forEach(function(it, urIdx) {
           // The card header already draws a line above the first row.
@@ -7530,23 +7524,14 @@ document.addEventListener('DOMContentLoaded', function() {
     }, 60000);
   }
 
-  // Probe for our custom API server before init.
-  // When served from the daemon (http://localhost:*), a relative /api/health works.
-  // When viewed as file://, stay in static read-only mode to avoid CORS noise.
+  // Probe the daemon; file pages keep all controls except regeneration read-only.
   var DAEMON_URL = data.runtime === 'codex' ? 'http://localhost:24843' : 'http://localhost:24842';
   function _setApiLive(baseUrl) {
-    window.__TOKEN_API_LIVE = true;
+    if (window.location.protocol === 'file:') window.__TOKEN_REGEN_LIVE = true;
+    else window.__TOKEN_API_LIVE = true;
     window.__TOKEN_API_BASE = baseUrl || '';
   }
-  // v5.4.19: helper that all mutating API calls must use. Adds the per-install
-  // CSRF token header so the server accepts the request. Without this, POSTs
-  // are rejected with 403 -- that's the whole point of the CSRF hardening.
-  //
-  // Surface auth errors as a distinct message
-  // rather than letting callers hit r.json() on a text body ("Forbidden:
-  // invalid token") and seeing a confusing JSON parse error. The helper
-  // intercepts 403 responses and rejects with an Error whose .authError flag
-  // lets call sites show a reload-page hint.
+  // All mutations carry the per-install token and surface authorization failures.
   window.__TOKEN_API_POST = function(path, body) {
     var base = window.__TOKEN_API_BASE || '';
     var headers = { 'Content-Type': 'application/json' };
@@ -7567,6 +7552,21 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   };
 
+  function waitForRegen(result, message) {
+    if (!result.ok) return Promise.reject(new Error('Could not update the dashboard. Please try again.'));
+    if (!result.job_id) return Promise.resolve();
+    function poll() {
+      return window.__TOKEN_API_POST('/api/regenerate/status', {job_id: result.job_id})
+        .then(function(r) { return r.json(); }).then(function(state) {
+          if (message) message.textContent = state.progress || 'Updating the dashboard.';
+          if (state.state === 'done') return;
+          if (state.state !== 'running') throw new Error('Could not update the dashboard. Please try again.');
+          return new Promise(function(resolve) { setTimeout(resolve, 1000); }).then(poll);
+        });
+    }
+    return poll();
+  }
+
   window.__TOKEN_LOAD_HISTORY = function(choice, message) {
     if (choice === 'all') { try { localStorage.setItem('to-daily-range', 'all'); } catch (e) {} }
     if (!window.__TOKEN_API_LIVE) {
@@ -7577,25 +7577,23 @@ document.addEventListener('DOMContentLoaded', function() {
     function attempt(retried) {
       window.__TOKEN_API_POST('/api/regenerate', {days: choice}).then(function(r) { return r.json(); })
         .then(function(result) {
-          if (!result.ok) throw new Error(result.msg || 'Regeneration failed');
+          return waitForRegen(result, message);
+        }).then(function() {
           try { sessionStorage.setItem('to-history-return', '1'); } catch (e) {}
           location.reload();
         }).catch(function(err) {
           if (err.authError && !retried) {
             _fetchToken(window.__TOKEN_API_BASE || '').then(function() { attempt(true); })
-              .catch(function(e) { message.textContent = 'Could not load history: ' + e.message; });
-          } else message.textContent = 'Could not load history: ' + err.message;
+              .catch(function() { message.textContent = 'Could not load history. Please try again.'; });
+          } else message.textContent = 'Could not load history. Please try again.';
         });
     }
     if (window.__TOKEN_API_TOKEN) attempt(false);
     else _fetchToken(window.__TOKEN_API_BASE || '').then(function() { attempt(false); })
-      .catch(function(e) { message.textContent = 'Could not load history: ' + e.message; });
+      .catch(function() { message.textContent = 'Could not load history. Please try again.'; });
   };
 
-  // Manual regeneration. The background freshness regen is stale-while-revalidate:
-  // it serves the current file and refreshes for NEXT time, so a reader who wants
-  // current numbers now would have to reload twice and never knows that. This is
-  // synchronous on the daemon side and reloads on success, so one click is enough.
+  // Manual regeneration waits for the background job before reloading.
   window.__TOKEN_REGENERATE = function() {
     var btn = document.getElementById('to-regen-btn');
     var msg = document.getElementById('to-regen-msg');
@@ -7619,16 +7617,16 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     function fail(e) {
       btn.disabled = false; btn.textContent = was;
-      var txt = (e && e.authError)
-        ? 'Auth failed after a token refresh — reload the page.'
-        : ('Failed: ' + ((e && e.message) || e || 'unknown error'));
+      var txt = (e && e.authError) ? 'Authentication failed. Reload the page and try again.' : 'Could not update the dashboard. Please try again.';
       if (msg) msg.textContent = '';
       if (errBox) { errBox.textContent = txt; errBox.hidden = false; }
       else if (msg) { msg.textContent = txt; }
     }
     function succeed(d) {
-      if (d && d.ok) { location.reload(); return; }
-      fail({ message: ((d && d.msg) || 'unknown error') });
+      return waitForRegen(d || {}, msg).then(function() {
+        if (window.location.protocol === 'file:') window.location.href = window.__TOKEN_API_BASE + '/';
+        else location.reload();
+      }).catch(fail);
     }
     // At most ONE 403->refetch->retry. Without the cap a persistently-bad token
     // loops forever; without the retry a stale/empty page token silently 403'd
@@ -7672,19 +7670,17 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   if (typeof fetch === 'function') {
     var isHttp = window.location.protocol.indexOf('http') === 0;
-    if (!isHttp) {
-      startApp();
-      return;
-    }
-    var probe = '/api/health';
+    var base = isHttp ? '' : DAEMON_URL;
+    var probe = base + '/api/health';
     try {
       fetch(probe, { method: 'GET' })
         .then(function(r) { return r.json(); })
         .then(function(d) {
           if (d && d.ok) {
-            var base = '';
-            _setApiLive(base);
-            return _fetchToken(base);
+            if (isHttp) _setApiLive(base);
+            return _fetchToken(base).then(function() {
+              if (!isHttp && window.__TOKEN_API_TOKEN) _setApiLive(base);
+            });
           }
         })
         .catch(function() {})

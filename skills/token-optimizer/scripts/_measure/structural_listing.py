@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import statistics
+from itertools import chain
 
 LISTING_COMPONENTS = ("skills", "commands", "plugin_skills", "plugin_commands")
 MIN_SESSIONS = 3
@@ -25,14 +26,14 @@ CACHE_FILE = "structural_listing_checks.json"
 def first_listing_chars(path):
     """Characters of the first initial skill_listing attachment, or None."""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for i, line in enumerate(fh):
+        with open(path, "rb") as fh:
+            for i, line in enumerate(chain.from_iterable(chunk.splitlines(keepends=True) for chunk in fh)):
                 if i > MAX_LINES:
                     return None
-                if '"skill_listing"' not in line:
+                if b'"skill_listing"' not in line:
                     continue
                 try:
-                    a = (json.loads(line).get("attachment") or {})
+                    a = (json.loads(line.decode("utf-8", errors="replace")).get("attachment") or {})
                 except ValueError:
                     continue
                 if a.get("type") == "skill_listing" and a.get("isInitial"):

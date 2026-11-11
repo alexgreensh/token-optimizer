@@ -3741,7 +3741,7 @@ _counted_backfill_all = _measure_compat.bind(_measure_providers['savings']._coun
 _counted_session_cache_mix = _measure_compat.bind(_measure_providers['savings']._counted_session_cache_mix, __name__, defaults=("cache_read",))
 
 
-_counted_rollup_rows = _measure_compat.bind(_measure_providers['savings']._counted_rollup_rows, __name__, defaults=(None,))
+_counted_rollup_rows = _measure_compat.bind(_measure_providers['savings']._counted_rollup_rows, __name__, defaults=(None, None))
 
 
 _counted_row_awaits_rescore = _measure_compat.bind(_measure_providers['savings']._counted_row_awaits_rescore, __name__)
@@ -6976,7 +6976,7 @@ _RUNWAY_ESTIMATED_EVENT_TYPES = frozenset(
 _runway_saved_tokens = _measure_compat.bind(_measure_providers['savings']._runway_saved_tokens, __name__, defaults=(False,))
 
 
-runway_snapshot = _measure_compat.bind(_measure_providers['savings'].runway_snapshot, __name__, defaults=(30, None,))
+runway_snapshot = _measure_compat.bind(_measure_providers['savings'].runway_snapshot, __name__, defaults=(30, None, None))
 
 
 _active_model_cache_rates = _measure_compat.bind(_measure_providers['savings']._active_model_cache_rates, __name__)

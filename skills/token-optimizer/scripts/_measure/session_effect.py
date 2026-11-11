@@ -49,6 +49,7 @@ _MESSAGE_RE = re.compile(rb'"message"\s*:\s*\{[^{}]*?"id"\s*:\s*"([^"]+)"')
 _TS_RE = re.compile(rb'"timestamp"\s*:\s*"(\d{4}-\d{2}-\d{2})')
 _ASSISTANT_RE = re.compile(rb'"type"\s*:\s*"assistant"')
 DEFAULT_SCAN_BUDGET_S = 20.0
+_PARALLEL_EVIDENCE_MIN = 256
 
 
 def _int(value):
@@ -194,7 +195,7 @@ def _evidence(conn, paths, budget_s):
                 cached[row[0]] = row[1:]
         except Exception:
             cached = {}
-    out = {}
+    out, pending = {}, []
     deadline = time.monotonic() + budget_s if budget_s is not None else None
     for path in paths:
         try:
@@ -209,20 +210,32 @@ def _evidence(conn, paths, budget_s):
                 continue
             except ValueError:
                 pass
-        if deadline is not None and time.monotonic() > deadline:
-            continue
-        scan = scan_transcript(path)
-        if scan is None:
-            continue
-        out[path] = scan
-        if writable and not transcript_stream.needs_resume(path):
-            try:
-                conn.execute('INSERT OR REPLACE INTO to_session_evidence VALUES (?,?,?,?,?,?,?,?,?)',
-                             (path, st.st_size, st.st_mtime, SCANNER_VERSION, scan['markers'],
-                              scan['injections'], scan['restore_tokens'], json.dumps(scan['days']),
-                              time.strftime('%Y-%m-%dT%H:%M:%S')))
-            except Exception:
-                writable = False
+        pending.append((path, st))
+    if len(pending) >= _PARALLEL_EVIDENCE_MIN and getattr(scan_transcript, '__module__', None) == __name__:
+        from . import evidence_parallel
+        batches = evidence_parallel.batches(pending, deadline, transcript_stream.LARGE_BYTES) if evidence_parallel.safe_entrypoint() else None
+    else:
+        batches = None
+    if batches is None:
+        def serial():
+            for path, st in pending:
+                if deadline is not None and time.monotonic() > deadline:
+                    break
+                yield [((path, st), scan_transcript(path))]
+        batches = serial()
+    for batch in batches:
+        for (path, st), scan in batch:
+            if scan is None:
+                continue
+            out[path] = scan
+            if writable and not transcript_stream.needs_resume(path):
+                try:
+                    conn.execute('INSERT OR REPLACE INTO to_session_evidence VALUES (?,?,?,?,?,?,?,?,?)',
+                                 (path, st.st_size, st.st_mtime, SCANNER_VERSION, scan['markers'],
+                                  scan['injections'], scan['restore_tokens'], json.dumps(scan['days']),
+                                  time.strftime('%Y-%m-%dT%H:%M:%S')))
+                except Exception:
+                    writable = False
     if writable:
         try:
             conn.commit()

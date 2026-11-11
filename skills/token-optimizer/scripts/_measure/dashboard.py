@@ -770,7 +770,7 @@ def generate_dashboard(coord_path):
     # when the meter has never been read at all (a stale-but-present reading is
     # kept and dated on the card), and the template simply omits the card.
     try:
-        runway = _measure_facade.runway_snapshot(days=30)
+        runway = _measure_facade.runway_snapshot(days=30, token_headline=savings_data.get("token_headline"))
     except Exception:
         runway = None
 
@@ -2518,7 +2518,7 @@ def generate_standalone_dashboard(days=None, quiet=None, force=None):
     # setups or when the meter has never been read (a stale-but-present reading is
     # kept and dated on the card), and the template omits the card.
     try:
-        runway = _measure_facade.runway_snapshot(days=30)
+        runway = _measure_facade.runway_snapshot(days=30, token_headline=savings_data.get("token_headline"))
     except Exception:
         runway = None
 
@@ -3384,7 +3384,7 @@ def _collect_trends_data(days=None):
 def _build_ttl_period_summary(period_days):
     """Build a compact TTL mix summary for a given period."""
     _measure_facade = _compat.facade()
-    trends = _measure_facade._collect_trends_data(days=period_days)
+    from . import ttl_period; trends = ttl_period.base_trends(_measure_facade, period_days)
     if not trends:
         return {
             "label": f"{period_days}d: no cache-write data",

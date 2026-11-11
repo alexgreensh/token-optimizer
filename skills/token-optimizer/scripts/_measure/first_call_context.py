@@ -1,9 +1,11 @@
 """Privacy-safe first-call context observations from parent transcripts."""
 import json
+import re
 import sqlite3
 import statistics
+import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from functools import lru_cache
 from pathlib import Path
 
@@ -142,9 +144,14 @@ def summarize(observations):
     return result
 
 
+_RELEVANT_TYPE = re.compile(r'"type"\s*:\s*"(?:assistant|user|attachment)"')
+
+
 def transcript(path):
     with open(path, encoding="utf-8", errors="replace") as stream:
         for line in stream:
+            if '\\u' not in line and not _RELEVANT_TYPE.search(line):
+                continue
             try:
                 row = json.loads(line)
             except ValueError:
@@ -153,14 +160,27 @@ def transcript(path):
                 yield row
 
 
+_cache = OrderedDict()
+_cache_lock = threading.Lock()
+
+
 def collect(db_path, data_dir):
-    """Read parent transcripts and trim dates; never write to either source."""
-    return _collect_cached(str(db_path), str(data_dir), int(time.monotonic() // 60))
+    """Share a scan for one minute after it finishes, even if it ran slowly."""
+    key = (str(db_path), str(data_dir))
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and time.monotonic() - entry[0] < 60:
+            _cache.move_to_end(key)
+            return entry[1]
+        value = _collect_uncached(*key)
+        _cache[key] = (time.monotonic(), value)
+        _cache.move_to_end(key)
+        while len(_cache) > 4:
+            _cache.popitem(last=False)
+        return value
 
 
-@lru_cache(maxsize=4)
-def _collect_cached(db_path, data_dir, minute):
-    # Dashboard refreshes can share one read-only scan for up to one minute.
+def _collect_uncached(db_path, data_dir):
     from . import structural_ledger
     db_path = Path(db_path)
     if not db_path.is_file():
@@ -169,18 +189,26 @@ def _collect_cached(db_path, data_dir, minute):
     try:
         with sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True) as conn:
             paths = conn.execute("SELECT DISTINCT jsonl_path FROM session_log WHERE jsonl_path IS NOT NULL AND COALESCE(is_sidechain,0)=0").fetchall()
+        files = []
         for (name,) in paths:
             path = Path(name)
             if path in seen:
                 continue
             seen.add(path)
             try:
-                item = observe(transcript(path), lambda value: round(len(value) / 4))
+                files.append((str(path), path.stat()))
             except (OSError, ValueError, TypeError):
                 missing += 1
-                continue
-            if item:
-                observations.append(item)
+        from . import evidence_parallel
+        if len(files) >= 256 and evidence_parallel.safe_entrypoint():
+            batches = evidence_parallel.batches(files, None, 8 * 1024 * 1024, evidence_parallel.first_call)
+        else:
+            batches = ([((path, stat), evidence_parallel.first_call(path))] for path, stat in files)
+        for batch in batches:
+            for _, (item, failed) in batch:
+                missing += int(failed)
+                if item:
+                    observations.append(item)
         dates = sorted({str(t.get("ts"))[:10] for t in structural_ledger.load_trims(data_dir)
                         if t.get("ts") and int(t.get("tokens") or 0) > 0})
         return {"months": summarize(observations), "trim_dates": dates, "missing": missing}

@@ -12,8 +12,9 @@ from pathlib import Path
 from plugin_env import resolve_snapshot_dir
 
 PASS_BYTES = 64 * 1024 * 1024
+PASS_SECONDS = 1.0
 LINE_BYTES = 16 * 1024 * 1024
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = '''
   CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, identity TEXT, offset INTEGER,
@@ -34,6 +35,8 @@ def _open_db(db_path):
                 conn.execute('ALTER TABLE files ADD COLUMN mtime INTEGER')
             except sqlite3.OperationalError:
                 pass  # concurrent migration: column already added
+        if 'anchor' not in {row[1] for row in conn.execute('PRAGMA table_info(files)')}:
+            conn.execute('ALTER TABLE files ADD COLUMN anchor TEXT')
     except Exception:
         # On Windows an abandoned handle pins the file and defeats the
         # unlink-and-rebuild below, so a failed open must not leak it.
@@ -82,14 +85,21 @@ def pending(filepath):
     try:
         conn = _connect()
         try:
-            row = conn.execute('SELECT offset,revision,mtime FROM files WHERE path=?', (str(path),)).fetchone()
+            row = conn.execute('SELECT offset,revision,mtime,skipped FROM files WHERE path=?', (str(path),)).fetchone()
             stat = path.stat()
             return (row is None or row[0] != stat.st_size or
-                    row[1] != SCHEMA_VERSION or row[2] != stat.st_mtime_ns)
+                    row[1] != SCHEMA_VERSION or row[2] != stat.st_mtime_ns or row[3] > 0)
         finally:
             conn.close()
     except (OSError, sqlite3.Error):
         return True
+
+
+def _archive_chars(output):
+    if isinstance(output, str):
+        return [len(output), len(output)]
+    text = sum(len(v.get('text') or '') for v in output if isinstance(v, dict)) if isinstance(output, list) else 0
+    return [text, len(json.dumps(output))]
 
 
 def _slim(record):
@@ -105,9 +115,11 @@ def _slim(record):
         text = _extract_text(payload)
         payload = {'type': kind, 'role': payload.get('role'), 'message': text[:1000],
                    'content': text[:1000], '_optimizer_chars': len(text)}
-    elif kind in ('function_call_output', 'custom_tool_call_output', 'exec_command_end', 'patch_apply_end'):
+    elif kind in ('function_call_output', 'custom_tool_call_output', 'mcp_tool_call_output', 'exec_command_end', 'patch_apply_end'):
+        output = payload.get('output')
         chars = len(str(payload.get('output') or '')) if kind.endswith('call_output') else len(_event_output_text(payload))
-        payload = {'type': kind, '_optimizer_output_chars': chars, 'duration': payload.get('duration')}
+        payload = {'type': kind, '_optimizer_output_chars': chars, 'duration': payload.get('duration'),
+                   '_optimizer_archive_chars': _archive_chars(output)}
     elif kind in ('function_call', 'custom_tool_call'):
         payload = {'type': kind, 'name': payload.get('name'),
                    'arguments': payload.get('arguments') if payload.get('name') == 'spawn_agent' else None}
@@ -142,29 +154,35 @@ def records(filepath):
             stat = path.stat()
             identity = f'{SCHEMA_VERSION}:{stat.st_dev}:{stat.st_ino}:' + hashlib.sha256(handle.readline(65536)).hexdigest()
             # Decide whether to re-index BEFORE acquiring the write lock.
-            row = conn.execute('SELECT identity,offset,skipped,mtime FROM files WHERE path=?', (key,)).fetchone()
-            # mtime check is UNCONDITIONAL: a truncate-and-regrow (same first
-            # line, larger size) changes mtime and must trigger a full re-index.
-            # Gating mtime behind offset==size missed that case.
-            if not row or row[0] != identity or row[1] > stat.st_size or row[3] != stat.st_mtime_ns:
+            row = conn.execute('SELECT identity,offset,skipped,mtime,anchor,size FROM files WHERE path=?', (key,)).fetchone()
+            # Validate the old boundary before resuming an append.
+            from _measure.transcript_stream import _anchor
+            restart = (not row or row[0] != identity or row[1] > stat.st_size
+                       or row[4] != _anchor(handle, row[1])
+                       or (row[5] == stat.st_size and row[3] != stat.st_mtime_ns))
+            if restart:
                 offset, skipped = 0, 0
             else:
                 offset, skipped = row[1], row[2]
             handle.seek(offset)
             end = min(stat.st_size, offset + PASS_BYTES)
             parsed = []
-            while handle.tell() < end:
+            parse_deadline = time.monotonic() + PASS_SECONDS
+            while handle.tell() < end and time.monotonic() < parse_deadline:
                 start = handle.tell()
                 line = handle.readline(LINE_BYTES + 1)
                 if not line:
                     break
                 if len(line) > LINE_BYTES:
-                    while line and not line.endswith(b'\n'):
+                    while line and not line.endswith(b'\n') and time.monotonic() < parse_deadline:
                         line = handle.readline(65536)
                     if not line or not line.endswith(b'\n'):
                         handle.seek(start)
                         break
                     skipped += 1
+                elif not line.endswith(b'\n'):
+                    handle.seek(start)
+                    break
                 else:
                     try:
                         record = json.loads(line)
@@ -183,6 +201,7 @@ def records(filepath):
                             else:
                                 skipped += 1
                 offset = handle.tell()
+            anchor = _anchor(handle, offset)
         # Now acquire the write lock for a tight batch commit only. A losing
         # thread can still outlast busy_timeout under heavy contention (or hit
         # the no-retry lock-upgrade deadlock path), so retry the transaction
@@ -191,11 +210,11 @@ def records(filepath):
         while True:
             try:
                 conn.execute('BEGIN IMMEDIATE')
-                if not row or row[0] != identity or row[1] > stat.st_size or row[3] != stat.st_mtime_ns:
+                if restart:
                     conn.execute('DELETE FROM records WHERE path=?', (key,))
                 conn.executemany('INSERT OR REPLACE INTO records(path, offset, data) VALUES (?,?,?)', parsed)
-                conn.execute('INSERT OR REPLACE INTO files(path, identity, offset, size, skipped, revision, mtime) VALUES (?,?,?,?,?,?,?)',
-                             (key, identity, offset, stat.st_size, skipped, SCHEMA_VERSION, stat.st_mtime_ns))
+                conn.execute('INSERT OR REPLACE INTO files(path, identity, offset, size, skipped, revision, mtime, anchor) VALUES (?,?,?,?,?,?,?,?)',
+                             (key, identity, offset, stat.st_size, skipped, SCHEMA_VERSION, stat.st_mtime_ns, anchor))
                 conn.commit()
                 break
             except sqlite3.OperationalError:

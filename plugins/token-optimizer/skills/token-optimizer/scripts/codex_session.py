@@ -129,33 +129,19 @@ def _safe_int(value: Any) -> int:
 
 
 def _iter_json_records(filepath: str | Path, *, skip_large_file: bool = True):
-    """Yield parsed JSONL records without letting pathological logs dominate.
-
-    Codex can occasionally leave multi-GB session files or individual records
-    with enormous embedded tool output. Dashboard and hook refresh paths need
-    bounded work more than perfect telemetry from those outlier transcripts.
-    """
+    """Stream small logs; large logs advance a resumable telemetry index."""
     path = Path(filepath)
     try:
         with path.open("rb") as handle:
             size = path.stat().st_size
             if skip_large_file and size > MAX_PARSE_FILE_BYTES:
-                # Keep identity, but never attribute the omitted interval to
-                # the model from the first turn. Only recent usage is sampled.
-                head = handle.readline(65536)
+                import codex_log_index
+                values, _ = codex_log_index.records(path)
                 try:
-                    meta = json.loads(head)
-                    if isinstance(meta, dict) and meta.get('type') == 'session_meta':
-                        yield meta
-                except (ValueError, UnicodeError):
-                    pass
-                offset = max(handle.tell(), size - LARGE_FILE_TAIL_BYTES)
-                handle.seek(max(0, offset - 1))
-                if offset and handle.read(1) != b'\n':
-                    while True:
-                        fragment = handle.readline(65536)
-                        if not fragment or fragment.endswith(b'\n'):
-                            break
+                    yield from values
+                finally:
+                    values.close()
+                return
             while True:
                 line = handle.readline(MAX_JSONL_LINE_CHARS + 1)
                 if not line:
@@ -435,7 +421,8 @@ def parse_session_jsonl(filepath: str | Path) -> dict[str, Any] | None:
             return result
         except (OSError, ValueError, sqlite3.Error):
             # Contention must not stall a hook. A tail fallback remains labelled.
-            return _parse_session_records(_iter_json_records(filepath), incomplete=True, sampled=True)
+            from _measure.transcript_stream import sampled_records
+            return _parse_session_records(sampled_records(filepath), incomplete=True, sampled=True)
     return _parse_session_records(_iter_json_records(filepath))
 
 

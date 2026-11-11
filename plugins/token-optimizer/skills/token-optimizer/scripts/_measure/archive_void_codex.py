@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
+from . import transcript_stream
 
 _ROW = re.compile(r'^replaced (\S+) \(([\d,]+) chars -> ([\d,]+) chars\)')
 _UUID = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
@@ -55,8 +56,7 @@ def _lines(path):
     path = Path(path)
     if path.suffix != '.zst':
         try:
-            with path.open('rb') as stream:
-                return stream.read().splitlines()
+            return transcript_stream.binary_lines(path)
         except OSError:
             return None
     try:
@@ -109,6 +109,10 @@ def outputs(path):
         payload = record.get('payload') if isinstance(record.get('payload'), dict) else {}
         if payload.get('type') not in _OUTPUT_TYPES:
             continue
+        compact = payload.get('_optimizer_archive_chars')
+        if isinstance(compact, list) and len(compact) == 2:
+            out.append((stamp, *compact))
+            continue
         value = payload.get('output')
         if isinstance(value, str):
             text = full = len(value)
@@ -117,7 +121,7 @@ def outputs(path):
             text = sum(len(item.get('text') or '') for item in items if isinstance(item, dict))
             full = len(json.dumps(value))
         out.append((stamp, text, full))
-    return out, last
+    return None if Path(path).suffix != '.zst' and transcript_stream.needs_resume(path) else (out, last)
 
 
 def _shows_pointer(near, pointer_chars):

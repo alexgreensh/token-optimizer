@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, counted_orphans, counted_subagents, headline, structural_report, savings_story
+from . import _compat, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream
 
 def _counted_event_utc(ts):
     """Savings-event timestamps are naive LOCAL time (datetime.now()); transcript
@@ -46,7 +46,7 @@ def _counted_media_results(path):
     import fnmatch
     names, results = {}, []
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with transcript_stream.open_transcript(path) as f:
             for line in f:
                 if '"tool_use"' not in line and '"tool_result"' not in line:
                     continue
@@ -652,7 +652,7 @@ def _update_counted_cumulative(conn, max_sessions=None,
                 continue
             def fresh_event(key):
                 _measure_facade = _compat.facade()
-                if key not in stored:
+                if key not in stored or transcript_stream.needs_resume(orphan_paths.get(key, path)):
                     return False
                 detail = _measure_facade._counted_pricing_detail(stored[key].get("pricing_detail"))
                 st = orphan_paths.get(key, path).stat(); event_stamp = [st.st_mtime_ns, st.st_size]
@@ -677,7 +677,7 @@ def _update_counted_cumulative(conn, max_sessions=None,
                     _measure_facade._counted_pricing_detail(stored[key].get("pricing_detail")).get("file_size", 0)
                     for key, *_ in evs if key in stored])
                 turns, compacts, _ = _measure_facade._counted_walk_transcript(path)
-                if path.stat().st_mtime_ns != proof["mtime_ns"] or path.stat().st_size != proof["file_size"]:
+                if transcript_stream.needs_resume(path) or path.stat().st_mtime_ns != proof["mtime_ns"] or path.stat().st_size != proof["file_size"]:
                     raise OSError("transcript changed while scoring")
             except OSError:
                 if proof is None:
@@ -722,7 +722,7 @@ def _update_counted_cumulative(conn, max_sessions=None,
                 old_size = (_measure_facade._counted_pricing_detail(stored[key].get("pricing_detail")).get("file_size", 0) or 0) if key in stored else 0; proof_key = (event_path, old_size, before_walk.st_mtime_ns, before_walk.st_size)
                 if proof_key not in event_proofs: event_proofs[proof_key] = _measure_facade._counted_file_proof(event_path, [old_size])
                 event_proof = event_proofs[proof_key]; event_stat = event_path.stat(); event_mtime = event_stat.st_mtime
-                if (before_walk.st_mtime_ns, before_walk.st_size) != (event_proof["mtime_ns"], event_proof["file_size"]) or (event_stat.st_mtime_ns, event_stat.st_size) != (event_proof["mtime_ns"], event_proof["file_size"]):
+                if transcript_stream.needs_resume(event_path) or (before_walk.st_mtime_ns, before_walk.st_size) != (event_proof["mtime_ns"], event_proof["file_size"]) or (event_stat.st_mtime_ns, event_stat.st_size) != (event_proof["mtime_ns"], event_proof["file_size"]):
                     stats["unmeasured_events"] += 1; continue
                 if not _measure_facade._counted_store_score(conn, key, key.split(":", 1)[0], uuid,
                                              ts, int(tok or 0), score, event_mtime, event_proof,

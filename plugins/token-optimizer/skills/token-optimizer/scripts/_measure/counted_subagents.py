@@ -26,6 +26,7 @@ import-time state and imports nothing from measure.
 """
 
 import hashlib
+from . import transcript_stream
 import json
 import re
 import sqlite3
@@ -73,7 +74,7 @@ def walk(facade, path, collect_markers=None, sidechain=False):
     seen = {}
     last_ts = None
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with transcript_stream.open_transcript(path) as f:
             for line in f:
                 if collect_markers and "Full result archived" in line:
                     m = facade._COUNTED_MARKER_RX.search(line)
@@ -182,7 +183,7 @@ def index_results(path, sidechain):
     command or None, pointer original chars or None)]. Never raises."""
     uses, results = {}, []
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as stream:
+        with transcript_stream.open_transcript(path) as stream:
             for line in stream:
                 if '"tool_use"' not in line and '"tool_result"' not in line:
                     continue

@@ -36,17 +36,18 @@ import os
 import re
 import time
 
-from . import _compat
+from . import _compat, transcript_stream
 
-SCANNER_VERSION = 3
+SCANNER_VERSION = 4
 _MARKER = b'[Token Optimizer'
 _EVIDENCE_TYPES = ('hook_additional_context', 'hook_system_message')
 _RESTORE_PREFIXES = ('[Token Optimizer] Post-compact recovery',
                      '[Token Optimizer] Cross-session checkpoint',
                      '[Token Optimizer] Cold-resume lean')
-_REQUEST_RE = re.compile(rb'"requestId":"([^"]+)"')
-_MESSAGE_RE = re.compile(rb'"message":\{[^{}]*?"id":"([^"]+)"')
-_TS_RE = re.compile(rb'"timestamp":"(\d{4}-\d{2}-\d{2})')
+_REQUEST_RE = re.compile(rb'"requestId"\s*:\s*"([^"]+)"')
+_MESSAGE_RE = re.compile(rb'"message"\s*:\s*\{[^{}]*?"id"\s*:\s*"([^"]+)"')
+_TS_RE = re.compile(rb'"timestamp"\s*:\s*"(\d{4}-\d{2}-\d{2})')
+_ASSISTANT_RE = re.compile(rb'"type"\s*:\s*"assistant"')
 DEFAULT_SCAN_BUDGET_S = 20.0
 
 
@@ -93,18 +94,15 @@ def scan_transcript(path):
     injection, which is its first read (counted as injected, not reread).
     """
     try:
-        with open(path, 'rb') as fh:
-            data = fh.read()
+        data = transcript_stream.binary_lines(path)
     except OSError:
         return None
     out = {'markers': 0, 'injections': 0, 'restore_tokens': 0, 'days': {}}
-    if _MARKER not in data and b'measure.py' not in data:
-        return out
     active = unseen = active_expand = unseen_expand = 0
     seen = set()
     expand_seen = set()
     day = ''
-    for line in data.splitlines():
+    for line in data:
         m = _TS_RE.search(line)
         if m:
             day = m.group(1).decode()
@@ -133,7 +131,7 @@ def scan_transcript(path):
             unseen += tokens
             out['days'].setdefault(day, [0, 0, 0, 0])[0] += tokens
             continue
-        if b'"type":"assistant"' in line and active:
+        if _ASSISTANT_RE.search(line) and active:
             m = _REQUEST_RE.search(line) or _MESSAGE_RE.search(line)
             key = m.group(1) if m else None
             if key is not None and key not in seen:
@@ -145,7 +143,7 @@ def scan_transcript(path):
                     out['days'].setdefault(day, [0, 0, 0, 0])[1] += reread
                 if expand_reread > 0:
                     out['days'].setdefault(day, [0, 0, 0, 0])[3] += expand_reread
-        if b'measure.py' in line and b'"type":"assistant"' in line:
+        if b'measure.py' in line and _ASSISTANT_RE.search(line):
             try:
                 content = (json.loads(line).get('message') or {}).get('content') or []
                 for block in content if isinstance(content, list) else []:
@@ -204,7 +202,7 @@ def _evidence(conn, paths, budget_s):
         except (OSError, TypeError, ValueError):
             continue
         row = cached.get(path)
-        if row and row[0] == st.st_size and row[1] == st.st_mtime and row[2] == SCANNER_VERSION:
+        if row and row[0] == st.st_size and row[1] == st.st_mtime and row[2] == SCANNER_VERSION and not transcript_stream.needs_resume(path):
             try:
                 out[path] = {'markers': row[3], 'injections': row[4], 'restore_tokens': row[5],
                              'days': json.loads(row[6] or '{}')}
@@ -217,7 +215,7 @@ def _evidence(conn, paths, budget_s):
         if scan is None:
             continue
         out[path] = scan
-        if writable:
+        if writable and not transcript_stream.needs_resume(path):
             try:
                 conn.execute('INSERT OR REPLACE INTO to_session_evidence VALUES (?,?,?,?,?,?,?,?,?)',
                              (path, st.st_size, st.st_mtime, SCANNER_VERSION, scan['markers'],

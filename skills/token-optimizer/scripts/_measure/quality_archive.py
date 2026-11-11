@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
+from . import _compat, transcript_stream
 
 
 def _int_env(key: str, default: int) -> int:
@@ -517,15 +517,8 @@ def _parse_jsonl_for_quality(filepath):
 
     idx = 0
     try:
-        if _measure_facade.os.stat(filepath).st_size > _measure_facade.codex_session.MAX_PARSE_FILE_BYTES:
-            return None
-    except OSError:
-        return None
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        with transcript_stream.open_transcript(filepath) as f:
             for line in f:
-                if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:
-                    continue
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:

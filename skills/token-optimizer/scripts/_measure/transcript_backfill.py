@@ -89,7 +89,7 @@ def scan_transcript(path):
     out = {"traces": {}, "sized": [], "unsized": {}, "pointer_results": 0, "error": None}
     tool_uses = {}
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as stream:
+        with transcript_stream.open_transcript(path) as stream:
             for line in stream:
                 is_assistant = '"tool_use"' in line and '"assistant"' in line
                 is_result = '"tool_result"' in line
@@ -298,7 +298,7 @@ def _cursor(conn):
     return value if isinstance(value, dict) else {}
 
 
-from . import fixture_context
+from . import fixture_context, transcript_stream
 
 
 def candidate_sessions(conn, since_date, is_fixture):
@@ -348,7 +348,7 @@ def run(conn, m, since_date, max_files=None, deadline_seconds=None, report=None)
                 stats["no_transcript"] += 1
                 continue
             stamp = [st.st_size, st.st_mtime_ns]
-            if report is None and cursor.get(uuid) == stamp:
+            if report is None and cursor.get(uuid) == stamp and not transcript_stream.needs_resume(path):
                 continue  # unchanged since the last scan
             if (max_files is not None and stats["files_scanned"] >= max_files) or (
                     deadline_seconds is not None and time.monotonic() - started > deadline_seconds):
@@ -373,7 +373,8 @@ def run(conn, m, since_date, max_files=None, deadline_seconds=None, report=None)
                 written = write_rows(conn, ce_rows, se_rows)
                 stats["rows_written"] += written
                 entry.update(rows=len(ce_rows) + len(se_rows), written=written, skipped=skipped)
-            cursor[uuid] = stamp
+            if not transcript_stream.needs_resume(path):
+                cursor[uuid] = stamp
             if report is not None:
                 report[uuid] = entry
         conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) VALUES (?, ?)",

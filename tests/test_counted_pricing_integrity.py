@@ -325,7 +325,7 @@ def test_unknown_prices_disclosed_in_cli_json_and_dashboard(m, tmp_path, monkeyp
     assert cli["action_savings"]["total_usd"] == 2
     html = render(dashboard)
     assert "unpriced" in html.lower()
-    assert "Context savings" in html
+    assert "complete net dollar value is unavailable" in html
 
 
 @pytest.mark.parametrize("known_zero", [False, True])
@@ -339,8 +339,14 @@ def test_unpriced_reread_label_is_distinct_from_verified_zero(m, monkeypatch, kn
     summary = {"period_days": 30, "total_cost_usd": 2, "counted_period": counted}
     summary["action_savings"] = m._action_savings_components(summary, counted)
     html = render(summary)
-    assert ("Repeat reads avoided <strong>~$0" if known_zero else
-            "Repeat reads avoided <strong>Unpriced") in html
+    if known_zero:
+        assert "Repeat reads avoided <strong>~$0" in html
+    else:
+        # Unknown prices are never shown as $0: the row is dropped and the
+        # note discloses the unpriced tokens.
+        assert "Repeat reads avoided <strong>$0" not in html
+        assert "repeat-read tokens unpriced" in html
+        assert "complete net dollar value is unavailable" in html
 
 
 def test_weekly_plan_payload_carries_partial_reread_coverage(m, tmp_path, monkeypatch):
@@ -368,18 +374,23 @@ def test_history_amount_labels_use_component_price_availability(m, monkeypatch, 
     counted.update(available=True, events=1, total_usd=counted["oneshot_usd"] + counted["reread_usd"])
     summary = {"period_days": 30, "counted_period": counted, "counted_cumulative": counted,
                "action_savings": m._action_savings_components({}, counted)}
-    history = render(summary).split('savings-history')[1]
+    html = render(summary)
     if kind == "unknown":
-        assert '<strong>Unpriced</strong> from removals in the last 30 days' in history
-        assert 'Unpriced initial removals + Unpriced modeled repeat reads.' in history
-        assert '$0' not in history
-    elif kind == "known_zero":
+        # Nothing priced: the history card is dropped (value or nothing) and the
+        # page discloses the unpriced tokens instead of showing $0.
+        assert 'savings-history' not in html
+        assert 'repeat-read tokens unpriced' in html
+        assert 'complete net dollar value is unavailable' in html
+        return
+    history = html.split('savings-history')[1]
+    if kind == "known_zero":
         assert '<strong>$0.00</strong> from removals in the last 30 days' in history
-        assert '$0.00 initial removals + $0.00 modeled repeat reads.' in history
+        assert '$0.00 initial removals.' in history and '$0.00 modeled repeat reads.' in history
         assert 'Unpriced' not in history
     else:
-        assert f'Unpriced initial removals + ${counted["reread_usd"]:.2f} modeled repeat reads.' in history
+        assert f'${counted["reread_usd"]:.2f} modeled repeat reads.' in history
         assert 'Priced subtotal only:' in history
+        assert 'initial-removal tokens unpriced' in history
 
 
 @pytest.mark.parametrize("source", ["missing", "unreadable", "empty", "observed_no_later_calls", "no_candidates"])

@@ -261,6 +261,7 @@ def _card_text(rw):
     end = html.index("  function renderSavings() {")
     script = (
         "const data = {runway: JSON.parse(process.argv[2]), runtime_label: 'Claude Code'};\n"
+        "const window = {location: {protocol: 'http:'}};\n"
         "function esc(s) { return s == null ? '' : String(s); }\n"
         "function fn(n) { return String(n); }\n"
         + html[html.index("function tokenSplitText("):html.index("function hostRefreshHtml(")]

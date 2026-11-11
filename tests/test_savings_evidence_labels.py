@@ -249,7 +249,7 @@ def test_legacy_quality_nudge_is_not_measured(m):
 def test_checkpoint_restore_does_not_credit_checkpoint_size(m, monkeypatch, tmp_path):
     cp_dir = tmp_path / 'checkpoints'
     cp_dir.mkdir()
-    path = cp_dir / (SID + '-checkpoint.md')
+    path = cp_dir / (SID + '-20261111-120000-auto.md')
     path.write_text('# header\nGenerated: now\n## Task\n' + 'x' * 5000)
     cp = {'filename': path.name, 'path': path, 'created': datetime.now(), 'trigger': 'auto'}
     monkeypatch.setattr(m, 'CHECKPOINT_DIR', cp_dir)

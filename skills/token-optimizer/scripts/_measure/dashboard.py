@@ -3065,12 +3065,9 @@ def _query_trends_db(conn, days):
                 "jsonl_path": jsonl_path,
                 "topic": sr["topic"],
                 "project": _measure_facade._clean_project_name(sr["project"]),
-                # cost_usd is THIS day's share; session_cost_usd is the whole session.
                 "cost_usd": round(day_cost, 4),
                 "session_cost_usd": round(session_total_cost, 4),
-                # input/output_tokens above are whole-session totals (the row
-                # describes the session); these are this day's share, the same
-                # numbers the day's total_input/total_output add up.
+                # These token counts cover this day, not the whole session.
                 "day_input_tokens": day_in,
                 "day_output_tokens": day_out,
                 "spans_days": len(du) > 1,
@@ -3080,16 +3077,21 @@ def _query_trends_db(conn, days):
                 "model": _measure_facade._normalize_model_name(dom_model) or dom_model,
                 "model_count": len(mu) if mu else 1,
             }
-            # Prefer stored quality score (persisted during collect), fall back to recomputation
-            if sr["quality_score"] is not None:
-                sd["quality_score"] = sr["quality_score"]
-                sd["quality_grade"] = sr["quality_grade"] or _measure_facade.score_to_grade(round(sr["quality_score"]))
-                sd["quality_band"] = _measure_facade.score_to_band(sr["quality_score"])
+            # Legacy session_log quality fields have no score version.
+            try:
+                qc = _measure_facade._read_quality_cache(_measure_facade._quality_cache_path_for(_measure_facade.Path(jsonl_path))) or {}
+            except (OSError, ValueError, TypeError):
+                qc = {}
+            if qc.get("score_version") == _measure_facade._QUALITY_SCORE_VERSION and qc.get("session_file") == _measure_facade.Path(jsonl_path).name:
+                sd["quality_score"] = qc.get("score")
+                sd["quality_grade"] = qc.get("grade", "?")
+                sd["quality_measured"] = qc.get("measured", False)
+                sd["quality_band"] = _measure_facade.score_to_band(qc["score"]) if sd["quality_measured"] else "Unmeasured"
             else:
-                sq = _measure_facade.score_session_quality(sd)
-                sd["quality_score"] = sq["score"]
-                sd["quality_grade"] = sq["grade"]
-                sd["quality_band"] = sq["band"]
+                sd["quality_score"] = None
+                sd["quality_grade"] = "?"
+                sd["quality_measured"] = False
+                sd["quality_band"] = "Unmeasured"
             d["session_details"].append(sd)
         if window_unpriced > 0:
             total_unpriced_sessions += 1
@@ -3101,14 +3103,13 @@ def _query_trends_db(conn, days):
         d["total_cost_usd"] = round(sum(float(sd.get("cost_usd") or 0.0) for sd in details), 4)
         d["cost_priced_tokens"] = sum(int(sd.get("cost_priced_tokens") or 0) for sd in details)
         d["cost_unpriced_tokens"] = sum(int(sd.get("cost_unpriced_tokens") or 0) for sd in details)
-        scores = [float(sd["quality_score"]) for sd in details if sd.get("quality_score") is not None]
+        scores = [float(sd["quality_score"]) for sd in details if sd.get("quality_measured") and sd.get("quality_score") is not None]
         if scores:
             d["avg_quality_score"] = round(sum(scores) / len(scores), 1)
-        grades = [sd.get("quality_grade") for sd in details if sd.get("quality_grade")]
+        grades = [sd.get("quality_grade") for sd in details if sd.get("quality_measured") and sd.get("quality_grade")]
         if grades:
             d["worst_grade"] = min(grades, key=lambda grade: ((_measure_facade := _compat.facade()), grade_rank.get(grade, 999))[1])
 
-    # Rolling quality trend from session_log
     quality_trend_rows = conn.execute(
         """SELECT date,
                   AVG(quality_score) as avg_q,
@@ -3116,7 +3117,7 @@ def _query_trends_db(conn, days):
                   MAX(quality_score) as max_q,
                   COUNT(*) as n
            FROM session_log
-           WHERE date >= ? AND quality_score IS NOT NULL
+           WHERE date >= ? AND quality_score IS NOT NULL AND quality_grade != '?'
            GROUP BY date ORDER BY date""",
         (cutoff,),
     ).fetchall()
@@ -3131,8 +3132,6 @@ def _query_trends_db(conn, days):
         for r in quality_trend_rows
     ]
 
-    # conn.close() removed — caller (_collect_trends_from_db) owns the connection
-    # and closes it in its finally block (double-close fix).
 
     # Pricing tier info for dashboard
     pricing_tier = _measure_facade._load_pricing_tier()

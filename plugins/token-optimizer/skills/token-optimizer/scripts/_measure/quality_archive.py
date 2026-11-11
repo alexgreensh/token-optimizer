@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, transcript_stream
+from . import _compat, transcript_stream, quality_continuity, quality_checkpoint
 
 
 def _int_env(key: str, default: int) -> int:
@@ -464,7 +464,7 @@ def _rec_track_tool_result(rec, block, idx, ts):
             open_b["post_calls"].append(call)
 
 
-def _parse_jsonl_for_quality(filepath):
+def _parse_jsonl_for_quality(filepath, checkpoint=None):
     """Parse a JSONL session file and extract quality-relevant data.
 
     Returns a dict with chronological lists of reads, writes, tool results,
@@ -473,7 +473,14 @@ def _parse_jsonl_for_quality(filepath):
     """
     _measure_facade = _compat.facade()
     if _measure_facade._use_codex_session_adapter(filepath):
-        return _measure_facade.codex_session.parse_jsonl_for_quality(filepath)
+        try:
+            with open(filepath, "rb"):
+                pass
+        except OSError:
+            return quality_checkpoint.ParseFailure("unreadable")
+        parsed = (_measure_facade.codex_session.parse_jsonl_for_quality(filepath, checkpoint)
+                  if checkpoint else _measure_facade.codex_session.parse_jsonl_for_quality(filepath))
+        return parsed if parsed is not None else quality_checkpoint.ParseFailure("no_messages")
 
     reads = []       # (index, path, timestamp)
     writes = []      # (index, path, timestamp)
@@ -516,9 +523,25 @@ def _parse_jsonl_for_quality(filepath):
     _rec_cwd = ""
 
     idx = 0
+    saved_checkpoint = None
+    parsed_offset = 0
+    window_offset = 0
     try:
-        with transcript_stream.open_transcript(filepath) as f:
-            for line in f:
+        with open(filepath, "rb") as f:
+            if checkpoint:
+                resumed = quality_checkpoint.restore(f, checkpoint)
+                if resumed is not None:
+                    _rec = resumed
+                    idx = checkpoint["idx"]
+                    compactions = checkpoint["compactions"]
+                    tool_calls = checkpoint["tool_calls"]
+                    current_model = checkpoint["model"]
+                    _rec_first_ts = checkpoint["first_ts"]
+                    _rec_last_ts = checkpoint["last_ts"]
+                    _rec_cwd = checkpoint["cwd"]
+                    parsed_offset = checkpoint["offset"]
+                    window_offset = parsed_offset
+            for line_offset, line in quality_checkpoint.lines(f, transcript_stream.LINE_BYTES):
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
@@ -541,22 +564,13 @@ def _parse_jsonl_for_quality(filepath):
                     if isinstance(_cwd_val, str) and _cwd_val:
                         _rec_cwd = _cwd_val
 
-                # Detect context-clearing boundaries:
-                # 1. compact_boundary (from /compact or autocompact)
-                # 2. ExitPlanMode (plan mode clears context but leaves no boundary marker)
-                # On boundary: reset all signal accumulators so quality score
-                # reflects the CURRENT context window, not full session history
-                is_compact = rec_type == "system" and (
-                    record.get("subtype") == "compact_boundary"
-                    or "compactMetadata" in record
-                )
-                is_plan_exit = False
-                if rec_type == "assistant":
-                    for block in record.get("message", {}).get("content", []):
-                        if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "ExitPlanMode":
-                            is_plan_exit = True
-                            break
-                if is_compact or is_plan_exit:
+                is_compact = rec_type == "system" and (record.get("subtype") == "compact_boundary" or "compactMetadata" in record)
+                if is_compact and not _is_sidechain:
+                    window_offset = line_offset
+                    saved_checkpoint = quality_checkpoint.save(
+                        f, line_offset, _rec, idx=idx, compactions=compactions,
+                        tool_calls=tool_calls, model=current_model, first_ts=_rec_first_ts,
+                        last_ts=_rec_last_ts, cwd=_rec_cwd)
                     if not _is_sidechain:
                         safe_pause = False
                     if is_compact:
@@ -609,7 +623,7 @@ def _parse_jsonl_for_quality(filepath):
                     # right after a compaction with no further turn, leaving the old
                     # value would over-report fill. None falls through to the
                     # char-length estimate of whatever follows the boundary.
-                    context_tokens = None
+                    context_tokens = _md.get("postTokens") if isinstance(_md.get("postTokens"), (int, float)) else None
                     idx += 1
                     continue
 
@@ -750,9 +764,10 @@ def _parse_jsonl_for_quality(filepath):
                                         agent_dispatches[-1] = (last[0], last[1], len(result_text))
 
                 idx += 1
-
+            if f.tell() - window_offset > _measure_facade.codex_session.MAX_PARSE_FILE_BYTES:
+                return quality_checkpoint.ParseFailure("too_large")
     except (PermissionError, OSError):
-        return None
+        return quality_checkpoint.ParseFailure("unreadable")
 
     # Close the last open boundary at EOF: its post window is whatever the
     # session produced before ending (possibly still filling -> "observing").
@@ -760,10 +775,10 @@ def _parse_jsonl_for_quality(filepath):
         _measure_facade._finalize_compaction_boundary(_rec["open"], _rec["notices"])
         _rec["boundaries"].append(_rec["open"])
 
-    if not messages:
-        return None
-
     return {
+        "parse_reason": None if messages else "no_messages",
+        "_quality_checkpoint": saved_checkpoint,
+        "_parsed_from_offset": parsed_offset,
         "reads": reads,
         "writes": writes,
         "tool_results": tool_results,
@@ -1142,8 +1157,6 @@ def compute_quality_score(quality_data, session_id=None):
     """
     _measure_facade = _compat.facade()
     total_messages = len(quality_data["messages"])
-    if total_messages == 0:
-        return {"score": 0, "signals": {}, "breakdown": {}}
 
     # 0. Context fill degradation
     # Priority: live fill from statusline (real-time) > JSONL context_tokens (previous turn) > char-length estimate
@@ -1362,11 +1375,7 @@ def compute_quality_score(quality_data, session_id=None):
     dup_data = _measure_facade.detect_duplicates(quality_data)
     dup_score = max(0, min(100, 100 - dup_data["duplicates"] * 10))
 
-    # 4. Compaction count is descriptive metadata only -- it carries NO
-    # quality weight. Measured post-boundary recovery signals are reported
-    # separately in the recovery panel (see _assess_compaction_recovery);
-    # the count-only "~65/88/95% lost" model was unsupported by the paired
-    # event study and is removed (COMPACTION-QUALITY.md).
+    # Continuity is applied after recovery evidence has been evaluated.
     compactions = quality_data["compactions"]
 
     # 5. Decision density: rolling window over last N messages.
@@ -1428,21 +1437,17 @@ def compute_quality_score(quality_data, session_id=None):
     )
 
     # Absolute waste tokens signal for ResourceHealth (0-100, higher = less waste)
-    waste_fraction = total_waste / max(ctx_window, 1) if ctx_window > 0 else 0
+    waste_fraction = total_waste / max(model_context_window, 1) if model_context_window > 0 else 0
     waste_score = max(0, min(100, 100 - waste_fraction * 1000))
     signals["absolute_waste_tokens"] = round(waste_score, 1)
 
-    # v6 dual composite: ResourceHealth (monotonic) + SessionEfficiency (flexible)
+    # Base resource health and separate diagnostic session efficiency.
     resource_health = sum(
         signals[k] * _measure_facade._RESOURCE_HEALTH_WEIGHTS[k]
         for k in _measure_facade._RESOURCE_HEALTH_WEIGHTS
     )
 
-    # Which signal actually pulls ResourceHealth down? The displayed score IS
-    # resource_health, so attribute its deficit by weighted contribution —
-    # weight * (100 - signal) — not by which waste key happens to exist. This
-    # is what the "biggest drag" wording everywhere must reflect: a 70% fill
-    # drags harder than one stale read even when no waste was recorded.
+    # Attribute the base deficit to the weighted fill and waste signals.
     _drag_deficit = {
         k: _measure_facade._RESOURCE_HEALTH_WEIGHTS[k] * max(0.0, 100.0 - signals[k])
         for k in _measure_facade._RESOURCE_HEALTH_WEIGHTS
@@ -1559,7 +1564,7 @@ def compute_quality_score(quality_data, session_id=None):
         },
         "compactions": {
             "count": compactions,
-            "weighted": False,
+            "weighted": True,
             "detail": f"{compactions} compaction(s)" if compactions > 0 else "No compactions",
         },
         "compaction_recovery": {
@@ -1631,13 +1636,32 @@ def compute_quality_score(quality_data, session_id=None):
             "message": "System prompt erosion accelerating, middle content at highest risk",
         }
 
+    multiplier, effective = quality_continuity.continuity(compactions, recovery["evidence"])
+    base_score = resource_health
+    resource_health *= multiplier
+    compaction_drag = base_score * (1 - multiplier)
+    if compaction_drag >= 3 and (not top_drag or compaction_drag > top_drag["points"] * multiplier):
+        top_drag = {"key": "compactions", "label": "compaction continuity prior", "points": round(compaction_drag, 1)}
+    if quality_data.get("unmeasured"):
+        try:
+            previous = float(quality_data.get("last_measured_score", 100))
+            if not _measure_facade.math.isfinite(previous):
+                previous = 100
+        except (TypeError, ValueError):
+            previous = 100
+        resource_health = min(max(0, previous), 100 * multiplier)
     rh_rounded = round(resource_health, 1)
     se_rounded = round(session_efficiency, 1)
-    rh_grade = _measure_facade.score_to_grade(round(resource_health))
+    rh_grade = _measure_facade.score_to_grade(round(resource_health)) if not quality_data.get("unmeasured") else "?"
     se_grade = _measure_facade.score_to_grade(round(session_efficiency))
 
     return {
         "score": rh_rounded,
+        "measured": not quality_data.get("unmeasured", False),
+        "continuity": multiplier,
+        "base_score": round(base_score, 1),
+        "effective_compactions": effective,
+        "base_source": "assumed-empty" if total_messages == 0 and quality_data.get("context_tokens") is None and fill_source != "host-live" else fill_source,
         "grade": rh_grade,
         "score_version": _measure_facade._QUALITY_SCORE_VERSION,
         "resource_health": rh_rounded,
@@ -1863,25 +1887,34 @@ def quality_analyzer(session_id=None, as_json=None):
             print("[Token Optimizer] No session logs found. Run a Claude Code session first.")
         return None
 
-    quality_data = _measure_facade._parse_jsonl_for_quality(filepath)
-    if not quality_data:
-        if as_json:
-            print(_measure_facade.json.dumps({"error": "Session log is empty or unparseable."}))
-        else:
-            print("[Token Optimizer] Session log is empty or unparseable.")
-        return None
-
-    result = _measure_facade.compute_quality_score(quality_data)
-    result["session_file"] = _measure_facade.Path(filepath).name
-    result["total_messages"] = len(quality_data["messages"])
-    result["decisions_found"] = len(quality_data["decisions"])
+    try:
+        result = _measure_facade._read_quality_cache(_measure_facade._quality_cache_path_for(filepath)) or {}
+    except (OSError, ValueError, TypeError):
+        result = {}
+    if result.get("score_version") != _measure_facade._QUALITY_SCORE_VERSION or result.get("session_file") != _measure_facade.Path(filepath).name:
+        quality_data = _measure_facade._parse_jsonl_for_quality(filepath)
+        if not quality_data:
+            if as_json:
+                print(_measure_facade.json.dumps({"error": "Session log is unmeasurable.", "reason": getattr(quality_data, "reason", "unreadable")}))
+            else:
+                print("[Token Optimizer] Session log is unmeasurable.")
+            return None
+        result = _measure_facade.compute_quality_score(quality_data)
+        result["session_file"] = _measure_facade.Path(filepath).name
+        result["total_messages"] = len(quality_data["messages"])
+        result["decisions_found"] = len(quality_data["decisions"])
+        if quality_data.get("estimated"):
+            result["estimated"] = True
+    result.pop("_quality_checkpoint", None)
     result["runtime"] = _measure_facade.detect_runtime()
     result["runtime_label"] = _measure_facade.runtime_name_for_humans()
-    if quality_data.get("estimated"):
-        result["estimated"] = True
 
     if as_json:
         print(_measure_facade.json.dumps(result, indent=2))
+        return result
+
+    if result.get("measured") is False:
+        print(f"\n  Context Quality: ~{result['score']} (unmeasured)\n")
         return result
 
     # Pretty print
@@ -4683,37 +4716,19 @@ def _recent_compact_boundary(path, within_s=None, now=None):
 
 
 def _settled_compactions(parsed, prev_result, post_compact, now=None):
-    """The session's compaction count, never lower than what was already known.
-
-    Claude Code appends the compact_boundary row to the transcript after the
-    PostCompact hooks run, so the PostCompact refresh parses a transcript that
-    does not show the compaction yet. That refresh therefore counts one more
-    than before when the parse has not caught up, once per compaction (a
-    second PostCompact within a minute is the same one). A later parse that
-    sees the boundary agrees with that count rather than adding to it. The
-    caller passes post_compact=False when the boundary is already in the
-    transcript. Two real compactions inside one minute read as one until the
-    next parse sees both boundaries, which then corrects the count.
-    """
+    """Allow a short pending hook bump, then trust the transcript again."""
     _measure_facade = _compat.facade()
     try:
         prev = max(0, int((prev_result or {}).get("compactions", 0) or 0))
-    except (TypeError, ValueError, OverflowError):
-        prev = 0
-    try:
         parsed = max(0, int(parsed or 0))
+        last = float((prev_result or {}).get("_compact_bumped_at") or 0)
     except (TypeError, ValueError, OverflowError):
-        parsed = 0
-    count = max(parsed, prev)
-    if post_compact and parsed <= prev:
-        now = _measure_facade.time.time() if now is None else now
-        try:
-            last = float((prev_result or {}).get("_compact_bumped_at") or 0)
-        except (TypeError, ValueError, OverflowError):
-            last = 0.0
-        if now - last > _measure_facade._COMPACT_BUMP_WINDOW_S:
-            count = prev + 1
-    return count
+        return 0
+    now = _measure_facade.time.time() if now is None else now
+    pending = prev > parsed and 0 <= now - last < _measure_facade._COMPACT_BUMP_WINDOW_S
+    if pending:
+        return prev
+    return parsed + 1 if post_compact else parsed
 
 
 def _quality_scores_comparable(prev_result, result):
@@ -5556,64 +5571,38 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
 
     try:
         # Run quality analysis
-        quality_data = _measure_facade._parse_jsonl_for_quality(filepath)
+        try:
+            prev_result = _measure_facade._read_quality_cache(cache_path) or {} if cache_path.exists() else {}
+        except Exception:
+            prev_result = {}
+        checkpoint = prev_result.get("_quality_checkpoint")
+        quality_data = (_measure_facade._parse_jsonl_for_quality(filepath, checkpoint)
+                        if checkpoint else _measure_facade._parse_jsonl_for_quality(filepath))
+        parsed_compactions = 0
         if not quality_data:
-            # New/empty session - write a clean score to cache so stale score doesn't persist.
-            # A transcript the parser gives up on (very large) is not a new session: keep the
-            # compaction count it already had, so "never decreases" holds there too.
             try:
-                _prev_empty = _measure_facade._read_quality_cache(cache_path) if cache_path.exists() else {}
-            except Exception:
-                _prev_empty = {}
-            result = {
-                "score": 100,
-                "grade": "S",
-                "score_version": _measure_facade._QUALITY_SCORE_VERSION,
-                "signals": {},
-                "breakdown": {},
-                "total_messages": 0,
-                "decisions_found": 0,
-                "compactions": _measure_facade._settled_compactions(
-                    0, _prev_empty or {}, post_compact and not _measure_facade._recent_compact_boundary(filepath)),
-                "recovery_status": None,
-                "recovery_score": None,
-                "recovery_evidence": [],
-                "turns": 0,
-                "timestamp": _measure_facade.datetime.now(_measure_facade.timezone.utc).isoformat(),
-                "session_file": _measure_facade.Path(filepath).name,
-                "model_context_window": _measure_facade.detect_context_window()[0],
-            }
-            # Same bump bookkeeping as the full path: one count per compaction.
-            if (_prev_empty or {}).get("_compact_bumped_at"):
-                result["_compact_bumped_at"] = _prev_empty["_compact_bumped_at"]
-            # Keep the nudge and warning state too: dropping it re-arms nudges
-            # that already fired once the transcript parses again.
-            for carry_key in _measure_facade._CARRY_KEYS:
-                if carry_key in (_prev_empty or {}):
-                    result[carry_key] = _prev_empty[carry_key]
-            # A legacy/v1 nudge baseline must not seed v2 comparisons.
-            if (_prev_empty or {}).get("score_version") != _measure_facade._QUALITY_SCORE_VERSION:
-                result.pop("_nudge_previous_score", None)
-            try:
-                _prev_n = int((_prev_empty or {}).get("compactions", 0) or 0)
+                count = max(0, int(prev_result.get("compactions", 0) or 0))
+                bumped_at = float(prev_result.get("_compact_bumped_at", 0) or 0)
             except (TypeError, ValueError, OverflowError):
-                _prev_n = 0
-            if post_compact and result["compactions"] > _prev_n:
-                result["_compact_bumped_at"] = _measure_facade.time.time()
-            _measure_facade._write_quality_cache(cache_path, result)
-            return 100
-
-        # Carry forward nudge/loop state from previous cache (survives across
-        # UserPromptSubmit → PostCompact boundary for follow-through measurement)
-        prev_result = {}
-        if cache_path.exists():
-            try:
-                prev_result = _measure_facade._read_quality_cache(cache_path) or {}
-            except Exception:
-                prev_result = {}
-
+                count, bumped_at = 0, 0
+            if post_compact and _measure_facade.time.time() - bumped_at > _measure_facade._COMPACT_BUMP_WINDOW_S:
+                count += 1
+            quality_data = {"messages": [], "decisions": [], "reads": [], "writes": [],
+                            "tool_results": [], "tool_result_meta": [], "system_reminders": [],
+                            "agent_dispatches": [], "total_entries": 0, "tool_calls": 0,
+                            "compactions": count, "unmeasured": True,
+                            "last_measured_score": prev_result.get("last_measured_score", prev_result.get("score", 100)),
+                            "parse_reason": getattr(quality_data, "reason", "unreadable")}
+        else:
+            parsed_compactions = quality_data["compactions"]
+            quality_data["compactions"] = _measure_facade._settled_compactions(
+                quality_data["compactions"], prev_result,
+                post_compact and not _measure_facade._recent_compact_boundary(filepath))
         _session_id = _measure_facade.Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
         result = _measure_facade.compute_quality_score(quality_data, session_id=_session_id)
+        result["_quality_checkpoint"] = quality_data.get("_quality_checkpoint")
+        result["parse_reason"] = quality_data.get("parse_reason")
+        result["last_measured_score"] = (result["score"] if result["measured"] else quality_data["last_measured_score"])
         for carry_key in _measure_facade._CARRY_KEYS:
             if carry_key in prev_result and carry_key not in result:
                 result[carry_key] = prev_result[carry_key]
@@ -5628,14 +5617,11 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
         # accurate. Routing the statusline through the same dedup would add
         # latency to every prompt for a number the user glances at.
         result["decisions_found"] = len(quality_data["decisions"])
-        result["compactions"] = _measure_facade._settled_compactions(
-            quality_data["compactions"], prev_result,
-            post_compact and not _measure_facade._recent_compact_boundary(filepath))
         try:
             _prev_compactions = int(prev_result.get("compactions", 0) or 0)
         except (TypeError, ValueError, OverflowError):
             _prev_compactions = 0
-        if post_compact and result["compactions"] > max(int(quality_data["compactions"] or 0), _prev_compactions):
+        if post_compact and result["compactions"] > max(int(parsed_compactions or 0), _prev_compactions):
             result["_compact_bumped_at"] = _measure_facade.time.time()
         elif prev_result.get("_compact_bumped_at"):
             result["_compact_bumped_at"] = prev_result["_compact_bumped_at"]
@@ -5659,50 +5645,16 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
         )
         result["context_window_contradicted"] = bool(cfd.get("window_contradicted"))
 
-        # Dampen ResourceHealth swings within a session.
-        # Fill_pct fluctuates between measurements (context adds/removes, compaction).
-        # Allow recovery but dampen: drops are immediate, recovery moves 30% toward
-        # the new value per measurement to prevent wild upward swings.
-        # Only within the same score_version: a v1 score mixed in the count-only
-        # compaction penalty, so importing its deficit (or its nudge baseline)
-        # would silently compare apples to oranges (COMPACTION-QUALITY.md).
-        if _measure_facade._quality_scores_comparable(prev_result, result):
-            prev_rh = prev_result.get("resource_health")
-            current_rh = result.get("resource_health")
-            if prev_rh is not None and current_rh is not None:
-                if current_rh >= prev_rh:
-                    result["resource_health"] = round(prev_rh + (current_rh - prev_rh) * 0.3, 1)
-                result["score"] = result["resource_health"]
-                result["grade"] = _measure_facade.score_to_grade(round(result["resource_health"]))
-                result["resource_health_grade"] = result["grade"]
-        else:
-            # Version boundary or legacy unversioned cache: reseed the nudge
-            # baseline instead of comparing across score schemes.
+        if not _measure_facade._quality_scores_comparable(prev_result, result):
             result.pop("_nudge_previous_score", None)
 
-        # Session duration + active agents for statusline (v2.6)
-        result["session_start_ts"] = _measure_facade._extract_session_start_ts(filepath)
-        result["active_agents"] = _measure_facade._extract_active_agents(filepath)
-
-        # Cache hit rate for statusline (v5.4.27). A billing ratio, so it reads
-        # the top-level (advisor-summed) usage on purpose, unlike context fill,
-        # which uses _context_usage (#287).
-        try:
-            total_input_all = 0
-            total_cache_read = 0
-            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    try:
-                        rec = _measure_facade.json.loads(line)
-                        usage = rec.get("message", {}).get("usage", {}) if rec.get("type") == "assistant" else {}
-                        if usage:
-                            total_input_all += usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
-                            total_cache_read += usage.get("cache_read_input_tokens", 0)
-                    except (_measure_facade.json.JSONDecodeError, AttributeError):
-                        continue
-            result["cache_hit_rate"] = round(total_cache_read / total_input_all, 3) if total_input_all > 0 else 0
-        except (OSError, ZeroDivisionError):
-            result["cache_hit_rate"] = 0
+        # Reuse cumulative telemetry and scan only appended records.
+        telemetry = quality_checkpoint.status_telemetry(filepath, prev_result.get("_status_telemetry"))
+        result["_status_telemetry"] = telemetry
+        result["session_start_ts"] = telemetry.get("started")
+        result["active_agents"] = telemetry.get("agents", [])
+        total_input = telemetry.get("total_input", 0)
+        result["cache_hit_rate"] = round(telemetry.get("cache_read", 0) / total_input, 3) if total_input else 0
 
         if not _measure_facade._write_quality_cache(cache_path, result):
             return None
@@ -5737,9 +5689,9 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
         # Fresh-session nudge takes precedence: when a session is long AND degraded,
         # "start fresh (context is preserved)" is the stronger remedy than /compact, and
         # firing both would be noise. Only fall back to the /compact nudge if it didn't fire.
-        fresh_msg = _measure_facade._maybe_fresh_session_nudge(result, cache_path, quality_data)
+        fresh_msg = _measure_facade._maybe_fresh_session_nudge(result, cache_path, quality_data) if result["measured"] else None
         remedy_fired = bool(fresh_msg)
-        if not fresh_msg:
+        if not fresh_msg and result["measured"]:
             nudge_msg = _measure_facade._maybe_nudge(result, cache_path, quality_data)
             if nudge_msg:
                 system_messages.append(nudge_msg)
@@ -5750,8 +5702,8 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
         # Context-size advisory: eligibility, not an instruction -- at most
         # once per session, suppressed while a stronger remedy already fired
         # (suppression does not consume the once-per-session slot).
-        advisory_msg = _measure_facade._maybe_context_size_advisory(
-            result, cache_path, quality_data, suppressed=remedy_fired)
+        advisory_msg = (_measure_facade._maybe_context_size_advisory(
+            result, cache_path, quality_data, suppressed=remedy_fired) if result["measured"] else None)
         if advisory_msg:
             system_messages.append(advisory_msg)
         # Persist nudge/loop/fresh state (the once-per-session _fresh_nudge_fired flag
@@ -5797,7 +5749,7 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
         # actually installs: `quality-cache --warn --quiet`). Gated by
         # _maybe_quality_warn so it no longer re-prints on every prompt while a
         # session sits in one quality band; see that function for the rationale.
-        if warn and _measure_facade._maybe_quality_warn(result, warn_threshold):
+        if warn and result["measured"] and _measure_facade._maybe_quality_warn(result, warn_threshold):
             _emit_warn = True
             try:
                 from context_pressure import should_inject, get_pressure_level, log_suppression

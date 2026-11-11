@@ -1,10 +1,9 @@
 """Compaction recovery scoring + context-size advisory (COMPACTION-QUALITY.md).
 
-Pins the contract that replaced the count-only compaction penalty:
+Pins the v3 bounded continuity prior and the recovery evidence contract:
 
-- Compaction count is descriptive metadata with ZERO quality weight.
-  ``score_version`` is explicit so pre-v2 caches are never silently
-  compared or dampened against v2 scores.
+- Compaction depth is evidence-weighted and bounded. ``score_version``
+  prevents comparisons between v2 and v3 scores.
 - A separate recovery panel reports observed post-boundary signals
   (matched 20-call windows: errors, re-reads, repeats, loops, restore
   delivery) with status observing / no_concerning_signal_observed /
@@ -125,25 +124,24 @@ def _event(ordinal, pre=None, post=None, *, matched=20, eligible=True,
 
 
 # ---------------------------------------------------------------------------
-# Score: count-only penalty is gone
+# Score: bounded compaction prior
 # ---------------------------------------------------------------------------
 
 def test_score_version_is_explicit(m):
     mod, *_ = m
     res = mod.compute_quality_score(_qdata())
-    assert res["score_version"] == 2
+    assert res["score_version"] == 3
 
 
-def test_compaction_count_has_zero_quality_weight(m):
-    """3 compactions with no measurable recovery signal must score exactly
-    like 0 compactions when every other input is identical."""
+def test_compaction_count_has_bounded_quality_weight(m):
+    """V3 assigns unknown compactions a bounded continuity prior."""
     mod, *_ = m
     base = _qdata()
     res0 = mod.compute_quality_score(base)
     heavy = _qdata(compactions=5, compaction_events=[])
     res5 = mod.compute_quality_score(heavy)
-    assert res5["score"] == res0["score"]
-    assert res5["resource_health"] == res0["resource_health"]
+    assert res5["score"] < res0["score"]
+    assert res5["resource_health"] < res0["resource_health"]
     assert res5["session_efficiency"] == res0["session_efficiency"]
 
 
@@ -177,13 +175,12 @@ def test_resource_health_weights_renormalized(m):
     assert abs(mod._RESOURCE_HEALTH_WEIGHTS["absolute_waste_tokens"] - 2 / 7) < 1e-9
 
 
-def test_top_drag_never_names_compactions(m):
+def test_top_drag_names_compactions_when_dominant(m):
     mod, *_ = m
     res = mod.compute_quality_score(_qdata(compactions=9, compaction_events=[]))
     td = res.get("top_drag")
-    if td:
-        assert "compact" not in str(td.get("key", ""))
-        assert "loss" not in str(td.get("label", "")).lower()
+    assert td["key"] == "compactions"
+    assert "prior" in td["label"]
 
 
 # ---------------------------------------------------------------------------

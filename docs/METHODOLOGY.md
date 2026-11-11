@@ -320,32 +320,12 @@ them:
 
 ## 9. Quality score (a figure, but not a savings figure)
 
-The 0–100 "quality" number in the CLI, dashboard and status line is a
-**resource-pressure indicator**, not an accuracy measure. Since score
-schema v2 (`_QUALITY_SCORE_VERSION`):
+The 0–100 "quality" number is a **resource-pressure indicator**, not an accuracy measure. In score schema v3, the base remains fill (5/7) plus absolute waste (2/7), multiplied by continuity: `0.45 + 0.55 × 0.90 ** n_eff`. Each compaction contributes a size factor, clamped to 0.25–1.0 using tokens removed divided by 150,000, multiplied by an evidence factor: 0.5 for a delivered restore and clean follow-up, 0.75 for either a delivered restore awaiting measurement or a clean follow-up without one, 1.0 when unknown, and 1.5 when recovery needs attention.
 
-- **ResourceHealth** weights only context fill (5/7) and absolute waste
-  tokens (2/7). Compaction count carries **zero** weight — it is descriptive
-  metadata (`breakdown.compactions.weighted == false`). The earlier
-  count-only penalty and the "~65/88/95% context lost" display were removed:
-  the paired-window audit (research/arxiv-2611.05306) found no support for
-  fixed per-count loss.
-- **Recovery evidence is shadow-only this release.** `recovery_status` is
-  neutral `observing` on every surface after compaction. `recovery_evidence`
-  retains provisional evaluations of observed post-boundary signals — restore
-  delivery, tool errors, re-reads, repeated calls, loop events — from
-  matched ≤20-call windows before/after each compaction
-  (`_assess_compaction_recovery`). Statuses: `observing`,
-  `no_concerning_signal_observed`, `needs_attention`, `unmeasurable`.
-  Missing telemetry is unknown, never healthy. Public recovery scores remain
-  unset until thresholds are calibrated on held-out labels. Repeated failed
-  calls require no observed Edit, Write or MultiEdit in between. Test-runner
-  errors followed by edits remain in the raw counts but do not trigger an
-  error-rate-increase flag. Codex and OpenCode lack matched recovery windows;
-  their evidence stays unmeasurable while the display says `observing`.
-- **Versions never mix.** `score_version` gates cache carry-over,
-  ResourceHealth dampening and nudge baselines; a v1 cache is never
-  compared against a v2 score (`_quality_scores_comparable`).
+This is a **prior**, not a fitted measure of information loss. Compaction can lose details and repeated summaries compound that risk, so the score uses a bounded, evidence-sensitive term. The earlier paired-window audit found no support for a fixed per-count penalty. Fit the retention rate and evidence factors on paired-window data before treating these values as calibrated.
+
+Recovery evidence remains provisional and its public panel remains observational. Score versions are never compared for nudge baselines; a v2 cache does not seed v3 comparisons.
+
 - **Size remedies share one gate.** `/compact`, `/clear` and "start fresh"
   recommendations — including the 300–400K context-size advisory (default
   350K, once per session, eligibility not instruction) — require ≥300K

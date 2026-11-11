@@ -5035,19 +5035,11 @@ _apply_daemon_restart_outcome = _measure_compat.bind(_measure_providers['daemon'
 CHECKPOINT_DIR = _STATE_BASE / "token-optimizer" / "checkpoints"
 CHECKPOINT_EVENT_LOG = _STATE_BASE / "token-optimizer" / "checkpoint-events.jsonl"
 
-# v6 dual-score architecture: ResourceHealth (monotonic warning) + SessionEfficiency (behavioral).
-# ResourceHealth can only worsen within a session (no rolling-window signals).
-# SessionEfficiency uses rolling windows and can rise or fall freely.
-# Score schema version. v2 (COMPACTION-QUALITY.md): compaction count carries
-# zero quality weight -- measured post-boundary recovery signals live in a
-# separate evidence panel instead of the count-only penalty. Consumers must
-# never compare or dampen a v1 score against a v2 score.
-_QUALITY_SCORE_VERSION = 2
+# ResourceHealth combines fill and waste with a bounded continuity prior.
+# SessionEfficiency remains a separate diagnostic; versions are not compared.
+_QUALITY_SCORE_VERSION = 3
 
 _RESOURCE_HEALTH_WEIGHTS = {
-    # Compaction count is descriptive metadata, not a quality signal: the
-    # count-only penalty is replaced by measured recovery evidence
-    # (recovery_status/recovery_evidence). Weights renormalized to 1.0.
     "context_fill_degradation": 5 / 7,
     "absolute_waste_tokens": 2 / 7,
 }

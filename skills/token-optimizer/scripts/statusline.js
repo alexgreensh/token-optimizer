@@ -463,7 +463,7 @@ process.stdin.on('end', () => {
         // Keep the score's value-color (green/yellow/orange/red) regardless of
         // staleness; the `~` prefix is the only stale indicator so the number
         // stays readable. (Dimming the whole score made it barely visible.)
-        const tag = `ContextQ:${stale ? '~' : ''}${grade}(${score})`;
+        const tag = q.measured === false ? `ContextQ:~${score}` : `ContextQ:${stale ? '~' : ''}${grade}(${score})`;
         if (score >= 85) {
           qScore = `${SEP}\x1b[32m${tag}${RESET}`;
         } else if (score >= 75) {

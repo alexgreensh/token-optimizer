@@ -2289,7 +2289,7 @@ def _keepwarm_valid_arg(value):
 
 def _keepwarm_build_ping_cmd(session_id, model, claude_bin=None,
                              budget_usd=None):
-    """The verified ping command (form A): resume, print, no persistence.
+    """Build a forked print command; execution remains disabled pending proof.
 
     `claude_bin` is the fire-time-resolved absolute path; callers pass
     the resolved binary so launchd's empty PATH cannot break the spawn.
@@ -2297,7 +2297,7 @@ def _keepwarm_build_ping_cmd(session_id, model, claude_bin=None,
     _measure_facade = _compat.facade()
     return [
         claude_bin,
-        "--resume", str(session_id),
+        "--resume", str(session_id), "--fork-session",
         "-p", _measure_facade._KEEPWARM_PING_PROMPT,
         "--no-session-persistence",
         "--model", str(model),

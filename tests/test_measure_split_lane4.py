@@ -178,6 +178,7 @@ def test_read_tail_and_ping_command_keep_their_captured_defaults(m, monkeypatch,
     assert len(m._keepwarm_read_tail(transcript)) == expected_lines
     assert len(m._keepwarm_read_tail(transcript, 2)) == 2
     command = m._keepwarm_build_ping_cmd('session', 'model', '/bin/claude')
+    assert '--fork-session' in command
     assert command[command.index('--max-budget-usd') + 1] == str(budget)
 
 

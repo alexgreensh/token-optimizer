@@ -6027,15 +6027,9 @@ def _estimate_stale_reads_reclaimable(days=None):
 
 
 def _progressive_disclosure_summary(days=None):
-    """Count-first view of tool-archive progressive disclosure (B6, informational).
-
-    How many tool results were archived vs later re-expanded, and the net tokens
-    that stayed collapsed. The $ value of the net is ALREADY in the realized
-    tool_archive figure (re-pops are netted out in _get_savings_summary); this is
-    a transparency count, NOT an additional saving to sum. Never raises.
-    """
+    """Summarize archive disclosures without assigning a counterfactual value."""
     _measure_facade = _compat.facade()
-    out = {"archived": 0, "reexpanded": 0, "net_collapsed_tokens": 0}
+    out = {"archived": 0, "reexpanded": 0, "net_collapsed_tokens": 0, "full_bash_fetches": 0, "full_bash_tokens": 0}
     try:
         if not _measure_facade.TRENDS_DB.exists():
             return out
@@ -6050,23 +6044,25 @@ def _progressive_disclosure_summary(days=None):
                 (cutoff,),
             ).fetchall()
             re_rows = conn.execute(
-                "SELECT detail FROM " + counted + " WHERE timestamp >= ? "
+                "SELECT detail, tokens_saved, session_id, timestamp FROM " + counted + " WHERE timestamp >= ? "
                 "AND event_type = 'tool_archive_reexpand'",
                 (cutoff,),
             ).fetchall()
+            from . import savings_story
+            full_count, full_tokens = savings_story.full_bash_fetch_totals(conn, cutoff, re_rows, _measure_facade._is_fixture_session_id, _measure_facade.SNAPSHOT_DIR)
         finally:
             conn.close()
         agg = {r[0]: (int(r[1]), int(r[2] or 0)) for r in rows}
         arch_n, arch_tok = agg.get("tool_archive", (0, 0))
         re_tok = agg.get("tool_archive_reexpand", (0, 0))[1]
         out["archived"] = arch_n
-        # Multiple bounded debits can hit one archived item; "re-expanded" is a
-        # count of distinct tool_use_ids, not debit events.
         out["reexpanded"] = len({
             detail.split(" ", 1)[0]
-            for (detail,) in re_rows
+            for (detail, _, _, _) in re_rows
             if detail and detail.strip()
         })
+        out["full_bash_fetches"] = full_count
+        out["full_bash_tokens"] = full_tokens
         out["net_collapsed_tokens"] = max(0, arch_tok - re_tok)
     except (_measure_facade.sqlite3.Error, OSError):
         pass

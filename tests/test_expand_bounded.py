@@ -431,3 +431,30 @@ def test_expand_recognizer_rejects_expansion_values_and_bad_session(tmp_path):
                 "--session sess.ion", "--session sess:ion"):
         assert not is_expand_command(base + " " + bad), bad
     assert is_expand_command(base + " --session sess-ion_1 --lines 1:2")
+
+
+def test_full_bash_archive_fetch_is_counted_without_dollar_claim(tmp_path):
+    _seed_archive(tmp_path)
+    result = _run_measure(['expand', KEY], _env(tmp_path))
+    assert result.returncode == 0, result.stderr
+    summary = _progressive_summary(tmp_path)
+    assert summary['full_bash_fetches'] == 1
+    assert summary['full_bash_tokens'] == estimate_tokens(BODY)
+
+
+def test_full_fetch_after_partial_and_repeat_are_both_counted(tmp_path):
+    _seed_archive(tmp_path)
+    env = _env(tmp_path)
+    for args in (["expand", KEY, "--lines", "1:2"], ["expand", KEY], ["expand", KEY]):
+        result = _run_measure(args, env)
+        assert result.returncode == 0, result.stderr
+    summary = _progressive_summary(tmp_path)
+    assert summary['full_bash_fetches'] == 2
+    assert summary['full_bash_tokens'] == 2 * estimate_tokens(BODY)
+
+
+def test_truncated_archive_fetch_is_not_counted_as_full(tmp_path):
+    _seed_archive(tmp_path, truncated=True)
+    result = _run_measure(['expand', KEY], _env(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert _progressive_summary(tmp_path)['full_bash_fetches'] == 0

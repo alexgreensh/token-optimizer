@@ -190,6 +190,7 @@ function savingsStoryHtml(data) {
       table('Estimated, sized by a documented method', estimated) +
       routingRow +
       setupDetail +
+      (num((s.progressive_disclosure || {}).full_bash_fetches) > 0 ? '<p>Full command output fetched from the archive: ' + count(s.progressive_disclosure.full_bash_fetches) + ' outputs, about ' + tok(s.progressive_disclosure.full_bash_tokens) + ' tokens. This does not establish whether a command would otherwise have been re-run.</p>' : '') +
       (archive ? '<p>Tool archive, net of re-expands: ' + usd(archive.cost_saved_usd) + ' once, before repeat-reads.</p>' : '') +
       (bashExpand ? '<p>Bash compression, net of re-expands: ' + usd(bashNet) + ' once, before repeat-reads.</p>' : '') +
       (num((as.estimates_usd || {}).expand_overhead) ? '<p>Estimated expand-command overhead: ' + usd(as.estimates_usd.expand_overhead) + '.</p>' : '') +
@@ -326,21 +327,24 @@ function savingsTransformationHtml(data) {
 // Limits with and without Token Optimizer: per window, the used share and what
 // it would be without. Live windows first, then the last stored meter reading;
 // with neither, the window grid is left out.
-function savingsLimitWindows(rw) {
+function savingsLimitWindows(rw, ratio) {
   var f = savingsStoryFmt(), num = f.num;
-  var names = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
+  var names = { five_hour: '5-hour limit', seven_day: 'weekly limit' };
   function ok(w) {
-    if (!w || !isFinite(Number(w.used_pct))) return false;
-    return isFinite(Number(w.without_used_pct)) || isFinite(Number(w.without_headroom_pct));
+    return w && w.used_pct != null && isFinite(Number(w.used_pct)) && Number(w.used_pct) >= 0 && Number(w.used_pct) <= 100;
   }
   var live = (Array.isArray(rw.windows) ? rw.windows : []).filter(ok), rows = live, stored = false;
   if (!rows.length) { rows = (Array.isArray(rw.last_known_windows) ? rw.last_known_windows : []).filter(ok); stored = rows.length > 0; }
   if (!rows.length) return '';
   var html = '<div class="st-limits">' + rows.map(function(w) {
-    var used = Math.round(num(w.used_pct));
-    var without = isFinite(Number(w.without_used_pct)) ? num(w.without_used_pct) : 100 - num(w.without_headroom_pct);
-    return '<p class="st-limit"><span class="st-limit__used">' + used + '%</span> of your ' + esc((names[w.key] || ((w.label || 'Window') + ' limit')).toLowerCase()) + ' used &middot; ' +
-      (w.would_be_capped ? 'would already be at the limit without Token Optimizer' : 'would be <span class="st-limit__num">' + Math.round(without) + '%</span> without Token Optimizer') + '</p>';
+    var used = num(w.used_pct), rawWithout = used * ratio;
+    var name = names[w.key] || ((w.label || 'window') + ' limit').toLowerCase();
+    var tail = ratio > 0
+      ? (rawWithout > 100
+        ? ' &middot; would be over your limit without Token Optimizer'
+        : ' &middot; would be <span class="st-limit__num">' + Math.round(rawWithout) + '%</span> without Token Optimizer')
+      : '';
+    return '<p class="st-limit"><span class="st-limit__used">' + Math.round(used) + '%</span> of your ' + esc(name) + ' used' + tail + '</p>';
   }).join('') + '</div>';
   var ts = Number(rw.meter_ts);
   if (stored && isFinite(ts) && ts > 0) {
@@ -354,19 +358,20 @@ function savingsLimitsHtml(data) {
   var f = savingsStoryFmt(), num = f.num;
   var rw = (data && data.runway) || null;
   if (!rw || typeof rw !== 'object') return '';
-  var extra = num(rw.extra_work_pct) > 0 ? Math.round(num(rw.extra_work_pct) * 10) / 10 : 0;
-  var windows = savingsLimitWindows(rw);
+  var ba = ((data && data.savings) || {}).before_after || {};
+  var actual = num(ba.actual_monthly_usd), before = num(ba.counterfactual_monthly_usd);
+  var ratio = ba.transformation_state === 'ok' && actual > 0 && before > actual ? before / actual : 0;
+  var extra = ratio > 1 ? Math.round((1 - 1 / ratio) * 100) : 0;
+  var windows = savingsLimitWindows(rw, ratio);
   if (!extra && !windows) return '';
-  var ctx = num(rw.context_multiplier), route = rw.routing_multiplier == null ? 0 : num(rw.routing_multiplier);
-  var method = (rw.proxy ? '<p>' + esc(rw.proxy) + '</p>' : '') +
-    '<p>' + (ctx ? 'Lighter context: &times;' + ctx + '. ' : '') + (route ? 'Model mix: &times;' + route + '. ' : '') +
-    (extra ? 'Together that is about ' + extra + '% more work per token.' : '') + '</p>' +
-    (windows ? '<p>The without-Token-Optimizer figure is your used share multiplied by that factor, capped at 100%.</p>' : '');
+  var direct = num(rw.extra_work_pct);
+  var method = '<p>Your usage is a meter reading. The without-Token-Optimizer comparison is an estimate using the same before-and-after basis as your transformation: counterfactual monthly cost divided by actual monthly cost, multiplied by the used percentage and capped at 100%. Providers do not publish the exact weighting of usage limits.</p>' +
+    (ratio ? '<p>' + savingsCents(before) + ' divided by ' + savingsCents(actual) + ' = &times;' + ratio.toFixed(2) + '.</p>' : '') +
+    (direct > 0 ? '<p>Separately, directly measured savings imply about ' + direct + '% more work per token.</p>' : '');
   return '<div class="card st-card st-limits-card">' +
     '<div class="st-limits__top"><h2 class="st-h">Your limits go further</h2>' + windows + '</div>' +
-    '<div class="st-limits__bottom">' + (extra ? '<p>&asymp;' + extra + '% more work per token</p>' : '') +
-    f.fold('How this is calculated', method) + '</div>' +
-    '</div>';
+    '<div class="st-limits__bottom">' + (extra ? '<p>&asymp;' + extra + '% more room in your limits</p>' : '') +
+    f.fold('How this is calculated', method) + '</div></div>';
 }
 
 // Still on the table: computable opportunities per period, each with one

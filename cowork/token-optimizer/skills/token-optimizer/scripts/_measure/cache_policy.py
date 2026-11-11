@@ -4399,8 +4399,7 @@ def keepwarm_report(days=None, now=None):
         "has_pings": has_pings,
         "empty_state": (
             None if has_pings else
-            "No keep-warm pings yet. Eligible paused sessions can be refreshed "
-            "before the cache expires; estimated value and ping cost appear here."),
+            "Keep-warm: paused while we prove it is safe and saves you money"),
     }
 
 

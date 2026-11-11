@@ -1802,7 +1802,7 @@ def _get_compression_summary(days=None, since=None):
             key = s_uuid if s_uuid in session_rates else ("session_id", sid)
             rate, priced_share = _measure_facade._compression_rate_coverage(model, key, session_rates, fallback_rate, tier_data)
             tokens_saved = orig - comp
-            cost_saved = round(tokens_saved * rate / 1_000_000, 6)
+            cost_saved = 0.0 if feature in ("mod_clean", "mod_clean_first") else round(tokens_saved * rate / 1_000_000, 6)
             # Gross credits and debits are kept apart (summed per event in SQL), so
             # an unknown-model expansion is disclosed rather than netted away.
             uncovered = max(0.0, 1.0 - priced_share)

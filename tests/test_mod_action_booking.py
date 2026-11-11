@@ -242,3 +242,20 @@ def test_unanswered_fork_books_usage_without_resume_credit(facade, tmp_path):
     assert mod_action_booking.record(facade, event)['ok']
     assert facade.keepwarm_spend_summary(days=None, now=1767229002)['spend_usd'] > 0
     assert facade.load_keepwarm_records() == []
+
+
+def test_manual_write_cost_uses_disclosed_conservative_rate(facade, tmp_path):
+    from _measure import mod_action_booking
+    path = tmp_path / 'synthetic-session.jsonl'
+    path.write_text(json.dumps({'type': 'assistant', 'timestamp': '2026-01-01T00:00:00Z',
+        'message': {'model': 'claude-sonnet-4-5', 'usage': {'cache_read_input_tokens': 20000,
+        'cache_creation': {'ephemeral_5m_input_tokens': 100}}}}) + '\n')
+    st = path.stat()
+    event = {'action': 'warm', 'action_id': 'five-minute', 'session_id': 'synthetic-session',
+        'timestamp': 1767229000, 'transcript_path': str(path), 'byte_size': st.st_size,
+        'transcript_mtime': st.st_mtime, 'usage': {'input_tokens': 4, 'output_tokens': 2,
+        'cache_read_input_tokens': 19000, 'cache_creation_input_tokens': 100}}
+    assert mod_action_booking.record(facade, event)['ok']
+    row = facade._keepwarm_load_ledger_rows()[0]
+    assert row['cost_basis'] == 'conservative-1h-write'
+    assert row['cost_usd'] == pytest.approx(0.006342)

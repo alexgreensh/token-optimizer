@@ -132,6 +132,7 @@ export type World = {
   /** How `$.model.fork()` answers. */
   fork: { read: number } | 'nothing'
   modActionFail: boolean
+  sessionCost: number
   theme: string
   /** Mocked-clock delay before compact-capture answers, and before a fork answers (ms). */
   captureDelayMs: number
@@ -221,6 +222,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     compact: 'ok',
     fork: { read: 600_000 },
     modActionFail: false,
+    sessionCost: 1,
     theme: 'light',
     captureDelayMs: 0,
     forkDelayMs: 0,
@@ -287,6 +289,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     value: {
       ...(w.startedAt === null ? {} : { startedAt: w.startedAt }),
       context: w.context ?? { window: 1_000_000, tokens: 620_000, percent: 62 },
+      cost: { usd: w.sessionCost },
       rateLimits: [
         ...(w.dropFiveHour ? [] : [{ kind: 'five_hour', percentUsed: w.fiveHourUsed ?? 40, resetsAt: '2026-10-03T12:00:00Z' }]),
         { kind: 'seven_day', percentUsed: 20 },
@@ -392,8 +395,11 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     if (w.compact === 'hang') await w.clock.sleep(10 * 60_000)
     if (w.compact === 'skip') return { skip: 'nothing to compact' }
     if (w.duringCompact) await w.duringCompact()
+    w.sessionCost += 0.1
     // A compaction leaves at least its summary (the shape the engine hands hooks).
-    return { messages: [{ role: 'user', text: 'Summary of the conversation so far.', toolUses: [], handle: 'summary-1' }] as never }
+    return { messages: [{ role: 'user', text: 'Summary of the conversation so far.', toolUses: [], handle: 'summary-1' }] as never,
+      tokensBefore: 620_000, tokensAfter: 40_000,
+      usage: { input_tokens: 5, output_tokens: 4, cache_read_input_tokens: 600_000, cache_creation_input_tokens: 0 } }
   })
   on('model.fork', async () => {
     w.forks += 1

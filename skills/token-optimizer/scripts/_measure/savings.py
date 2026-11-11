@@ -16,7 +16,6 @@ def _counted_walk_transcript(path, collect_markers=None):
     Returns (turns, compacts, markers); never raises."""
     return _compat.facade()._counted_subagents.walk(_compat.facade(), path, collect_markers)
 
-
 def _claude_image_tokens(width, height):
     """Image input tokens on Claude: about width*height/750, after the API
     scales the image so its long edge is at most 1568 px and its area at most
@@ -615,7 +614,7 @@ def _update_counted_cumulative(conn, max_sessions=None,
     A session is rewalked when events are new or its transcript has grown.
     Bounded by a soft deadline; the backlog converges over passes. Fail-open."""
     _measure_facade = _compat.facade()
-    from . import first_read_revive
+    from . import first_read_revive, mod_compaction_booking
     first_read_revive.reconcile(conn, _measure_facade.SNAPSHOT_DIR)
     stats = {"sessions_walked": 0, "rows_written": 0, "pending_sessions": 0, "unmeasured_events": 0, **_compat.facade()._counted_subagents.collect_stats()}
     try:
@@ -623,7 +622,7 @@ def _update_counted_cumulative(conn, max_sessions=None,
         # Duplicate derived rows remain as evidence and are excluded at read time.
         stats['duplicate_rows_removed'] = 0
         _measure_facade._reprice_counted_rows_once(conn)
-        events = _measure_facade._counted_candidate_events(conn)
+        events = _measure_facade._counted_candidate_events(conn); mod_features = mod_compaction_booking.event_features(conn)
         if not events:
             return stats
         stored = _measure_facade._counted_stored_rows(conn)
@@ -715,7 +714,7 @@ def _update_counted_cumulative(conn, max_sessions=None,
                 event_path = orphan_paths.get(key, path); before_walk = event_path.stat()
                 ev_turns, ev_compacts, ev_scope = scope.turns_for(key, turns, compacts)
                 score = dict(_measure_facade._counted_score_detail(ev_turns, ev_compacts, ev_dt, int(tok or 0), tier_data,
-                    oneshot_floor_only=key.startswith("md:")), scope=ev_scope, resolved_agent=event_path.name if key in orphan_paths and ev_scope == "subagent" else None)
+                    oneshot_floor_only=key.startswith("md:")), scope=ev_scope, resolved_agent=event_path.name if key in orphan_paths and ev_scope == "subagent" else None); score = mod_compaction_booking.adjust_score(_measure_facade, *mod_features[key], ev_turns, ev_dt, int(tok or 0), tier_data, score) if key in mod_features else score
                 old_size = (_measure_facade._counted_pricing_detail(stored[key].get("pricing_detail")).get("file_size", 0) or 0) if key in stored else 0; proof_key = (event_path, old_size, before_walk.st_mtime_ns, before_walk.st_size)
                 if proof_key not in event_proofs: event_proofs[proof_key] = _measure_facade._counted_file_proof(event_path, [old_size])
                 event_proof = event_proofs[proof_key]; event_stat = event_path.stat(); event_mtime = event_stat.st_mtime
@@ -1359,7 +1358,7 @@ def _get_savings_summary(days=None, since=None):
     boundary (e.g. the subscription limit reset). When *since* is None / empty,
     the rolling cutoff is computed from *days* as before.
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import mod_fresh_booking, mod_compaction_booking
     try:
         conn = _measure_facade._init_trends_db()
         try:
@@ -1410,7 +1409,7 @@ def _get_savings_summary(days=None, since=None):
             "period_days": days,
             # A1: one-time first-trim (compare). Reported separately, NEVER summed
             # into the realized total (structural_savings is the ongoing model).
-            "one_time_setup": one_time, "keepwarm_estimated": keepwarm_economics.headline_pool(_measure_facade, cutoff),
+            "one_time_setup": one_time, "keepwarm_estimated": keepwarm_economics.headline_pool(_measure_facade, cutoff), "mod_fresh_estimated": mod_fresh_booking.summary(_measure_facade, cutoff), "mod_compaction_actions": mod_compaction_booking.summary(_measure_facade, cutoff),
             # U-G: observed-trigger / estimated-magnitude avoided-search from
             # proactive hints. Estimated tier, never in the realized total.
             "hint_followed_estimated": hint_followed_est,
@@ -6213,7 +6212,7 @@ def _action_savings_components(summary, reread=None):
     Observed hints replace the retrieval estimate as soon as a hint fires.
     Opportunity and the separate whole-workload comparison are not additive.
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import mod_fresh_booking
     estimates = {
         key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated") else float((((summary.get("structural_detail") or {}).get("estimated") if key == "structural_estimated" else summary.get(key)) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
@@ -6222,7 +6221,7 @@ def _action_savings_components(summary, reread=None):
             "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated", "keepwarm_estimated",
         )
     }
-    overhead = ((summary.get("session_effect") or {}).get("overhead") or {})
+    overhead = ((summary.get("session_effect") or {}).get("overhead") or {}); estimates["mod_fresh_estimated"] = mod_fresh_booking.additive(summary.get("mod_fresh_estimated"), summary.get("handover_rerun"))
     estimates["expand_overhead"] = -max(0.0, float(overhead.get("expand_usd") or 0))
     hints = summary.get("hint_followed") or {}
     avoided_source = "hint_followed" if int(hints.get("events") or 0) > 0 else "retrieval_serve"
@@ -6407,7 +6406,7 @@ def _get_merged_savings(days=None, since=None):
         # $ is already inside realized tool_archive (re-pops netted); not summed.
         "progressive_disclosure": _measure_facade._progressive_disclosure_summary(days=days),
         # A1: one-time first-trim, surfaced separately, never in the realized total.
-        "one_time_setup": savings.get("one_time_setup"), "keepwarm_estimated": savings.get("keepwarm_estimated"),
+        "one_time_setup": savings.get("one_time_setup"), "keepwarm_estimated": savings.get("keepwarm_estimated"), "mod_fresh_estimated": savings.get("mod_fresh_estimated"), "mod_compaction_actions": savings.get("mod_compaction_actions"),
         # U-G: deterministically-triggered avoided-search from proactive hints
         # (observed hint->read), estimated magnitude. Estimated tier, never realized.
         "hint_followed": savings.get("hint_followed_estimated"),

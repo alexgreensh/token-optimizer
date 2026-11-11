@@ -101,6 +101,12 @@ def _snapshot_still_usable(snapshot):
 def record(facade, event):
     """Reserve then book usage once; credit only a subsequently proven warm return."""
     try:
+        if isinstance(event, dict) and event.get('action') == 'fresh':
+            from . import mod_fresh_booking
+            return mod_fresh_booking.record(facade, event)
+        if isinstance(event, dict) and event.get('action') in ('clean', 'clean-first'):
+            from . import mod_compaction_booking
+            return mod_compaction_booking.record(facade, event)
         if not isinstance(event, dict) or event.get('action') not in ('warm', 'warm-prepare', 'warm-cancel'):
             return {'ok': False, 'reason': 'unsupported-action'}
         sid, ident, when = _identity(event)
@@ -128,8 +134,8 @@ def record(facade, event):
             model, ttl = snapshot['model'], snapshot['ttl']
             creation = usage['cache_creation_input_tokens']
             cost = facade._get_model_cost(model, usage['input_tokens'], usage['output_tokens'],
-                 usage['cache_read_input_tokens'], creation, cache_create_1h=creation if ttl == '1h' else 0,
-                 cache_create_5m=0 if ttl == '1h' else creation, per_request=True)
+                 usage['cache_read_input_tokens'], creation, cache_create_1h=creation,
+                 cache_create_5m=0, per_request=True)
             if not math.isfinite(cost) or cost <= 0:
                 return {'ok': False, 'reason': 'cost-unavailable'}
             db = facade._init_trends_db()
@@ -143,7 +149,7 @@ def record(facade, event):
                 pause_key = facade._keepwarm_pause_key(sid, same_pause['ts'])
             row = {'status': 'ok', 'source': 'claude-code-mod', 'action': 'warm', 'action_id': ident,
                    'attempt_key': ident, 'session_id': sid, 'pause_key': pause_key, 'ts': when,
-                   'model': model, 'cost_usd': cost, 'usage': dict(usage)}
+                   'model': model, 'cost_usd': cost, 'cost_basis': 'conservative-1h-write' if creation else 'reported-usage', 'usage': dict(usage)}
             finished = [r for r in existing if r.get('status') == 'ok']
             if not finished:
                 _append(facade._keepwarm_ledger_path(), row)

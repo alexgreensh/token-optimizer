@@ -11,7 +11,6 @@
 // chunks do not write on every piece.
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register } from 'claude-code'
-
 import type { TokenOptimizerDesktopSession } from '../types/index.d.ts'
 import {
   BUSY_TIMEOUT_MS,
@@ -137,7 +136,7 @@ let engineCallAt = 0
 /** The live session a render last asked to re-read after finding another session's figures. */
 let resyncFor = ''
 /** Compactions that landed in this process, so Clean up can tell one happened during its /compact. */
-let compactionsLanded = 0
+let compactionsLanded = 0; let modCompactEvidence: { usage?: unknown; before?: number; after?: number } | null = null
 
 /** The store key for the user's band size: the user's choice, so it survives sessions and restarts. */
 const SIZE_KEY = 'status-bar-size'
@@ -562,7 +561,7 @@ async function isTurnRunning($: EngineInterface): Promise<boolean> {
 }
 
 /** Clean up: compaction with Token Optimizer's own PreCompact guidance, run outside the press. */
-async function cleanUp($: EngineInterface): Promise<void> {
+async function cleanUp($: EngineInterface, kind: 'clean' | 'clean-first'): Promise<void> {
   const now = await $.clock.now()
   const ui = (await attempt(() => read($, uiAtom), null)) ?? initialUi()
   if (busyNow(ui, now) !== null) return
@@ -578,10 +577,10 @@ async function cleanUp($: EngineInterface): Promise<void> {
   }
   await setUi($, u => withBusy(u, 'clean', now))
   armBusyTimeout($, 'clean', now)
-  $.clock.after(0, () => void attempt(() => runCompact($, now), undefined))
+  $.clock.after(0, () => void attempt(() => runCompact($, now, kind), undefined))
 }
 
-async function runCompact($: EngineInterface, since: number): Promise<void> {
+async function runCompact($: EngineInterface, since: number, kind: 'clean' | 'clean-first'): Promise<void> {
   // A turn that started since the press would be cut short.
   if (await isTurnRunning($)) {
     const ui = await attempt(() => read($, uiAtom), null)
@@ -601,7 +600,7 @@ async function runCompact($: EngineInterface, since: number): Promise<void> {
     return
   }
   /** The note when no compaction can be confirmed; null after a confirmed one. */
-  let skip: string | null = null
+  let skip: string | null = null; modCompactEvidence = null
   const skipped = (reason: string) => `Clean up skipped: ${reason.replace(/\.$/, '')}.`
   // Claimed with no await between the check and the claim; recorded before the call.
   const mine = await claimCall($, 'compact')
@@ -615,16 +614,16 @@ async function runCompact($: EngineInterface, since: number): Promise<void> {
       // Claude Code answers a refused /compact ("Not enough messages to compact.",
       // a hook's veto) without throwing, and a reply may be empty or not English.
       const landedBefore = compactionsLanded
-      const tokensBefore = liveTokens(await attempt(() => $.session.usage(), null))
+      const beforeUsage = await attempt(() => $.session.usage(), null); const tokensBefore = liveTokens(beforeUsage); const compactSid = cleanId(await attempt(() => $.session.id(), '')); const compactPath = transcriptFor(compactSid); const compactTtl = (await attempt(() => read($, sessionAtom), null))?.cacheLifetime
       const answer = await $.command.run({ command: 'compact' })
-      const tokensAfter = liveTokens(await attempt(() => $.session.usage(), null))
+      const afterUsage = await attempt(() => $.session.usage(), null); const tokensAfter = liveTokens(afterUsage)
       const outcome = cleanUpOutcome({
         landed: compactionsLanded > landedBefore,
         tokensBefore,
         tokensAfter,
         said: answer?.text ?? '',
       })
-      if (!outcome.ok) skip = outcome.line
+      if (!outcome.ok) skip = outcome.line; else { const evidence = modCompactEvidence as { usage?: unknown; before?: number; after?: number } | null; const finished = await $.clock.now(); const receipt = { action: kind, action_id: `${compactSid}-${since}-compact`, session_id: compactSid, started_at: since / 1000, timestamp: finished / 1000, transcript_path: compactPath, before_tokens: evidence?.before ?? tokensBefore, after_tokens: evidence?.after ?? tokensAfter, usage: evidence?.usage, observed_manual: evidence !== null, observed_action: true, cost_usd: beforeUsage?.cost?.usd != null && afterUsage?.cost?.usd != null ? afterUsage.cost.usd - beforeUsage.cost.usd : null, ttl_kind: compactTtl }; void attempt(() => bookModAction(dataIo($), receipt), false); $.clock.after(STATUS_AFTER_TURN_MS, () => void attempt(async () => { if (!await bookModAction(dataIo($), receipt)) toast($, 'Clean-up savings could not be recorded in Token Optimizer.') }, undefined)) }
     } catch (error) {
       skip = skipped(error instanceof Error && error.message ? error.message.split('\n')[0] ?? 'it failed' : 'it failed')
     } finally {
@@ -894,7 +893,7 @@ async function runClear($: EngineInterface, since: number, handoff: Handoff, sid
   // Claimed with no await between the check and the claim; recorded before the call.
   const mine = await claimCall($, 'clear')
   if (!mine) return fail('Start fresh could not clear. Your conversation is unchanged.')
-  let cleared = false
+  let cleared = false; const freshUsage = await attempt(() => $.session.usage(), null); const freshBefore = liveTokens(freshUsage) ?? (await attempt(() => read($, sessionAtom), null))?.contextTokens; const freshPath = transcriptFor(sid)
   try {
     await $.command.run({ command: 'clear' })
     cleared = true
@@ -903,7 +902,7 @@ async function runClear($: EngineInterface, since: number, handoff: Handoff, sid
   } finally {
     await releaseCall($, mine)
   }
-  if (!cleared) return fail('Start fresh could not clear. Your conversation is unchanged.')
+  if (!cleared) return fail('Start fresh could not clear. Your conversation is unchanged.'); const freshAt = await $.clock.now(); const saveFresh = async () => cleanId(await $.session.id()) !== sid && await bookModAction(dataIo($), { action: 'fresh', action_id: `${sid}-${handoff.createdAt}-fresh`, session_id: sid, timestamp: freshAt / 1000, transcript_path: freshPath, before_tokens: freshBefore, handoff_tokens_estimate: Math.ceil(handoff.text.length / 2) }); if (!await attempt(saveFresh, false)) $.clock.after(STATUS_AFTER_TURN_MS, () => void attempt(async () => { if (!await saveFresh()) toast($, 'Start fresh could not be confirmed or recorded for accounting.') }, undefined))
   // The hand-off now waits for the first prompt of a conversation started since the save.
   const now = await $.clock.now()
   await setUi($, u => (u.busy === 'fresh-clear' && u.busySince === since ? withBusy(u, null, now) : u))
@@ -969,7 +968,7 @@ async function act($: EngineInterface, id: ActionId | 'dashboard'): Promise<void
   }
   mine.at = now
   try {
-    if (id === 'clean' || id === 'clean-first') await cleanUp($)
+    if (id === 'clean' || id === 'clean-first') await cleanUp($, id)
     else if (id === 'dashboard') await openDashboard($)
     else if (id === 'fresh') await startFresh($)
     else await keepWarm($)
@@ -1531,7 +1530,7 @@ export const register: Register = on => {
       // The band watched this one land: count it now, before Claude Code writes its
       // marker to the transcript (it does so late) and before Token Optimizer re-reads.
       if (!('skip' in result && result.skip)) {
-        compactionsLanded += 1
+        compactionsLanded += 1; if (engineCall === 'compact' && e.trigger === 'manual' && result.messages !== undefined) { const evidence = result as { usage?: unknown; tokensBefore?: number; tokensAfter?: number }; modCompactEvidence = { usage: evidence.usage, before: evidence.tokensBefore, after: evidence.tokensAfter } }
         await attempt(
           () =>
             update($, sessionAtom, cur =>

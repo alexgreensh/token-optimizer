@@ -7,10 +7,10 @@ import json
 def feature_settings():
     return {'keepwarm': {'env_var': 'TOKEN_OPTIMIZER_KEEPWARM',
             'config_key': 'v5_keepwarm', 'default': True,
-            'label': 'Keep-warm', 'what': 'Keeps a paused session cache warm when the expected return exceeds the ping cost.',
-            'value': 'Can avoid rebuilding cached context when you return.', 'impact_pct': 0,
-            'how': 'Runs only when the safety and cost checks pass.',
-            'risk': 'A ping uses plan limits or API credits.', 'risk_level': 'low', 'recommended': True}}
+            'label': 'Keep-warm', 'what': 'Paused while we prove it is safe and saves you money.',
+            'value': 'Automatic warm-ups are paused.', 'impact_pct': 0,
+            'how': 'Automatic warm-ups do not run in this release.',
+            'risk': 'A ping uses plan limits or API credits.', 'risk_level': 'low', 'recommended': False}}
 
 
 def toggle(facade, enabled):

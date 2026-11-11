@@ -24,6 +24,48 @@ def _generation(conn, include_sessions=True):
     return hashlib.sha256(repr(('receiver_scan_v3', events, sessions if include_sessions else [])).encode()).hexdigest()
 
 
+# A marker is delivered within three minutes of its event; a day of slack keeps
+# the comparison safe across time zones and clock skew.
+_MARGIN_S = 86400 + 180
+
+
+def _epoch(stamp):
+    """Seconds for an event or file time, or None. Naive stamps are local time."""
+    try:
+        return datetime.fromisoformat(str(stamp).replace('Z', '+00:00')).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _session_rows(conn):
+    """(session_uuid, path, start day or None), oldest row first."""
+    cols = {row[1] for row in conn.execute('PRAGMA table_info(session_log)')}
+    days = [c for c in ('first_activity_day', 'date') if c in cols]
+    day = ('MIN(' + ','.join("COALESCE(NULLIF(%s,''),'9999')" % c for c in days) + ')') if len(days) == 2 else (days[0] if days else 'NULL')
+    out = []
+    for sid, path, start in conn.execute('SELECT session_uuid,jsonl_path,' + day + ' FROM session_log WHERE session_uuid IS NOT NULL AND jsonl_path IS NOT NULL ORDER BY id'):
+        start = str(start)[:10] if start else None
+        out.append((sid, path, start if start and start[:1].isdigit() and start < '9999' else None))
+    return out
+
+
+def _could_hold(start_day, mtime_s, event_epoch):
+    """Whether a transcript that began on `start_day` and was last written at
+    `mtime_s` can contain the delivery of an event at `event_epoch`."""
+    if event_epoch is None:
+        return True
+    if mtime_s < event_epoch - _MARGIN_S:
+        return False
+    begin = _epoch(start_day) if start_day else None
+    return begin is None or begin <= event_epoch + _MARGIN_S
+
+
+def _coverage(conn):
+    """{generation: highest event id its scans looked for}."""
+    conn.execute('CREATE TABLE IF NOT EXISTS lean_receiver_generations (generation TEXT PRIMARY KEY, max_event_id INTEGER)')
+    return dict(conn.execute('SELECT generation,max_event_id FROM lean_receiver_generations').fetchall())
+
+
 def collect(conn, to_utc, max_files=8, deadline_seconds=None):
     started = time.monotonic()
     conn.execute('CREATE TABLE IF NOT EXISTS lean_receiver_candidates (event_id INTEGER, receiver TEXT, path TEXT, size INTEGER, mtime_ns INTEGER, PRIMARY KEY(event_id,receiver,path,size,mtime_ns))')
@@ -32,17 +74,22 @@ def collect(conn, to_utc, max_files=8, deadline_seconds=None):
     generation = _generation(conn)
     event_generation = _generation(conn, include_sessions=False)
     targets = defaultdict(list)
+    newest = conn.execute("SELECT COALESCE(MAX(id),0) FROM savings_events WHERE event_type='resume_lean'").fetchone()[0]
+    covered = _coverage(conn)
+    conn.execute('INSERT OR REPLACE INTO lean_receiver_generations VALUES (?,?)', (event_generation, newest))
+    pending_events = []
     for ident, stamp, sid, detail in conn.execute("SELECT id,timestamp,COALESCE(session_uuid,session_id),detail FROM savings_events WHERE event_type='resume_lean'"):
         dt = to_utc(stamp)
         if sid and dt and 'receiver=' not in (detail or ''):
             targets[sid[:8].lower()].append((ident, sid, dt))
+            pending_events.append((ident, _epoch(stamp)))
     if not targets:
         conn.execute('INSERT OR REPLACE INTO lean_receiver_state VALUES (1, 1, ?)', (generation,))
         conn.commit()
         return {'scanned': 0, 'matches': 0, 'pending': 0, 'unavailable': 0}
-    sessions = {}
-    for sid, path in conn.execute('SELECT session_uuid,jsonl_path FROM session_log WHERE session_uuid IS NOT NULL AND jsonl_path IS NOT NULL ORDER BY id'):
-        sessions[path] = sid
+    sessions, starts = {}, {}
+    for sid, path, start in _session_rows(conn):
+        sessions[path], starts[path] = sid, start
     out = {'scanned': 0, 'matches': 0, 'pending': 0, 'unavailable': 0}
     for path, receiver in sessions.items():
         try:
@@ -52,6 +99,12 @@ def collect(conn, to_utc, max_files=8, deadline_seconds=None):
             continue
         proof = (path, st.st_size, st.st_mtime_ns)
         if conn.execute('SELECT 1 FROM lean_receiver_scans WHERE path=? AND size=? AND mtime_ns=? AND generation=?', (*proof, event_generation)).fetchone():
+            continue
+        # An unchanged file already searched for every event up to id N only
+        # needs reading again when a later event could have been delivered in it.
+        seen = max([covered.get(g, -1) for (g,) in conn.execute('SELECT generation FROM lean_receiver_scans WHERE path=? AND size=? AND mtime_ns=?', proof)] or [-1])
+        if seen >= 0 and not any(ident > seen and _could_hold(starts.get(path), st.st_mtime, when) for ident, when in pending_events):
+            conn.execute('INSERT OR IGNORE INTO lean_receiver_scans VALUES (?,?,?,?)', (*proof, event_generation))
             continue
         if (max_files is not None and out['scanned'] >= max_files) or (deadline_seconds is not None and time.monotonic() - started >= deadline_seconds):
             out['pending'] += 1
@@ -91,15 +144,65 @@ def collect(conn, to_utc, max_files=8, deadline_seconds=None):
     return out
 
 
-def resolved(conn):
+def _delivered(path, size, mtime):
+    """A transcript only grows, so a marker found in it earlier is still there."""
     try:
-        ready = conn.execute('SELECT complete,generation FROM lean_receiver_state WHERE id=1').fetchone()
-        if not ready or not ready[0] or ready[1] != _generation(conn):
-            return {}
+        s = Path(path).stat()
+        return s.st_size >= size and s.st_mtime_ns >= mtime
+    except OSError:
+        return False
+
+
+def resolved(conn):
+    """{event id: receiver session} for events with exactly one proven receiver.
+
+    An event is held back only while a transcript that could contain a second
+    delivery of it has not been searched: a file never scanned that was active
+    around the event, or lines appended after the last scan to a file that was.
+    A session that began later, or text appended long after the event, cannot
+    hold that delivery, so it never takes back a receiver already proven.
+    """
+    try:
         candidates = defaultdict(set)
         for ident, receiver, path, size, mtime in conn.execute('SELECT event_id,receiver,path,size,mtime_ns FROM lean_receiver_candidates'):
-            if _stat_matches(path, size, mtime):
+            if _delivered(path, size, mtime):
                 candidates[ident].add(receiver)
-        return {ident: next(iter(receivers)) for ident, receivers in candidates.items() if len(receivers) == 1}
+        single = {ident: next(iter(r)) for ident, r in candidates.items() if len(r) == 1}
+        if not single:
+            return {}
+        events = {ident: _epoch(stamp) for ident, stamp in conn.execute(
+            "SELECT id,timestamp FROM savings_events WHERE event_type='resume_lean'") if ident in single}
+        single = {ident: receiver for ident, receiver in single.items() if ident in events}
+        if not single:
+            return {}
+        covered = _coverage(conn)
+        scans = defaultdict(list)
+        for path, size, mtime, generation in conn.execute('SELECT path,size,mtime_ns,generation FROM lean_receiver_scans'):
+            if generation in covered:
+                scans[path].append((size, mtime, covered[generation]))
+        need = max(single)
+        unsearched = []  # (start day, mtime seconds, exact cover id, [(older scan mtime seconds, cover id)])
+        for _sid, path, start in _session_rows(conn):
+            try:
+                st = Path(path).stat()
+            except OSError:
+                continue
+            exact = max([top for size, mtime, top in scans.get(path, ()) if size == st.st_size and mtime == st.st_mtime_ns] or [-1])
+            if exact >= need:
+                continue
+            older = [(mtime / 1e9, top) for size, mtime, top in scans.get(path, ()) if size <= st.st_size and mtime < st.st_mtime_ns]
+            unsearched.append((start, st.st_mtime, exact, older))
+        out = {}
+        for ident, receiver in single.items():
+            when = events[ident]
+            for start, mtime_s, exact, older in unsearched:
+                if exact >= ident or not _could_hold(start, mtime_s, when):
+                    continue
+                if when is not None and any(top >= ident and when < seen - _MARGIN_S for seen, top in older):
+                    continue  # only lines written well after the event are unread
+                break
+            else:
+                out[ident] = receiver
+        return out
     except Exception:
         return {}

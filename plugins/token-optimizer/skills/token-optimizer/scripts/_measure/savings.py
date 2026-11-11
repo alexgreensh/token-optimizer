@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split
+from . import _compat, baseline_provenance, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split
 
 def _counted_event_utc(ts):
     """Convert local event timestamps to UTC, respecting local DST."""
@@ -4943,11 +4943,9 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
             "Sessions are not a stable unit of work (you ran {now_n:,} this period vs "
             "{then_n:,} in {month}, {growth:.1f}x, at about the same total spend) -- "
             "that extra capacity is real, but it is capacity gained, not dollars saved, "
-            "so it is not in the _compat.facade()._headline. Model price/mix drift worth about "
+            "so it is not in the headline. Model price/mix drift worth about "
             "${drift:,.0f} this period is also excluded: it would have happened without Token "
             "Optimizer."
-            + ("" if pinned else " The anchor month already had partial Token Optimizer "
-               "coverage, so if anything this understates the full pre-tool gap.")
         ).format(units=n_units,
                  unit_label="API calls" if unit == "api_call" else "messages",
                  unit_singular="API call" if unit == "api_call" else "message",
@@ -5100,7 +5098,7 @@ def _weight_pool_payload(pool):
             float(pool.get("engine_priced_transformation_usd", 0.0)), 2),
         "engine_priced_actual_usd": round(
             float(pool.get("engine_priced_actual_usd", 0.0)), 2),
-        "price_mix_drift_usd": round(float(pool.get("price_mix_drift_usd", 0.0)), 2),
+        "price_mix_drift_usd": round(float(pool.get("price_mix_drift_usd", 0.0)), 2), "flat_rates": dict(_measure_facade._WEIGHT_POOL_FLAT_RATES),
         "capacity_assumption": pool["capacity_assumption"],
     }
 
@@ -5629,6 +5627,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         # eliminate ("no savings" must stay distinguishable from "the math broke").
         # Both non-headlined states report the SAME real arms and real (signed) delta so the
         # renderer can explain itself; `reason` / `transformation_state` carry which one.
+        provenance = baseline_provenance.transformation(_measure_facade, baseline, weight_pool)
         not_headlined = {**zero, "before_sessions": bn, "after_sessions": recent_n,
                     "actual_monthly_usd": round(combined_actual, 2),
                     "counterfactual_monthly_usd": round(combined_cf, 2),
@@ -5668,7 +5667,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
                                       if weight_pool else int(t_pool + bcw + bout)),
                     "after_tokens": (int(weight_pool["after_tokens_per_session"])
                                      if weight_pool else int(t_pool + bcw + bout)),
-                    "baseline_source": baseline_source,
+                    "baseline_source": baseline_source, "baseline_provenance": provenance,
                     # A net-negative card used to return the `zero` per-session fields, so
                     # the dashboard rendered NOTHING and the user could not tell "no savings
                     # this period" from "the computation broke". Report the real arms and the
@@ -5805,26 +5804,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
             key=lambda x: ((_measure_facade := _compat.facade()), abs(x["monthly_usd"]))[1], reverse=True,
         )
         if weight_pool:
-            breakdown_caveat = (
-                "Work-normalized counterfactual: every API call you dispatched this "
-                "period, priced at the anchor month's cost per call ("
-                + str(weight_pool["anchor_month"]) + ", your earliest complete month "
-                "on record), at ONE constant rate card both eras -- so only how much "
-                "context each call carries (and how often the cache serves it) moves "
-                "the number; model-price and mix changes between eras are excluded and "
-                "disclosed separately, not claimed. Sessions are not used as the unit "
-                "because the lighter workflow itself splits the same work into more, "
-                "smaller sessions, which would count capacity gained as money saved. "
-                "The delta includes every volume mechanism at once (context "
-                "compression, lean output, loop prevention, continuity handovers), so "
-                "the metered and estimated pools are not added on top -- they would "
-                "double-count; the directly-metered floor still shows in its own card. "
-                "Delegated (subagent) work is excluded from this figure. Two caveats "
-                "ride with it: the anchor month already had partial Token Optimizer "
-                "coverage (the true pre-tool gap is larger), and the per-call delta "
-                "cannot separate Token Optimizer's effect from your own behaviour "
-                "drift -- the metered floor is the part we can prove action by action."
-            )
+            breakdown_caveat = baseline_provenance.weight_pool_caveat(weight_pool["anchor_month"], provenance)
         else:
             breakdown_caveat = (
             "Counterfactual attribution: your FROZEN typical pre-TO session is priced two "
@@ -5975,7 +5955,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
                                 if weight_pool else bn),
             "after_sessions": (int(weight_pool["sessions"])
                                if weight_pool else recent_n),
-            "baseline_source": baseline_source,
+            "baseline_source": baseline_source, "baseline_provenance": provenance,
             "breakdown": breakdown,
             "breakdown_caveat": breakdown_caveat,
             "evidence": "estimated",
@@ -6333,6 +6313,7 @@ def _get_merged_savings(days=None, since=None):
     handover_rerun = _measure_facade._estimate_handover_rerun_savings(days=days)
     retrieval_serve = _measure_facade._estimate_retrieval_serve_savings(days=days)
     model_routing = _measure_facade._compute_model_routing_savings(days=days, since=since)
+    model_routing["baseline_provenance"] = baseline_provenance.routing(_measure_facade, model_routing)
     output_waste = _measure_facade._estimate_output_waste(days=days)
     cache_drop = {**_measure_facade._estimate_cache_drop_savings(days=days), **__import__("large_transcripts").count(_measure_facade.CLAUDE_DIR, days)}
     before_after = _measure_facade._estimate_before_after_savings(days=days, since=since, estimated_pools={
@@ -6431,33 +6412,11 @@ def _get_merged_savings(days=None, since=None):
 
 
 def _install_date():
-    """Best-known install / first-capture date (ISO YYYY-MM-DD), or None.
-
-    Prefers the pristine baseline snapshot timestamp (captured at first run);
-    falls back to the earliest session_log date. Never raises.
+    """Best-known install date (ISO YYYY-MM-DD), or None: the first-run baseline
+    snapshot or the earliest logged event, whichever is earlier; with neither,
+    the earliest session on record. Never raises.
     """
-    _measure_facade = _compat.facade()
-    try:
-        snap = _measure_facade.SNAPSHOT_DIR / "snapshot_before.json"
-        if snap.exists():
-            ts = _measure_facade.json.loads(snap.read_text(encoding="utf-8")).get("timestamp")
-            if ts:
-                return ts[:10]
-    except (_measure_facade.json.JSONDecodeError, OSError, ValueError):
-        pass
-    try:
-        if _measure_facade.TRENDS_DB.exists():
-            conn = _measure_facade._init_trends_db()
-            _measure_facade.ensure_activity_view(conn)
-            try:
-                row = conn.execute("SELECT MIN(date) FROM session_activity").fetchone()
-            finally:
-                conn.close()
-            if row and row[0]:
-                return str(row[0])[:10]
-    except (_measure_facade.sqlite3.Error, OSError):
-        pass
-    return None
+    return baseline_provenance.install_evidence(_compat.facade()).get("date")
 
 
 def _savings_since_install():
@@ -6539,7 +6498,7 @@ def _savings_since_install():
                 "estimated_usd": round(sum(components["display"]["estimates_usd"].values()), 2),
                 "routing_usd": round(float(components.get("routing_usd", 0) or 0), 2),
                 "routing_baseline_opus_share": full_routing.get("baseline_opus_share"), "routing_baseline_source": routing_source,
-                "routing_baseline_basis": full_routing.get("baseline_source"),
+                "routing_baseline_basis": full_routing.get("baseline_source"), "routing_baseline_provenance": full_routing.get("baseline_provenance"),
                 "routing_measured_baseline_opus_share": full_routing.get("measured_baseline_opus_share"), "routing_measured_baseline_realized_cost_usd": full_routing.get("measured_baseline_realized_cost_usd"),
                 "routing_pending": full_routing.get("evidence") == "pending",
                 "routing_pending_sessions": int(full_routing.get("pending_sessions") or 0),
@@ -6761,12 +6720,14 @@ def savings_report(days=None, as_json=None):
         if wp:
             unit_lbl = "API call" if wp.get("work_unit") == "api_call" else "message"
             print(f"    Each {unit_lbl} now carries less billed context than in "
-                  f"{wp.get('anchor_month')} (your earliest complete month): "
+                  f"{wp.get('anchor_month')}: "
                   f"${wp.get('after_cost_per_unit', 0):.4f} vs ${wp.get('before_cost_per_unit', 0):.4f} "
                   f"at constant token prices, x {int(wp.get('now_units', 0)):,} {unit_lbl}s "
                   f"this period "
                   f"(est. ${ba.get('actual_monthly_usd', 0):,.0f} now vs ${ba.get('counterfactual_monthly_usd', 0):,.0f} "
                   f"the old way) [estimated]")
+            for line in _measure_facade.textwrap.wrap((ba.get("baseline_provenance") or {}).get("note") or "", width=72):
+                print(f"    {line}")
             drift = float(wp.get("price_mix_drift_usd", 0.0) or 0.0)
             if abs(drift) >= 1.0:
                 print(f"    Not claimed: ~${abs(drift):,.0f} this period of model price/mix drift "
@@ -6823,7 +6784,7 @@ def savings_report(days=None, as_json=None):
         print(f"    Each request now carries more context than at your baseline "
               f"(est. ${ba.get('actual_monthly_usd', 0):,.0f} now vs "
               f"${ba.get('counterfactual_monthly_usd', 0):,.0f} this period at the baseline's cost "
-              f"per request), so there is no whole-workload saving to _compat.facade()._headline. "
+              f"per request), so there is no whole-workload saving to headline. "
               f"The measured savings below are real and counted.")
     elif ba.get("reason") == "flat":
         print()
@@ -6956,9 +6917,9 @@ def savings_report(days=None, as_json=None):
         b_share = routing.get("baseline_opus_share", 0.0) * 100
         c_share = routing.get("current_opus_share", 0.0) * 100
         routing_label = "estimated" if routing.get("evidence") == "estimated" else "measured"
-        basis = "assuming" if routing.get("baseline_source") == "pretool_baseline" else "with measured baseline"
+        basis = (routing.get("baseline_provenance") or {}).get("short") or (f"assuming {b_share:.0f}% Opus before Token Optimizer" if routing.get("baseline_source") == "pretool_baseline" else f"against a measured {b_share:.0f}% Opus baseline")
         print(f"  i  Model routing (not in ALL IN): ~${r_monthly}{per} "
-              f"{basis} {b_share:.0f}% Opus before Token Optimizer (now {c_share:.0f}%) [{routing_label}]")
+              f"{basis} (now {c_share:.0f}%) [{routing_label}]")
         mb_share = routing.get("measured_baseline_opus_share")
         if mb_share is not None:
             mb_cents, _ = _measure_facade._allocate_cents([_mo(float(routing.get("measured_baseline_realized_cost_usd") or 0.0))])

@@ -205,13 +205,21 @@ function savingsStoryHtml(data) {
         tok(carry.carry_tokens) + ' tokens, about ' + usd(carry.carry_cost_usd) + '. That proxy stays out of totals; receiver-linked estimates are counted separately.</p>' : '') +
       '<p>Valued at API rates. On a subscription this is room inside your limits; nothing is refunded. Opportunity is never part of this total.</p>';
     var SIh = savingsSinceInstall(data);
+    // While an upgrade re-reads older sessions the totals are partial: say so
+    // on each number it affects, with how many sessions are left.
+    var aiP = ((s.since_install || {}).all_in) || {};
+    var soFar30 = cp.remeasuring === true || mr.evidence === 'pending';
+    var soFarAll = aiP.remeasuring === true || aiP.routing_pending === true;
+    var left = Math.max(num(cp.remeasuring_sessions), num(aiP.remeasuring_sessions), num(aiP.routing_pending_sessions), mr.evidence === 'pending' ? num(mr.pending_sessions) : 0);
+    var soFar = function(on) { return on ? ', so far' : ''; };
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">What Token Optimizer saved</h2>' +
       '<div class="st-mega__row st-mega__row--hero">' +
-        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(bigTotal) + '</span><span class="st-mega__unit">saved in the last ' + days + ' days</span></div>' +
-        (SIh && SIh.all > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(SIh.all) + '</span><span class="st-mega__unit">saved since you installed</span></div>' : '') +
-        (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context in ' + days + ' days</span></div>' : '') +
+        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(bigTotal) + '</span><span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' +
+        (SIh && SIh.all > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(SIh.all) + '</span><span class="st-mega__unit">saved since you installed' + soFar(soFarAll) + '</span></div>' : '') +
+        (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context in ' + days + ' days' + soFar(cp.remeasuring === true) + '</span></div>' : '') +
       '</div>' +
+      (soFar30 || soFarAll ? '<p class="st-lead st-progress">Updating your history after an upgrade' + (left > 0 ? ' (' + count(left) + ' session' + (left === 1 ? '' : 's') + ' left)' : '') + '. These totals are in progress and will change when it finishes.</p>' : '') +
       f.fold('How this is calculated', method + (SIh && SIh.all > 0 ? savingsSinceInstallBody(data, SIh) : '')) +
       '</div>';
   }
@@ -292,6 +300,10 @@ function savingsRoutingBasis(data) {
   var kind = (src === 'measured_at_install' || src === 'snapshot' || src === 'history') ? 'measured' : 'stated';
   var share = has(ai.routing_baseline_opus_share) ? num(ai.routing_baseline_opus_share) : (has(mr.baseline_opus_share) ? num(mr.baseline_opus_share) : null);
   var pct = share != null ? Math.round(share * 100) + '%' : '';
+  // Newer payloads say where the baseline came from and whether Token
+  // Optimizer was already running in it; that sentence replaces the fixed one.
+  var prov = ai.routing_baseline_provenance || mr.baseline_provenance;
+  if (prov && prov.lead && prov.ledger) return { kind: prov.kind === 'stated' ? 'stated' : 'measured', pct: pct, lead: String(prov.lead), ledger: String(prov.ledger) };
   return {
     kind: kind, pct: pct,
     lead: kind === 'measured'
@@ -310,15 +322,26 @@ function savingsTransformationHtml(data) {
   var ba = ((data && data.savings) || {}).before_after || {};
   if (ba.transformation_state !== 'ok' || !(num(ba.monthly_savings_usd) > 0)) return '';
   var share = has(ba.transformation_pct) && num(ba.transformation_pct) > 0 ? Math.round(num(ba.transformation_pct) * 100) : 0;
-  var method = '<ul><li>Without Token Optimizer: ' + savingsCents(ba.counterfactual_monthly_usd) + ' a month</li>' +
-    '<li>What you actually spent: ' + savingsCents(ba.actual_monthly_usd) + ' a month</li>' +
+  // Where the "before" came from. Older payloads carry no provenance and keep the fixed sentence.
+  var prov = ba.baseline_provenance || {};
+  // The lead states the baseline; what it understates is spelled out in the fold.
+  var against = prov.lead ? esc(prov.lead) : 'compared with your own baseline from before you installed.';
+  // A work-normalized figure prices both periods at one fixed rate card, so its
+  // "now" side is not the user's spend: name the card and show the exact-card cost.
+  var wp = ba.session_weight_pool || {}, fr = wp.flat_rates || null;
+  var fixed = fr && has(fr.input) && has(fr.output) && has(fr.cache_read) && has(fr.cache_write);
+  var method = '<ul><li>Without Token Optimizer' + (fixed ? ', at the fixed price card' : '') + ': ' + savingsCents(ba.counterfactual_monthly_usd) + ' a month</li>' +
+    '<li>' + (fixed ? 'This period, at the same fixed price card' : 'What you actually spent') + ': ' + savingsCents(ba.actual_monthly_usd) + ' a month</li>' +
     '<li>Difference: ' + savingsCents(ba.monthly_savings_usd) + ' a month</li></ul>' +
-    (ba.before_mix_label ? '<p>Baseline mix before you installed: ' + esc(ba.before_mix_label) + '. Now: ' + esc(ba.after_mix_label || 'your current mix') + '.</p>' : '') +
+    (fixed ? '<p>Both sides are priced at one fixed card (per million tokens: $' + num(fr.input) + ' input, $' + num(fr.output) + ' output, $' + num(fr.cache_read) + ' cache read, $' + num(fr.cache_write) + ' cache write), so a price change between the two periods cannot count as a saving. These are dollars at that card, not your bill.' +
+      (num(wp.engine_priced_actual_usd) > 0 ? ' At the prices of the models you actually used, this period comes to ' + savingsCents(wp.engine_priced_actual_usd) + ' at API rates.' : '') + '</p>' : '') +
+    (prov.note ? '<p>' + esc(prov.note) + '</p>' : '') +
+    (ba.before_mix_label ? '<p>' + (prov.mix_note ? 'Baseline model mix: ' + esc(ba.before_mix_label) + ', ' + esc(prov.mix_note) : 'Baseline mix before you installed: ' + esc(ba.before_mix_label)) + '. Now: ' + esc(ba.after_mix_label || 'your current mix') + '.</p>' : '') +
     (ba.breakdown_caveat ? '<p>' + esc(ba.breakdown_caveat) + '</p>' : '');
   return '<div class="card st-card st-transform">' +
     '<h2 class="st-h">Your transformation</h2>' +
     '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(ba.monthly_savings_usd) + '<span class="st-mega__per"> a month</span></span>' +
-      '</p><p class="st-lead">Without Token Optimizer, working the way you work now would cost you this much more, compared with your own baseline from before you installed.' +
+      '</p><p class="st-lead">Without Token Optimizer, working the way you work now would cost you this much more, ' + against +
     (share > 0 ? ' That is ' + share + '% of what this work would have cost.' : '') + '</p>' +
     f.fold('How this is calculated', method) +
     '</div>';

@@ -73,6 +73,119 @@ def test_first_assignment_is_stored_and_wins_over_a_changed_share(tmp_path):
     assert holdout.is_control(sid, tmp_path, {holdout.ENV: '0.000001'}) is True
 
 
+def test_existing_assignment_survives_eight_contended_readers(tmp_path):
+    sid = _sid(3)
+    assert holdout.decide(sid, 0.000001) == holdout.TREATMENT
+    assert holdout.arm(sid, tmp_path, {holdout.ENV: '1'}) == holdout.CONTROL
+    blocker = sqlite3.connect(tmp_path / 'trends.db')
+    blocker.execute('PRAGMA journal_mode=WAL')
+    blocker.execute('BEGIN IMMEDIATE')
+    code = ("import sys,holdout; from pathlib import Path; "
+            "print(holdout.arm(sys.argv[2], Path(sys.argv[1]), {holdout.ENV: '0.000001'}))")
+    children = [subprocess.Popen([sys.executable, '-c', code, str(tmp_path), sid],
+                                 env=dict(os.environ, PYTHONPATH=str(SCRIPTS)),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                for _ in range(8)]
+    try:
+        results = [child.communicate(timeout=5) for child in children]
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert all(child.returncode == 0 for child in children), results
+    assert [out.strip() for out, _ in results] == [holdout.CONTROL] * 8
+
+
+def test_first_assignment_is_remembered_when_database_is_busy(tmp_path):
+    sid = _sid(3)
+    assert holdout.decide(sid, 0.000001) == holdout.TREATMENT
+    with sqlite3.connect(tmp_path / 'trends.db') as setup:
+        setup.execute('PRAGMA journal_mode=WAL')
+        setup.executescript(holdout._SCHEMA)
+    blocker = sqlite3.connect(tmp_path / 'trends.db')
+    blocker.execute('BEGIN IMMEDIATE')
+    try:
+        assert holdout.arm(sid, tmp_path, {holdout.ENV: '1'}) == holdout.CONTROL
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert holdout.arm(sid, tmp_path, {holdout.ENV: '0.000001'}) == holdout.CONTROL
+
+
+def test_eight_first_assignments_agree_while_database_is_busy(tmp_path):
+    sid = _sid(3)
+    with sqlite3.connect(tmp_path / 'trends.db') as setup:
+        setup.execute('PRAGMA journal_mode=WAL')
+        setup.executescript(holdout._SCHEMA)
+    blocker = sqlite3.connect(tmp_path / 'trends.db')
+    blocker.execute('BEGIN IMMEDIATE')
+    code = ("import sys,holdout; from pathlib import Path; "
+            "print(holdout.arm(sys.argv[2], Path(sys.argv[1]), {holdout.ENV: sys.argv[3]}))")
+    children = [subprocess.Popen([sys.executable, '-c', code, str(tmp_path), sid,
+                                  '1' if i % 2 else '0.000001'],
+                                 env=dict(os.environ, PYTHONPATH=str(SCRIPTS)),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                for i in range(8)]
+    try:
+        results = [child.communicate(timeout=5) for child in children]
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert all(child.returncode == 0 for child in children), results
+    arms = [out.strip() for out, _ in results]
+    assert len(set(arms)) == 1
+    assert holdout.arm(sid, tmp_path, {holdout.ENV: '1'}) == arms[0]
+
+
+def test_old_committed_holdout_candidates_are_swept_safely(tmp_path):
+    import time
+    from _measure import holdout_fallback
+    stored, pending = _sid(10), _sid(11)
+    assert holdout.arm(stored, tmp_path, {holdout.ENV: '1'}) == holdout.CONTROL
+    assert holdout_fallback.claim(tmp_path, pending, holdout.TREATMENT, 0.5)
+    root = tmp_path / '.holdout-pending'
+    old = time.time() - 31 * 86400
+    for sid in (stored, pending):
+        os.utime(root / (sid + '.json'), (old, old))
+    unrelated = root / 'do-not-remove.txt'
+    unrelated.write_text('keep')
+    assert holdout.arm(stored, tmp_path, {holdout.ENV: '1'}) == holdout.CONTROL
+    assert not (root / (stored + '.json')).exists()
+    assert (root / (pending + '.json')).exists()
+    assert unrelated.read_text() == 'keep'
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='requires SIGKILL')
+def test_killed_holdout_candidate_is_cleaned_without_partial_assignment(tmp_path):
+    import time
+    code = """
+import os, sys, time
+from pathlib import Path
+from _measure import holdout_fallback
+def stop(src, dst):
+    print('ready', flush=True)
+    time.sleep(60)
+os.replace = stop
+holdout_fallback.claim(Path(sys.argv[1]), sys.argv[2], 'control', 1)
+"""
+    sid = _sid(12)
+    child = subprocess.Popen([sys.executable, '-c', code, str(tmp_path), sid],
+                             env=dict(os.environ, PYTHONPATH=str(SCRIPTS)),
+                             stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == 'ready'
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+    root = tmp_path / '.holdout-pending'
+    candidates = list(root.glob('.candidate-*.tmp'))
+    assert len(candidates) == 1
+    assert not (root / (sid + '.json')).exists()
+    old = time.time() - 90000
+    os.utime(candidates[0], (old, old))
+    assert holdout.arm(sid, tmp_path, {holdout.ENV: '1'}) == holdout.CONTROL
+    assert not candidates[0].exists()
+
+
 def test_unwritable_ledger_falls_back_to_the_pure_decision(tmp_path):
     blocker = tmp_path / 'file'
     blocker.write_text('x')
@@ -141,10 +254,9 @@ def test_control_session_archives_nothing(tmp_path):
     sid = _sid(7)
     _hook(tmp_path, '1', sid)
     names = sorted(p.name for p in (tmp_path / 'snap').rglob('*') if p.is_file())
-    # The ledger, plus the existing per-session thrash-guard state and its cleanup-lock
-    # sidecar (session_store_guard, added with the parallel-session store lock: it is
-    # created whenever that store is opened, never separately). No archived original.
-    assert all(n.startswith('trends.db') or n in (f'{sid}.db', f'{sid}.db.guard') for n in names), names
+    # The ledger, plus the existing per-session thrash-guard state. No archived original.
+    assert all(n.startswith(('trends.db', '.guard-')) or n in
+               (f'{sid}.db', f'{sid}.db.guard', f'{sid}.json', '.sweep.guard') for n in names), names
     assert not any('archive' in str(p.relative_to(tmp_path / 'snap')) for p in (tmp_path / 'snap').rglob('*'))
 
 

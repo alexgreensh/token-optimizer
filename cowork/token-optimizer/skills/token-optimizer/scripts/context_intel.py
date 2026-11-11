@@ -206,9 +206,7 @@ def _extract_decisions(text: str, store: SessionStore) -> None:
 
     Uses split-then-filter to avoid catastrophic regex backtracking on
     large outputs without sentence-ending punctuation (build logs, JSON).
-    Uses SessionStore's auto-commit get_meta/set_meta (no explicit transaction)
-    to avoid conflicting with the implicit transaction from log_tool_use on
-    the same shared connection.
+    SessionStore merges redacted decisions atomically through its durable queue.
     """
     if len(text) < 50:
         return
@@ -245,6 +243,10 @@ def _extract_decisions(text: str, store: SessionStore) -> None:
         return
 
     try:
+        if isinstance(store, SessionStore):
+            from _measure import session_store_spool
+            session_store_spool.enqueue(store, {"kind": "decisions", "decisions": new_decisions})
+            return
         existing_raw = store.get_meta("session_decisions")
         existing = json.loads(existing_raw) if existing_raw else []
 

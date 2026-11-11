@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, transcript_stream, quality_continuity
+from . import _compat, transcript_stream, quality_continuity, upgrade_drain_control
 
 
 def _find_all_jsonl_files(days=None):
@@ -1351,10 +1351,10 @@ def _store_adapter_activity(conn, dedup_key, parsed):
         "FROM session_log WHERE jsonl_path=?", (dedup_key,)).fetchone()
     if current and tuple(current) == params[:-1]:
         return 0
-    conn.execute(
+    changed = upgrade_drain_control.session_write(conn,
         "UPDATE session_log SET first_activity_day=?,last_activity_day=?,date=?,daily_usage_json=?, "
         "parent_daily_usage_json=?,daily_calls_json=? WHERE jsonl_path=?", params)
-    return 1
+    return int(changed is not None)
 
 
 def _insert_normalized_session(conn, dedup_key, parsed, platform, project_fallback, quiet=None):
@@ -1427,7 +1427,7 @@ def _insert_normalized_session(conn, dedup_key, parsed, platform, project_fallba
         if existing is not None and int(existing[0]) == is_incomplete:
             return _measure_facade._store_adapter_activity(conn, dedup_key, parsed)
         try:
-            conn.execute(
+            changed = upgrade_drain_control.session_write(conn,
                 """UPDATE session_log SET
                      date=?, project=?, duration_minutes=?, input_tokens=?,
                      output_tokens=?, message_count=?, api_calls=?, cache_hit_rate=?,
@@ -1441,6 +1441,8 @@ def _insert_normalized_session(conn, dedup_key, parsed, platform, project_fallba
                    WHERE jsonl_path=?""",
                 values + (dedup_key,),
             )
+            if changed is None:
+                return 0
             _measure_facade._store_adapter_activity(conn, dedup_key, parsed)
             return 1
         except _measure_facade.sqlite3.Error as exc:
@@ -1449,7 +1451,7 @@ def _insert_normalized_session(conn, dedup_key, parsed, platform, project_fallba
             return 0
 
     try:
-        cur = conn.execute(
+        cur = upgrade_drain_control.session_write(conn,
             """INSERT OR IGNORE INTO session_log
                (jsonl_path, date, project, duration_minutes, input_tokens,
                 output_tokens, message_count, api_calls, cache_hit_rate,
@@ -1466,7 +1468,7 @@ def _insert_normalized_session(conn, dedup_key, parsed, platform, project_fallba
         if not quiet:
             print(f"[Token Optimizer] skipped a {platform} session: {exc}")
         return 0
-    if cur.rowcount == 1:
+    if cur is not None and cur.rowcount == 1:
         _measure_facade._store_adapter_activity(conn, dedup_key, parsed)
         return 1
     return 0
@@ -1677,7 +1679,7 @@ def _hermes_refresh_session_totals(conn, dedup_key, parsed):
     old = tuple(int(v or 0) for v in stored)
     if any(n < o for n, o in zip(new, old)) or new == old:
         return False
-    conn.execute(
+    changed = upgrade_drain_control.session_write(conn,
         """UPDATE session_log
            SET duration_minutes = ?, input_tokens = ?, output_tokens = ?,
                message_count = ?, api_calls = ?, cache_hit_rate = ?,
@@ -1687,7 +1689,9 @@ def _hermes_refresh_session_totals(conn, dedup_key, parsed):
                model_usage_json = ?, all_model_usage_json = ?,
                model_usage_breakdown_json = ?, version = ?, topic = ?,
                collected_at = ?
-           WHERE jsonl_path = ?""",
+           WHERE jsonl_path = ? AND COALESCE(message_count,0)<=? AND COALESCE(input_tokens,0)<=?
+             AND COALESCE(output_tokens,0)<=? AND COALESCE(api_calls,0)<=?
+             AND (COALESCE(message_count,0)<? OR COALESCE(input_tokens,0)<? OR COALESCE(output_tokens,0)<? OR COALESCE(api_calls,0)<?)""",
         (
             parsed["duration_minutes"],
             parsed["total_input_tokens"],
@@ -1709,8 +1713,9 @@ def _hermes_refresh_session_totals(conn, dedup_key, parsed):
             parsed.get("topic"),
             _measure_facade.datetime.now().isoformat(),
             dedup_key,
-        ),
+        ) + new + new,
     )
+    if changed is None or changed.rowcount != 1: return False
     _measure_facade._store_adapter_activity(conn, dedup_key, parsed)
     return True
 
@@ -3609,7 +3614,7 @@ def _stamp_usage_parser_version(conn, filepath):
     re-parsed on every collect."""
     _measure_facade = _compat.facade()
     try:
-        conn.execute(
+        upgrade_drain_control.session_write(conn,
             "UPDATE session_log SET usage_parser_version = ? WHERE jsonl_path = ?",
             (_measure_facade._USAGE_PARSER_VERSION, str(filepath)))
     except _measure_facade.sqlite3.Error:
@@ -3950,20 +3955,22 @@ def _upgrade_drain_after_pass(conn, backlog):
         if _measure_facade._upgrade_meta_get(conn, _measure_facade._UPGRADE_DRAIN_META) == key:
             return False
         if not backlog:
-            _measure_facade._upgrade_drain_mark_done(conn)
+            with upgrade_drain_control.running(_measure_facade) as held:
+                if held: _measure_facade._upgrade_drain_mark_done(conn)
             return False
         # Under pytest the child would run against the real ~/.claude.
         if _measure_facade.os.environ.get("PYTEST_CURRENT_TEST") and not _measure_facade.os.environ.get(
                 "TOKEN_OPTIMIZER_TEST_ALLOW_DRAIN_SPAWN"):
             return False
         raw = _measure_facade._upgrade_meta_get(conn, _measure_facade._UPGRADE_DRAIN_ATTEMPTS_META) or ""
-        attempts = int(raw.split(":", 1)[1]) if raw.startswith(key + ":") else 0
-        if attempts >= _measure_facade._UPGRADE_DRAIN_MAX_ATTEMPTS:
+        ready, attempts = upgrade_drain_control.retry_ready(raw, key, _measure_facade.time.time())
+        if not ready:
             return False
         if not _measure_facade._upgrade_drain_claim_lock():
             return False
-        if _measure_facade._spawn_upgrade_drain():
-            _measure_facade._upgrade_meta_set(conn, _measure_facade._UPGRADE_DRAIN_ATTEMPTS_META, f"{key}:{attempts + 1}")
+        started = _measure_facade._spawn_upgrade_drain()
+        _measure_facade._upgrade_meta_set(conn, _measure_facade._UPGRADE_DRAIN_ATTEMPTS_META, f"{key}:{attempts + 1}:{_measure_facade.time.time()}")
+        if started:
             return True
         _measure_facade._upgrade_drain_release_lock()
         return False
@@ -3974,29 +3981,12 @@ def _upgrade_drain_after_pass(conn, backlog):
 def _upgrade_drain_claim_lock():
     """Claim the drain lock file (O_EXCL); reclaim one left by a dead child."""
     _measure_facade = _compat.facade()
-    marker = _measure_facade.SNAPSHOT_DIR / _measure_facade._UPGRADE_DRAIN_LOCK_NAME
-    try:
-        _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = _measure_facade.os.open(str(marker), _measure_facade.os.O_CREAT | _measure_facade.os.O_EXCL | _measure_facade.os.O_WRONLY, 0o600)
-        except FileExistsError:
-            if _measure_facade.time.time() - marker.stat().st_mtime <= _measure_facade._UPGRADE_DRAIN_LOCK_STALE_SECONDS:
-                return False
-            _measure_facade.os.unlink(str(marker))
-            fd = _measure_facade.os.open(str(marker), _measure_facade.os.O_CREAT | _measure_facade.os.O_EXCL | _measure_facade.os.O_WRONLY, 0o600)
-        with _measure_facade.os.fdopen(fd, "w") as handle:
-            handle.write(str(_measure_facade.os.getpid()))
-        return True
-    except OSError:
-        return False
+    return upgrade_drain_control.claim(_measure_facade)
 
 
 def _upgrade_drain_release_lock():
     _measure_facade = _compat.facade()
-    try:
-        (_measure_facade.SNAPSHOT_DIR / _measure_facade._UPGRADE_DRAIN_LOCK_NAME).unlink()
-    except OSError:
-        pass
+    upgrade_drain_control.release(_measure_facade)
 
 
 def _spawn_upgrade_drain():
@@ -4019,10 +4009,7 @@ def _spawn_upgrade_drain():
             creationflags=(getattr(_measure_facade.subprocess, "DETACHED_PROCESS", 0) | _measure_facade._NO_WINDOW),
             **popen_kw,
         )
-        try:
-            (_measure_facade.SNAPSHOT_DIR / _measure_facade._UPGRADE_DRAIN_LOCK_NAME).write_text(str(child.pid))
-        except OSError:
-            pass
+        upgrade_drain_control.publish_child(_measure_facade, child.pid)
         return True
     except Exception as exc:
         try:
@@ -4052,7 +4039,14 @@ def _run_upgrade_drain(days=None, quiet=None):
     _measure_facade = _compat.facade()
     _measure_facade.os.environ["TOKEN_OPTIMIZER_UPGRADE_DRAIN"] = "1"
     try:
-        return _measure_facade.collect_sessions(days=days or _measure_facade._upgrade_drain_days(), quiet=quiet)
+        with upgrade_drain_control.running(_measure_facade) as held:
+            return _measure_facade.collect_sessions(days=days or _measure_facade._upgrade_drain_days(), quiet=quiet) if held else None
+    except _measure_facade.sqlite3.OperationalError as exc:
+        if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+            raise
+        try: _measure_facade._log_spawn_failure("upgrade drain deferred after SQLite contention")
+        except Exception: pass
+        return 0
     finally:
         _measure_facade._upgrade_drain_release_lock()
 
@@ -4304,19 +4298,18 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
                 # This copy changed since last seen and may hold requests the
                 # stored copy lacks; its per-day usage (merged across copies) is
                 # recomputed by the next backfill.
-                conn.execute(
+                changed = upgrade_drain_control.session_write(conn,
                     "UPDATE session_log SET daily_usage_json = NULL WHERE session_uuid = ? AND jsonl_path != ?",
                     (session_uuid, str(filepath)))
+                if changed is None:
+                    conn.rollback(); parse_truncated = True; break
                 _measure_facade._stamp_usage_parser_version(conn, filepath)
                 continue
         else:
             other = []
 
-        # Compute quality score at collection time for persistence
         sq = _measure_facade.score_session_quality(parsed)
-        # B1: persist reclaimable stale-read waste (opportunity tier, not realized).
         stale_waste = _measure_facade._session_stale_waste_tokens(filepath)
-
         # Resolve the platform for this session. Codex transcripts carry
         # "runtime": "codex" in their parsed dict; Claude transcripts do not
         # set the key, so detect_runtime() (which returns the active runtime,
@@ -4338,7 +4331,7 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
             o_mark += ", ?"
             o_val += (_measure_facade._USAGE_PARSER_VERSION,)
             o_upd += ",\n               usage_parser_version=excluded.usage_parser_version"
-        cur = conn.execute(
+        cur = upgrade_drain_control.session_write(conn,
             """INSERT INTO session_log
                (jsonl_path, date, project, duration_minutes, input_tokens,
                 output_tokens, message_count, api_calls, cache_hit_rate,
@@ -4425,6 +4418,8 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
                 _measure_facade.json.dumps(daily_usage),
             ) + o_val,
         )
+        if cur is None:
+            conn.rollback(); parse_truncated = True; break
         if cur.rowcount != 1:
             continue
         calls = dict(parsed.get("daily_calls") or {})
@@ -4432,11 +4427,13 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
             if not u.get("advisor") and u.get("n", 1) and u.get("day"):
                 day = u["day"]
                 calls[day] = calls.get(day, 0) + 1
-        conn.execute(
+        changed = upgrade_drain_control.session_write(conn,
             "UPDATE session_log SET first_activity_day=?, last_activity_day=?, transcript_mtime=?, "
             "parent_daily_usage_json=?, daily_calls_json=?, daily_metrics_json=? WHERE jsonl_path=?",
             (activity_bounds[0] if activity_bounds else None, activity_bounds[-1] if activity_bounds else None, mtime,
              _measure_facade.json.dumps(parent_daily), _measure_facade.json.dumps(calls), _measure_facade.json.dumps(session_daily_metrics), str(filepath)))
+        if changed is None:
+            conn.rollback(); parse_truncated = True; break
         if merged is not None:
             _measure_facade._claim_requests(conn, owner_id, merged)
             live_owners.add(_measure_facade._stable_hash63(owner_id))
@@ -4453,7 +4450,8 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
                 conn.executemany(
                     "INSERT OR REPLACE INTO session_log_aliases (jsonl_path, session_uuid, collected_at) "
                     "VALUES (?, ?, ?)", [(r[0], session_uuid, r[1]) for r in losers])
-                conn.executemany("DELETE FROM session_log WHERE id = ?", [(r[0],) for r in other])
+                if upgrade_drain_control.session_write(conn, "DELETE FROM session_log WHERE id = ?", [(r[0],) for r in other], many=True) is None:
+                    conn.rollback(); parse_truncated = True; break
             conn.execute("DELETE FROM session_log_aliases WHERE jsonl_path = ?", (str(filepath),))
 
         new_count += 1
@@ -4483,7 +4481,7 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
                               budget_seconds=budgets["daily_seconds"])
         daily_truncated = _measure_facade.time.monotonic() - _daily_started >= budgets["daily_seconds"]
     except Exception:
-        pass
+        daily_truncated = True
     try:
         _measure_facade._pretool_anchor_step(budget_seconds=3600.0 if drain == "full" else 5.0)
     except Exception:
@@ -4493,25 +4491,28 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
     # collect pass (never at dashboard-regen time). Both helpers carry their
     # own per-pass caps + soft deadline and are fail-open, so a slow transcript
     # can never hold the flush; the backlog converges over passes.
-    counted_pending = 0
+    counted_pending = 1
     try:
         # Sessions where Token Optimizer ran elsewhere (cloud) and logged nothing
         # here: rebuild their events from its own transcript markers first.
-        _measure_facade._transcript_backfill.collect_pass(conn, _measure_facade, drain, budgets, quiet=quiet)
+        transcript_stats = _measure_facade._transcript_backfill.collect_pass(conn, _measure_facade, drain, budgets, quiet=quiet)
         if drain == "full":
-            counted_pending = int(_measure_facade._counted_backfill_all(conn, quiet=quiet).get("pending_sessions", 0) or 0)
+            counted_stats = _measure_facade._counted_backfill_all(conn, quiet=quiet)
+            counted_pending = int(counted_stats.get("pending_sessions", 0) or 0) + int(not counted_stats.get("marker_backfill_done"))
         else:
             counted_pending = int(_measure_facade._update_counted_cumulative(
                 conn, max_sessions=budgets["counted_sessions"],
                 deadline_seconds=budgets["counted_seconds"],
                 quiet=quiet).get("pending_sessions", 0) or 0)
             if drain == "inline":
-                _measure_facade._counted_marker_backfill(conn, max_files=None,
+                marker_stats = _measure_facade._counted_marker_backfill(conn, max_files=None,
                                          deadline_seconds=budgets["counted_seconds"], quiet=quiet)
             else:
-                _measure_facade._counted_marker_backfill(conn, quiet=quiet)
+                marker_stats = _measure_facade._counted_marker_backfill(conn, quiet=quiet)
+            counted_pending += int(not marker_stats.get("done"))
+        counted_pending += int(upgrade_drain_control.backfill_pending(transcript_stats))
     except Exception:
-        pass
+        counted_pending = max(1, counted_pending)
     # Verbosity nudges against matched un-nudged replies (savings-truth U5).
     # Read-only on the DB, one derived JSON file, at most daily, and never on
     # the hook path: it walks every recent transcript.
@@ -4522,15 +4523,6 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
                 else _measure_facade.time.monotonic() + budgets["counted_seconds"]))
         except Exception:
             pass
-    try:
-        if drain == "full":
-            _measure_facade._upgrade_drain_mark_done(conn)
-        elif not rebuild:
-            _measure_facade._upgrade_drain_after_pass(
-                conn, backlog=bool(parse_truncated or daily_truncated or counted_pending))
-    except Exception:
-        pass
-
     # ATOMICITY INVARIANT: _rebuild_aggregate_tables does DELETE-then-reINSERT and must
     # NOT commit internally. The whole wipe+rebuild is one transaction that commits only on
     # the next line, so a _HookTimeout (BaseException) mid-rebuild rolls back cleanly and the
@@ -4538,6 +4530,13 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
     # re-INSERTs -- a half-applied commit would leave the dashboard reading empty aggregates.
     _measure_facade._rebuild_aggregate_tables(conn)
     conn.commit()
+    try:
+        if drain == "full" and not (parse_truncated or daily_truncated or counted_pending):
+            _measure_facade._upgrade_drain_mark_done(conn)
+        elif drain != "full" and not rebuild:
+            _measure_facade._upgrade_drain_after_pass(conn, backlog=bool(parse_truncated or daily_truncated or counted_pending))
+    except Exception:
+        pass
     # Ensure schema version is set (idempotent, also set in migration and rebuild)
     conn.execute("PRAGMA user_version = 3")
     conn.commit()  # PRAGMA write must be committed explicitly

@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, baseline_provenance, own_price_card, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split
+from . import _compat, baseline_provenance, own_price_card, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split, upgrade_drain_control
 
 def _counted_event_utc(ts):
     """Convert local event timestamps to UTC, respecting local DST."""
@@ -811,6 +811,9 @@ def _counted_marker_backfill(conn, max_files=None,
         processed_any = False
         last = cursor
         for sp in paths:
+            if processed_any and _measure_facade._collect_drain_mode() == "full":
+                upgrade_drain_control.commit_marker_cursor(conn, _measure_facade._COUNTED_META_MARKER_CURSOR, last)
+                processed_any = False
             if sp <= cursor:
                 continue
             if max_files is not None and stats["files_scanned"] >= max_files:
@@ -899,8 +902,7 @@ def _counted_marker_backfill(conn, max_files=None,
                          "VALUES (?, '1')", (_measure_facade._COUNTED_META_MARKER_DONE,))
             stats["done"] = True
         else:
-            conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
-                         "VALUES (?, ?)", (_measure_facade._COUNTED_META_MARKER_CURSOR, last))
+            upgrade_drain_control.commit_marker_cursor(conn, _measure_facade._COUNTED_META_MARKER_CURSOR, last)
         conn.commit()
         if not quiet and stats["rows_written"]:
             print(f"[Token Optimizer] counted-cumulative marker backfill: "
@@ -918,24 +920,7 @@ def _purge_counted_without_transcripts(conn):
 
 def _counted_backfill_all(conn, quiet=None):
     """Finish refresh attempts; unverifiable history stays quarantined."""
-    _measure_facade = _compat.facade()
-    stats = _measure_facade._update_counted_cumulative(
-        conn, max_sessions=10**9, deadline_seconds=None, quiet=quiet)
-    marker_total = {"files_scanned": 0, "rows_written": 0, "done": False}
-    while True:
-        marker = _measure_facade._counted_marker_backfill(
-            conn, max_files=500, deadline_seconds=None, quiet=quiet)
-        marker_total["files_scanned"] += int(marker.get("files_scanned", 0) or 0)
-        marker_total["rows_written"] += int(marker.get("rows_written", 0) or 0)
-        marker_total["done"] = bool(marker.get("done"))
-        if marker.get("done") or not marker.get("files_scanned"):
-            break
-    stats.update({"marker_files_scanned": marker_total["files_scanned"],
-                  "marker_rows_written": marker_total["rows_written"],
-                  "marker_backfill_done": marker_total["done"],
-                  "rows_removed_no_transcript": _measure_facade._purge_counted_without_transcripts(conn)})
-    stats["pricing_coverage"] = _measure_facade._counted_rollup_rows(_measure_facade._counted_stored_rows(conn).values(), conn)
-    return stats
+    return upgrade_drain_control.counted_backfill_all(_compat.facade(), conn, quiet)
 
 
 def _counted_session_cache_mix(conn, session_uuid, tier_data, memo, rate_key=None):

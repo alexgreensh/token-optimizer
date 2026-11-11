@@ -16,7 +16,7 @@ from datetime import timedelta
 
 import pytest
 
-from test_counted_cumulative import m, _db, _transcript, _add_event, _local_iso, SID
+from test_counted_cumulative import m, _db, _transcript, _add_event, _local_iso, SID, SCRIPTS
 from test_savings_render import render
 from test_savings_card_young_install import measure  # noqa: F401  (fixture)
 from test_savings_display_cents import patch as patch_savings, snapshot
@@ -104,16 +104,47 @@ def test_stale_lock_from_dead_child_is_reclaimed(m, tmp_path, monkeypatch):
     monkeypatch.setattr(m, "_spawn_upgrade_drain", lambda: True)
     (tmp_path / "snap").mkdir(parents=True, exist_ok=True)
     lock = tmp_path / "snap" / m._UPGRADE_DRAIN_LOCK_NAME
-    lock.write_text("1")
+    lock.write_text("2147483647")
     old = lock.stat().st_mtime - m._UPGRADE_DRAIN_LOCK_STALE_SECONDS - 10
     os.utime(lock, (old, old))
     with sqlite3.connect(str(db)) as conn:
         assert m._upgrade_drain_after_pass(conn, backlog=True) is True
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def test_drain_spawn_is_detached_and_windowless(m, tmp_path, monkeypatch):
     monkeypatch.setattr(m, "SNAPSHOT_DIR", tmp_path / "snap")
     (tmp_path / "snap").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "snap" / m._UPGRADE_DRAIN_LOCK_NAME).write_text(str(os.getpid()))
     seen = {}
 
     class Child:
@@ -133,6 +164,10 @@ def test_drain_spawn_is_detached_and_windowless(m, tmp_path, monkeypatch):
     if os.name != "nt":
         assert seen["start_new_session"] is True
     assert (tmp_path / "snap" / m._UPGRADE_DRAIN_LOCK_NAME).read_text() == "4242"
+
+
+
+
 
 
 def test_drain_mode_by_caller(m, monkeypatch):
@@ -186,6 +221,26 @@ def test_hook_pass_hands_capped_backlog_to_the_drain(tmp_path, monkeypatch):
     assert calls == [True]
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ---- re-measuring states ------------------------------------------------------
 
 def test_all_time_reports_sessions_awaiting_rescore(m, tmp_path, monkeypatch):
@@ -228,6 +283,7 @@ def test_dashboard_card_labels_subtotal_in_progress(measure, monkeypatch):
     card = render(measure._dashboard_savings_data()).split("savings-history")[1]
     # The page shows the value so far, never a "measuring" placeholder.
     assert "Re-measuring" not in card and "so far" in card
+    assert "Updating history (12 sessions left)" in card
     monkeypatch.setattr(measure, "_counted_cumulative_summary", lambda **kw: _counted())
     card = render(measure._dashboard_savings_data()).split("savings-history")[1]
     assert "so far" not in card

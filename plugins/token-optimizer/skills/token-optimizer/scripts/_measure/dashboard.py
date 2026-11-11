@@ -3776,11 +3776,8 @@ def _status_bar_read_cache(session_id):
 def _status_bar_start_refresh(session_id):
     """Start ONE detached `status-bar --sync` child. Returns True if started.
 
-    A lock file (O_EXCL) makes concurrent callers start at most one child; the
-    child removes it when done, and a lock older than 120 s counts as abandoned.
-    The lock holds a random owner token, passed to the child in the
-    TO_STATUS_BAR_LOCK_TOKEN environment variable; the child deletes the lock
-    only while it still holds that token.
+    A guarded marker holds an owner token and PID. The child adopts it before
+    computing and removes it only while it still owns that token.
     """
     _measure_facade = _compat.facade()
     token = _measure_facade._status_bar_acquire_lock(session_id)
@@ -3801,101 +3798,13 @@ def _status_bar_start_refresh(session_id):
 
 
 def _status_bar_acquire_lock(session_id):
-    """Take the session's refresh lock; its owner token, or None when it is held."""
-    _measure_facade = _compat.facade()
-    lock = _measure_facade._status_bar_lock_path(session_id)
-    token = _measure_facade.os.urandom(16).hex()
-    fd = None
-    try:
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = _measure_facade.os.open(str(lock), _measure_facade.os.O_CREAT | _measure_facade.os.O_EXCL | _measure_facade.os.O_WRONLY)
-        except FileExistsError:
-            if _measure_facade.time.time() - lock.stat().st_mtime < _measure_facade._STATUS_BAR_LOCK_STALE_S:
-                return None
-            # Take an abandoned lock over by renaming it aside. Rename is atomic,
-            # so when two callers race only one moves the file; the other gets
-            # FileNotFoundError and backs off instead of deleting the winner's lock.
-            quarantine = lock.with_name(
-                f"{lock.name}.{_measure_facade.os.getpid()}.{_measure_facade.time.time_ns()}.stale")
-            try:
-                _measure_facade.os.rename(str(lock), str(quarantine))
-            except OSError:
-                return None
-            try:
-                moved_fresh = (_measure_facade.time.time() - _measure_facade.os.stat(str(quarantine)).st_mtime
-                               < _measure_facade._STATUS_BAR_LOCK_STALE_S)
-            except OSError:
-                moved_fresh = False
-            if moved_fresh:
-                # Another caller replaced the stale lock between our check and the
-                # rename, so we moved its live lock. Put it back without
-                # overwriting anything (link fails if the name is taken) and back off.
-                _measure_facade._status_bar_put_back(quarantine, lock)
-                try:
-                    quarantine.unlink()
-                except OSError:
-                    pass
-                return None
-            try:
-                quarantine.unlink()
-            except OSError:
-                pass
-            try:
-                fd = _measure_facade.os.open(str(lock), _measure_facade.os.O_CREAT | _measure_facade.os.O_EXCL | _measure_facade.os.O_WRONLY)
-            except FileExistsError:
-                return None
-        written = _measure_facade.os.write(fd, token.encode("ascii"))
-        _measure_facade.os.close(fd)
-        fd = None
-        if written != len(token):
-            # A short write leaves a lock nobody can prove they own: remove ours now.
-            try:
-                lock.unlink()
-            except OSError:
-                pass
-            return None
-        return token
-    except OSError:
-        if fd is not None:
-            try:
-                _measure_facade.os.close(fd)
-            except OSError:
-                pass
-            try:
-                lock.unlink()
-            except OSError:
-                pass
-        return None
+    from . import status_bar_lock
+    return status_bar_lock.acquire(_compat.facade(), session_id)
 
 
 def _status_bar_release_lock(session_id, token):
-    """Delete the refresh lock only when it still holds `token`. Never raises.
-
-    The lock is moved aside first (one atomic rename) and only then checked, so a
-    lock another process created after ours is never deleted by mistake: when the
-    moved file is not ours it goes back, unless a newer lock already took its name.
-    """
-    _measure_facade = _compat.facade()
-    if not token:
-        return False
-    lock = _measure_facade._status_bar_lock_path(session_id)
-    aside = lock.with_name(f"{lock.name}.{_measure_facade.os.getpid()}.{_measure_facade.time.time_ns()}.release")
-    try:
-        _measure_facade.os.rename(str(lock), str(aside))
-    except OSError:
-        return False
-    try:
-        mine = aside.read_text(encoding="ascii", errors="replace").strip() == token
-    except OSError:
-        mine = False
-    if not mine:
-        _measure_facade._status_bar_put_back(aside, lock)
-    try:
-        aside.unlink()
-    except OSError:
-        pass
-    return mine
+    from . import status_bar_lock
+    return status_bar_lock.release(_compat.facade(), session_id, token)
 
 
 def _status_bar_put_back(aside, lock):
@@ -4358,6 +4267,10 @@ def _status_bar_cli(args):
     child = sync and "--release-lock" in args
     sid = _measure_facade.sanitize_session_id(session)
     token = _measure_facade.os.environ.get(_measure_facade._STATUS_BAR_LOCK_TOKEN_ENV, "") if child else None
+    if child:
+        from . import status_bar_lock
+        if not status_bar_lock.adopt(_measure_facade, sid, token):
+            token, sync = None, False
     if sync and not child:
         # A direct --sync takes the same lock as the background refresh; when one is
         # already running, this answers from the cache instead of computing twice.

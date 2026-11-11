@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, fixture_context, counted_cap, archive_void_evidence, compression_fixture_void
+from . import _compat, fixture_context, counted_cap, archive_void_evidence, compression_fixture_void, upgrade_drain_control
 
 
 def _classify_jsonl_is_sidechain(filepath, max_lines=None):
@@ -642,7 +642,7 @@ def _counted_sql(table, template):
 def _connect_trends_db():
     """Open the trends DB with the standard pragmas (no migrations run)."""
     _measure_facade = _compat.facade()
-    conn = _measure_facade.sqlite3.connect(str(_measure_facade.TRENDS_DB))
+    conn = _measure_facade.sqlite3.connect(str(_measure_facade.TRENDS_DB), factory=upgrade_drain_control.SessionLogConnection)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     # Auto-checkpoint every 100 pages (~400 KiB) instead of 1000 (~4 MiB).
@@ -1353,7 +1353,7 @@ def _backfill_daily_usage(conn, days=None, budget_seconds=None):
     if not rows:
         return 0
     deadline = _measure_facade.time.monotonic() + budget_seconds
-    updates = []
+    updates = upgrade_drain_control.DailyUpdates(conn, _measure_facade)
     live_owners = _measure_facade._live_usage_owners(conn)
     for jsonl_path, stored_date in rows:
         if _measure_facade.time.monotonic() > deadline:
@@ -1386,26 +1386,9 @@ def _backfill_daily_usage(conn, days=None, budget_seconds=None):
                         _measure_facade.json.dumps(evidence["calls"]),
                         _measure_facade.json.dumps(evidence["metrics"]),
                         jsonl_path))
-    if not updates:
-        return 0
-
-    def batch_update():
-        _measure_facade = _compat.facade()
-        conn.executemany(
-            """UPDATE session_log
-               SET daily_usage_json = ?,
-                   session_uuid = COALESCE(session_uuid, ?),
-                   first_activity_day = ?, last_activity_day = ?, date = ?,
-                   parent_daily_usage_json = ?, daily_calls_json = ?,
-                   daily_metrics_json = ?
-               WHERE jsonl_path = ?""",
-            updates,
-        )
-        conn.commit()
-        return len(updates)
-
-    result = _measure_facade._retry_db_operation(conn, batch_update)
-    return result if result is not None else 0
+    if updates.pending and _measure_facade._retry_db_operation(conn, updates.flush) is None:
+        raise _measure_facade.sqlite3.OperationalError("database is locked")
+    return updates.count
 
 
 def _extract_session_uuid(session_id):

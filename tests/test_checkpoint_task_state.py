@@ -214,14 +214,15 @@ def test_objective_constraints_survive_outside_the_tail_window(m):
     assert state["task_state"]["user_constraints"][0]["source"]["id"] == "original"
 
 
-def test_objective_uses_the_hard_tier_cap_and_still_renders(m):
+def test_objective_is_shortened_in_rendered_checkpoint(m):
     mod, _cp, tmp = m
     prompt = "Objective detail " * 110
     state = mod._extract_session_state(str(_transcript(tmp, [_user(prompt)])))
     objective = state["task_state"]["objective"]["text"]
     assert len(objective) == 1500
     rendered = mod._render_checkpoint_sections(mod._checkpoint_sections(state))
-    assert objective in rendered
+    assert objective[:200] in rendered
+    assert objective not in rendered
 
 
 @pytest.mark.parametrize("reads", [1, 4])
@@ -349,7 +350,7 @@ def test_task_state_survives_compact_capture_redaction_path(m):
     assert sidecar["task_state"]["version"] == 2
     assert sidecar["task_state"]["next_action"]["text"] == "write migration"
     md = Path(out).read_text(encoding="utf-8")
-    assert "## Objective" in md
+    assert "## Current direction" in md
     assert "## Next Action" in md
     assert "Migrate settings to the new schema" in md
     assert "Never drop user prefs" in md
@@ -627,3 +628,97 @@ def test_codex_extract_session_state_builds_task_state(m, tmp_path):
     assert failed, ts["checks"]
     assert any("pytest" in (c.get("target") or "") or "exec" in (c.get("tool") or "").lower()
                for c in failed)
+
+
+def test_current_direction_across_compactions_and_short_tail(m):
+    mod, _, tmp = m
+    records = [_user('Build the original kickoff deck.', uuid='first'),
+               _user('Draft the initial outline.'), _user('Review the first draft.'),
+               _user('Never touch production credentials.', uuid='rule'),
+               {'type': 'system', 'subtype': 'compact_boundary'},
+               _user('Prepare the release and verify every package.', uuid='release'),
+               {'type': 'system', 'subtype': 'compact_boundary'},
+               _user('ok'), _user('status plz'), _user('continue'), _user('/help'),
+               _user('remove'), _user([{'type': 'image', 'source': {}}])]
+    state = mod._extract_session_state(str(_transcript(tmp, records)), tail_lines=4)
+    text = mod._render_checkpoint_sections(mod._checkpoint_sections(state))
+    direction = text.split('## Current direction', 1)[1].split('\n\n', 1)[0]
+    assert 'Prepare the release' in direction
+    assert 'Build the original' not in direction
+    assert 'Never touch production credentials.' in text
+    assert 'Session began with:' in text
+
+
+def test_current_direction_redaction_and_latest_constraints(m):
+    mod, _, tmp = m
+    records = [_user('Fix the parser, token sk-ant-api03-' + 'a' * 95, uuid='secret')]
+    records += [_user(f'Never modify protected file number {i}.', uuid=str(i)) for i in range(10)]
+    records += [_user('Never modify protected file number 9.', uuid='newest'), _user('yes')]
+    state = mod._extract_session_state(str(_transcript(tmp, records)), tail_lines=2)
+    ts = state['task_state']
+    assert len(ts['user_constraints']) == 8
+    assert any(c['source']['id'] == 'newest' for c in ts['user_constraints'])
+    assert all('file number 0' not in c['text'] for c in ts['user_constraints'])
+    assert 'sk-ant-api03-' not in str(ts)
+    rendered = mod._render_checkpoint_sections(mod._checkpoint_sections(state), budget=400)
+    assert '## Current direction' in rendered
+    assert 'Session began with:' not in rendered
+
+
+def test_direction_redacts_before_clipping_and_stays_bounded(m):
+    mod, _, tmp = m
+    secret = 'sk-ant-api03-' + 'a' * 95
+    records = [_user('Please fix the release key ' + secret + '. ' + 'x' * 900)]
+    state = mod._extract_session_state(str(_transcript(tmp, records)))
+    direction = state['task_state']['current_direction'][0]['text']
+    assert secret not in direction
+    assert len(direction) <= 400
+    rendered = mod._render_checkpoint_sections(mod._checkpoint_sections(state))
+    sections = mod._checkpoint_sections(state)
+    old_sections = [s for s in sections if s['title'] not in ('Current direction', 'Session began')]
+    old_sections.insert(0, mod._checkpoint_section('Objective', ['## Objective', state['task_state']['objective']['text']], 'hard', None))
+    assert len(rendered) <= 1.15 * len(mod._render_checkpoint_sections(old_sections))
+
+
+def test_bounded_direction_scan_keeps_recent_and_skips_oversized_lines(m):
+    import time
+    from _measure import checkpoint_direction
+    from credential_patterns import redact_credentials
+    import checkpoint_state
+    mod, _, tmp = m
+    records = [_user('First task and never edit the old database.'),
+               {'type': 'progress', 'padding': 'x' * (12 * 1024 * 1024)},
+               _user('Build the latest release.'), _user('continue')]
+    path = _transcript(tmp, records)
+    start = time.perf_counter()
+    first, direction, constraints = checkpoint_direction.scan(
+        path, mod._task_user_text, redact_credentials, checkpoint_state,
+        mod.codex_session.MAX_JSONL_LINE_CHARS)
+    assert time.perf_counter() - start < 3.0
+    assert first is None
+    assert direction[-1]['text'] == 'Build the latest release.'
+    assert not constraints
+
+
+def test_cached_constraints_are_merged_with_newest_winning(m):
+    from _measure import checkpoint_direction
+    cached = [{'text': 'Never edit the old database.', 'source': {'id': 'old'}},
+              {'text': 'Always run tests.', 'source': {'id': 'old'}}]
+    recent = [{'text': 'Always run tests.', 'source': {'id': 'new'}},
+              {'text': 'Never touch production.', 'source': {'id': 'new'}}]
+    result = checkpoint_direction.merge_constraints(recent, cached)
+    assert [c['text'] for c in result] == ['Never edit the old database.', 'Always run tests.', 'Never touch production.']
+    assert result[1]['source']['id'] == 'new'
+
+
+def test_capture_recovers_cached_rules_past_window(m):
+    mod, _, tmp = m
+    path = _transcript(tmp, [_user('Never edit the production database.')])
+    assert mod.compact_capture(transcript_path=str(path), session_id=SID, trigger='stop')
+    with path.open('a') as stream:
+        stream.write(json.dumps({'type': 'progress', 'padding': 'x' * (9 * 1024 * 1024)}) + '\n')
+        stream.write(json.dumps(_user('Ship the new release.')) + '\n')
+    out = mod.compact_capture(transcript_path=str(path), session_id=SID, trigger='stop')
+    state = json.loads(Path(out).with_suffix('.json').read_text())['task_state']
+    assert any('Never edit the production database' in c['text'] for c in state['user_constraints'])
+    assert state['current_direction'][-1]['text'] == 'Ship the new release.'

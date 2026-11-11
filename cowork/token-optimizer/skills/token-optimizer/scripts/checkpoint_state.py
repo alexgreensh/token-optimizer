@@ -27,7 +27,7 @@ TASK_STATE_VERSION = 2
 # Bounds: the sidecar is JSON and the .md renderer applies its own budget, but
 # the extractor itself must stay small enough to serialize cheaply on every
 # Stop/SessionEnd hook fire.
-_MAX_CONSTRAINTS = 12
+_MAX_CONSTRAINTS = 8
 _MAX_REQUIREMENTS = 20
 _MAX_FACTS = 8
 _MAX_CHECKS = 15
@@ -44,7 +44,7 @@ _CONSTRAINT_RE = re.compile(
     r"\b(?:must(?:n['’]t|\s+not)?|never|always|do(?:es)?\s+not|don['’]t|"
     r"should(?:\s+not|n['’]t)?|cannot|can['’]t|won['’]t|shall|required|"
     r"requirement|constraint|forbidden|avoid|only|no\s+more\s+than|"
-    r"at\s+most|exactly|without|must\s+keep|do\s+not\s+dare)\b",
+    r"at\s+most|exactly|without|cap|no|must\s+keep|do\s+not\s+dare)\b",
     re.IGNORECASE,
 )
 

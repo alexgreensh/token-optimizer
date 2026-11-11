@@ -109,8 +109,9 @@ function savingsStoryBands(data) {
            mUsd: mUsd, eUsd: eUsd, totalUsd: totalUsd, totalTok: totalTok };
 }
 
-function savingsStoryHtml(data) {
+function savingsStoryHtml(data, extras) {
   if (!savingsStoryOn(data)) return '';
+  extras = extras || {};
   var f = savingsStoryFmt(), num = f.num, has = f.has, usd = f.usd, tok = f.tok, pct = f.pct, count = f.count;
   var s = data.savings || {};
   var se = s.session_effect || {};
@@ -215,12 +216,46 @@ function savingsStoryHtml(data) {
     var soFarAll = aiP.remeasuring === true || aiP.routing_pending === true;
     var left = Math.max(num(cp.remeasuring_sessions), num(aiP.remeasuring_sessions), num(aiP.routing_pending_sessions), mr.evidence === 'pending' ? num(mr.pending_sessions) : 0);
     var soFar = function(on) { return on ? ', so far' : ''; };
+    // Hover cards on the three hero numbers: what the number is made of and
+    // what to do about it. Opens on hover and focus, toggles on tap.
+    function tipCard(id, title, lines) {
+      return '<span class="st-tipcard" role="tooltip" id="' + id + '">' +
+        '<span class="st-tipcard__t">' + esc(title) + '</span>' +
+        lines.map(function(l) {
+          return '<span class="st-tipcard__l' + (l.note ? ' st-tipcard__note' : '') + '">' + l.html + '</span>';
+        }).join('') + '</span>';
+    }
+    var tipTotalLines = [{ html: 'Measured and estimated savings ' + usd(totalUsd) }];
+    if (num(as.reread_usd) > 0) tipTotalLines.push({ html: 'Of which re-reads avoided ' + usd(as.reread_usd) });
+    if (routing30 > 0) tipTotalLines.push({ html: 'Model routing (estimate) ' + usd(routing30) });
+    tipTotalLines.push({ html: 'At API prices. On a subscription this shows up as limit headroom, not a bill.', note: true });
+    if (num(mr.potential_cost_usd) > 0) {
+      var tipTarget = /sonnet/i.test(String(mr.target_model || '')) ? 'Sonnet' : /haiku/i.test(String(mr.target_model || '')) ? 'Haiku' : 'a lighter model';
+      tipTotalLines.push({ html: 'Want more: route routine work to ' + tipTarget + ', about ' + usd(mr.potential_cost_usd) + ' more per ' + days + ' days.' });
+    }
+    var tipTokLines = [{ html: 'What it means: text ' + esc(data.runtime_label || 'Claude Code') + ' never had to read again, so each turn was lighter and your window lasted longer.', note: true }];
+    var tipTokParts = [];
+    if (num(th.reread_tokens) > 0) tipTokParts.push(tok(th.reread_tokens) + ' re-reads avoided');
+    var tipRemoved = has(th.context_removed_tokens) ? num(th.context_removed_tokens) + num(th.output_not_generated_tokens) : num(th.removed_tokens);
+    if (tipRemoved > 0) tipTokParts.push(tok(tipRemoved) + ' removed from context');
+    if (num(th.reload_avoided_tokens) > 0) tipTokParts.push(tok(th.reload_avoided_tokens) + ' not reloaded after compaction');
+    if (tipTokParts.length) tipTokLines.push({ html: 'Mostly from: ' + tipTokParts.join(', ') + '.' });
+    var tipSinceLines = [];
+    if (SIh && SIh.measured > 0) tipSinceLines.push({ html: 'Measured: ' + usd(SIh.measured) });
+    if (SIh && SIh.estimated > 0) tipSinceLines.push({ html: 'Estimated: ' + usd(SIh.estimated) });
+    if (SIh && SIh.routing > 0) tipSinceLines.push({ html: 'Model routing (estimate): ' + usd(SIh.routing) });
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">What Token Optimizer saved</h2>' +
       '<div class="st-mega__row st-mega__row--hero">' +
-        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(bigTotal) + '</span><span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' +
-        (SIh && SIh.all > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(SIh.all) + '</span><span class="st-mega__unit">saved since you installed' + soFar(soFarAll) + '</span></div>' : '') +
-        (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context in ' + days + ' days' + soFar(cp.remeasuring === true) + '</span></div>' : '') +
+        '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-total">' + usd(bigTotal) + '</button>' +
+          tipCard('st-tip-total', 'What makes up ' + usd(bigTotal), tipTotalLines) +
+          '<span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' +
+        (SIh && SIh.all > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-since">' + usd(SIh.all) + '</button>' +
+          tipCard('st-tip-since', 'Since ' + esc(SIh.date || 'install'), tipSinceLines) +
+          '<span class="st-mega__unit">saved since you installed' + soFar(soFarAll) + '</span></div>' : '') +
+        (totalTok > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--tok st-tip" aria-describedby="st-tip-tokens">' + tok(totalTok) + '</button>' +
+          tipCard('st-tip-tokens', tok(totalTok) + ' tokens kept out of context', tipTokLines) +
+          '<span class="st-mega__unit">tokens kept out of context in ' + days + ' days' + soFar(cp.remeasuring === true) + '</span></div>' : '') +
       '</div>' +
       (soFar30 || soFarAll ? '<p class="st-lead st-progress">Updating your history after an upgrade' + (left > 0 ? ' (' + count(left) + ' session' + (left === 1 ? '' : 's') + ' left)' : '') + '. These totals are in progress and will change when it finishes.</p>' : '') +
       f.fold('How this is calculated', method + (SIh && SIh.all > 0 ? savingsSinceInstallBody(data, SIh) : '')) +
@@ -232,7 +267,7 @@ function savingsStoryHtml(data) {
   out += savingsLimitsHtml(data);
 
   // ---- 1c. Still on the table: opportunity, never part of a savings total ----
-  out += savingsOnTableHtml(data);
+  out += savingsOnTableHtml(data, extras);
 
   // ---- 2. The re-read card ----
   var cards = [];
@@ -241,8 +276,9 @@ function savingsStoryHtml(data) {
     var carryN = rereads / removedOnce;
     cards.push('<div class="card st-card st-reread">' +
       '<h2 class="st-h">' + (as.reread_available !== false && has(as.reread_usd) && num(as.reread_usd) > 0 && bigTotal > 0 ? usd(as.reread_usd) + ' of your ' + usd(bigTotal) + ' came from re-reads avoided' : 'Removed once, saved on every later turn') + '</h2>' +
-      '<div class="st-reread__body"><p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + Math.round(carryN) + '&times;</span><span class="st-mega__unit">re-reads avoided per token removed</span></p>' +
-      '<p class="st-lead"><strong>' + tok(removedOnce) + ' priced tokens removed</strong> became <strong>' + tok(rereads) + ' tokens not sent</strong> on later reads' + (has(cp.reread_usd) ? ', worth ' + usd(cp.reread_usd) + ' at API rates' : '') + '.</p></div>' +
+      '<div class="st-reread__body"><p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + Math.round(carryN) + '&times;</span><span class="st-mega__unit">each token removed was not re-read ' + Math.round(carryN) + ' times</span></p>' +
+      '<p class="st-lead">Removing <strong>' + tok(removedOnce) + ' tokens</strong> once kept <strong>' + tok(rereads) + ' tokens</strong> from being re-sent on later turns' +
+        (has(cp.reread_usd) ? '. Worth ' + usd(cp.reread_usd) + ' at API prices.' : '.') + '</p></div>' +
       '</div>');
   }
   if (cards.length) out += '<div class="st-grid">' + cards.join('') + '</div>';
@@ -335,7 +371,7 @@ function savingsBaselineProgressHtml(ba) {
   } else {
     return '';
   }
-  return '<div class="card st-card st-baseline-progress"><h2 class="st-h">Your transformation</h2><p class="st-lead">' + line + '</p></div>';
+  return '<div class="card st-card st-baseline-progress"><h2 class="st-h">What the same work used to cost</h2><p class="st-lead">' + line + '</p></div>';
 }
 
 // Transformation: what this month would cost without Token Optimizer, against
@@ -347,8 +383,15 @@ function savingsTransformationHtml(data) {
   var share = has(ba.transformation_pct) && num(ba.transformation_pct) > 0 ? Math.round(num(ba.transformation_pct) * 100) : 0;
   // Where the "before" came from. Older payloads carry no provenance and keep the fixed sentence.
   var prov = ba.baseline_provenance || {};
-  // The lead states the baseline; what it understates is spelled out in the fold.
-  var against = prov.lead ? esc(prov.lead) : 'compared with your own baseline from before you installed.';
+  // Friendly dates inside the provenance sentence: "(2026-03-17 to 2026-04-16)"
+  // becomes "(Mar 17 to Apr 16)".
+  var leadSrc = String(prov.lead || 'compared with your earliest tracked month.');
+  var friendlyLead = leadSrc.replace(/(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})/g, function(m, a, b) {
+    return f.day(a) + ' to ' + f.day(b);
+  });
+  var desc = friendlyLead.replace(/^compared with /i, '').replace(/\.$/, '');
+  var lead = 'This month&rsquo;s work would have cost ' + usd(ba.monthly_savings_usd) + ' more at what each request cost you in ' +
+    esc(desc) + (share > 0 ? '. That is ' + share + '% saved.' : '.');
   // A work-normalized figure prices both periods at one fixed rate card, so its
   // "now" side is not the user's spend: name the card and show the exact-card cost.
   var wp = ba.session_weight_pool || {}, fr = wp.flat_rates || null;
@@ -365,10 +408,9 @@ function savingsTransformationHtml(data) {
     (ba.before_mix_label ? '<p>' + (prov.mix_note ? 'Baseline model mix: ' + esc(ba.before_mix_label) + ', ' + esc(prov.mix_note) : 'Baseline mix before you installed: ' + esc(ba.before_mix_label)) + '. Now: ' + esc(ba.after_mix_label || 'your current mix') + '.</p>' : '') +
     (ba.breakdown_caveat ? '<p>' + esc(ba.breakdown_caveat) + '</p>' : '');
   return '<div class="card st-card st-transform">' +
-    '<h2 class="st-h">Your transformation</h2>' +
+    '<h2 class="st-h">What the same work used to cost</h2>' +
     '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(ba.monthly_savings_usd) + '<span class="st-mega__per"> a month</span></span>' +
-      '</p><p class="st-lead">' + (prov.claim ? esc(prov.claim) : 'Without Token Optimizer, working the way you work now would cost you this much more, ' + against) +
-    (share > 0 ? ' That is ' + share + '% of what this work would have cost.' : '') + '</p>' +
+      '</p><p class="st-lead">' + lead + '</p>' +
     f.fold('How this is calculated', method) +
     '</div>';
 }
@@ -389,22 +431,20 @@ function savingsLimitWindows(rw, ratio, versus) {
   if (!rows.length) { rows = (Array.isArray(rw.last_known_windows) ? rw.last_known_windows : []).filter(ok); stored = rows.length > 0; }
   if (!rows.length) return '';
   // One row per window: name, a bar (solid = used now, striped = without
-  // Token Optimizer) and the two numbers as stat blocks.
+  // Token Optimizer) and the two numbers as stat blocks. The "without" figure
+  // is shown plainly, never as an over-the-limit verdict.
   var html = '<div class="st-limits">' + rows.map(function(w) {
     var used = num(w.used_pct), rawWithout = used * ratio;
     var name = names[w.key] || ((w.label || 'window') + ' limit');
     name = name.charAt(0).toUpperCase() + name.slice(1);
-    var over = ratio > 0 && rawWithout > 100;
-    var without = ratio > 0 ? Math.min(100, Math.round(rawWithout)) : 0;
-    var label = Math.round(used) + '% used now' + (ratio > 0 ? (over ? ', over the limit ' + vs : ', ' + without + '% ' + vs) : '');
+    var without = ratio > 0 ? Math.round(rawWithout) : 0;
+    var label = Math.round(used) + '% used now' + (ratio > 0 ? ', about ' + without + '% ' + vs : '');
     var stat = ratio > 0
-      ? (over
-        ? '<span class="st-limit__stat st-limit__stat--over">over the limit ' + vs + '</span>'
-        : '<span class="st-limit__stat"><span class="st-limit__num">' + without + '%</span> ' + vs + '</span>')
+      ? '<span class="st-limit__stat"><span class="st-limit__num">' + without + '%</span> ' + vs + '</span>'
       : '';
     return '<div class="st-limit"><span class="st-limit__name">' + esc(name) + '</span>' +
       '<span class="st-limit__meter" role="img" aria-label="' + esc(label) + '">' +
-      (ratio > 0 ? '<span class="st-limit__ghost" style="width:' + without + '%"></span>' : '') +
+      (ratio > 0 ? '<span class="st-limit__ghost" style="width:' + Math.min(100, without) + '%"></span>' : '') +
       '<span class="st-limit__fill" style="width:' + Math.round(used) + '%"></span></span>' +
       '<span class="st-limit__stat"><span class="st-limit__used">' + Math.round(used) + '%</span> used now</span>' + stat + '</div>';
   }).join('') + '</div>';
@@ -416,6 +456,9 @@ function savingsLimitWindows(rw, ratio, versus) {
   return html;
 }
 
+// The weekly limit card: how much further your limit goes with Token Optimizer.
+// The headline is the cost ratio minus one ("more work fits"), never the
+// share-of-cost-avoided figure, which belongs to the transformation card.
 function savingsLimitsHtml(data) {
   var f = savingsStoryFmt(), num = f.num;
   var rw = (data && data.runway) || null;
@@ -423,24 +466,66 @@ function savingsLimitsHtml(data) {
   var ba = ((data && data.savings) || {}).before_after || {};
   var actual = num(ba.actual_monthly_usd), before = num(ba.counterfactual_monthly_usd);
   var ratio = ba.transformation_state === 'ok' && actual > 0 && before > actual ? before / actual : 0;
-  var extra = ratio > 1 ? Math.round((1 - 1 / ratio) * 100) : 0;
-  var versus = (ba.baseline_provenance || {}).versus || '';
-  var windows = savingsLimitWindows(rw, ratio, versus);
-  if (!extra && !windows) return '';
+  if (!(ratio > 1)) return '';
+  var pctGain = Math.round((ratio - 1) * 100);
+  // Weekly window first; the 5-hour window is the fallback when no weekly
+  // reading exists. Live meter readings beat the last stored one.
+  function okWin(w) {
+    return w && w.used_pct != null && isFinite(Number(w.used_pct)) && Number(w.used_pct) >= 0 && Number(w.used_pct) <= 100;
+  }
+  var live = (Array.isArray(rw.windows) ? rw.windows : []).filter(okWin);
+  var stored = live.length ? [] : (Array.isArray(rw.last_known_windows) ? rw.last_known_windows : []).filter(okWin);
+  var pool = live.length ? live : stored;
+  var win = pool.filter(function(w) { return w.key === 'seven_day'; })[0] || pool[0] || null;
+  var used = win ? num(win.used_pct) : 0;
+  var rawWithout = used * ratio;
+  var withSuffix = win && win.key === 'five_hour' ? 'used in this 5-hour window' : 'used this week';
+  var withoutTxt = rawWithout >= 100
+    ? 'about ' + Math.round(rawWithout) + '%: right at your limit'
+    : Math.round(rawWithout) + '%';
+  var bars = win
+    ? '<div class="st-limitbar"><div class="st-limitbar__label"><span>Without Token Optimizer</span>' +
+        '<span class="st-limitbar__val">' + esc(withoutTxt) + '</span></div>' +
+        '<div class="st-limitbar__track"><span class="st-limitbar__fill st-limitbar__fill--ghost" style="width:' + Math.min(100, Math.round(rawWithout)) + '%"></span></div></div>' +
+      '<div class="st-limitbar"><div class="st-limitbar__label"><span>With Token Optimizer</span>' +
+        '<span class="st-limitbar__val">' + Math.round(used) + '% ' + esc(withSuffix) + '</span></div>' +
+        '<div class="st-limitbar__track"><span class="st-limitbar__fill" style="width:' + Math.round(used) + '%"></span></div></div>'
+    : '<p class="st-sub">No weekly limit reading right now; the comparison comes from your usage history.</p>';
+  // One-line basis: what the "before" side is, with friendly dates.
+  var prov = ba.baseline_provenance || {};
+  var basisSrc = String(prov.lead || 'compared with your earliest tracked month.');
+  var basis = basisSrc.replace(/(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})/g, function(m, a, b) {
+    return f.day(a) + ' to ' + f.day(b);
+  }).replace(/^compared with /i, 'Compared with ').replace(/\.?$/, '.');
+  basis = basis.charAt(0).toUpperCase() + basis.slice(1);
+  // Method fold: the direct measurement first, then what the rest is made of.
   var direct = num(rw.extra_work_pct);
-  var method = '<p>Your usage is a meter reading. The ' + (versus ? 'comparison ' + esc(versus) : 'without-Token-Optimizer comparison') + ' is an estimate using the same before-and-after basis as your transformation: counterfactual monthly cost divided by actual monthly cost, multiplied by the used percentage and capped at 100%. Providers do not publish the exact weighting of usage limits.</p>' +
-    (ratio ? '<p>' + savingsCents(before) + ' divided by ' + savingsCents(actual) + ' = &times;' + ratio.toFixed(2) + '.</p>' : '') +
-    (direct > 0 ? '<p>Separately, directly measured savings imply about ' + direct + '% more work per token.</p>' : '');
+  var provider = (data && data.runtime) === 'codex' ? 'OpenAI' : 'Anthropic';
+  var methodLines = [];
+  if (direct > 0) methodLines.push('Measured directly by Token Optimizer: about ' + (Math.round(direct * 10) / 10) + '% more work per token');
+  methodLines.push('The rest comes from your setup, habits and model choices since your earliest tracked month');
+  methodLines.push(provider + "'s own improvements in that time are not separated out");
+  var method = '<ul>' + methodLines.map(function(l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>';
   return '<div class="card st-card st-limits-card">' +
-    '<div class="st-limits__top"><h2 class="st-h">Your limits go further</h2>' + windows + '</div>' +
-    '<div class="st-limits__bottom">' + (extra ? '<p>&asymp;' + extra + '% more room in your limits</p>' : '') +
-    f.fold('How this is calculated', method) + '</div></div>';
+    '<div class="st-limits__head">' +
+      '<h2 class="st-h">Your limits go further</h2>' +
+      '<p class="st-limits__mega"><span class="st-mega st-mega--usd st-mega--card">' + pctGain + '%</span></p>' +
+      '<p class="st-lead">more work fits in your weekly limit</p>' +
+    '</div>' +
+    '<div class="st-limits__body">' +
+      bars +
+      '<p class="st-sub">' + esc(basis) + '</p>' +
+      (win && !live.length ? '<p class="st-sub">Last reading from your meter history.</p>' : '') +
+      f.fold('How this is calculated', method) +
+    '</div></div>';
 }
 
 // Still on the table: computable opportunities per period, each with one
 // action. A part the data cannot size is left out. Never part of any
 // savings total.
-function savingsOnTableHtml(data) {
+function savingsOnTableHtml(data, extras) {
+  extras = extras || {};
+  var fixes = extras.fixes || {};
   var f = savingsStoryFmt(), num = f.num, has = f.has, usd = f.usd, tok = f.tok, count = f.count;
   var s = (data && data.savings) || {};
   var days = Number(s.period_days) || 30;
@@ -451,27 +536,41 @@ function savingsOnTableHtml(data) {
     var target = String(mr.target_model || '');
     var name = /sonnet/i.test(target) ? 'Sonnet' : /haiku/i.test(target) ? 'Haiku' : 'a lighter model';
     var frac = has(mr.routable_fraction) ? Math.round(num(mr.routable_fraction) * 100) : null;
-    rows.push({ label: 'Model routing', action: 'Send routine work to ' + name, usd: num(mr.potential_cost_usd) });
+    rows.push({ key: 'routing', label: 'Model routing', action: 'Send routine work to ' + name, usd: num(mr.potential_cost_usd), fix: fixes.routing || null });
     how.push('<li>Model routing: if ' + (frac != null ? 'about ' + frac + '% of' : 'part of') + ' your Opus work ran on ' + name + ', new input and output priced at API rates. An assumption about your own work.</li>');
   }
   // The skill-listing row appears only when the user's own history sizes it;
   // with no earlier listing to compare, it is left out (never "Measuring").
   if (lb && typeof lb === 'object' && lb.available && num(lb.cost_usd) > 0) {
     var bm = /^\d{4}-\d{2}$/.test(lb.baseline_month || '') ? new Date(lb.baseline_month + '-01T00:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '';
-    rows.push({ label: 'Skill listing', action: 'Trim the skill list budget', usd: num(lb.cost_usd) });
+    rows.push({ key: 'skills', label: 'Skill listing', action: 'Trim the skill list budget', usd: num(lb.cost_usd), fix: fixes.skills || null });
     how.push('<li>Skill listing: your skill list grew from ' + count(lb.baseline_chars) + ' to ' + count(lb.current_chars) + ' characters per message' + (bm ? ' since ' + esc(bm) : '') +
       '. Trimming it back is worth the ' + tok(lb.growth_tokens) + '-token difference &times; ' + count(lb.calls) + ' calls on this computer in the last ' + count(lb.period_days || days) + ' days &times; each call&rsquo;s cache-read price.</li>');
   }
   if (!rows.length) return '';
   var total = rows.reduce(function(a, r) { return a + r.usd; }, 0);
+  function fixBtn(r) {
+    var fx = r.fix;
+    if (!fx || !fx.view) return '';
+    return '<button type="button" class="st-fix" data-goto-view="' + esc(fx.view) + '"' +
+      (fx.idx != null && fx.idx !== '' ? ' data-goto-idx="' + esc(String(fx.idx)) + '"' : '') + '>Go to fix</button>';
+  }
+  var changeWord = rows.length === 1 ? 'this change' : (rows.length === 2 ? 'these two changes' : 'these ' + rows.length + ' changes');
   return '<div class="card st-table">' +
     '<h2 class="st-h">Still on the table</h2>' +
     '<div class="st-table__body"><p class="st-mega__item st-mega__item--card">' +
-      '<span class="st-mega st-mega--warm st-mega--card">' + usd(total) + '</span><span class="st-mega__unit">more every ' + days + ' days, yours to claim</span></p>' +
+      '<span class="st-mega st-mega--route st-mega--card">' + usd(total) + '</span><span class="st-mega__unit">more every ' + days + ' days if you make ' + changeWord + '</span></p>' +
     '<div class="st-table__rows"><ul class="st-rows st-rows--card">' + rows.map(function(r) {
-      return '<li><span>' + esc(r.label) + '<span class="st-sub">' + esc(r.action) + '</span></span><span class="st-v">' + usd(r.usd) + '</span></li>';
+      return '<li><span>' + esc(r.label) + '<span class="st-sub">' + esc(r.action) + '</span></span>' +
+        '<span class="st-fixcell"><span class="st-v">' + usd(r.usd) + '</span>' + fixBtn(r) + '</span></li>';
     }).join('') + '</ul>' +
     f.fold('How each one is sized', '<ul>' + how.join('') + '</ul><p>Valued at API rates, per ' + days + ' days. None of this is in any savings total.</p>') +
+    (Array.isArray(extras.parts) && extras.parts.length
+      ? f.fold('More changes you could make',
+        '<p>More changes to your setup or habits, beyond Still on the table. None of this is in any total above.</p>' +
+        extras.parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
+        (extras.optimizerHint ? '<p>Run <strong>/token-optimizer</strong> and follow its suggestions to claim it.</p>' : ''))
+      : '') +
     '</div></div></div>';
 }
 

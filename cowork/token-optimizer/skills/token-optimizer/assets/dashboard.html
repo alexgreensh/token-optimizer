@@ -1712,9 +1712,32 @@ input:checked + .slider:before {
    Card titles are headings (no small-caps labels above them). Sans for words,
    mono only for standalone figures; numbers inside sentences use the sans face
    with tabular figures. Secondary lines stay in --c-text-main for readability. */
-html { -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; } h1,h2,h3 { text-wrap: balance; } p,li { text-wrap: pretty; } .st-enter .st > * { animation: st-enter .32s ease-out both; } .st-enter .st > :nth-child(2) { animation-delay:90ms; } .st-enter .st > :nth-child(3) { animation-delay:180ms; } .st-enter .st > :nth-child(4) { animation-delay:270ms; } .st-enter .st > :nth-child(5) { animation-delay:360ms; } .st-enter .st > :nth-child(6) { animation-delay:450ms; } @keyframes st-enter { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } } @media (prefers-reduced-motion:reduce) { .st-enter .st > * { animation:none; } .fold__body { transition:none; } .fold > summary::before { transition:none; } } .st { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); margin-bottom: var(--s-3); } .st .card.wide { grid-column: auto; }
+html { -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; } em, i { font-style: normal; } h1,h2,h3 { text-wrap: balance; } p,li { text-wrap: pretty; } .st-enter .st > * { animation: st-enter .32s ease-out both; } .st-enter .st > :nth-child(2) { animation-delay:90ms; } .st-enter .st > :nth-child(3) { animation-delay:180ms; } .st-enter .st > :nth-child(4) { animation-delay:270ms; } .st-enter .st > :nth-child(5) { animation-delay:360ms; } .st-enter .st > :nth-child(6) { animation-delay:450ms; } @keyframes st-enter { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } } @media (prefers-reduced-motion:reduce) { .st-enter .st > * { animation:none; } .fold__body { transition:none; } .fold > summary::before { transition:none; } } .st { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); margin-bottom: var(--s-3); } .st .card.wide { grid-column: auto; }
 .st .card { padding: var(--s-4); border: 0; box-shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.12); } [data-theme="light"] .st .card { box-shadow: 0 0 0 1px rgba(0,0,0,.08), 0 2px 5px rgba(0,0,0,.06); } .st .st-table { box-shadow: 0 0 0 1px rgba(251,191,36,.4), 0 0 44px rgba(251,191,36,.1); }
-.st .st-limits-card { padding: 12px var(--s-4); } .st-limits__top { display:flex; align-items:baseline; flex-wrap:wrap; gap: 8px 24px; } .st-limits__bottom { display:flex; align-items:center; justify-content:space-between; gap:16px; font-size:14px; } .st-limits__bottom .fold { margin:0; } .st-transform .st-mega__item { gap:0; } .st-transform .st-lead { max-width:65ch; margin-top:8px; } .st-transform .fold, .st-hero .fold { margin-top:0; } .st-table__body > .st-mega__item { margin-top:0; } .st-reread__body { display:flex; align-items:center; gap:32px; } .st-reread__body .st-lead { margin:0; } .st-h { font: 600 20px/1.3 var(--font-sans); color: var(--c-text-main); display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) 12px; }
+.st .st-limits-card { padding: var(--s-4); display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: var(--s-4) var(--s-6, 48px); align-items: start; }
+.st-limits__mega { margin: var(--s-2) 0 0; }
+.st-limits__mega .st-mega { font-size: clamp(64px, 7vw, 104px); }
+.st-limits__body .fold { margin-top: var(--s-3); }
+.st-limitbar { margin-bottom: var(--s-4); }
+.st-limitbar__label { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-2) var(--s-4); flex-wrap: wrap; font: 500 15px/1.4 var(--font-sans); color: var(--c-text-main); margin-bottom: 6px; }
+.st-limitbar__val { color: var(--c-text-main); font-size: 14px; }
+.st-limitbar__track { position: relative; height: 14px; border-radius: 7px; overflow: hidden; background: var(--c-elev-3); box-shadow: inset 0 0 0 1px var(--c-border); }
+.st-limitbar__fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 7px; background: var(--c-accent-cyan); box-shadow: 0 0 10px var(--c-accent-cyan); transition: width 600ms cubic-bezier(0.2, 0, 0, 1); }
+.st-limitbar__fill--ghost { background: repeating-linear-gradient(135deg, var(--c-warning-2) 0 3px, transparent 3px 7px); opacity: 0.75; box-shadow: none; }
+.st-fixcell { display: inline-flex; align-items: center; gap: var(--s-3); flex: none; }
+.st-fix { min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--c-border-strong); background: var(--c-elev-2); color: var(--c-text-main); font: 600 14px/1 var(--font-sans); cursor: pointer; white-space: nowrap; }
+.st-fix:hover { border-color: var(--c-accent-cyan); color: var(--c-accent-cyan); }
+.st-fix:focus-visible { outline: 2px solid var(--c-accent-cyan); outline-offset: 2px; }
+.st-mega__item { position: relative; }
+.st-tip { font: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: help; color: inherit; text-decoration: underline dotted var(--c-text-dim); text-decoration-thickness: 2px; text-underline-offset: 8px; }
+.st-tip:focus-visible { outline: 2px solid var(--c-accent-cyan); outline-offset: 4px; border-radius: 4px; }
+.st-tipcard { position: absolute; left: 0; bottom: calc(100% + 10px); z-index: 60; display: block; width: max-content; max-width: min(340px, 86vw); padding: 12px 14px; background: var(--c-elev-2, #1b1e26); border: 1px solid var(--c-border-strong); border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.45); opacity: 0; visibility: hidden; transform: translateY(4px); transition: opacity .15s ease, transform .15s ease, visibility .15s; pointer-events: none; text-align: left; }
+.st-tipcard__t { display: block; font: 600 15px/1.4 var(--font-sans); color: var(--c-text-main); margin-bottom: 6px; }
+.st-tipcard__l { display: block; font: 400 14px/1.5 var(--font-sans); color: var(--c-text-main); margin-top: 4px; }
+.st-tipcard__note { color: var(--c-text-dim); }
+.st-mega__item:hover .st-tipcard, .st-tip:focus + .st-tipcard, .st-tipcard:hover, .st-tipcard:focus-within, .st-tip--open + .st-tipcard { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
+.st-flash { animation: st-flash 1.6s ease-out; }
+@keyframes st-flash { 0% { box-shadow: 0 0 0 3px var(--c-accent-cyan); } 100% { box-shadow: 0 0 0 0 transparent; } }
 .st-tag { font: 500 13px/1 var(--font-sans); letter-spacing: 0.01em; color: var(--c-text-main); border: 1px solid var(--c-border-strong); border-radius: 999px; padding: 5px 10px; }
 .st-num { font-family: var(--font-sans); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--c-accent-cyan); white-space: nowrap; }
 .st-v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--c-text-main); text-align: right; white-space: nowrap; }
@@ -1753,7 +1776,6 @@ html { -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; 
 .st-mega__row--hero .st-mega { font-size: clamp(60px, 6.2vw, 96px); }
 .st-mega__note { font: 600 17px/1.3 var(--font-sans); color: var(--c-savings); }
 .st-mega--route { color: var(--c-info); text-shadow: 0 0 26px rgba(96,165,250,0.36), 0 0 2px rgba(96,165,250,0.4); }
-.st-mega--warm { color: var(--c-warning-2); text-shadow: 0 0 28px rgba(251,191,36,0.38), 0 0 2px rgba(251,191,36,0.45); }
 .st-table { border: 0; box-shadow: 0 0 0 1px rgba(251,191,36,0.35), 0 0 44px rgba(251,191,36,0.10); }
 [data-theme="light"] .st-table { box-shadow: 0 0 0 1px rgba(150,95,0,.3), 0 2px 5px rgba(0,0,0,.06); }
 .st-table__body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: var(--s-3) var(--s-5); align-items: center; }
@@ -1778,14 +1800,13 @@ html { -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; 
 .st-limit__ghost, .st-limit__fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; transition-property: width; transition-duration: 600ms; transition-timing-function: cubic-bezier(0.2, 0, 0, 1); }
 .st-limit__ghost { background: repeating-linear-gradient(135deg, var(--c-warning-2) 0 3px, transparent 3px 7px); opacity: 0.7; }
 .st-limit__fill { background: var(--c-accent-cyan); box-shadow: 0 0 10px var(--c-accent-cyan); }
-.st-limit__stat { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
-.st-limit__stat--over { color: var(--c-warning-2); font-weight: 600; }
+.st-limit__stat { display: inline-flex; align-items: baseline; gap: 6px; white-space: normal; }
 @media (max-width: 720px) { .st-limit { grid-template-columns: 1fr max-content max-content; } .st-limit__meter { grid-column: 1 / -1; grid-row: 2; } }
 .st-mega__per { font: 500 clamp(20px, 2vw, 26px)/1 var(--font-sans); letter-spacing: 0; text-shadow: none; color: var(--c-text-main); }
 .st-limit__used, .st-limit__num { font: 500 24px/1 var(--font-mono); font-variant-numeric: tabular-nums; text-shadow: 0 0 18px currentColor; } .st-limit__used { color: var(--c-accent-cyan); }
-.st-limit__num { color: var(--c-warning-2); }
+.st-limit__num { color: var(--c-text-main); }
 @media (max-width: 900px) {
-  .st-grid, .st-bands, .st-mega__row--hero, .st-table__body, .st-cols { grid-template-columns: 1fr; }
+  .st-grid, .st-bands, .st-mega__row--hero, .st-table__body, .st-cols, .st-limits-card { grid-template-columns: 1fr; }
   .st-grid > :last-child:nth-child(odd) { grid-column: auto; }
   .st-mega__row--hero .st-mega { font-size: 72px; }
 }
@@ -1858,11 +1879,7 @@ html { -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; 
 .hook-command-pre { white-space: pre-wrap; word-break: break-word; background: var(--c-bg); border: 1px solid var(--c-border); border-radius: 8px; padding: 12px; color: var(--c-accent-cyan); font-family: var(--font-mono); font-size: 13px; line-height: 1.5; margin: 10px 0 12px; }
 .hook-command-meta { color: var(--c-text-dim); font-size: 13px; line-height: 1.45; }
 
-/* ========== SESSION QUALITY OVERLAY (v2.6) ========== */
-.quality-good { border-left: 4px solid var(--c-savings-strong, #22c55e) !important; }
-.quality-fair { border-left: 4px solid transparent !important; }
-.quality-needs-work { border-left: 4px solid var(--c-warning-yellow, #eab308) !important; }
-.quality-poor { border-left: 4px solid var(--c-waste-strong, #ef4444) !important; }
+/* Section 6: quality rows carry a badge, not a left accent stripe. */
 .quality-badge {
   display: inline-block;
   font-family: var(--font-mono);
@@ -1955,7 +1972,7 @@ tr.token-spike td {
   background: var(--c-warning-fill-2, rgba(251, 146, 60, 0.08)) !important;
 }
 tr.token-spike td:first-child {
-  border-left: 3px solid var(--c-warning-soft, #fb923c);
+  border-left: none;
 }
 
 /* ========== PROMPT PREVIEW MODAL ========== */
@@ -2147,8 +2164,8 @@ window.__TOKEN_DATA__ = null;
     <div>
       <div class="brand"><span></span> Token Optimizer <small id="brand-meta" style="display:block;margin-left:27px;margin-top:2px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--c-text-dim);font-weight:600;"></small></div>
       <div class="nav-menu">
-        <a class="nav-item active" data-view="overview">Overview</a>
-        <a class="nav-item" data-view="savings">Savings</a>
+        <a class="nav-item active" data-view="savings">Savings</a>
+        <a class="nav-item" data-view="overview">Overview</a>
         <a class="nav-item" data-view="quick">Quick Wins <span class="nav-badge" id="badge-quick"></span></a>
         <a class="nav-item" data-view="medium">Medium <span class="nav-badge" id="badge-medium"></span></a>
         <a class="nav-item" data-view="deep">Deep <span class="nav-badge" id="badge-deep"></span></a>
@@ -2161,15 +2178,13 @@ window.__TOKEN_DATA__ = null;
         <a class="nav-item" data-view="manage">Manage</a>
       </div>
     </div>
-    <div class="user-profile">workspace: <i id="nav-date"></i></div>
   </nav>
 
   <!-- MAIN -->
   <main class="main-col">
     <!-- Overview View -->
-    <div class="view active" id="view-overview">
+    <div class="view" id="view-overview">
       <header class="header">
-        <div class="label">Token Overhead Analysis <span id="overview-version-badge" style="opacity:.7;margin-left:.5rem;font-family:var(--font-mono);font-size:12px;"></span></div>
         <h1>Overview</h1>
         <p>Your current config overhead, measured against your detected context window. <span id="overview-view-source" style="color:var(--c-text-dim);font-size:13px;"></span></p>
       </header>
@@ -2209,7 +2224,7 @@ window.__TOKEN_DATA__ = null;
     </div>
 
     <!-- Savings View -->
-    <div class="view" id="view-savings"></div>
+    <div class="view active" id="view-savings"></div>
     <!-- Quick Wins View -->
     <div class="view" id="view-quick"></div>
     <!-- Medium View -->
@@ -2229,6 +2244,8 @@ window.__TOKEN_DATA__ = null;
     <div class="view" id="view-manage"></div>
 
     <div class="main-footer">
+      <span class="footer-version" id="footer-version"></span>
+      <span class="footer-updated" id="footer-updated"></span>
       <span class="footer-byline">Built by <a href="https://linkedin.com/in/alexgreensh" target="_blank" rel="noopener">Alex Greenshpun</a></span>
       <a class="gh-star" href="https://github.com/alexgreensh/token-optimizer" target="_blank" rel="noopener" title="Star Token Optimizer on GitHub">
         <svg class="gh-star-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5l2.9 6.06 6.6.59-5 4.38 1.5 6.47L12 16.98 5.99 20.5l1.5-6.47-5-4.38 6.6-.59L12 2.5z"/></svg>
@@ -2260,29 +2277,10 @@ window.__TOKEN_DATA__ = null;
     </div>
 
     <div class="section-title">Notes</div>
-    <textarea class="notes-area" id="notes-input" placeholder="Keep gsd, skip n8n cluster..."></textarea>
+    <textarea class="notes-area" id="notes-input" placeholder="Anything to keep or skip?"></textarea>
 
     <button class="apply-btn" id="copy-btn" disabled>Preview &amp; Copy</button>
 
-    <div class="version-footer">
-      <div class="footer-byline">Built by <a href="https://linkedin.com/in/alexgreensh" target="_blank" rel="noopener">Alex Greenshpun</a></div>
-      <a class="gh-star" href="https://github.com/alexgreensh/token-optimizer" target="_blank" rel="noopener" title="Star Token Optimizer on GitHub">
-        <svg class="gh-star-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5l2.9 6.06 6.6.59-5 4.38 1.5 6.47L12 16.98 5.99 20.5l1.5-6.47-5-4.38 6.6-.59L12 2.5z"/></svg>
-        <span>Star on GitHub</span>
-        <span class="gh-star-count" data-gh-stars hidden></span>
-      </a>
-      <div class="social-icons">
-        <a href="https://github.com/alexgreensh/token-optimizer" target="_blank" rel="noopener" title="GitHub" class="social-link">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-        </a>
-        <a href="https://x.com/alexgreensh" target="_blank" rel="noopener" title="X (Twitter)" class="social-link">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24h-6.66l-5.214-6.817-5.97 6.817H1.673l7.73-8.835L1.254 2.25h6.83l4.713 6.231 5.447-6.231zm-1.161 17.52h1.833L7.084 4.126H5.117l11.966 15.644z"/></svg>
-        </a>
-        <a href="https://linkedin.com/in/alexgreensh" target="_blank" rel="noopener" title="LinkedIn" class="social-link">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
-        </a>
-      </div>
-    </div>
   </aside>
 </div>
 
@@ -2817,6 +2815,17 @@ var DB = (function() {
     safeRender('RightPanel', null, updateRightPanel);
     safeRender('EventBinding', null, bind);
 
+    // Deep links: a hash naming a view opens that view; with no usable hash,
+    // open Savings when the story payload is present, else Overview. The
+    // replaceState write keeps the landing URL bookmarkable without adding a
+    // history entry.
+    var initialView = viewFromHash();
+    if (initialView) {
+      showView(initialView, { skipHash: true });
+    } else {
+      showView((typeof savingsStoryOn === 'function' && savingsStoryOn(data)) ? 'savings' : 'overview', { replace: true });
+    }
+
     // Kill stale session buttons (v2.6)
     var killStaleBtn = document.getElementById('kill-stale-btn');
     if (killStaleBtn) {
@@ -2876,21 +2885,33 @@ var DB = (function() {
           hasAnyItems = true;
         }
       });
-      // Default to Trends tab (analytics are always relevant for standalone)
-      var trendsNav = document.querySelector('.nav-item[data-view="trends"]');
-      if (trendsNav) trendsNav.click();
+      // Standalone files still open on Savings/Overview per the initial
+      // showView() above; the F4 default is not overridden here.
     }
+  }
+
+  // Section 5 cuts: habits items that say "no action needed" or give generic
+  // advice with no figure from this user's data are not rendered (see
+  // renderSectionViews) and do not count toward the nav badge.
+  function habitsItemCut(it) {
+    var t = (it.title || '') + ' ' + (it.shortDesc || '');
+    return /effortLevel/i.test(t) || /Use \/clear/i.test(t) || /Batch related/i.test(t);
   }
 
   function renderNav() {
     var counts = { quick: 0, medium: 0, deep: 0, habits: 0 };
-    items.forEach(function(it) { if (counts[it.section] !== undefined) counts[it.section]++; });
+    items.forEach(function(it) {
+      if (counts[it.section] === undefined) return;
+      if (it.section === 'habits' && habitsItemCut(it)) return;
+      counts[it.section]++;
+    });
     for (var k in counts) {
       var el = document.getElementById('badge-' + k);
       if (el) el.textContent = counts[k] || '';
     }
     var ts = data.generated_at || new Date().toISOString();
-    document.getElementById('nav-date').textContent = ts.slice(0,10);
+    var navDate = document.getElementById('nav-date');
+    if (navDate) navDate.textContent = ts.slice(0,10);
   }
 
   // v5.4.18: v5 feature metadata mirrors V5_FEATURES in measure.py. Used as a
@@ -3087,11 +3108,10 @@ var DB = (function() {
     }
 
     // Hero card
-    var remaining = Math.max(0, ctxWindow - total);
     document.getElementById('hero-tag').textContent = fn(total) + ' tokens';
     document.getElementById('hero-total').textContent = fn(total);
     document.getElementById('hero-sub').innerHTML =
-      'tokens loaded before you type a word (' + ctxLabel + ' window). You start every session with only <span>' + fn(remaining) + '</span> left for actual conversation.';
+      'tokens loaded before you type a word (' + ctxLabel + ' window).';
 
     // v5 Active Compression recommendation card. v5.4.18: fall back to
     // client-side synthesis when the dashboard has no real data yet so a
@@ -3134,7 +3154,7 @@ var DB = (function() {
             var recBadge = f.recommended
               ? '<span style="background:var(--c-badge-savings);color:#000;font-size:11px;padding:2px 7px;border-radius:3px;margin-left:8px;font-weight:700;">RECOMMENDED</span>'
               : '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:11px;padding:2px 7px;border-radius:3px;margin-left:8px;">OPT-IN</span>';
-            cardHtml += '<div style="padding:14px;background:var(--c-bg);border-radius:6px;border-left:4px solid ' + riskColor + ';">' +
+            cardHtml += '<div style="padding:14px;background:var(--c-bg);border-radius:6px;">' +
               '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">' +
               '<div style="font-size:17px;font-weight:600;">' + esc(f.label) + recBadge + '</div>' +
               '<div style="font-size:20px;font-weight:700;color:var(--c-accent-cyan);">+' + f.impact_pct + '%</div>' +
@@ -3154,13 +3174,9 @@ var DB = (function() {
         cardHtml += '</div></div>';
         v5card.innerHTML = cardHtml;
       } else {
-        // All features enabled - show success state
-        v5card.innerHTML = '<div class="card wide" style="border: 2px solid var(--c-savings);margin-bottom:var(--s-3);">' +
-          '<div class="card-header"><span style="font-size:20px;">Active Compression (v5)</span>' +
-          '<span class="label" style="background:var(--c-badge-savings);color:#000;padding:4px 10px;border-radius:4px;font-weight:700;font-size:13px;">MAXED OUT</span></div>' +
-          '<div style="padding: var(--s-2) var(--s-3);font-size:17px;">' +
-          '<span style="font-size:24px;">\u2713</span> ' + esc(v5rec.recommendation) +
-          '</div></div>';
+        // All features enabled: one line, the detail lives in Manage.
+        v5card.innerHTML = '<div style="font-size:15px;color:var(--c-text-dim);margin:0 0 var(--s-3);">' +
+          '\u2713 All compression features are on.</div>';
       }
     }
 
@@ -3168,8 +3184,7 @@ var DB = (function() {
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
     var staleMinutes = data.generated_at ? Math.round((Date.now() - new Date(data.generated_at).getTime()) / 60000) : 0;
     var isStale = staleMinutes > 60;
-    var refreshHint = data.runtime === 'codex' ? 'run the Codex dashboard refresh command' : isNoInstructionHost(data) ? 'regenerate the dashboard' : 'run /token-optimizer';
-    var staleWarning = isStale ? ' <span style="color:var(--c-warning, #ff9f43);font-weight:500;">(data is ' + (staleMinutes > 1440 ? Math.round(staleMinutes / 1440) + 'd' : Math.round(staleMinutes / 60) + 'h') + ' old — ' + refreshHint + ' to refresh)</span>' : '';
+    var staleWarning = isStale ? ' <span style="color:var(--c-text-dim);font-weight:500;">(updated ' + (staleMinutes > 1440 ? Math.round(staleMinutes / 1440) + ' days' : Math.round(staleMinutes / 60) + ' hours') + ' ago)</span>' : '';
     var headerEl = document.querySelector('#view-overview .header');
     if (headerEl) {
       var existingTs = headerEl.querySelector('.last-updated');
@@ -3263,21 +3278,8 @@ var DB = (function() {
       isCodexOverview
         ? 'Bars show % of the logged Codex context window each component uses. Core System is fixed by Codex. AGENTS.md, memories, skills/plugins, MCP, and hooks are yours to tune.'
         : 'Bars show % of context window each component uses. Core System is fixed by ' + (data.runtime_label || 'Claude Code') + '. Everything else is yours to trim.';
-    var caveatEl = document.getElementById('sat-caveat');
-    if (!caveatEl) {
-      caveatEl = document.createElement('div');
-      caveatEl.id = 'sat-caveat';
-      caveatEl.style.cssText = 'font-size:11px;color:var(--c-text-dim);margin-top:6px;font-style:italic;';
-      document.getElementById('sat-desc').parentNode.appendChild(caveatEl);
-    }
-    var cal = data.snapshot.calibration;
-    if (cal && cal.has_data && cal.significant) {
-      caveatEl.textContent = 'Note: real session baseline averages ' + fn(cal.avg_real_baseline) +
-        ' tokens (' + (cal.gap_pct > 0 ? '+' : '') + cal.gap_pct + '% vs estimate). ' +
-        'Gap is from unmeasured system overhead (XML framing, MCP instructions).';
-    } else {
-      caveatEl.textContent = 'Estimate based on file sizes. Actual overhead includes XML framing and system wrappers not measured here.';
-    }
+    // The italic calibration footnote is cut (section 5): the headline now
+    // carries the measured number, and an 11px dim aside only repeated it.
 
     // What You'd Save card
     var planTokens = Math.min(
@@ -3341,23 +3343,10 @@ var DB = (function() {
     gridEl.className = 'component-cards';
     gridEl.innerHTML = cardsHtml;
 
-    // Health cards: runtime instruction files + memory files
+    // Health cards: runtime memory files. The instruction-file (CLAUDE.md /
+    // AGENTS.md) health card is cut (section 5): its one number is already in
+    // the component breakdown above.
     var healthCardsHtml = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--s-3);margin-top:var(--s-3);">';
-
-    // Instruction-file health card
-    var cmh = data.claude_md_health;
-    if (cmh) {
-      var instructionLabel = isCodexOverview ? 'AGENTS.md Health' : 'CLAUDE.md Health';
-      var cmColor = cmh.status === 'good' ? 'var(--c-accent-cyan)' : cmh.status === 'warning' ? 'var(--c-warning, #ff9f43)' : 'var(--c-text-dim, #7d8ca3)';
-      healthCardsHtml += '<div class="card"><div class="card-header"><span>' + instructionLabel + '</span></div>' +
-        '<div style="text-align:center;padding:var(--s-3) 0;">' +
-        '<div style="font-size:28px;font-weight:700;font-family:var(--font-mono);color:' + cmColor + ';">' + fn(cmh.tokens) + '</div>' +
-        '<div style="font-size:13px;color:var(--c-text-dim);">tokens (' + cmh.pct + '% of context)</div>' +
-        '</div>' +
-        '<div style="text-align:center;padding:0 0 var(--s-3) 0;font-size:13px;color:' + cmColor + ';">' +
-        (cmh.status === 'good' ? 'Lean and efficient' : cmh.status === 'warning' ? 'Consider restructuring' : 'Growing') +
-        '</div></div>';
-    }
 
     // Memory health card
     var mr = data.memory_review;
@@ -3395,20 +3384,15 @@ var DB = (function() {
     healthCardsHtml += '</div>';
     gridEl.insertAdjacentHTML('afterend', healthCardsHtml);
 
-    // Standalone mode: CTA or auto-recommendations banner
-    if (data.standalone) {
+    // Standalone mode: CTA when there is nothing auto-detected. The
+    // "Auto-Detected Recommendations" card is cut (section 5): its whole body
+    // was "browse them in the tabs on the left".
+    if (data.standalone && !(data.auto_plan && items.length > 0)) {
       var ctaEl = document.createElement('div');
       ctaEl.className = 'card wide';
-      if (data.auto_plan && items.length > 0) {
-        ctaEl.innerHTML = '<div class="card-header"><span>Auto-Detected Recommendations</span></div>' +
-          '<div class="empty-state" style="text-align:left;color:var(--c-text-dim);font-size:14px;">' +
-          'These recommendations are auto-generated from your config. Browse them in the tabs on the left.<br>' +
-          (isCodexOverview ? 'For deeper analysis, refresh the Codex dashboard after a few real turns so quality and continuity signals are available.' : isHostOverview ? '' : 'For deeper analysis (semantic duplication, content quality), run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full LLM-powered audit.') + '</div>';
-      } else {
-        ctaEl.innerHTML = '<div class="card-header"><span>Optimization Recommendations</span></div>' +
-          '<div class="empty-state">No auto-detected issues. Your setup looks clean.<br>' +
-          (isCodexOverview ? 'Refresh the Codex dashboard after live usage for deeper quality analysis.' : isHostOverview ? '' : 'Run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full audit with deeper analysis.') + '</div>';
-      }
+      ctaEl.innerHTML = '<div class="card-header"><span>Optimization Recommendations</span></div>' +
+        '<div class="empty-state">No auto-detected issues. Your setup looks clean.<br>' +
+        (isCodexOverview ? 'Refresh the Codex dashboard after live usage for deeper quality analysis.' : isHostOverview ? '' : 'Run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full audit with deeper analysis.') + '</div>';
       gridEl.parentNode.insertBefore(ctaEl, gridEl.nextSibling);
     }
 
@@ -3462,24 +3446,20 @@ var DB = (function() {
       if (!el) return;
       var secItems = items.filter(function(it) { return it.section === sec; });
       var isHabits = (sec === 'habits');
+      if (isHabits) {
+        // Section 5 cuts: the FYI effortLevel card says "no action needed" and
+        // the two generic advice items cite no number from this user's data.
+        secItems = secItems.filter(function(it) { return !habitsItemCut(it); });
+      }
 
-      var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
       var html = '<div class="section-header">' +
-        '<div class="label">' + (isHabits ? 'Recommendations' : 'Optimization Plan') + '</div>' +
         '<h1>' + (groupLabels[sec] || sec) + '</h1>' +
         '<p>' + (groupDescs[sec] || '') + '</p>' +
         '</div>';
 
-      if (data.auto_plan) {
-        html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          (data.runtime === 'codex' ? ' · Auto-detected from Codex local config and logs.</div>' : (isNoInstructionHost(data) ? ' · Auto-detected from local config and logs.</div>' : ' · Auto-detected. Run <span class="update-cmd">/token-optimizer</span> for deeper LLM-powered analysis.</div>'));
-      } else if (data.standalone) {
-        html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          (data.runtime === 'codex' ? ' · Optimization data is limited until Codex session logs are collected.</div>' : (isNoInstructionHost(data) ? ' · Optimization data is limited in standalone mode.</div>' : ' · Optimization data not available in standalone mode. Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.</div>'));
-      } else {
-        html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          (data.runtime === 'codex' ? ' · To refresh, use the Codex dashboard refresh command.</div>' : (isNoInstructionHost(data) ? ' · To refresh, run ' + hostRefreshHtml(data) + '.</div>' : ' · To refresh, run <span class="update-cmd">/token-optimizer</span> again.</div>'));
-      }
+      // The "Last updated … Auto-detected" line is cut (section 5): freshness
+      // lives once in the footer, and the auto-detect note repeated on all
+      // four tabs.
 
       if (secItems.length === 0) {
         if (!data.plan && !data.auto_plan) {
@@ -3563,7 +3543,7 @@ var DB = (function() {
     return [{ heading: 'Details', text: detail }];
   }
 
-  var analyticsViews = { savings: true, trends: true, health: true, hooks: true, manage: true };
+  var analyticsViews = { savings: true, trends: true, health: true, hooks: true, manage: true, overview: true, coach: true };
 
   // Emits the per-model note + stacked bar + legend (the existing USAGE
   // breakdown). Hoisted to module scope so the Tokens Saved card (in BOTH
@@ -3638,7 +3618,6 @@ var DB = (function() {
   // Share the Savings story calculation and period, including its eligibility rules.
   function tokensSavedCardHtml(savings) {
     var s = savings || {};
-    var storyAvailable = typeof savingsStoryOn === 'function' && savingsStoryOn(data);
     var bands = typeof savingsStoryBands === 'function' ? savingsStoryBands(data) : null;
     var total = bands ? bands.totalTok : Number((s.token_headline || {}).total_tokens) || 0;
     if (total <= 0) return '';
@@ -3662,8 +3641,24 @@ var DB = (function() {
       out += '<div class="ts-divider"></div><h3 class="ts-section-label">Model usage</h3>';
       out += modelMixBodyHtml(mix, data.runtime === 'codex', spent > 0 ? spent : modelTotal);
     }
-    out += '<div class="ts-foot">' + (storyAvailable ? 'Same figure as the Savings card.<br>' : '') + formatTokens(removed) + ' tokens removed once.</div></div>';
+    out += '<div class="ts-foot">' + formatTokens(removed) + ' tokens removed once.</div></div>';
     return out;
+  }
+
+  // Trends keeps only the model-usage bar from the old Tokens Saved card
+  // (section 5): the savings figures live on the Savings tab now, and the
+  // "Your limits go further" twin is removed (F8).
+  function trendsModelMixCardHtml() {
+    var t = data.trends || {};
+    var mix = t.model_mix || {};
+    var modelTotal = 0;
+    for (var m in mix) { modelTotal += Number(mix[m]) || 0; }
+    if (modelTotal <= 0) return '';
+    var spent = Object.prototype.hasOwnProperty.call(t, 'total_tokens') ? Math.max(0, Number(t.total_tokens) || 0) : modelTotal;
+    var days = Number(t.period_days) || 30;
+    return '<div class="card wide"><div class="card-header"><span>Model usage</span></div>' +
+      '<div style="font-size:13px;color:var(--c-text-dim);margin:0 0 var(--s-2);">Share of logged tokens by model, last ' + days + ' days.</div>' +
+      modelMixBodyHtml(mix, data.runtime === 'codex', spent > modelTotal ? spent : modelTotal) + '</div>';
   }
 
   function renderTrends() {
@@ -3675,13 +3670,15 @@ var DB = (function() {
 
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
     var html = '<div class="section-header">' +
-      '<div class="label">Analytics</div>' +
       '<h1>Usage Trends</h1>' +
       '<p>How you use ' + esc(runtimeLabel) + ' across sessions.</p>' +
       '</div>' +
       '<div class="last-updated">Last updated: ' + esc(ts) + '</div>';
 
-    html += tokensSavedCardHtml(data.savings || {}) + runwayCardHtml();
+    // The Tokens Saved card and the "Your limits go further" twin are cut
+    // (sections 5 and F8): savings figures live on the Savings tab. Only the
+    // model-usage bar was new information here.
+    html += trendsModelMixCardHtml();
     // Context before the first message is not a saving: it lives here, not on Savings.
     if (typeof firstCallContextHtml === 'function') html += firstCallContextHtml((t || {}).first_call_context);
 
@@ -3713,32 +3710,16 @@ var DB = (function() {
       html += '</select><span class="pricing-tier-badge">costs reflect this tier</span></div>';
     }
 
-    // Compute global cache hit rate + cache write TTL mix
+    // Compute global cache hit rate
     var globalCacheRead = 0, globalCacheTotal = 0;
-    var globalTtl1h = 0, globalTtl5m = 0;
-    var globalMixedSessions = 0, globalFiveOnlySessions = 0;
     (t.daily || []).forEach(function(dd) {
       (dd.session_details || []).forEach(function(sd) {
         if (sd.continuation) return;  // multi-day session: count it once
         var chr = sd.cache_hit_rate || 0;
         if (chr > 0) { globalCacheRead += chr; globalCacheTotal++; }
-        var ttl1h = sd.cache_create_1h_tokens || 0;
-        var ttl5m = sd.cache_create_5m_tokens || 0;
-        globalTtl1h += ttl1h;
-        globalTtl5m += ttl5m;
-        if (ttl1h && ttl5m) globalMixedSessions += 1;
-        else if (ttl5m && !ttl1h) globalFiveOnlySessions += 1;
       });
     });
     var avgCacheHit = globalCacheTotal > 0 ? (globalCacheRead / globalCacheTotal * 100).toFixed(0) : 'N/A';
-    var globalTtlMix = ttlMixLabel(globalTtl1h, globalTtl5m);
-    var globalTtlSessionLabel = (globalMixedSessions || globalFiveOnlySessions)
-      ? ('Mixed sessions: ' + globalMixedSessions + ' | 5m-only: ' + globalFiveOnlySessions)
-      : 'Recent main sessions were 1h-only';
-    var ttlPeriodSummary = (data.ttl_period_summary || [])
-      .map(function(item) { return item && item.label ? item.label : ''; })
-      .filter(function(label) { return !!label; })
-      .join(' | ');
 
     var tokenLabel = isCodex ? 'Measured/Estimated Tokens' : 'Deduplicated Fresh Input + Output';
     var tokenNote = isCodex
@@ -3753,14 +3734,8 @@ var DB = (function() {
     var avgCacheDisplay = cacheOverall ? (overallCacheHit * 100).toFixed(1).replace(/\.0$/, '')
       : (Number.isFinite(eligibleCacheHit) && pop.cache_eligible_main_sessions ? Math.round(eligibleCacheHit * 100) : avgCacheHit);
     var cacheLabel = isCodex ? 'Cached Input Share' : (cacheOverall ? 'Cache hit rate (all tokens)' : 'Main-work cache hit rate');
-    var cacheSessionLines = cacheOverall
-      ? (pop.cache_eligible_main_sessions ? '<div style="font-size:12px;color:var(--c-text-main);margin-top:6px">Average session, 20+ messages: ' + Math.round((Number(pop.cache_eligible_main_hit_rate) || 0) * 100) + '%</div>' : '') +
-        (pop.cache_ineligible_sessions ? '<div style="font-size:12px;color:var(--c-text-main);margin-top:2px">Average short or delegated session: ' + Math.round((Number(pop.cache_ineligible_hit_rate) || 0) * 100) + '%</div>' : '') +
-        '<div style="font-size:11px;color:var(--c-text-dim);margin-top:2px">Session lines average each session&rsquo;s own rate; the big number weights every token.</div>'
-      : '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + (pop.cache_eligible_main_sessions || 0) + ' cache-building main-work sessions · ' + (pop.cache_ineligible_sessions || 0) + ' short/delegated sessions at ' + Math.round((Number(pop.cache_ineligible_hit_rate) || 0) * 100) + '%</div>';
-    var cacheNote = isCodex
-      ? 'Share of logged input tokens Codex says were cached_input_tokens. Similar to a cache hit rate, but Codex does not expose cache-write TTL or write-size fields.'
-      : (cacheOverall ? '' : 'Main-work sessions with 20+ messages.');
+    // The six grey sub-lines under the cache number are cut (section 5):
+    // session-mix and TTL debug output. The number and its label stand alone.
     var tokenBreakdownNote = isCodex
       ? 'fresh:' + fn(t.total_fresh_input || 0) + ' · cached input:' + fn(t.total_cache_read || 0) + ' · out:' + fn(t.total_output_tokens || 0)
       : 'raw fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0);
@@ -3775,10 +3750,6 @@ var DB = (function() {
         codexCostNote += '<div style="font-size:10px;color:var(--c-warning);margin-top:2px">' + esc(t.cost_note) + '</div>';
       }
     }
-    var cacheExtra = isCodex
-      ? '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div>'
-      : '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Cache writes: ' + esc(globalTtlMix) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(globalTtlSessionLabel) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(ttlPeriodSummary || 'TTL period summary unavailable') + '</div>' + (cacheNote ? '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div>' : '');
-
     html += '<div class="stat-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:var(--s-3)">' +
       '<div class="stat-card"><div class="stat-card-value">' + t.session_count + '</div><div class="stat-card-label">All logged sessions (' + t.period_days + 'd)</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + (pop.main_work_sessions || 0) + ' main-work · ' + (pop.delegated_sessions || 0) + ' delegated/subagent</div></div>' +
       '<div class="stat-card"><div class="stat-card-value">' + fn(t.total_tokens || 0) + '</div><div class="stat-card-label">' + tokenLabel + ', all logged (' + t.period_days + 'd)</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + tokenNote + '</div><div style="font-size:10px;color:var(--c-text-dim);margin-top:2px">' + tokenBreakdownNote + '</div>' + codexCostNote + '</div>' +
@@ -3787,7 +3758,7 @@ var DB = (function() {
       '<div class="stat-row" style="grid-template-columns:repeat(3,1fr)">' +
       '<div class="stat-card"><div class="stat-card-value">' + Math.round(t.avg_duration_minutes || 0) + 'm</div><div class="stat-card-label">Avg duration, all logged</div></div>' +
       '<div class="stat-card"><div class="stat-card-value">' + fn((t.avg_input_tokens || 0) + (t.avg_output_tokens || 0)) + '</div><div class="stat-card-label">Avg tokens, all logged sessions</div></div>' +
-      (avgCacheDisplay === 'N/A' ? '' : '<div class="stat-card"><div class="stat-card-value" style="color:var(--c-savings-strong, #22c55e)">' + avgCacheDisplay + '%</div><div class="stat-card-label">' + cacheLabel + '</div>' + cacheSessionLines + cacheExtra + '</div>') +
+      (avgCacheDisplay === 'N/A' ? '' : '<div class="stat-card"><div class="stat-card-value" style="color:var(--c-savings-strong, #22c55e)">' + avgCacheDisplay + '%</div><div class="stat-card-label">' + cacheLabel + '</div></div>') +
       '</div>';
 
     var skillsDetail = (data.snapshot && data.snapshot.components && data.snapshot.components.skills_detail) || {};
@@ -3877,7 +3848,7 @@ var DB = (function() {
             row += '</div>';
           }
         } else {
-          row += '<div class="skill-desc" style="font-style:italic;">No detail available</div>';
+          row += '<div class="skill-desc">No detail available</div>';
         }
         row += '</div></div></div>';
         return row;
@@ -4705,17 +4676,59 @@ var DB = (function() {
     var routingAltShare = mr.measured_baseline_opus_share;
     var routingAltMo = mr.measured_baseline_realized_cost_usd != null ? mo(mr.measured_baseline_realized_cost_usd) : null;
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
+    var storyOn = (typeof savingsStoryOn === 'function') && savingsStoryOn(data);
+
+    // ---- SAVE MORE: suggestions, promoted right under the hero ----
+    // Built before the story render: in story mode they fold into "Still on
+    // the table" ("More changes you could make") so the two never contradict;
+    // in legacy mode they feed the "Money on the table" card below.
+    var parts = [];
+    if ((Number(sp.cost_saved_usd) || 0) > 0 && unusedSkills > 0) {
+      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window.');
+    }
+    if ((Number(recl.cost_usd) || 0) > 0) {
+      parts.push('Avoid re-reading files that have not changed, or add them to .contextignore. ' + (Number(recl.tokens) || 0).toLocaleString() + ' tokens of stale re-reads across ' + (Number(recl.sessions) || 0).toLocaleString() + ' sessions are worth about ' + moneyCents(oppCents.reclaimable) + per + '.');
+    }
+    if (!storyOn && (Number(mr.potential_cost_usd) || 0) > 0) {
+      parts.push('Route routine work to lighter models and keep Opus for the work that needs it. The routing line above shows the size of that assumption.');
+    }
+    if (cdTokensMo > 0) {
+      parts.push(cdResume + ', or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past ' + cdCacheName + ' and re-wrote the prefix' + (cdRebuilds > 0 ? ' ' + cdRebuilds.toLocaleString() + ' time' + (cdRebuilds === 1 ? '' : 's') : '') + ', about ' + cdTokensMo.toLocaleString() + ' tokens' + per + (cdCostMo > 0 ? ', worth about ' + money(cdCostMo) + per + ' at API rates' : '') + '.');
+    }
+    if ((Number(ow.cost_saved_usd) || 0) > 0) {
+      parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + moneyCents(oppCents.output) + per + ' in output.');
+    }
+
     // U9: the savings story leads when the payload carries session_effect;
     // older payloads (or a template without the inlined module) keep the
-    // previous layout unchanged.
+    // previous layout unchanged. extras carries the "Still on the table" fix
+    // targets and the merged "More changes you could make" parts.
     var story = '';
-    try { story = (typeof savingsStoryHtml === 'function') ? savingsStoryHtml(data) : ''; } catch (e) { story = ''; }
+    if (storyOn) {
+      try {
+        story = (typeof savingsStoryHtml === 'function') ? savingsStoryHtml(data, {
+          fixes: (typeof savingsOnTableFixes === 'function') ? savingsOnTableFixes() : {},
+          parts: parts,
+          optimizerHint: data.runtime !== 'cursor' && data.runtime !== 'antigravity'
+        }) : '';
+      } catch (e) { story = ''; }
+    }
+
+    // F13: "Updated today at 8:33 PM", not a raw locale timestamp.
+    var updTxt = 'unknown';
+    var updDate = data.generated_at ? new Date(data.generated_at) : null;
+    if (updDate && !isNaN(updDate.getTime())) {
+      var updNow = new Date();
+      var updDay = Math.floor((new Date(updNow.getFullYear(), updNow.getMonth(), updNow.getDate()) - new Date(updDate.getFullYear(), updDate.getMonth(), updDate.getDate())) / 86400000);
+      var updWhen = updDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      updTxt = (updDay <= 0 ? 'today' : updDay === 1 ? 'yesterday' : updDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })) + ' at ' + updWhen;
+    }
 
     var html = '<div class="section-header">' +
       (story ? '<h1>Savings</h1>' : '<div class="label">Value</div><h1>Savings</h1>' +
         '<p>Your savings, with the time period and method shown for each total.</p>') +
       '</div>' +
-      '<div class="last-updated">Updated ' + esc(ts) + ' &middot; refreshes after every session</div>';
+      '<div class="last-updated">Updated ' + esc(updTxt) + ' &middot; refreshes after every session</div>';
 
     html += story || runwayCardHtml();
     var storyHead = html; html = '';
@@ -4908,37 +4921,26 @@ var DB = (function() {
     var ledgerHtml = html;
     html = storyHead + (story ? '' : ledgerHtml);
 
-    // ---- SAVE MORE: suggestions, promoted right under the hero ----
-    var parts = [];
-    if ((Number(sp.cost_saved_usd) || 0) > 0 && unusedSkills > 0) {
-      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window.');
-    }
-    if ((Number(recl.cost_usd) || 0) > 0) {
-      parts.push('Avoid re-reading files that have not changed, or add them to .contextignore. ' + (Number(recl.tokens) || 0).toLocaleString() + ' tokens of stale re-reads across ' + (Number(recl.sessions) || 0).toLocaleString() + ' sessions are worth about ' + moneyCents(oppCents.reclaimable) + per + '.');
-    }
-    if (!story && (Number(mr.potential_cost_usd) || 0) > 0) {
-      parts.push('Route routine work to lighter models and keep Opus for the work that needs it. The routing line above shows the size of that assumption.');
-    }
-    if (cdTokensMo > 0) {
-      parts.push(cdResume + ', or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past ' + cdCacheName + ' and re-wrote the prefix' + (cdRebuilds > 0 ? ' ' + cdRebuilds.toLocaleString() + ' time' + (cdRebuilds === 1 ? '' : 's') : '') + ', about ' + cdTokensMo.toLocaleString() + ' tokens' + per + (cdCostMo > 0 ? ', worth about ' + money(cdCostMo) + per + ' at API rates' : '') + '.');
-    }
-    if ((Number(ow.cost_saved_usd) || 0) > 0) {
-      parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + moneyCents(oppCents.output) + per + ' in output.');
-    }
+    // ---- SAVE MORE: the parts list was built before the story render (see
+    // above); story mode already folded it into "Still on the table". ----
     var moreFolds = [];
     if (story) {
-      // U9: nothing else on the tab. Opportunity, coverage detail, the previous
-      // cards and diagnostics sit in one row of folds at the bottom; the
+      // U9: nothing else on the tab. Coverage detail, the previous cards and
+      // diagnostics sit in one row of folds at the bottom; the
       // whole-workload comparison is no longer shown here.
-      if (parts.length > 0) {
-        moreFolds.push('<details class="fold"><summary>Room to save more</summary><div class="fold__body">' +
-          '<p>More changes you could make to your setup or habits, beyond Still on the table. None of this is in any total above.</p>' +
-          parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
-          (data.runtime !== 'cursor' && data.runtime !== 'antigravity' ? '<p>Run <strong>/token-optimizer</strong> and follow its suggestions to claim it.</p>' : '') +
-          '</div></details>');
-      }
       var covFold = (typeof savingsCoverageFold === 'function') ? savingsCoverageFold(data) : '';
       if (covFold) moreFolds.push(covFold);
+      // F13 merged "Room to save more" into the Still-on-the-table fold. When
+      // that card does not render (nothing sized), the parts still need a home:
+      // keep them as their own fold rather than dropping the copy entirely.
+      if (parts.length > 0 && story.indexOf('st-table') === -1) {
+        moreFolds.push('<details class="fold"><summary>More changes you could make</summary><div class="fold__body">' +
+          '<p>More changes to your setup or habits. None of this is in any total above.</p>' +
+          parts.map(function(p) { return '<p>' + esc(p) + '</p>'; }).join('') +
+          (data.runtime !== 'cursor' && data.runtime !== 'antigravity'
+            ? '<p>Run <strong>/token-optimizer</strong> and follow its suggestions to claim it.</p>' : '') +
+          '</div></details>');
+      }
       // The previous action-savings, since-install and Tokens Saved cards are not
       // shown in story mode: they still add routing to their totals and count
       // tokens on another basis, so they would contradict the hero.
@@ -4949,10 +4951,10 @@ var DB = (function() {
       moreFolds.push('<details class="fold"><summary>Full ledger and history</summary><div class="fold__body">' + ledgerBody + '</div></details>');
     } else if (parts.length > 0) {
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);border:1px solid var(--c-amber);box-shadow:0 0 0 1px rgba(217,164,65,0.18), 0 0 44px rgba(217,164,65,0.12);">';
-      html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-amber);letter-spacing:0.08em;">Money on the table &middot; opportunity</div>';
+      html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-text-dim);">Money on the table &middot; opportunity</div>';
       if (opportunityMo > 0) {
         html += '<div style="display:flex;align-items:baseline;gap:var(--s-2);flex-wrap:wrap;">' +
-            '<span style="font-family:var(--font-mono);font-weight:300;font-size:76px;line-height:0.9;color:var(--c-amber);text-shadow:0 0 30px rgba(217,164,65,0.5);letter-spacing:-0.02em;">' + moneyCents(oppCents.total) + '</span>' +
+            '<span style="font-family:var(--font-mono);font-weight:300;font-size:76px;line-height:0.9;color:var(--c-text-main);text-shadow:0 0 30px rgba(217,164,65,0.5);letter-spacing:-0.02em;">' + moneyCents(oppCents.total) + '</span>' +
             '<span style="font-size:23px;color:var(--c-text-dim);font-family:var(--font-mono);">' + per + ' still on the table</span>' +
           '</div>';
         html += '<div class="lede" style="margin-top:var(--s-2);">Potential savings if you change your setup or habits. Excluded from the totals above.</div>';
@@ -4962,7 +4964,7 @@ var DB = (function() {
       if (cdTokensMo > 0) {
         html += '<div class="cache-drop-opportunity" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
           'Cache drops (an opportunity, not a measurement): ' + (Number(cd.drop_sessions) || 0) + ' sessions idled past ' + cdCacheName + ' and re-wrote ~' + fmtTok(cdTokensMo) + ' tokens' + esc(per) + ' of prefix' +
-          (cdCostMo > 0 ? ', about <span style="color:var(--c-amber);">' + money(cdCostMo) + esc(per) + '</span> at API rates' : '') + '.' +
+          (cdCostMo > 0 ? ', about <span style="color:var(--c-text-main);font-weight:600;">' + money(cdCostMo) + esc(per) + '</span> at API rates' : '') + '.' +
           '</div>';
         html += '<div class="plain-line">Not part of the savings number above.</div>';
         html += fold('How the cache drop figure is priced', '<p>Each rebuild is the prefix the cache had held before the gap, priced at its own cache write rate (1 hour or 5 minutes) minus the cache read it would have cost, at the models you ran and at API rates. It is not part of the number above.</p>' + ((Number(cd.unscanned_large_sessions) || 0) > 0 ? '<p>' + Number(cd.unscanned_large_sessions) + ' very large session' + (Number(cd.unscanned_large_sessions) === 1 ? ' was' : 's were') + ' not scanned; savings there are understated.</p>' : ''));
@@ -4970,7 +4972,7 @@ var DB = (function() {
       if (routingPotentialMo > 0) {
         html += '<div class="routing-assumption" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
           'Routing (an assumption, not a measurement): if about ' + routingFracPct + '% of your Opus work (grunt tasks) ran on ' + esc(routingTarget) + ': new input and output only' +
-          (mo(mr.potential_unsplit_excluded_tokens) > 0 ? ' (~' + fmtTok(mo(mr.potential_unsplit_excluded_tokens)) + ' Opus tokens' + esc(per) + ' without a class split are left out)' : '') + ', about <span style="color:var(--c-amber);">' + money(routingPotentialMo) + esc(per) + '</span> at API rates.' +
+          (mo(mr.potential_unsplit_excluded_tokens) > 0 ? ' (~' + fmtTok(mo(mr.potential_unsplit_excluded_tokens)) + ' Opus tokens' + esc(per) + ' without a class split are left out)' : '') + ', about <span style="color:var(--c-text-main);font-weight:600;">' + money(routingPotentialMo) + esc(per) + '</span> at API rates.' +
           (routingTokensMo > 0 ? ' ~' + fmtTok(routingTokensMo) + ' tokens' + esc(per) + '.' : '') +
           '</div>';
         html += '<div class="plain-line">An assumption about your own work, not a measured saving, and not part of the number above.</div>';
@@ -4995,11 +4997,11 @@ var DB = (function() {
       html += '<p>' + billingCaption + '</p>';
       parts.forEach(function(p, i){
         html += '<div style="display:flex;gap:var(--s-3);align-items:flex-start;">' +
-          '<div style="flex-shrink:0;width:34px;height:34px;border-radius:50%;border:1.5px solid var(--c-amber);background:rgba(217,164,65,0.08);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:16px;color:var(--c-amber);margin-top:2px;">' + (i+1) + '</div>' +
+          '<div style="flex-shrink:0;width:34px;height:34px;border-radius:50%;border:1.5px solid var(--c-amber);background:rgba(217,164,65,0.08);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:16px;color:var(--c-text-main);margin-top:2px;">' + (i+1) + '</div>' +
           '<div style="font-size:18px;color:var(--c-text-main);line-height:1.7;max-width:760px;">' + esc(p) + '</div></div>';
       });
       html += '</div>';
-      if (data.runtime !== 'cursor' && data.runtime !== 'antigravity') html += '<div style="margin-top:var(--s-5);padding:var(--s-4);background:rgba(217,164,65,0.07);border:1px solid var(--c-amber);border-radius:10px;font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);font-weight:500;">Run <span style="color:var(--c-amber);">/token-optimizer</span> and follow its suggestions to claim the rest &rarr;</div>';
+      if (data.runtime !== 'cursor' && data.runtime !== 'antigravity') html += '<div style="margin-top:var(--s-5);padding:var(--s-4);background:rgba(217,164,65,0.07);border:1px solid var(--c-amber);border-radius:10px;font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);font-weight:500;">Run <span style="color:var(--c-accent-cyan);">/token-optimizer</span> and follow its suggestions to claim the rest &rarr;</div>';
       html += '</details></div>';
     }
 
@@ -5190,27 +5192,30 @@ var DB = (function() {
 
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
     var html = '<div class="section-header">' +
-      '<div class="label">Analytics</div>' +
       '<h1>Session Health</h1>' +
-      '<p>Running sessions, version status, and automated processes.</p>' +
+      '<p>Running sessions and context quality.</p>' +
       '</div>' +
       '<div class="last-updated">Last updated: ' + esc(ts) + '</div>';
 
-    if (typeof keepwarmHealthHtml === 'function') html += keepwarmHealthHtml(data);
+    // The keep-warm card is cut from Health (section 5): its paused-state
+    // detail lives as one line in Manage. The coverage funnel renders only
+    // when the counters were actually read — a card that says it has nothing
+    // to say is hidden.
     if (!h) {
       html += '<div class="empty-state">No health data available. This usually means no ' + esc(data.runtime_label || 'Claude Code') + ' processes are currently running.</div>';
       try { if (typeof featureHealthHtml === 'function') html += featureHealthHtml(data); } catch (e) {}
-      try { if (typeof coverageFunnelHtml === 'function') html += coverageFunnelHtml(data); } catch (e) {}
+      try {
+        var cfData = data.coverage_funnel;
+        if (cfData && cfData.available && typeof coverageFunnelHtml === 'function') html += coverageFunnelHtml(data);
+      } catch (e) {}
       try { if (typeof holdoutHtml === 'function') html += holdoutHtml(data); } catch (e) {}
       el.innerHTML = html;
       return;
     }
 
-    if (!isCodex) {
-      html += '<div class="card wide"><div class="card-header"><span>Installed Version</span></div>' +
-        '<div class="version-hero">' + esc(h.installed_version || 'unknown') + '</div>' +
-        '<div class="label">' + esc(data.runtime_label || 'Claude Code') + '</div></div>';
-    } else {
+    // The "Installed Version" card is cut (section 5): one line in the
+    // sessions context is enough; the version lives in the footer.
+    if (isCodex) {
       html += '<div class="card wide"><div class="card-header"><span>Codex Health</span><span class="label">local session logs</span></div>' +
         '<p style="font-size:13px;color:var(--c-text-dim);margin-bottom:0;">Codex process version comparison is not exposed reliably in local session data, so version/outdated rows are hidden. This tab focuses on running sessions, hook health, and context quality.</p></div>';
     }
@@ -5300,49 +5305,47 @@ var DB = (function() {
     }
     html += '</div>';
 
-    // Automated processes
+    // The "Automated Processes" card is cut (section 5): two launchd labels
+    // with a zero in front, no reader, no action.
     var automated = h.automated || [];
-    if (automated.length > 0) {
-      html += '<div class="card wide"><div class="card-header"><span>Automated Processes</span><span class="label">' + automated.length + ' found</span></div>';
-      automated.forEach(function(proc) {
-        html += '<div style="font-family:var(--font-mono);font-size:13px;color:var(--c-text-dim);padding:4px 0;border-bottom:1px solid var(--c-border);">' + esc(proc) + '</div>';
-      });
-      html += '</div>';
-    }
 
     // Context Quality Gauge (v2.0)
     var q = data.quality;
     if (q && typeof q.score === 'number') {
       var qs = q.score;
       var qColor = qs >= 85 ? 'var(--c-accent-cyan)' : qs >= 70 ? 'var(--c-chart-teal, #4ecdc4)' : qs >= 50 ? 'var(--c-warning, #ff9f43)' : 'var(--c-chart-coral, #ff6b6b)';
+      // Section 6: warm colour stays on non-text marks; score, band and drag
+      // labels are ink.
+      var qInk = 'var(--c-text-main)';
       var qBand = qs >= 85 ? 'Excellent' : qs >= 70 ? 'Good' : qs >= 50 ? 'Degraded' : 'Critical';
       var sessionFile = q.session_file ? q.session_file.replace(/.*\//, '') : null;
       var runtimeLabel = q.runtime_label || data.runtime_label || 'Claude Code';
       var estimateNote = q.estimated ? ' Some Codex quality signals are inferred from local session events and should be read as an operational estimate, not model self-evaluation.' : '';
       html += '<div class="card wide"><div class="card-header"><span>Context quality &middot; latest session</span><span class="label">v2.0</span></div>' +
-        '<div style="padding:8px var(--s-3) 0;font-size:12px;color:var(--c-text-dim);">This score measures your most recently active ' + esc(runtimeLabel) + ' session, not an average across sessions. It reflects context quality based on 7 signals.' + estimateNote + ' <em>For the rolling cross-session average, see the Savings tab.</em></div>' +
+        '<div style="padding:8px var(--s-3) 0;font-size:12px;color:var(--c-text-dim);">This score measures your most recently active ' + esc(runtimeLabel) + ' session, not an average across sessions. It reflects context quality based on 7 signals.' + estimateNote + ' For the rolling cross-session average, see the Savings tab.</div>' +
         (sessionFile ? '<div style="padding:4px var(--s-3) 0;font-size:13px;color:var(--c-text-dim);">Session: <code style="font-family:var(--font-mono);color:var(--c-text-main);">' + esc(sessionFile) + '</code><span style="margin-left:8px;color:var(--c-text-dim);font-size:12px;">(most recently active)</span></div>' : '') +
         '<div style="text-align:center;padding:var(--s-3) 0;">' +
-        '<div style="font-size:56px;font-weight:700;font-family:var(--font-mono);color:' + qColor + ';text-shadow:0 0 15px ' + qColor + ';">' + qs + '</div>' +
-        '<div class="label" style="font-size:16px;color:' + qColor + ';">' + qBand + '</div>' +
+        '<div style="font-size:56px;font-weight:700;font-family:var(--font-mono);color:' + qInk + ';text-shadow:0 0 15px ' + qColor + '55;">' + qs + '</div>' +
+        '<div class="label" style="font-size:16px;color:' + qInk + ';">' + qBand + '</div>' +
         '</div>' +
         // Biggest drag: the actual weighted deficit (fill / compactions /
         // dominant waste), computed upstream — not inferred from waste keys.
         (q.top_drag && q.top_drag.label
-          ? '<div style="text-align:center;padding:0 var(--s-3) var(--s-2);font-size:13px;color:var(--c-text-dim);">Biggest drag: <strong style="color:' + qColor + ';">' + esc(q.top_drag.label) + '</strong>' +
+          ? '<div style="text-align:center;padding:0 var(--s-3) var(--s-2);font-size:13px;color:var(--c-text-dim);">Biggest drag: <strong style="color:' + qInk + ';">' + esc(q.top_drag.label) + '</strong>' +
             (typeof q.top_drag.points === 'number' ? ' <span style="font-family:var(--font-mono);font-size:12px;">(-' + esc(String(q.top_drag.points)) + ' pts)</span>' : '') +
             '</div>'
           : '');
 
       // Breakdown bars
       var bd = q.breakdown || {};
+      // Section 6: no emoji — the labels carry the meaning.
       var signals = [
-        { key: 'context_fill_degradation', label: 'Context Fill', icon: '\uD83D\uDCCA', tip: 'How full the active context is. Higher fill raises degradation risk.' },
-        { key: 'stale_reads', label: 'Stale Reads', icon: '\uD83D\uDCC4', tip: 'Files read earlier that have since changed. The model may be working with outdated content.' },
-        { key: 'bloated_results', label: 'Bloated Results', icon: '\uD83D\uDCE6', tip: 'Tool outputs sitting in context that were never referenced. Wasted space.' },
-        { key: 'duplicates', label: 'Duplicates', icon: '\uD83D\uDD04', tip: 'Same system reminders or content injected multiple times. Pure waste.' },
-        { key: 'decision_density', label: 'Decision Density', icon: '\uD83C\uDFAF', tip: 'Ratio of actual decisions and work vs overhead and boilerplate.' },
-        { key: 'agent_efficiency', label: 'Agent Efficiency', icon: '\u2699\uFE0F', tip: 'Whether dispatched agents produced useful output relative to their token cost.' }
+        { key: 'context_fill_degradation', label: 'Context Fill', tip: 'How full the active context is. Higher fill raises degradation risk.' },
+        { key: 'stale_reads', label: 'Stale Reads', tip: 'Files read earlier that have since changed. The model may be working with outdated content.' },
+        { key: 'bloated_results', label: 'Bloated Results', tip: 'Tool outputs sitting in context that were never referenced. Wasted space.' },
+        { key: 'duplicates', label: 'Duplicates', tip: 'Same system reminders or content injected multiple times. Pure waste.' },
+        { key: 'decision_density', label: 'Decision Density', tip: 'Ratio of actual decisions and work vs overhead and boilerplate.' },
+        { key: 'agent_efficiency', label: 'Agent Efficiency', tip: 'Whether dispatched agents produced useful output relative to their token cost.' }
       ];
       html += '<div style="padding:0 var(--s-3) var(--s-3);">';
       // Compactions are metadata, with no health bar or fixed loss claim.
@@ -5365,7 +5368,7 @@ var DB = (function() {
         else if (d.ratio !== undefined) detail = d.ratio;
         else if (d.detail) detail = d.detail;
         html += '<div style="display:flex;align-items:center;gap:var(--s-2);margin-bottom:10px;font-size:15px;" title="' + esc(sig.tip) + '">' +
-          '<span style="width:165px;color:var(--c-text-main);font-weight:500;cursor:help;">' + sig.icon + ' ' + sig.label + '</span>' +
+          '<span style="width:165px;color:var(--c-text-main);font-weight:500;cursor:help;">' + sig.label + '</span>' +
           '<div style="flex:1;height:10px;background:var(--c-surface);border-radius:5px;overflow:hidden;">' +
           '<div style="width:' + sigScore + '%;height:100%;background:' + barColor + ';border-radius:5px;transition:width 0.3s;"></div>' +
           '</div>' +
@@ -5377,7 +5380,7 @@ var DB = (function() {
       var waste = bd.total_estimated_waste_tokens;
       if (waste && waste > 0) {
         html += '<div style="margin-top:var(--s-2);padding:var(--s-2);background:var(--c-surface);border-radius:8px;font-size:13px;color:var(--c-text-dim);">' +
-          '<strong style="color:' + qColor + ';">' + waste.toLocaleString() + ' tokens</strong> of estimated waste. ' +
+          '<strong style="color:' + qInk + ';">' + waste.toLocaleString() + ' tokens</strong> of estimated waste. ' +
           (qs < 70 ? 'Consider <code>/compact</code> to reclaim.' : 'Minor bloat, manageable.') +
           '</div>';
       }
@@ -5399,7 +5402,7 @@ var DB = (function() {
       var latestAvg = last7[last7.length - 1].avg_quality;
       var trendColor = latestAvg >= 80 ? 'var(--c-accent-cyan)' : latestAvg >= 60 ? 'var(--c-chart-teal, #4ecdc4)' : latestAvg >= 50 ? 'var(--c-warning, #ff9f43)' : 'var(--c-chart-coral, #ff6b6b)';
 
-      html += '<div class="card wide"><div class="card-header"><span>Quality Trend</span><span class="label">' + last7.length + '-day</span></div>' +
+      html += '<div class="card wide"><div class="card-header"><span>Quality Trend</span><span class="label">last ' + last7.length + ' days</span></div>' +
         '<div style="padding:var(--s-2) var(--s-3);font-size:12px;color:var(--c-text-dim);">Rolling daily average quality score across sessions. Dashed line shows daily minimum.</div>' +
         '<div style="padding:0 var(--s-3) var(--s-3);overflow-x:auto;">' +
         '<svg viewBox="0 0 ' + chartW + ' ' + chartH + '" style="width:100%;max-width:' + chartW + 'px;height:auto;">' +
@@ -5430,7 +5433,10 @@ var DB = (function() {
     // U9: context quality and hook time limits moved here from the Savings tab.
     try { if (typeof healthNotesHtml === 'function') html += healthNotesHtml(data); } catch (e) {}
     try { if (typeof featureHealthHtml === 'function') html += featureHealthHtml(data); } catch (e) {}
-    try { if (typeof coverageFunnelHtml === 'function') html += coverageFunnelHtml(data); } catch (e) {}
+    try {
+      var cfData2 = data.coverage_funnel;
+      if (cfData2 && cfData2.available && typeof coverageFunnelHtml === 'function') html += coverageFunnelHtml(data);
+    } catch (e) {}
     try { if (typeof holdoutHtml === 'function') html += holdoutHtml(data); } catch (e) {}
 
     el.innerHTML = html;
@@ -5444,7 +5450,6 @@ var DB = (function() {
     var isCodex = data.runtime === 'codex';
 
     var html = '<div class="section-header">' +
-      '<div class="label">Advisory</div>' +
       '<h1>Token Coach</h1>' +
       '<p>Health score, pattern analysis, and coaching prompts for your setup.</p>' +
       '</div>';
@@ -5523,64 +5528,38 @@ var DB = (function() {
       '<div style="font-size:28px;font-weight:500;font-family:var(--font-mono);color:' + scoreColor + ';">' + esc(score) + '/100</div>' +
       '</div></div>';
 
-    // Snapshot summary
+    // The "Startup Overhead" and "Usable context" tiles are cut (section 5):
+    // they repeat Overview. The snapshot numbers stay available in the
+    // health-score description above.
     var snap = c.snapshot || {};
     var instructionLabel = snap.instruction_label || (isCodex ? 'AGENTS.md' : isNoInstructionHost(data) ? 'agent instructions' : 'CLAUDE.md');
-    html += '<div class="dashboard-grid">' +
-      '<div class="card"><div class="card-header"><span>Startup Overhead</span></div>' +
-      '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Tokens loaded before you type. Includes ' + esc(instructionLabel) + ', skills/plugin metadata, MCP tools, and system prompt.</div>' +
-      '<div class="mini-stat">' + fn(snap.total_overhead || 0) + '</div>' +
-      '<div class="label">' + esc(snap.overhead_pct || 0) + '% of ' + ((snap.context_window || data.snapshot.context_window || 1000000) >= 1000000 ? ((snap.context_window || data.snapshot.context_window || 1000000) / 1000000) + 'M' : ((snap.context_window || data.snapshot.context_window || 1000000) / 1000) + 'K') + '</div></div>' +
-      '<div class="card"><div class="card-header"><span>Usable Context</span></div>' +
-      '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Context window minus startup overhead and ~33K autocompact buffer. This is how much room you actually have for conversation.</div>' +
-      '<div class="mini-stat" style="color:var(--c-accent-cyan);">~' + fn(snap.usable_tokens || 0) + '</div>' +
-      '<div class="label">After overhead + autocompact buffer</div></div>' +
-      '</div>';
 
     // Pattern cards
     var bad = c.patterns_bad || [];
     var good = c.patterns_good || [];
 
     if (bad.length > 0) {
+      // Section 6: no left stripes, no orange type. Severity is a small dot
+      // before the title; the title itself is ink.
       html += '<div class="card wide"><div class="card-header"><span>Issues Detected</span><span class="label">' + bad.length + ' found</span></div>';
       bad.forEach(function(p) {
         var sevColor = p.severity === 'high' ? 'var(--c-chart-coral, #ff6b6b)' : p.severity === 'medium' ? 'var(--c-warning, #ff9f43)' : 'var(--c-text-dim, #7d8ca3)';
-        html += '<div style="border-left:3px solid ' + sevColor + ';padding:var(--s-3);margin-bottom:var(--s-2);background:rgba(255,255,255,0.02);border-radius:0 6px 6px 0;">' +
-          '<div style="font-weight:500;color:' + sevColor + ';">' + esc(p.name) + '</div>' +
+        html += '<div style="padding:var(--s-3);margin-bottom:var(--s-2);background:rgba(255,255,255,0.02);border-radius:8px;">' +
+          '<div style="font-weight:500;color:var(--c-text-main);"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + sevColor + ';margin-right:8px;"></span>' + esc(p.name) + '</div>' +
           '<div style="color:var(--c-text-dim);font-size:14px;margin-top:4px;">' + esc(p.detail) + '</div>' +
           '<div style="font-size:13px;margin-top:4px;"><span style="color:var(--c-accent-cyan);">Fix:</span> ' + esc(p.fix) + '</div>' +
-          '<div style="font-size:13px;color:var(--c-text-dim);">Savings: ' + esc(p.savings) + '</div>' +
+          // Section 6: only a real figure is a savings claim; "Not estimated"
+          // and friends are not shown as savings.
+          (/\d/.test(p.savings || '')
+            ? '<div style="font-size:13px;color:var(--c-text-dim);">Savings: ' + esc(p.savings) + '</div>'
+            : '') +
           '</div>';
       });
       html += '</div>';
     }
 
-    if (good.length > 0) {
-      var earned = good.filter(function(p) { return p.earned; });
-      var neutral = good.filter(function(p) { return !p.earned; });
-
-      if (earned.length > 0) {
-        html += '<div class="card wide"><div class="card-header"><span>Working Well</span></div>';
-        earned.forEach(function(p) {
-          html += '<div style="border-left:3px solid var(--c-accent-cyan);padding:var(--s-3);margin-bottom:var(--s-2);background:rgba(0,240,255,0.02);border-radius:0 6px 6px 0;">' +
-            '<div style="font-weight:500;color:var(--c-accent-cyan);">' + esc(p.name) + '</div>' +
-            '<div style="color:var(--c-text-dim);font-size:14px;margin-top:4px;">' + esc(p.detail) + '</div>' +
-            '</div>';
-        });
-        html += '</div>';
-      }
-
-      if (neutral.length > 0) {
-        html += '<div class="card wide"><div class="card-header"><span>Setup Summary</span></div>';
-        neutral.forEach(function(p) {
-          html += '<div style="border-left:3px solid var(--c-border);padding:var(--s-3);margin-bottom:var(--s-2);background:rgba(255,255,255,0.015);border-radius:0 6px 6px 0;">' +
-            '<div style="font-weight:500;color:var(--c-text-main);">' + esc(p.name) + '</div>' +
-            '<div style="color:var(--c-text-dim);font-size:14px;margin-top:4px;">' + esc(p.detail) + '</div>' +
-            '</div>';
-        });
-        html += '</div>';
-      }
-    }
+    // "Working well" and "Setup summary" are cut (section 5): five rows
+    // restating Overview.
 
     // Compaction timing guide
     var cg = c.compaction_guide;
@@ -5590,12 +5569,12 @@ var DB = (function() {
         '<div>' +
         '<div style="font-weight:500;color:var(--c-accent-cyan);margin-bottom:var(--s-2);">Compact after</div>';
       (cg.compact_after || []).forEach(function(item) {
-        html += '<div style="font-size:14px;color:var(--c-text-dim);padding:4px 0;">\u2705 ' + esc(item) + '</div>';
+        html += '<div style="font-size:14px;color:var(--c-text-dim);padding:4px 0;">' + esc(item) + '</div>';
       });
       html += '</div><div>' +
         '<div style="font-weight:500;color:var(--c-chart-coral, #ff6b6b);margin-bottom:var(--s-2);">Avoid during</div>';
       (cg.avoid_during || []).forEach(function(item) {
-        html += '<div style="font-size:14px;color:var(--c-text-dim);padding:4px 0;">\u274C ' + esc(item) + '</div>';
+        html += '<div style="font-size:14px;color:var(--c-text-dim);padding:4px 0;">' + esc(item) + '</div>';
       });
       html += '</div></div></div>';
     }
@@ -5640,21 +5619,13 @@ var DB = (function() {
         html += '<div style="padding:10px var(--s-3);border-bottom:1px solid var(--c-border);">' +
           '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">' +
           '<span style="font-size:13px;color:var(--c-text-dim);">#' + (i + 1) + ' (' + breakdown + ')</span>' +
-          '<span style="font-family:var(--font-mono);font-weight:500;color:' + (p.cost_usd > 1 ? 'var(--c-chart-coral, #ff6b6b)' : p.cost_usd > 0.5 ? 'var(--c-warning, #ff9f43)' : 'var(--c-text-main)') + ';">$' + p.cost_usd.toFixed(4) + '</span></div>' +
-          '<div style="font-size:14px;color:var(--c-text-dim);font-style:italic;">"' + esc(preview) + '..."</div></div>';
+          '<span style="font-family:var(--font-mono);font-weight:500;color:var(--c-text-main);">$' + p.cost_usd.toFixed(2) + '</span></div>' +
+          '<div style="font-size:14px;color:var(--c-text-dim);">"' + esc(preview) + '..."</div></div>';
       });
       html += '</div>';
     }
 
-    // Coaching questions
-    var questions = c.questions || [];
-    if (questions.length > 0) {
-      html += '<div class="card wide"><div class="card-header"><span>Coaching Questions</span></div>';
-      questions.forEach(function(q) {
-        html += '<div style="padding:var(--s-2) var(--s-3);color:var(--c-text-dim);font-size:14px;border-bottom:1px solid var(--c-border);">' + esc(q) + '</div>';
-      });
-      html += '</div>';
-    }
+    // "Coaching Questions" is cut (section 5): one generic question.
 
     // Ask Coach prompt
     html += '<div class="card wide">' +
@@ -5713,7 +5684,6 @@ var DB = (function() {
       : tcli('python3 measure.py dashboard --user');
 
     var html = '<div class="section-header">' +
-      '<div class="label">Configuration</div>' +
       '<h1>Hooks</h1>' +
       '<p>' + (isCodex
         ? 'Codex hooks collect real local telemetry. Balanced mode is the default; per-tool hooks are opt-in because Codex Desktop shows hook rows.'
@@ -5963,7 +5933,6 @@ var DB = (function() {
     }
 
     var html = '<div class="section-header">' +
-      '<div class="label">Control Panel</div>' +
       '<h1>Manage</h1>' +
       '<p id="manage-mode-desc">' +
         (isCodex
@@ -5977,7 +5946,7 @@ var DB = (function() {
       '</div>';
 
     if (v5Synthesized) {
-      html += '<div style="padding:12px var(--s-3);margin-bottom:var(--s-2);background:var(--c-bg);border-left:3px solid var(--c-accent-cyan);border-radius:4px;font-size:14px;color:var(--c-text-dim);">' +
+      html += '<div style="padding:12px var(--s-3);margin-bottom:var(--s-2);background:var(--c-bg);border:1px solid var(--c-border);border-radius:8px;font-size:14px;color:var(--c-text-dim);">' +
         (isCodex
           ? 'Showing default Codex feature state. Run a Codex dashboard refresh to reflect your actual config.'
           : isNoInstructionHost(data) ? 'Showing default feature state.'
@@ -6041,10 +6010,8 @@ var DB = (function() {
           : unavailable
           ? '<span style="font-size:12px;color:var(--c-text-dim);margin-left:10px;">(shown for parity; not toggleable in Codex yet)</span>'
           : '';
-        var impactPct = f.impact_pct > 0 ? '+' + f.impact_pct + '%' : '';
-        var impactBadge = impactPct
-          ? '<span style="font-size:20px;font-weight:800;color:var(--c-accent-cyan);margin-left:auto;">' + impactPct + '</span>'
-          : '';
+        // Section 5: the "+N%" badge was a percent with no noun; it is cut.
+        var impactBadge = '';
 
         html += '<div class="hook-row" style="padding:20px var(--s-3);align-items:flex-start;border-top:1px solid var(--c-border);">' +
           '<label class="hook-toggle" style="margin-top:4px;transform:scale(1.2);transform-origin:left top;">' +
@@ -6068,7 +6035,7 @@ var DB = (function() {
           '</div>' +
           '<div style="margin-top:12px;display:inline-block;padding:6px 12px;background:' + riskBg + ';color:#000;font-size:13px;font-weight:700;border-radius:4px;">' +
           riskLabel + '</div>' +
-          '<div style="font-size:14px;color:var(--c-text-dim);margin-top:8px;line-height:1.6;font-style:italic;">' +
+          '<div style="font-size:14px;color:var(--c-text-dim);margin-top:8px;line-height:1.6;">' +
           esc(f.risk) +
           '</div>' +
           '</div></div>';
@@ -6693,28 +6660,96 @@ var DB = (function() {
     document.getElementById('prompt-modal-overlay').classList.remove('visible');
   }
 
+  // ---- View switching with deep links (F4) ----
+  // location.hash names the view (#savings, #quick, ...). showView is the one
+  // place that activates a view, syncs the nav, the right rail and the hash.
+  function viewFromHash() {
+    var h = (window.location.hash || '').replace(/^#/, '');
+    if (h.indexOf('view-') === 0) h = h.slice(5);
+    return h && document.querySelector('.nav-item[data-view="' + h + '"]') ? h : null;
+  }
+  function showView(v, opts) {
+    opts = opts || {};
+    var target = document.getElementById('view-' + v);
+    var nav = document.querySelector('.nav-item[data-view="' + v + '"]');
+    if (!target || !nav) return false;
+    document.querySelectorAll('.view').forEach(function(el) { el.classList.remove('active'); });
+    document.querySelectorAll('.nav-item').forEach(function(n) { n.classList.remove('active'); });
+    target.classList.add('active');
+    nav.classList.add('active');
+    var layout = document.querySelector('.layout');
+    if (layout) layout.classList.toggle('panel-hidden', !!analyticsViews[v]);
+    var mc = document.querySelector('.main-col');
+    if (mc) mc.scrollTop = 0;
+    if (!opts.skipHash) {
+      try {
+        if (opts.replace) history.replaceState(null, '', '#' + v);
+        else if (window.location.hash !== '#' + v) window.location.hash = v;
+      } catch (e) { /* file:// or locked history: leave the hash alone */ }
+    }
+    return true;
+  }
+
+  // ---- "Still on the table" fix buttons (F5) ----
+  // Each row's button lands on the exact plan item that fixes it: the tab it
+  // lives on plus the item, expanded and highlighted.
+  function savingsOnTableFixes() {
+    function find(patterns, fallback) {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        var hay = (it.title || '') + ' ' + (it.shortDesc || '') + ' ' + (it.detail || '');
+        for (var p = 0; p < patterns.length; p++) {
+          if (patterns[p].test(hay)) return { view: it.section || 'quick', idx: it._i };
+        }
+      }
+      return { view: fallback };
+    }
+    return {
+      routing: find([/hardcoded model/i, /route subagents/i, /model.{0,20}(routing|mix|task)/i, /lighter model/i], 'quick'),
+      skills: find([/skills? not invoked/i, /skill.{0,40}(archive|budget|listing|inventory|trim|unused)/i, /unused skills?/i], 'manage')
+    };
+  }
+  function gotoFix(view, idx) {
+    if (!showView(view)) return;
+    if (idx == null || idx === '') return;
+    var scope = document.getElementById('view-' + view);
+    var target = scope && scope.querySelector('[data-idx="' + idx + '"]');
+    if (!target) return;
+    var row = target.classList.contains('setting-row') ? target : target.closest('.setting-row');
+    if (row && !row.classList.contains('expanded')) {
+      row.classList.add('expanded');
+      var detail = scope.querySelector('[data-detail-for="' + idx + '"]');
+      if (detail) detail.style.maxHeight = detail.scrollHeight + 'px';
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.remove('st-flash');
+    void target.offsetWidth;
+    target.classList.add('st-flash');
+    setTimeout(function() { target.classList.remove('st-flash'); }, 1700);
+  }
+
   function bind() {
     // Nav clicks
     document.querySelectorAll('.nav-item[data-view]').forEach(function(lnk) {
       lnk.addEventListener('click', function(e) {
         e.preventDefault();
-        var v = this.getAttribute('data-view');
-        document.querySelectorAll('.view').forEach(function(el) { el.classList.remove('active'); });
-        document.querySelectorAll('.nav-item').forEach(function(n) { n.classList.remove('active'); });
-        document.getElementById('view-' + v).classList.add('active');
-        this.classList.add('active');
-        // Toggle panel visibility for analytics views
-        var layout = document.querySelector('.layout');
-        if (analyticsViews[v]) {
-          layout.classList.add('panel-hidden');
-        } else {
-          layout.classList.remove('panel-hidden');
-        }
-        document.querySelector('.main-col').scrollTop = 0;
+        showView(this.getAttribute('data-view'));
       });
     });
 
+    // Back/forward and hand-edited hashes switch the view too.
+    window.addEventListener('hashchange', function() {
+      var v = viewFromHash();
+      if (v) showView(v, { skipHash: true });
+    });
+
     // Individual toggles (delegated)
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        var any = document.querySelector('.st-tip--open');
+        if (any) { any.classList.remove('st-tip--open'); any.blur(); }
+      }
+    });
     document.addEventListener('change', function(e) {
       var toggleLabel = e.target.closest('[data-toggle]');
       if (toggleLabel) {
@@ -6747,7 +6782,7 @@ var DB = (function() {
       var td = document.createElement('td');
       td.colSpan = 12;
       td.style.padding = '0';
-      var html = '<div style="background:var(--c-bg);padding:var(--s-2) var(--s-3);margin:2px 0;border-left:2px solid var(--c-accent-cyan);">' +
+      var html = '<div style="background:var(--c-bg);padding:var(--s-2) var(--s-3);margin:2px 0;border:1px solid var(--c-border);border-radius:8px;">' +
         '<div style="font-size:12px;font-family:var(--font-mono);color:var(--c-accent-cyan);margin-bottom:6px;">Per-Turn Breakdown (' + turns.length + ' API calls)</div>' +
         '<table class="session-table" style="margin:0;font-size:12px;"><thead><tr>' +
         '<th title="Assistant API call number inside this session." style="cursor:help">#</th>' +
@@ -6849,6 +6884,27 @@ var DB = (function() {
     document.addEventListener('click', function(e) {
       // Stop propagation on toggle clicks so expand doesn't fire
       if (e.target.closest('.toggle')) return;
+
+      // Savings hero hover cards: tap toggles the card open on touch; a
+      // click anywhere else closes it. Hover and focus are pure CSS.
+      var tipBtn = e.target.closest('.st-tip');
+      if (tipBtn) {
+        var wasOpen = tipBtn.classList.contains('st-tip--open');
+        document.querySelectorAll('.st-tip--open').forEach(function(b) { b.classList.remove('st-tip--open'); });
+        if (!wasOpen) tipBtn.classList.add('st-tip--open');
+        return;
+      }
+      if (!e.target.closest('.st-mega__item')) {
+        document.querySelectorAll('.st-tip--open').forEach(function(b) { b.classList.remove('st-tip--open'); });
+      }
+
+      // "Still on the table" fix buttons: jump to the exact fix (tab + item).
+      var fixBtn = e.target.closest('.st-fix[data-goto-view]');
+      if (fixBtn) {
+        e.preventDefault();
+        gotoFix(fixBtn.getAttribute('data-goto-view'), fixBtn.getAttribute('data-goto-idx'));
+        return;
+      }
 
       // Setting row expand/collapse
       var row = e.target.closest('.setting-row[data-idx]');
@@ -7401,9 +7457,21 @@ document.addEventListener('DOMContentLoaded', function() {
   var brandMeta = document.getElementById('brand-meta');
   if (brandMeta) {
     var brandParts = [];
-    if (data.version) brandParts.push('v' + data.version);
     if (data.runtime === 'codex') brandParts.push('Codex');
     brandMeta.textContent = brandParts.join(' \u00b7 ');
+  }
+  // Version and freshness live once, in the footer.
+  var footerVersion = document.getElementById('footer-version');
+  if (footerVersion && data.version) footerVersion.textContent = 'v' + data.version;
+  var footerUpdated = document.getElementById('footer-updated');
+  if (footerUpdated && data.generated_at) {
+    var fuDate = new Date(data.generated_at);
+    if (!isNaN(fuDate.getTime())) {
+      var fuNow = new Date();
+      var fuDay = Math.floor((new Date(fuNow.getFullYear(), fuNow.getMonth(), fuNow.getDate()) - new Date(fuDate.getFullYear(), fuDate.getMonth(), fuDate.getDate())) / 86400000);
+      var fuDayTxt = fuDay <= 0 ? 'today' : fuDay === 1 ? 'yesterday' : fuDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: fuDate.getFullYear() === fuNow.getFullYear() ? undefined : 'numeric' });
+      footerUpdated.textContent = 'Updated ' + fuDayTxt + ' at ' + fuDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    }
   }
 
   function startApp() {

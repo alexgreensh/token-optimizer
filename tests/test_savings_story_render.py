@@ -193,7 +193,7 @@ def test_hero_total_is_measured_plus_estimated_plus_routing_and_the_fold_adds_up
     h = hero(story({'savings': full()}))
     # Action total 83 measured + 12 estimated, plus the 30-day routing estimate of 50.
     vis = _visible(h)
-    assert 'st-mega st-mega--usd">$145</span>' in h and 'saved in the last 30 days' in vis
+    assert re.search(r'class="st-mega st-mega--usd st-tip"[^>]*>\$145</button>', h) and 'saved in the last 30 days' in vis
     assert not re.search(r'\$[\d,]+\.\d{2}', vis)
     assert 'Measured' not in vis and 'Estimated' not in vis and 'st-bar' not in h and 'st-bands' not in h
     assert 'Whole-dollar' not in h and 'class="st-legend"' not in h
@@ -207,14 +207,17 @@ def test_hero_total_is_measured_plus_estimated_plus_routing_and_the_fold_adds_up
 
 
 def _visible(html):
-    """Text outside every fold: what shows before anything is opened."""
-    return re.sub(r'<[^>]+>', ' ', re.sub(r'(?s)<details.*?</details>', '', html))
+    """Text outside every fold and every hover card: what shows before anything
+    is opened or hovered."""
+    html = re.sub(r'(?s)<details.*?</details>', '', html)
+    html = re.sub(r'(?s)<span class="st-tipcard"[^>]*>.*?</span></span>', '', html)
+    return re.sub(r'<[^>]+>', ' ', html)
 
 
 def test_session_shares_above_fold_and_place_split_in_fold():
     out = story({'savings': full()})
     h = hero(out)
-    assert 'st-mega st-mega--usd">$145</span>' in h and 'st-mega st-mega--tok">' in h
+    assert re.search(r'class="st-mega st-mega--usd st-tip"[^>]*>\$145</button>', h) and 'st-mega st-mega--tok st-tip"' in h
     assert 'tokens kept out of context' in h
     assert 'On this computer' not in _visible(h) and 'Per session' not in _visible(h)
     fold = h.split('<details')[1]
@@ -270,7 +273,9 @@ def test_savings_tab_one_row_of_folds_and_quality_moves_to_health():
     html = render_savings(s, extra=extra)
     row = html.split('class="st-morerow"')[1]
     assert html.index('class="st"') < html.index('class="st-morerow"')
-    assert re.findall(r'<summary>([^<]+)', row)[:3] == ['Room to save more', 'Where your sessions ran', 'Full ledger and history']
+    # F13: "Room to save more" merged into Still-on-the-table; with nothing sized
+    # the parts keep their own fold. Coverage and ledger stay last.
+    assert re.findall(r'<summary>([^<]+)', row)[:3] == ['Where your sessions ran', 'More changes you could make', 'Full ledger and history']
     assert 'Whole-workload' not in html and 'Context quality' not in html and 'legacy-runway' not in html
     assert '<div class="label">Value</div>' not in html and 'still on the table' not in html
     assert 'None of this is in any total above' in row
@@ -297,7 +302,7 @@ def test_tokens_saved_card_has_no_fresh_only_share():
     out = _node(prefix + mix + card_src + '\nprocess.stdout.write(tokensSavedCardHtml(data.savings));', data)
     expected = call('savingsStoryFmt().tok(savingsStoryBands(data).totalTok)', data)
     assert expected in out and expected in story(data)
-    assert 'Same figure as the Savings card' in out and call('savingsStoryFmt().tok(data.savings.token_headline.removed_tokens)', data) in out
+    assert ' tokens removed once.' in out and call('savingsStoryFmt().tok(data.savings.token_headline.removed_tokens)', data) in out
     assert '999999999' not in out and 'measured + estimated' not in out
     assert '%' not in out.split('model-bar')[0]  # no share before the model-mix bar
     for banned in ('prevented', 'would otherwise', 'without Token Optimizer', 'Spent vs Saved', 'class="label"',
@@ -356,7 +361,7 @@ def test_reread_row_rounds_independently_and_matches_card():
                                reread_usd=84.01)
     out = story({'savings': s})
     assert 'Re-reads avoided: $84.01' in out
-    assert 'worth $84 at API rates' in out
+    assert 'Worth $84 at API prices' in out
     assert 'Re-reads avoided: $85' not in out
 
 
@@ -451,7 +456,7 @@ def test_hero_matches_action_total_without_adding_diagnostic_pools():
     s['output_reread']['cost_saved_usd'] = 300
     s['structural_detail']['estimated']['cost_saved_usd'] = 200
     h = hero(story({'savings': s}))
-    assert 'st-mega st-mega--usd">$145</span>' in h
+    assert re.search(r'class="st-mega st-mega--usd st-tip"[^>]*>\$145</button>', h)
     assert '$595' not in h and '$645' not in h
 
 
@@ -459,7 +464,7 @@ def test_hero_matches_action_total_without_adding_diagnostic_pools():
 
 def test_hero_band_leads_with_three_numbers_with_routing_inside():
     h = hero(story({'savings': routed()}))
-    megas = re.findall(r'<span class="st-mega st-mega--(usd|tok)">([^<]+)</span>', h)
+    megas = re.findall(r'<(?:span|button)[^>]*class="st-mega st-mega--(usd|tok)[^"]*"[^>]*>([^<]+)</(?:span|button)>', h)
     # 30 days: 44.2 + 8.4 + 30.4 + 12 + 50 routing = 145; since install 310 measured + 40 estimated + 3,484 routing.
     assert megas == [('usd', '$145'), ('usd', '$3,834'), ('tok', '83.0M')]
     assert 'st-mega__row st-mega__row--hero' in h
@@ -517,8 +522,10 @@ def test_still_on_the_table_sums_routing_and_skill_listing_in_warm_accent():
     out = story({'savings': s})
     assert out.index('class="card st-hero"') < out.index('class="card st-table"') < out.index('class="st-grid"')
     t = table(out)
-    assert 'st-mega st-mega--warm st-mega--card">$170</span>' in t and 'st-mega--usd' not in t
-    assert re.findall(r'<li><span>([^<]+)<span class="st-sub">([^<]+)</span></span><span class="st-v">([^<]+)</span>', t) == [
+    # Section 6: the total is ink/info, not warm type; the card keeps its amber edge.
+    assert 'st-mega st-mega--route st-mega--card">$170</span>' in t and 'st-mega--usd' not in t
+    assert 'st-fixcell' in t
+    assert re.findall(r'<li><span>([^<]+)<span class="st-sub">([^<]+)</span></span><span class="st-fixcell"><span class="st-v">([^<]+)</span>', t) == [
         ('Model routing', 'Send routine work to Sonnet', '$61'), ('Skill listing', 'Trim the skill list budget', '$108')]
     assert 'your skill list grew from 6,000 to 30,000 characters per message since Apr 2026' in t and '12,000 calls' in t
     assert 'waste' not in t.lower()
@@ -530,7 +537,7 @@ def test_unsized_skill_listing_is_hidden_and_stays_out_of_the_sum():
     s = routed()
     s['skill_listing_budget'] = {'available': False, 'reason': 'not enough skill listings in transcripts'}
     t = table(story({'savings': s}))
-    assert 'st-mega--warm st-mega--card">$61</span>' in t
+    assert 'st-mega--route st-mega--card">$61</span>' in t
     assert 'Skill listing' not in t and 'Measuring' not in t
 
 
@@ -583,22 +590,24 @@ def _trends_cache_card(cache_health, pop):
     end = html.index("    var tokenBreakdownNote")
     prefix = ('const data = JSON.parse(process.argv[2]); const t = data.trends; const pop = t.population_metrics;\n'
               "const isCodex = false; const avgCacheHit = 'N/A';\n")
-    return _node(prefix + html[start:end] + '\nprocess.stdout.write(JSON.stringify([String(avgCacheDisplay), cacheLabel, cacheSessionLines]));', data)
+    return _node(prefix + html[start:end] + '\nprocess.stdout.write(JSON.stringify([String(avgCacheDisplay), cacheLabel]));', data)
 
 
 def test_trends_cache_card_leads_with_token_weighted_rate():
     pop = {'cache_eligible_main_sessions': 40, 'cache_eligible_main_hit_rate': 0.7712,
            'cache_ineligible_sessions': 9, 'cache_ineligible_hit_rate': 0.4321}
-    big, label, lines = json.loads(_trends_cache_card({'overall_cache_hit_rate': 0.9733}, pop))
+    big, label = json.loads(_trends_cache_card({'overall_cache_hit_rate': 0.9733}, pop))
     assert big == '97.3' and label == 'Cache hit rate (all tokens)'
-    assert 'Average session, 20+ messages: 77%</div>' in lines
-    assert 'Average short or delegated session: 43%</div>' in lines
-    assert 'cache-eligible' not in lines.lower() and 'cache-building' not in lines
+    # Section 5: the six grey session-mix sub-lines are cut; the number stands alone.
+    tpl = TEMPLATE.read_text()
+    start = tpl.index("    var eligibleCacheHit = Number(pop.cache_eligible_main_hit_rate);")
+    end = tpl.index("    var tokenBreakdownNote")
+    assert 'cacheSessionLines' not in tpl[start:end]
 
 
 def test_trends_cache_card_falls_back_without_cache_health():
     pop = {'cache_eligible_main_sessions': 40, 'cache_eligible_main_hit_rate': 0.7712}
-    big, label, _ = json.loads(_trends_cache_card({}, pop))
+    big, label = json.loads(_trends_cache_card({}, pop))
     assert big == '77' and label == 'Main-work cache hit rate'
 
 
@@ -619,7 +628,8 @@ def test_subdollar_amounts_read_naturally():
 
 def test_compounding_card_names_its_priced_removal_basis():
     grid = story({'savings': full()}).split('class="st-grid"')[1]
-    assert '<strong>2.0M priced tokens removed</strong> became <strong>80.0M tokens not sent</strong>' in grid
+    # F13: "priced tokens" is ledger vocabulary; the sentence names tokens plainly.
+    assert '<strong>2.0M tokens</strong> once kept <strong>80.0M tokens</strong>' in grid
 
 
 
@@ -744,9 +754,9 @@ def test_transformation_card_is_big_with_caption_share_and_fold():
     out = story({'savings': s})
     card = out.split('class="card st-card st-transform"')[1].split('</details></div>')[0]
     assert 'st-mega st-mega--usd st-mega--card">$3,366<span class="st-mega__per"> a month</span></span>' in card
-    assert ('Without Token Optimizer, working the way you work now would cost you this much more, '
-            'compared with your own baseline from before you installed.') in card
-    assert 'That is 14% of what this work would have cost.</p>' in card
+    # F13: plain-language lead with friendly dates and the share saved.
+    assert 'would have cost $3,366 more at what each request cost you in' in card
+    assert 'That is 14% saved.' in card
     fold = card.split('<details')[1]
     assert 'How this is calculated' in card
     assert '$23,560.08 a month' in fold and '$20,194.49 a month' in fold and '$3,365.59 a month' in fold
@@ -785,49 +795,55 @@ def runway(**kw):
     return r
 
 
-def test_limits_card_uses_transformation_ratio_and_puts_direct_measurement_in_fold():
+def test_limits_card_headline_bars_basis_and_method():
+    """F8/contract: giant pct + 'more work fits in your weekly limit', two
+    labelled bars, one-line basis, three-line method fold."""
     s = full()
     s['before_after'] = ok_transformation()
     card = limits_card(story({'savings': s, 'runway': runway()}))
-    assert '&asymp;14% more room in your limits' in card
-    five, week = card.split('<div class="st-limit">')[1:3]
-    assert '5-hour limit' in five and '<span class="st-limit__used">17%</span> used now' in five
-    assert '<span class="st-limit__num">19%</span> without Token Optimizer' in five
-    assert 'class="st-limit__ghost" style="width:19%"' in five and 'class="st-limit__fill" style="width:17%"' in five
-    assert 'Weekly limit' in week and '<span class="st-limit__used">78%</span> used now' in week
-    assert '<span class="st-limit__num">91%</span> without Token Optimizer' in week
-    assert 'aria-label="78% used now, 91% without Token Optimizer"' in week
-    assert '2.7% more work per token' in card.split('<details')[1]
-    assert 'counterfactual monthly cost divided by actual monthly cost' in card.split('<details')[1]
-    assert 'class="st-limits__top"' in card and 'class="st-limits__bottom"' in card
+    # 23560.08 / 20194.49 = 1.1667 -> 17% more work fits.
+    assert 'st-limits__mega"><span class="st-mega st-mega--usd st-mega--card">17%</span>' in card
+    assert 'more work fits in your weekly limit' in card
+    assert 'Without Token Optimizer' in card and 'With Token Optimizer' in card
+    # Weekly window wins: used 78%, without = 78 * 1.1667 = 91%.
+    assert '<span class="st-limitbar__val">91%</span>' in card
+    assert '<span class="st-limitbar__val">78% used this week</span>' in card
+    assert 'class="st-limitbar__fill st-limitbar__fill--ghost" style="width:91%"' in card
+    assert 'class="st-limitbar__fill" style="width:78%"' in card
+    # One-line basis, friendly month/day dates when present.
+    assert 'Compared with your earliest tracked month.' in card
+    method = card.split('<details')[1]
+    assert 'Measured directly by Token Optimizer: about 2.7% more work per token' in method
+    assert 'The rest comes from your setup, habits and model choices since your earliest tracked month' in method
+    assert "Anthropic&#39;s own improvements in that time are not separated out" in method
+    assert 'over the limit' not in card
 
 
-def test_limits_card_uses_last_reading_and_caps_above_limit():
+def test_limits_card_without_reading_says_so_and_stored_reading_is_labelled():
     s = full()
     s['before_after'] = ok_transformation()
-    r = runway(windows=[], meter_ts=1794376851,
-               last_known_windows=[{'key': 'seven_day', 'used_pct': 98}])
-    card = limits_card(story({'savings': s, 'runway': r}))
-    assert '98%</span> used now' in card
-    assert 'st-limit__stat--over">over the limit without Token Optimizer' in card
-    assert 'class="st-limit__ghost" style="width:100%"' in card
-    assert 'Last reading, ' in card
+    card = limits_card(story({'savings': s, 'runway': runway(windows=[],
+        last_known_windows=[{'key': 'seven_day', 'used_pct': 98}], meter_ts=1794376851)}))
+    # 98 * 1.1667 = 114 -> capped at the track, labelled 'right at your limit'.
+    assert 'about 114%: right at your limit' in card
+    assert 'over the limit' not in card
+    assert 'Last reading from your meter history.' in card
 
 
-def test_limits_card_shows_meter_without_inventing_a_baseline():
-    card = limits_card(story({'savings': full(), 'runway': runway()}))
-    assert '<span class="st-limit__used">78%</span>' in card
-    assert 'without Token Optimizer' not in card.split('<details')[0]
-    assert 'st-limit__num' not in card
+def test_limits_card_needs_a_baseline_ratio():
+    # No before_after -> no honest "more work fits" figure, so no card.
+    assert 'st-limits-card' not in story({'savings': full(), 'runway': runway()})
     s = full()
     s['before_after'] = dict(ok_transformation(), actual_monthly_usd=0)
-    card = limits_card(story({'savings': s, 'runway': runway()}))
-    assert 'st-limit__num' not in card
+    assert 'st-limits-card' not in story({'savings': s, 'runway': runway()})
 
 
 def test_limits_card_ignores_invalid_meter_readings():
+    s = full()
+    s['before_after'] = ok_transformation()
     r = runway(windows=[{'key': 'seven_day', 'used_pct': None}, {'key': 'five_hour', 'used_pct': 101}])
-    assert 'st-limits-card' not in story({'savings': full(), 'runway': r})
+    card = limits_card(story({'savings': s, 'runway': r}))
+    assert 'No weekly limit reading right now' in card
 
 
 def test_savings_page_has_no_removed_cards_and_no_apologetic_copy_above_the_folds():
@@ -892,3 +908,63 @@ def test_fresh_without_history_does_not_claim_a_zero_estimate():
     data['mod_fresh_estimated'] = {'events': 1, 'cost_saved_usd': 0, 'unpriced_events': 1, 'evidence': 'estimated'}
     html = story({'savings': data})
     assert 'capped at 10 turns): not yet available' in html
+
+
+# ---- D3 lane: deep links, fix buttons, hover cards ----
+
+def test_savings_is_default_view_and_hashes_are_bookmarkable():
+    """F4: Savings opens first when the story payload exists; every tab's hash
+    round-trips through showView with replaceState for the default."""
+    tpl = TEMPLATE.read_text()
+    assert "data-view=\"savings\" class=\"nav-item active\"" in tpl or "class=\"nav-item active\" data-view=\"savings\"" in tpl
+    assert 'function viewFromHash()' in tpl and "replace(/^#/, '')" in tpl
+    assert "indexOf('view-') === 0" in tpl
+    assert 'savingsStoryOn(data)' in tpl and "'savings' : 'overview'" in tpl
+    assert 'history.replaceState' in tpl
+    assert 'hashchange' in tpl
+
+
+def test_still_on_the_table_rows_have_one_fix_button_to_the_exact_setting():
+    """F5: every sized opportunity renders exactly one control that jumps to the
+    plan tab + item; unsized rows never show a button."""
+    s = routed()
+    s['skill_listing_budget'] = {'available': True, 'period_days': 30, 'current_chars': 30000,
+                                 'baseline_chars': 6000, 'baseline_month': '2026-04',
+                                 'growth_tokens': 6000, 'calls': 12000, 'cost_usd': 108.2}
+    payload = {'savings': s, '__extras': {'fixes': {'routing': {'view': 'quick', 'idx': 3},
+                                                  'skills': {'view': 'manage', 'idx': 7}}}}
+    t = table(call('savingsStoryHtml(data, data.__extras)', payload))
+    assert t.count('class="st-fix"') == 2
+    assert 'data-goto-view="quick" data-goto-idx="3"' in t
+    assert 'data-goto-view="manage" data-goto-idx="7"' in t
+    assert 'Go to fix' in t
+    s2 = routed()
+    s2['skill_listing_budget'] = {'available': False, 'reason': 'x'}
+    t2 = table(call('savingsStoryHtml(data, data.__extras)', dict(payload, savings=s2)))
+    assert t2.count('class="st-fix"') == 1 and 'Skill listing' not in t2
+
+
+def test_hero_numbers_carry_hover_cards_with_meaning_and_action():
+    """F14 H1-H3: the three mega numbers are buttons wired to tipcards that say
+    what the number means and what to do."""
+    out = story({'savings': full()})
+    h = hero(out)
+    for tip in ('st-tip-total', 'st-tip-since', 'st-tip-tokens'):
+        assert 'id="' + tip + '"' in out, tip
+    assert h.count('st-tip"') >= 3
+    assert 'aria-describedby="st-tip-total"' in h
+    total_tip = out.split('id="st-tip-total"')[1][:1600]
+    assert 're-read' in total_tip.lower() or 'routing' in total_tip.lower()
+    since_tip = out.split('id="st-tip-since"')[1][:800]
+    assert 'Measured' in since_tip and 'Estimated' in since_tip
+
+
+def test_no_page_eyebrows_or_banned_patterns_in_template():
+    """Section 5/6 sweep: page eyebrows, accent stripes on cut cards, italic
+    explanatory copy and 'over the limit' phrasing stay out of the template."""
+    tpl = TEMPLATE.read_text()
+    for eyebrow in ('Token Overhead Analysis', 'Optimization Plan', 'Recommendations',
+                    'Analytics', 'Advisory', 'Configuration', 'Control Panel'):
+        assert "'" + eyebrow + "'" not in tpl and '>" + eyebrow + "<' not in tpl
+    assert 'over the limit' not in tpl
+    assert 'Measuring' not in tpl or 'measuring' in tpl.lower()  # placeholder banned in UI copy

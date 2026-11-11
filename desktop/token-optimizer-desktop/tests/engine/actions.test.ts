@@ -963,11 +963,25 @@ test('answered manual warm-up sends one priced-usage receipt', async ($, on) => 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   await ui.press({ key: 'action' })
   await w.clock.settle()
-  const receipts = w.runs.filter(r => r.argv.includes('mod-action'))
+  const receipts = w.runs.filter(r => r.argv.includes('mod-action') && JSON.parse(r.stdin!).action === 'warm')
   expect(receipts.length).toBe(1)
   const receipt = JSON.parse(receipts[0]!.stdin!)
   expect(receipt.action).toBe('warm')
   expect(receipt.session_id).toBe('sess-1')
   expect(receipt.transcript_path).toBe(transcript)
   expect(receipt.usage.cache_read_input_tokens).toBe(600_000)
+})
+
+
+test('manual warm-up refuses to fork if its cost cannot be reserved', async ($, on) => {
+  const w = stub(on)
+  w.modActionFail = true
+  w.status = { ...w.status, requestAgoS: 3400 }
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'action' })
+  await w.clock.settle()
+  expect(w.forks).toBe(0)
+  expect(w.toasts).toContain('Keep warm did not run: its cost could not be reserved.')
 })

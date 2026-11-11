@@ -126,15 +126,16 @@ def verified_summary(facade, days, now):
 
 
 def manual_count(rows, start):
-    count = 0
+    attempts, cancelled = set(), set()
     for row in rows:
         try:
             if (row.get('source') == 'claude-code-mod' and row.get('action') == 'warm' and
-                    row.get('status') == 'ok' and float(row.get('ts', 0)) >= start):
-                count += 1
+                    row.get('status') in ('firing', 'ok', 'cancelled') and float(row.get('ts', 0)) >= start):
+                (cancelled if row.get('status') == 'cancelled' else attempts).add(row.get('action_id'))
         except (TypeError, ValueError):
             continue
-    return count
+    attempts.discard(None)
+    return len(attempts - cancelled)
 
 
 def headline_pool(facade, cutoff):

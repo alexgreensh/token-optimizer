@@ -3681,13 +3681,13 @@ def keepwarm_spend_summary(days=None, now=None, rows=None):
     # quota was charged for; counting it keeps the tripwire ratio honest.
     outcome_ts_by_session = {}
     for r in rows:
-        if r.get("status") in ("ok", "error", "timeout"):
+        if r.get("status") in ("ok", "error", "timeout", "cancelled"):
             try:
                 ots = float(r.get("ts", 0) or 0)
             except (TypeError, ValueError):
                 ots = 0.0
             outcome_ts_by_session.setdefault(
-                r.get("session_id") or "unknown", []).append(ots)
+                (r.get("session_id") or "unknown", r.get("action_id")), []).append(ots)
 
     spend = 0.0
     realized = 0.0
@@ -3733,7 +3733,7 @@ def keepwarm_spend_summary(days=None, now=None, rows=None):
             # Orphan iff no outcome row for this session landed at/after the firing
             # ts AND the firing is older than the grace window (a fresh firing may
             # simply be mid-ping). Counted at its recorded est_cost_usd.
-            siblings = outcome_ts_by_session.get(sid, [])
+            siblings = outcome_ts_by_session.get((sid, r.get("action_id")), [])
             has_outcome = keepwarm_economics.claim_outcome(siblings, ts)
             if not has_outcome:
                 ec = float(r.get("est_cost_usd", 0.0) or 0.0)

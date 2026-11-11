@@ -164,3 +164,81 @@ def test_two_warmups_in_one_pause_cannot_double_credit(facade, tmp_path):
     assert result['realized'] == 1
     assert facade.keepwarm_detect_realized(now=1767230011, records=arms,
         parse_fn=lambda p: [{'timestamp': stamp, 'cache_read': 20000, 'cache_creation': 0}])['realized'] == 0
+
+
+def test_warm_reservation_books_a_tail_and_accepts_later_transcript_growth(facade, tmp_path):
+    from _measure import mod_action_booking
+    transcript = tmp_path / 'synthetic-session.jsonl'
+    transcript.write_text(json.dumps({'type': 'assistant', 'timestamp': '2026-01-01T00:00:00Z',
+        'message': {'model': 'claude-sonnet-4-5', 'usage': {'cache_read_input_tokens': 20000,
+        'cache_creation': {'ephemeral_1h_input_tokens': 100}}}}) + '\n')
+    st = transcript.stat()
+    event = {'action': 'warm-prepare', 'action_id': 'reserved-1', 'session_id': 'synthetic-session',
+        'timestamp': 1767229000, 'transcript_path': str(transcript), 'byte_size': st.st_size,
+        'transcript_mtime': st.st_mtime}
+    assert mod_action_booking.record(facade, event)['ok']
+    assert not mod_action_booking.record(facade, event)['ok']
+    rows = facade._keepwarm_load_ledger_rows()
+    assert len(rows) == 1 and rows[0]['status'] == 'firing' and rows[0]['est_cost_usd'] > 0
+    assert facade.keepwarm_spend_summary(days=None, now=1767229001, rows=rows)['spend_usd'] > 0
+    with transcript.open('a') as stream:
+        stream.write(json.dumps({'type': 'user', 'message': 'new turn'}) + '\n')
+    event.update(action='warm', timestamp=1767229001, usage={'input_tokens': 4, 'output_tokens': 2,
+        'cache_read_input_tokens': 19000, 'cache_creation_input_tokens': 100})
+    assert mod_action_booking.record(facade, event)['ok']
+    rows = facade._keepwarm_load_ledger_rows()
+    assert [r['status'] for r in rows] == ['firing', 'ok']
+    summary = facade.keepwarm_spend_summary(days=None, now=1767229002, rows=rows)
+    assert summary['pings'] == 1 and summary['spend_usd'] == pytest.approx(0.006342)
+    assert len(facade.load_keepwarm_records()) == 1
+
+
+def test_pending_reservations_match_outcomes_by_attempt_id(facade):
+    rows = [
+        {'session_id': 'same', 'action_id': 'a', 'ts': 100, 'status': 'firing', 'est_cost_usd': 1.0},
+        {'session_id': 'same', 'action_id': 'b', 'ts': 101, 'status': 'firing', 'est_cost_usd': 2.0},
+        {'session_id': 'same', 'action_id': 'b', 'ts': 102, 'status': 'ok', 'cost_usd': 0.5},
+    ]
+    summary = facade.keepwarm_spend_summary(days=None, now=103, rows=rows)
+    assert summary['pings'] == 2 and summary['spend_usd'] == pytest.approx(1.5)
+
+
+def test_manual_count_includes_unresolved_reservations_only_once():
+    from _measure.keepwarm_economics import manual_count
+    rows = [{'source': 'claude-code-mod', 'action': 'warm', 'action_id': 'a', 'ts': 100, 'status': 'firing'},
+            {'source': 'claude-code-mod', 'action': 'warm', 'action_id': 'b', 'ts': 101, 'status': 'firing'},
+            {'source': 'claude-code-mod', 'action': 'warm', 'action_id': 'b', 'ts': 102, 'status': 'ok'}]
+    assert manual_count(rows, 99) == 2
+
+
+def test_never_sent_reservation_is_cancelled_without_cost(facade, tmp_path):
+    from _measure import mod_action_booking
+    path = tmp_path / 'synthetic-session.jsonl'
+    path.write_text(json.dumps({'type': 'assistant', 'timestamp': '2026-01-01T00:00:00Z',
+        'message': {'model': 'claude-sonnet-4-5', 'usage': {'cache_read_input_tokens': 20000}}}) + '\n')
+    st = path.stat()
+    event = {'action': 'warm-prepare', 'action_id': 'unsent', 'session_id': 'synthetic-session',
+        'timestamp': 1767229000, 'transcript_path': str(path), 'byte_size': st.st_size, 'transcript_mtime': st.st_mtime}
+    assert mod_action_booking.record(facade, event)['ok']
+    assert mod_action_booking.record(facade, dict(event, action='warm-cancel', timestamp=1767229001))['ok']
+    rows = facade._keepwarm_load_ledger_rows()
+    summary = facade.keepwarm_spend_summary(days=None, now=1767229002, rows=rows)
+    assert summary['pings'] == 0 and summary['spend_usd'] == 0
+    from _measure.keepwarm_economics import manual_count
+    assert manual_count(rows, 0) == 0
+
+
+def test_unanswered_fork_books_usage_without_resume_credit(facade, tmp_path):
+    from _measure import mod_action_booking
+    path = tmp_path / 'synthetic-session.jsonl'
+    path.write_text(json.dumps({'type': 'assistant', 'timestamp': '2026-01-01T00:00:00Z',
+        'message': {'model': 'claude-sonnet-4-5', 'usage': {'cache_read_input_tokens': 20000}}}) + '\n')
+    st = path.stat()
+    event = {'action': 'warm-prepare', 'action_id': 'unanswered', 'session_id': 'synthetic-session',
+        'timestamp': 1767229000, 'transcript_path': str(path), 'byte_size': st.st_size, 'transcript_mtime': st.st_mtime}
+    assert mod_action_booking.record(facade, event)['ok']
+    event.update(action='warm', answered=False, timestamp=1767229001, usage={'input_tokens': 4, 'output_tokens': 2,
+        'cache_read_input_tokens': 19000, 'cache_creation_input_tokens': 100})
+    assert mod_action_booking.record(facade, event)['ok']
+    assert facade.keepwarm_spend_summary(days=None, now=1767229002)['spend_usd'] > 0
+    assert facade.load_keepwarm_records() == []

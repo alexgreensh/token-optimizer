@@ -19,8 +19,8 @@
     "mutation": "one session stored under two paths counted twice",
     "edit": 2,
     "file": "skills/token-optimizer/scripts/measure.py",
-    "old": "                conn.executemany(\"DELETE FROM session_log WHERE id = ?\", [(r[0],) for r in other])",
-    "new": "                pass",
+    "old": "                if upgrade_drain_control.session_write(conn, \"DELETE FROM session_log WHERE id = ?\", [(r[0],) for r in other], many=True) is None:",
+    "new": "                if False:",
     "symbol": "collect_sessions"
   },
   {

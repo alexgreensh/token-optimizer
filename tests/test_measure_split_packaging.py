@@ -124,6 +124,7 @@ def test_installed_bridge_locator_requires_complete_canonical_payload(tmp_path, 
     plugin = tmp_path / 'installed bridge'
     plugin.mkdir()
     for name in installer._PAYLOAD_MODULES:
+        (plugin / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SCRIPTS / name, plugin / name)
     payload = tmp_path / 'canonical engine é'
     scripts = payload / 'skills/token-optimizer/scripts'

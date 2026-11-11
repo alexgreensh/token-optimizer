@@ -112,6 +112,14 @@ _PAYLOAD_MODULES = (
     "refetch_fingerprint.py",
     "reset_epoch.py",
     "token_estimate.py",
+    # session_store queues contended writes through the spool and publishes
+    # reset markers; both live in the _measure package.
+    "_measure/__init__.py",
+    "_measure/session_store_spool.py",
+    "_measure/lease_candidate_cleanup.py",
+    "_measure/context_reset_marker.py",
+    "hook_provenance.py",
+    "shipped_hook_templates.py",  # hook_provenance imports it at module load
     "cursor_transcript.py",
 )
 

@@ -996,10 +996,11 @@ def test_installed_bridge_payload_imports_without_the_repo(tmp_path, installer):
     plugin = tmp_path / "plugin"
     plugin.mkdir()
     for name in payload:
+        (plugin / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SCRIPTS / name, plugin / name)
     local = sorted(p.stem for p in SCRIPTS.glob("*.py"))
     proc = subprocess.run([sys.executable, "-I", "-c", _IMPORT_PROBE, str(plugin), json.dumps(local),
-                           json.dumps([n[:-3] for n in payload])], capture_output=True, text=True,
+                           json.dumps([n[:-3].replace("/", ".").removesuffix(".__init__") for n in payload])], capture_output=True, text=True,
                           timeout=120, cwd=str(tmp_path),
                           env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin", "TOKEN_OPTIMIZER_NO_PROC_SCAN": "1"})
     assert proc.returncode == 0, proc.stderr[-500:]

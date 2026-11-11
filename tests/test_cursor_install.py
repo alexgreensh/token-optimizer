@@ -314,6 +314,7 @@ def test_concurrent_installs_both_survive(tmp_path, monkeypatch):
     plugin = cur / "token-optimizer" / "plugin"
     plugin.mkdir(parents=True)
     for name in ci._PAYLOAD_MODULES:
+        (plugin / name).parent.mkdir(parents=True, exist_ok=True)
         (plugin / name).write_text("# stub\n", encoding="utf-8")
 
     errors, done = [], []
@@ -445,6 +446,7 @@ def test_uninstall_rmtree_failure_is_runtime_error(home, monkeypatch):
     plugin.mkdir(parents=True)
     (home / "hooks.json").write_text(_json.dumps({"hooks": {}}), encoding="utf-8")
     for name in ci._PAYLOAD_MODULES:
+        (plugin / name).parent.mkdir(parents=True, exist_ok=True)
         (plugin / name).write_text("# stub\n", encoding="utf-8")
     monkeypatch.setattr(ci, "cursor_home", lambda: home)
 
@@ -510,6 +512,7 @@ def test_payload_imports_and_read_interception_are_self_contained(tmp_path):
     payload = tmp_path / "payload"
     payload.mkdir()
     for name in ci._PAYLOAD_MODULES:
+        (payload / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SCRIPTS / name, payload / name)
     target = tmp_path / "sample.py"
     target.write_text("def sample():\n    return 1\n")
@@ -517,7 +520,7 @@ def test_payload_imports_and_read_interception_are_self_contained(tmp_path):
 payload, target, home, names = sys.argv[1:]
 sys.path.insert(0, payload)
 for name in names.split(","):
-    importlib.import_module(name[:-3])
+    importlib.import_module(name[:-3].replace("/", ".").removesuffix(".__init__"))
 import cursor_read_cache as cache
 cache._home = lambda: pathlib.Path(home)
 result = cache.evaluate({"tool_name": "Read", "tool_args": {"file_path": target},

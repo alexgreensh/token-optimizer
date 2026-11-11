@@ -37,6 +37,7 @@ def test_cloud_payload_refuses_missing_domain(tmp_path):
 
 def test_runtime_manifest_and_hook_warmer_match():
     from _measure import RUNTIME_SOURCES
+    assert {'transcript_stream.py', 'checkpoint_direction.py', 'checkpoint_retention.py'} <= set(RUNTIME_SOURCES)
     spec = importlib.util.spec_from_file_location('split_gate_manifest', REPO / 'hooks/module_runner.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -56,7 +57,8 @@ def test_devin_closed_set_refuses_package_and_every_provider():
 
 @pytest.mark.parametrize('missing', ['__init__.py', '_compat.py', 'runtime.py', 'pricing.py',
     'audit.py', 'dashboard.py', 'lifecycle.py', 'sessions.py', 'trends.py', 'cache_policy.py',
-    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py'])
+    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py', 'dashboard_history.py', 'weekly_activity.py',
+    'transcript_stream.py', 'checkpoint_direction.py', 'checkpoint_retention.py'])
 def test_native_completeness_refuses_each_missing_provider(tmp_path, monkeypatch, missing):
     import codex_doctor
     import hermes_doctor

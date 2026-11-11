@@ -1827,12 +1827,12 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
         # CHECKPOINT_RELEVANCE_THRESHOLD. A home-dir / generic cwd yields no
         # opening context -> no score -> no pointer. The cross-session label,
         # the "NOT your own prior work" framing, the filename-format warning path,
-        # the 30-min age gate, and own-session exclusion are all preserved.
+        # the 24-hour age gate, and own-session exclusion are preserved.
         try:
             cur = _measure_facade.Path(cwd) if cwd else _measure_facade.Path.cwd()
         except Exception:
             cur = None
-        # Filter candidates once: own-session excluded, 30-min age gate applied.
+        # Filter candidates once: own-session excluded, 24-hour age gate applied.
         # The age gate and own-session exclusion are evaluated here (before
         # selection) so a stale or own-session checkpoint can never be the
         # relevance winner either.
@@ -1844,7 +1844,7 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
                 age_seconds = (_measure_facade.datetime.now() - cp["created"]).total_seconds()
             except Exception:
                 continue
-            if age_seconds > 1800:
+            if age_seconds > 86400:
                 continue
             candidates.append(cp)
         if not candidates:

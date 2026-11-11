@@ -13,11 +13,14 @@ sys.path.insert(0, str(SCRIPTS))
 
 @pytest.fixture
 def measure(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     sys.modules.pop("measure", None)
     mod = importlib.import_module("measure")
     monkeypatch.setattr(mod, "CHECKPOINT_DIR", tmp_path)
+    monkeypatch.setattr(mod, "TRENDS_DB", tmp_path / "trends.db")
     return mod
 
 
@@ -37,6 +40,17 @@ def test_ceiling_keeps_latest_of_every_live_session(measure):
     checkpoints = [dict(filename=f"session-{i}-20261111-120000.md", created=now,
                         trigger="auto") for i in range(3)]
     assert measure._checkpoints_to_prune(checkpoints, now=now, total_max=1) == []
+
+
+def test_session_lookup_uses_session_and_date_index(measure):
+    conn = measure._init_trends_db()
+    try:
+        plan = conn.execute("EXPLAIN QUERY PLAN SELECT * FROM session_log "
+                            "WHERE session_uuid = ? ORDER BY date DESC LIMIT 1", ("test",)).fetchall()
+        assert any("idx_session_log_uuid_date" in str(row) for row in plan)
+        assert not any("TEMP B-TREE" in str(row) for row in plan)
+    finally:
+        conn.close()
 
 
 def test_interleaved_parallel_sessions_restore_their_own_transcripts(tmp_path):

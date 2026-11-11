@@ -896,7 +896,7 @@ def _init_trends_db():
     # function and the path separator can vary on Windows.
     try:
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_session_log_uuid ON session_log (session_uuid)"
+            "CREATE INDEX IF NOT EXISTS idx_session_log_uuid_date ON session_log (session_uuid, date DESC)"
         )
         rows = conn.execute(
             "SELECT id, jsonl_path FROM session_log "

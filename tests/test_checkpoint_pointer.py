@@ -8,7 +8,7 @@ Now: when no cwd-prefix match exists, candidates are scored with the U2 relevanc
 scorer against the cwd-derived opening context, and the pointer fires ONLY if the
 best score clears ``CHECKPOINT_RELEVANCE_THRESHOLD``. The cross-session label +
 "NOT your own prior work" framing and the filename-format warning path are
-preserved. The age gate (30 min) and own-session exclusion are preserved.
+preserved. The age gate (24 hours) and own-session exclusion are preserved.
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ def test_own_session_checkpoint_yields_nothing(m, tmp_path, monkeypatch):
         f"own-session checkpoint must never surface a pointer; got: {out!r}")
 
 
-# --- S4: no checkpoints under 30 min -> nothing (age gate preserved) ---
+# --- S4: old checkpoints do not produce a pointer ---
 
 def test_stale_checkpoints_yield_nothing(m, tmp_path, monkeypatch):
     proj = tmp_path / "token-optimizer"
@@ -133,7 +133,17 @@ def test_stale_checkpoints_yield_nothing(m, tmp_path, monkeypatch):
     cp = _cp(tmp_path, "a1b2c3d4-20260811-120000-checkpoint.md",
              active_task="fix checkpoint injection in token optimizer",
              work_paths=[str(proj / "measure.py")],
-             age_seconds=60 * 60)  # 1h, past the 30-min gate
+             age_seconds=25 * 60 * 60)
     out = _run(m, monkeypatch, tmp_path, [cp], cwd=proj)
     assert out.strip() == "", (
-        f"stale checkpoint (>30min) must not surface a pointer; got: {out!r}")
+        f"stale checkpoint (>24h) must not surface a pointer; got: {out!r}")
+
+
+def test_relevant_checkpoint_from_previous_evening_is_offered(m, tmp_path, monkeypatch):
+    proj = tmp_path / "project"
+    proj.mkdir()
+    cp = _cp(tmp_path, "a1b2c3d4-20260811-120000-stop.md",
+             active_task="continue project", work_paths=[str(proj / "app.py")],
+             age_seconds=12 * 60 * 60)
+    out = _run(m, monkeypatch, tmp_path, [cp], cwd=proj)
+    assert "Cross-session checkpoint" in out and "Not your session" in out

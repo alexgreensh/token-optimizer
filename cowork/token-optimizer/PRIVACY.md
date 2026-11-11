@@ -144,6 +144,10 @@ Token Optimizer sets `cleanupPeriodDays=99999` in the host platform's `settings.
 - Users can override this setting in their `settings.json`
 - The `purge` command does NOT delete transcripts (they belong to the host platform)
 
+## Settings Self-Heal
+
+If `settings.json` is reset, Token Optimizer can put back its own entries. It keeps a private copy (`~/.claude/token-optimizer/settings_heal/`, owner-only) of only what it wrote: `cleanupPeriodDays`, its `statusLine`, its own hook entries and its `compactInstructions` block. It never copies or restores `env`, API keys, `apiKeyHelper`, `permissions`, MCP servers, plugin settings or other tools' hooks. A restore prints one line and shows in `doctor`/`health`. Older full copies in that folder are cut down to those entries on the first run of 5.13.70. Set `TOKEN_OPTIMIZER_SETTINGS_HEAL=0` to turn the snapshot and restore off.
+
 ## Subagent Prompt-Cache Setting
 
 On Claude Code 2.1.243+, Token Optimizer measures whether `subagentPromptCacheTtl: "1h"` would pay on your own transcripts and recommends it -- it never sets the key for you. `subagent-cache enable` applies the recommendation (setting it once in the user `settings.json` so subagents keep their prompt cache for an hour instead of five minutes). This is the host platform's billing setting, not Token Optimizer data.

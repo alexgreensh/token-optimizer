@@ -4281,43 +4281,17 @@ def _settings_read_highwater() -> dict | None:
 
 
 def _settings_update_highwater(data: dict) -> bool:
-    """Update the high-water mark if this sighting has MORE top-level keys
-    AND has at least one user-authored key. A file with only machine-written
-    keys is never a valid high-water candidate (it could be wipe residue
-    with more keys than the real highwater). Returns True if updated."""
+    """Snapshot Token Optimizer's OWN settings (settings_owned.OWNED_KEYS) when
+    the file has at least one user-authored key. Never copies env, permissions,
+    other plugins' hooks or any key we did not write. True if updated."""
     _measure_facade = _compat.facade()
-    if not isinstance(data, dict) or not data:
-        return False
-    # Poisoning guard: only snapshot files that have user-authored keys.
-    # A file with only machine-written keys is wipe residue, not a valid
-    # high-water candidate.
-    if not _measure_facade._settings_has_user_keys(data):
-        return False
+    if not isinstance(data, dict) or not _measure_facade._settings_has_user_keys(data):
+        return False  # poisoning guard: a machine-only file is wipe residue
     try:
-        d = _measure_facade._settings_heal_ensure_dir()
-        if d is None:
-            return False
-        existing = _measure_facade._settings_read_highwater()
-        if existing is None or len(data) > len(existing):
-            if not _measure_facade._settings_write_file_secure(
-                d / "highwater.json",
-                _measure_facade.json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-            ):
-                return False
-            # Record metadata.
-            meta = {
-                "key_count": len(data),
-                "key_set": sorted(data.keys()),
-                "timestamp": _measure_facade.datetime.now().isoformat(),
-            }
-            _measure_facade._settings_write_file_secure(
-                d / "highwater.meta.json",
-                _measure_facade.json.dumps(meta, indent=2) + "\n",
-            )
-            return True
+        import settings_owned
+        return settings_owned.update_highwater(_measure_facade, data) is not None
     except (OSError, TypeError):
-        pass
-    return False
+        return False
 
 
 def _settings_read_tombstones() -> set:
@@ -4642,39 +4616,11 @@ def _settings_validate_value(key: str, value) -> bool:
 
 
 def _settings_resolve_restore_value(key: str, highwater: dict) -> tuple:
-    """Resolve the value to restore for a given absent key.
-
-    Returns (value, source) where source is one of:
-      "authoritative" -- rebuilt from the live on-disk record
-      "snapshot"      -- taken from the high-water mark snapshot
-      (None, None)    -- could not resolve; skip this key
-
-    For keys with an authoritative source (extraKnownMarketplaces,
-    enabledPlugins), the snapshot is NEVER used -- we always rebuild from
-    disk. For all other keys, we fall back to the snapshot.
-    """
-    # Try authoritative source first.
-    _measure_facade = _compat.facade()
-    reconstructor = _measure_facade._SETTINGS_AUTHORITATIVE_RECONSTRUCTORS.get(key)
-    if reconstructor is not None:
-        try:
-            value = reconstructor()
-            if value is not None and _measure_facade._settings_validate_value(key, value):
-                return value, "authoritative"
-        except Exception:
-            pass
-        # If the authoritative source fails, do NOT fall back to the snapshot
-        # for these keys. A stale snapshot value for extraKnownMarketplaces
-        # or enabledPlugins is worse than no value (it can break plugin
-        # discovery or re-enable a disabled plugin).
-        return None, None
-
-    # Fall back to snapshot for keys without an authoritative source.
-    if key in highwater:
-        value = highwater[key]
-        if _measure_facade._settings_validate_value(key, value):
-            return value, "snapshot"
-    return None, None
+    """(value, "snapshot") for an absent key we own, else (None, None). Keys
+    outside settings_owned.OWNED_KEYS (enabledPlugins, env, ...) are never
+    restored: the host's own records are not ours to rebuild."""
+    import settings_owned
+    return settings_owned.restore_value(_compat.facade(), key, highwater)
 
 
 def _maybe_self_heal_settings() -> None:
@@ -4693,25 +4639,33 @@ def _maybe_self_heal_settings() -> None:
          a. Read the high-water mark. If none, fail open (nothing to restore).
          b. Compute absent keys = high-water keys - live keys - tombstoned.
          c. If no absent keys, fail open.
-         d. Backup the live file via _backup_settings_file. If backup fails,
+         d. Back up the OWNED part of the live file (settings_owned). If it fails,
             ABORT (no restore without a backup).
          e. Re-read settings.json under the settings lock to avoid value race.
          f. Additive merge: add only absent keys from the high-water mark.
          g. Write via _settings_write_atomic_silent (suppresses guard stderr).
          h. Log the restoration.
 
-    SILENT: no stdout, no stderr to the user. All diagnostics go to the heal
-    log. FAIL OPEN: any error returns without touching the file.
+    Only Token Optimizer's own keys are ever copied or restored
+    (settings_owned.OWNED_KEYS). stdout stays silent; a restore prints one
+    stderr line and records it in the heal log. TOKEN_OPTIMIZER_SETTINGS_HEAL=0
+    skips snapshot and restore. FAIL OPEN: any error returns without touching
+    the file.
     """
     _measure_facade = _compat.facade()
     try:
-        data, _path, ok = _measure_facade._read_settings_json_checked()
-        if not ok or not isinstance(data, dict):
-            return  # unreadable or malformed: fail open
-
+        import settings_owned
         heal_dir = _measure_facade._settings_heal_ensure_dir()
         if heal_dir is None:
             return  # can't create heal dir: fail open
+        # Shrink older full copies to owned keys even when the heal is off:
+        # it only removes data. TOKEN_OPTIMIZER_SETTINGS_HEAL=0 skips the rest.
+        settings_owned.migrate_to_owned_only(_measure_facade)
+        if settings_owned.heal_disabled():
+            return
+        data, _path, ok = _measure_facade._read_settings_json_checked()
+        if not ok or not isinstance(data, dict):
+            return  # unreadable or malformed: fail open
 
         # --- Healthy sighting: check tombstones + snapshot ---
         if _measure_facade._settings_has_user_keys(data):
@@ -4720,11 +4674,9 @@ def _maybe_self_heal_settings() -> None:
             _measure_facade._settings_check_tombstones(data, previously_restored)
             # Snapshot: update high-water mark if richer.
             if _measure_facade._settings_update_highwater(data):
+                _kept = settings_owned.owned_subset(_measure_facade, data)
                 _measure_facade._settings_heal_log(
-                    "snapshot",
-                    key_count=len(data),
-                    key_set=sorted(data.keys()),
-                )
+                    "snapshot", key_count=len(_kept), key_set=sorted(_kept))
             # Time-proximity signal: record last healthy sighting timestamp.
             _measure_facade._settings_write_file_secure(
                 heal_dir / "last_healthy.json",
@@ -4737,7 +4689,7 @@ def _maybe_self_heal_settings() -> None:
         if not _measure_facade._settings_is_wipe_residue(data):
             return  # has unknown keys that aren't machine-written: fail open
 
-        highwater = _measure_facade._settings_read_highwater()
+        highwater = settings_owned.read_highwater(_measure_facade)
         if not highwater:
             return  # no high-water mark: nothing to restore from
 
@@ -4749,10 +4701,10 @@ def _maybe_self_heal_settings() -> None:
         if not absent_keys:
             return  # nothing to restore (all missing keys are tombstoned)
 
-        # Pre-restore backup (reuses the existing _backup_settings_file helper).
+        # Pre-restore backup of the owned part only (settings_owned.backup_owned).
         # If the backup fails, ABORT: no restore without a reversible backup.
         backup_dir = heal_dir / "backups"
-        backup_path = _measure_facade._backup_settings_file(backup_dir)
+        backup_path = settings_owned.backup_owned(_measure_facade, backup_dir)
         if backup_path is None:
             _measure_facade._settings_heal_log(
                 "restore_aborted",
@@ -4814,7 +4766,9 @@ def _maybe_self_heal_settings() -> None:
                 backup_path=str(backup_path),
                 live_key_count=len(data),
                 healed_key_count=len(merged),
+                notice=settings_owned.restore_notice(restored),
             )
+            settings_owned.announce_restore(restored)
     except Exception:
         # Fail open, always. A heal that breaks a session is a worse bug
         # than the one it heals.

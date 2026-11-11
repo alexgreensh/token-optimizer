@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Settings self-heal now copies and restores only Token Optimizer's own entries (hooks it wrote, its statusLine, cleanupPeriodDays, its compact block), never `env`, keys, permissions, MCP servers or other tools' hooks. Older full copies in `settings_heal/` are cut down on first run, a restore prints one line and shows in doctor/health, and `TOKEN_OPTIMIZER_SETTINGS_HEAL=0` turns it off.
+
 ## [5.13.69] - 2026-11-09
 
 - Weekly savings stay whole when a few old transcripts were cleaned up (coverage shown), a partial count is labelled as one, and the savings report names its real period instead of "/mo".

@@ -2498,26 +2498,7 @@ classify_keepwarm_record = _measure_compat.bind(_measure_providers['cache_policy
 compact_keepwarm_sidecar = _measure_compat.bind(_measure_providers['cache_policy'].compact_keepwarm_sidecar, __name__, defaults=(None, None,))
 
 
-# ========== Keep-warm billing + consent gate (eligibility) ==========
-# THE pre-ping gate. The tick loop calls keepwarm_gate() before it touches any
-# armed record; it returns (allowed, reason) and nothing pings unless allowed is
-# True. Two independent conditions must both hold:
-#   * billing == 'api'  — keep-warm only recovers a *write premium*, which only
-#     API-key billing pays. On subscription auth a ping spends quota and saves
-#     nothing (never net-negative), so subscription is a HARD off and is
-#     never even asked for consent.
-#   * consent == 'enabled' — opt-in only (the default-on rule explicitly does NOT
-#     extend to token-spending features). Tri-state,
-#     sticky, stored via the same _write_config_flag/_config_lock surface as the
-#     rest of TO's config (0600 atomic write). States: unasked -> asked ->
-#     enabled|declined. enabled/declined are terminal unless an explicit CLI
-#     flip (keepwarm-enable / keepwarm-disable) moves them.
-# Detection is CONSERVATIVE by construction: anything we cannot positively
-# identify as API-key billing is treated as subscription (= off). Better to skip
-# a legitimate ping than to ever burn a subscription user's quota.
-# Every reader here is PURE + injectable (env dict + config paths) so the
-# tests can drive each ladder rung without touching the real machine.
-
+# Keep-warm pings fail closed until live-session refresh is proven safe.
 _KEEPWARM_CONSENT_KEY = "keepwarm_consent"
 # Valid sticky consent states. 'unasked' is the implicit default (no key yet).
 _KEEPWARM_CONSENT_STATES = ("unasked", "asked", "declined", "enabled")
@@ -2525,15 +2506,7 @@ _KEEPWARM_CONSENT_STATES = ("unasked", "asked", "declined", "enabled")
 # *inside* a ping resume can never recursively arm/ping again.
 _KEEPWARM_PING_ENV = "TOKEN_OPTIMIZER_KEEPWARM_PING"
 
-# ===== LLM-PING KILL: the ONLY token-spending step is off by default =====
-# Scope it tight: the WATCHER is awesome and stays ON -- the tick loop, meter
-# reading, resume/cache-drop classification, forecast, and quota model are all
-# code-only and spend ZERO tokens, so they keep watching "when the cash drops."
-# The ONE thing that spins up an LLM and costs tokens is the keep-warm ping
-# (`claude -p` in _keepwarm_fire_ping). THAT is gated off by default and never
-# ships hot. An operator can allow the LLM ping for internal dogfood ONLY by
-# explicitly setting the escape-hatch env var truthy; absent/false = ping OFF.
-# Everything else about keep-warm runs normally.
+# The legacy allow flag remains a supported explicit opt-out when set false.
 _KEEPWARM_ALLOW_LLM_PING_ENV = "TOKEN_OPTIMIZER_KEEPWARM_ALLOW_LLM_PING"
 
 
@@ -2617,11 +2590,8 @@ _KEEPWARM_SCHEDULER_LOG_NAME = "keepwarm-tick.log"
 # last_tick_ok/last_tick_age freshness signal independently of whether the log
 # carries a traceback (the log can be quiet-clean yet the scheduler dead).
 _KEEPWARM_TICK_STAMP_NAME = ".keepwarm-tick-stamp.json"
-# StartInterval: 5min (matches the "~5min" cadence). ThrottleInterval 60s so
-# launchd never hot-loops the tick if it exits fast. Log rotation guard truncates
-# the combined stdout/stderr log when it exceeds this size, on install and on the
-# tick's own check.
-_KEEPWARM_SCHEDULER_START_INTERVAL = 300
+# Check every minute and throttle launchd to prevent a hot loop.
+_KEEPWARM_SCHEDULER_START_INTERVAL = 60
 _KEEPWARM_SCHEDULER_THROTTLE = 60
 _KEEPWARM_SCHEDULER_LOG_MAX_BYTES = 1024 * 1024  # 1MB
 
@@ -2753,7 +2723,7 @@ _KEEPWARM_1H_CADENCE = _KEEPWARM_1H_WINDOW_SECONDS - _KEEPWARM_1H_SAFETY_MARGIN
 # 5m entries: the window is 300s; cadence (if viable at all) is window minus a
 # proportional margin. Viability is decided by the break-even formula, NOT this.
 _KEEPWARM_5M_WINDOW_SECONDS = 300
-_KEEPWARM_5M_SAFETY_MARGIN = 60
+_KEEPWARM_5M_SAFETY_MARGIN = 120
 _KEEPWARM_5M_CADENCE = _KEEPWARM_5M_WINDOW_SECONDS - _KEEPWARM_5M_SAFETY_MARGIN
 # Per-TTL write premium multiplier on the input rate, DERIVED from PRICING_TIERS
 # at module init (single source of truth -- no hand-copied numbers). The anthropic
@@ -6617,7 +6587,7 @@ _write_config_flag = _measure_compat.bind(_measure_providers['lifecycle']._write
 # This lets power users override via env, but persistent state lives in config.json
 # so dashboard toggles work without touching shell profiles.
 
-V5_FEATURES = {
+V5_FEATURES = {**__import__('_measure.keepwarm_economics', fromlist=['feature_settings']).feature_settings(),
     "quality_nudges": {
         "env_var": "TOKEN_OPTIMIZER_QUALITY_NUDGES",
         "config_key": "v5_quality_nudges",
@@ -6878,7 +6848,7 @@ _V5_COMPRESSION_LABELS = {
     # errors and the summary line.
     "build_output_compress": "Build output compression",
     # Codex sessions: command output compressed by the Codex hook path.
-    "codex_command_compress": "Command output (Codex)",
+    "codex_command_compress": "Command output (Codex)", "mod_clean": "Clean-up from the Claude Code mod", "mod_clean_first": "Clean-up first from the Claude Code mod",
 }
 
 # compression_events features that are bookkeeping, shadow measurement, or a

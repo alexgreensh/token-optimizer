@@ -3791,8 +3791,8 @@ def _is_v5_feature_enabled(feature_name):
         if r is not None:
             return r
 
-    # Config.json (user, then plugin-data, via _read_config_flag).
     config_val = _measure_facade._read_config_flag(feat["config_key"], None)
+    if feature_name == "keepwarm" and config_val is None and _measure_facade._read_config_flag("keepwarm_consent", "unasked") == "declined": return False
     if config_val is not None:
         r = _measure_facade.interpret_flag_value(config_val, env_truthy_value=tv)
         if r is not None:
@@ -3805,8 +3805,8 @@ def _set_v5_feature(feature_name, enabled):
     """Enable or disable a v5 feature via config.json (persistent, dashboard-friendly)."""
     _measure_facade = _compat.facade()
     feat = _measure_facade.V5_FEATURES.get(feature_name)
-    if not feat:
-        return False
+    if not feat: return False
+    if feature_name == "keepwarm": return False
     _measure_facade._write_config_flag(feat["config_key"], bool(enabled))
     return True
 
@@ -3879,9 +3879,7 @@ def _get_v5_feature_status():
         except OSError:
             codex_hooks_text = ""
     for name, feat in _measure_facade.V5_FEATURES.items():
-        # Resolve env from the process AND settings.json so the dashboard sees
-        # flags a user "marked" even when this process (e.g. the daemon) did not
-        # inherit Claude Code's env injection.
+        if name == "keepwarm" and (_measure_facade.detect_runtime() != "claude" or _measure_facade._normalized_platform() == "Windows"): continue
         env_val = _measure_facade._resolve_feature_env(feat["env_var"])
         config_val = _measure_facade._read_config_flag(feat["config_key"], None)
         enabled = _measure_facade._is_v5_feature_enabled(name)
@@ -3903,9 +3901,9 @@ def _get_v5_feature_status():
             "how": feat["how"],
             "risk": feat["risk"],
             "risk_level": feat.get("risk_level", "none"),
-            "recommended": recommended,
-            "enabled": enabled,
-            "source": source,
+            "recommended": recommended if name != "keepwarm" else False,
+            "enabled": enabled if name != "keepwarm" else False,
+            "source": source if name != "keepwarm" else "paused",
             "env_var": feat["env_var"],
             "config_key": feat["config_key"],
         }

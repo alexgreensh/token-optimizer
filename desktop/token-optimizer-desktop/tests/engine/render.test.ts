@@ -21,10 +21,10 @@ async function exactly(ui: Finder, text: string) {
 
 async function passesOn(mounting: Promise<unknown>): Promise<boolean> {
   try {
-    await mounting
-    return false
+    const ui = await mounting as { findAll: (q: { type: string; text: string }) => Promise<unknown[]> }
+    // Newer engines return an empty surface for a pass-on instead of rejecting.
+    return (await ui.findAll({ type: 'Text', text: 'Token Optimizer' })).length === 0
   } catch {
-    // Nothing beneath the plugin draws in a test, so a pass-on rejects.
     return true
   }
 }

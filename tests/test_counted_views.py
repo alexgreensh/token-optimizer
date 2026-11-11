@@ -394,3 +394,15 @@ def test_subagent_archive_proof_rejects_new_ambiguous_match(m, tmp_path):
     assert conn.execute('SELECT count(*) FROM ' + m._counted_table(conn, 'savings_events')).fetchone()[0] == 1
     assert conn.execute('SELECT count(*) FROM savings_events').fetchone()[0] == 1
     conn.close()
+
+
+def test_savings_headline_subtracts_pings_without_a_return(m, monkeypatch):
+    import time
+    now = time.time()
+    monkeypatch.setattr(m, '_keepwarm_load_ledger_rows', lambda: [
+        {'session_id': 's', 'ts': now - 10, 'status': 'ok', 'cost_usd': 0.25},
+    ])
+    summary = m._get_savings_summary(days=30)
+    assert summary['keepwarm_estimated']['cost_saved_usd'] == -0.25
+    action = m._action_savings_components(summary)
+    assert action['estimates_usd']['keepwarm_estimated'] == -0.25

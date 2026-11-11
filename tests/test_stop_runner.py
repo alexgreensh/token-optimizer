@@ -174,9 +174,7 @@ def test_sessionend_points_at_the_same_runner():
     )
     # The async flag and 60s timeout are host-level semantics that must be
     # preserved on the hooks.json entry itself.
-    assert hook.get("async") is True, (
-        "SessionEnd must keep async=true (host fire-and-forget semantics)"
-    )
+    assert not hook.get("async"), "SessionEnd must mark the session ended before exit"
     assert hook.get("timeout") == 60, (
         "SessionEnd must keep timeout=60 (the 60s async budget)"
     )

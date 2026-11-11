@@ -867,3 +867,28 @@ def test_archive_full_fetch_count_is_disclosed_without_adding_dollars():
     output = story({'savings': s})
     assert 'Full command output fetched from the archive: 2 outputs, about 5K tokens.' in output
     assert 'does not establish whether a command would otherwise have been re-run' in output
+
+
+def test_savings_fold_labels_manual_warmups_from_mod():
+    data = base()
+    data['keepwarm_estimated'] = {'manual_pings': 2, 'cost_saved_usd': -0.01}
+    html = story({'savings': data})
+    assert 'Manual warm-ups from the Claude Code mod: 2' in html
+
+
+def test_mod_actions_are_labelled_and_fresh_is_explicitly_estimated():
+    data = base()
+    data['by_category'] = {'mod_clean': {'events': 1, 'tokens_saved': 15000, 'cost_saved_usd': 0},
+                           'mod_compaction_cost': {'events': 1, 'tokens_saved': 0, 'cost_saved_usd': -0.01}}
+    data['mod_fresh_estimated'] = {'events': 1, 'cost_saved_usd': 0.06, 'unpriced_events': 0, 'evidence': 'estimated'}
+    data['action_savings']['estimates_usd'] = {'mod_fresh_estimated': 0.06}
+    html = story({'savings': data})
+    assert 'Clean-up from the Claude Code mod' in html
+    assert 'Start fresh from the Claude Code mod' in html and 'estimated' in html.lower()
+
+
+def test_fresh_without_history_does_not_claim_a_zero_estimate():
+    data = base()
+    data['mod_fresh_estimated'] = {'events': 1, 'cost_saved_usd': 0, 'unpriced_events': 1, 'evidence': 'estimated'}
+    html = story({'savings': data})
+    assert 'capped at 10 turns): not yet available' in html

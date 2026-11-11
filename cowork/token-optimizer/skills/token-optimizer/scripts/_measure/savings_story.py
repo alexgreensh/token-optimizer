@@ -163,3 +163,25 @@ def full_bash_fetch_totals(conn, cutoff, legacy_rows, is_fixture, snapshot_dir=N
               and verified_full(session, detail.split(' ', 1)[0])
               and before_new(ts, (session, detail.split(' ', 1)[0]))]
     return len(rows) + len(legacy), sum(int(row[3]) for row in rows) + sum(legacy)
+
+
+def keepwarm_reload_value(facade, record):
+    model = facade._keepwarm_model_norm(record.get('model'))
+    prefix = max(0, int(record.get('prefix_proxy') or 0))
+    ttl = record.get('ttl_kind') or 'unknown'
+    write = facade._KEEPWARM_INPUT_USD_PER_TOKEN[model] * facade._KEEPWARM_WRITE_PREMIUM.get(ttl, facade._KEEPWARM_WRITE_PREMIUM['unknown'])
+    return prefix * max(0.0, write - facade._KEEPWARM_CACHE_READ_USD_PER_TOKEN[model])
+
+
+def keepwarm_pause_net(facade, record, now, rows):
+    """Value a warm resume, net of actual ping costs in this pause."""
+    sid = str(record.get('session_id') or '')
+    start = float(record.get('ts') or 0)
+    outcomes = [row for row in rows if str(row.get('session_id') or '') == sid
+                and row.get('status') in ('ok', 'error', 'timeout')
+                and start <= float(row.get('ts') or 0) <= now]
+    if len(outcomes) < len(record.get('pings_fired') or []):
+        return None
+    estimate = facade._keepwarm_ping_cost_est(record.get('prefix_proxy'), record.get('model'))
+    spent = sum(float(row.get('cost_usd') or 0) or estimate for row in outcomes)
+    return keepwarm_reload_value(facade, record) - spent

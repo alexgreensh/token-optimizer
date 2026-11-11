@@ -680,6 +680,10 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
                 return None
         except Exception:
             pass
+        from . import keepwarm_safety
+        owner = keepwarm_safety.find_owner()
+        if owner is None:
+            return None
         tp = _measure_facade.Path(transcript_path)
         usage, model, ts = _measure_facade._keepwarm_last_usage(tp)
         if not usage:
@@ -714,7 +718,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
             "transcript_mtime": float(transcript_mtime),
             "byte_size": int(byte_size),
             "ts": float(now),
-            "state": "armed",
+            "state": "armed", "owner": owner,
         }
         line = _measure_facade.json.dumps(record) + "\n"
         # Idempotency (state-machine invariant: ONE active arm per
@@ -870,20 +874,15 @@ def classify_keepwarm_record(rec, now=None):
     except (TypeError, ValueError):
         armed_mtime = 0.0
 
-    # Resume detection is O(1) stat-based: a newer mtime is the
-    # cheap first signal; a byte-size GROWTH past the armed size confirms real
-    # appended turns (a bare touch bumps mtime without growth -> not a resume).
-    # Legacy records carry line_count (no byte_size): we cannot do the O(1) size
-    # compare for them, so they stay 'still_paused' until the 14d max-age expiry
-    # drops them (handled above) -- never falsely booked off a missing field.
-    armed_size = rec.get("byte_size")
-    if armed_size is None:
-        return "still_paused"  # legacy line_count record: tolerate, await expiry
+    from . import keepwarm_safety
+    if not keepwarm_safety.owner_alive(rec.get("owner")) or keepwarm_safety.ended_since(
+            _measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts):
+        return "gone"
     try:
-        armed_size = int(armed_size)
-    except (TypeError, ValueError):
-        return "still_paused"
-    if cur_mtime > armed_mtime + 0.001 and cur_size > armed_size:
+        armed_size = int(rec["byte_size"])
+    except (KeyError, TypeError, ValueError):
+        return "gone"
+    if cur_size != armed_size or cur_mtime != armed_mtime:
         return "resumed"
     return "still_paused"
 
@@ -951,18 +950,12 @@ def compact_keepwarm_sidecar(path=None, now=None):
 
 
 def _keepwarm_llm_ping_disabled(env=None):
-    """True (LLM ping OFF) unless the escape-hatch env var is truthy.
-
-    Gates ONLY the token-spending `claude -p` ping in _keepwarm_fire_ping. The
-    rest of keep-warm (watching/measuring, all token-free) is unaffected.
-    Default (env var absent/empty/false) = ping DISABLED. Pure + injectable.
-    """
+    """The disable switch stops token-spending pings, including subscription pings."""
     _measure_facade = _compat.facade()
-    if env is None:
-        env = _measure_facade.os.environ
-    val = env.get(_measure_facade._KEEPWARM_ALLOW_LLM_PING_ENV)
-    return not (isinstance(val, str)
-                and val.strip().lower() in ("1", "true", "yes", "on"))
+    env = _measure_facade.os.environ if env is None else env
+    disabled = str(env.get("TOKEN_OPTIMIZER_KEEPWARM_DISABLE", "")).strip().lower()
+    old = env.get(_measure_facade._KEEPWARM_ALLOW_LLM_PING_ENV)
+    return disabled in ("1", "true", "yes", "on") or (old is not None and str(old).strip().lower() in ("0", "false", "no", "off"))
 
 
 def _keepwarm_default_claude_json_path():
@@ -1123,71 +1116,15 @@ def keepwarm_mark_asked():
     return current
 
 
-def keepwarm_enable(env=None, claude_json_path=None, settings_path=None,
-                    limits_lab=None):
-    """Explicit opt-in. Refuses on subscription billing (honest copy).
-
-    Returns (ok, message). On API billing sets consent='enabled' and returns the
-    pointer to what happens next (the scheduler install is a SEPARATE step — NOT
-    here). On
-    subscription billing it writes NOTHING and returns the honest refusal: a
-    ping spends quota and recovers no write premium, so the only real remedy is
-    behavioral (shorter pauses / resume sooner).
-
-    limits_lab=True is the DOGFOOD-ONLY exception (the product rule still holds):
-    measurement on an instrumented subscription machine showed that full-prefix pings
-    moved the plan usage meters 0.0 points (6 pings, all three buckets), so an
-    operator may explicitly enroll a subscription machine to measure the
-    write-avoidance side. It sets consent='enabled' AND the keepwarm_limits_lab
-    config flag, and says EXPERIMENTAL out loud. Never offered by any consent
-    pitch surface; CLI-only, deliberate.
-    """
+def keepwarm_enable(env=None, claude_json_path=None, settings_path=None, limits_lab=None):
+    """Re-enable keep-warm and reset the tripwire after an explicit opt-out."""
     _measure_facade = _compat.facade()
-    mode = _measure_facade.keepwarm_billing_mode(
-        env=env, claude_json_path=claude_json_path, settings_path=settings_path)
-    if mode != "api" and limits_lab:
-        _measure_facade._keepwarm_set_consent("enabled")
-        _measure_facade._write_config_flag("keepwarm_limits_lab", True)
-        # An explicit (re-)enable is the ONLY sanctioned tripwire
-        # walk-up. Reset the demotion ladder to the most-permissive state with a
-        # fresh promoted_at so a previously demoted-to-off lab re-arms.
-        try:
-            _measure_facade.keepwarm_tripwire_repromote()
-        except Exception:
-            pass
-        sched_line = _measure_facade._keepwarm_enable_install_scheduler()
-        return (True, (
-            "Keep-warm enabled in LIMITS-LAB mode (EXPERIMENTAL, subscription "
-            "billing). Pings measured 0.0 usage-meter movement on this setup, "
-            "but write-side limit weighting is still unmeasured: watch the "
-            "keep-warm ledger and your /usage meters. keepwarm-disable exits "
-            "the lab any time; the tripwire still auto-demotes if outcomes "
-            "go bad.\n" + sched_line
-        ))
-    if mode != "api":
-        return (False, (
-            "Keep-warm refused: this looks like a subscription (non-API-key) "
-            "Claude account. Keep-warm pings spend your quota and recover no "
-            "savings, because subscription billing has no per-write premium to "
-            "recover. The honest remedy is behavioral: resume paused sessions "
-            "sooner, or keep pauses under the cache TTL so the prefix survives "
-            "on its own. (If you do bill via an API key, set ANTHROPIC_API_KEY "
-            "and re-run keepwarm-enable.)"
-        ))
     _measure_facade._keepwarm_set_consent("enabled")
-    # Explicit enable resets the tripwire ladder (the sole walk-up).
     try:
         _measure_facade.keepwarm_tripwire_repromote()
     except Exception:
         pass
-    sched_line = _measure_facade._keepwarm_enable_install_scheduler()
-    return (True, (
-        "Keep-warm enabled. On your next paused, API-billed session the "
-        "keepwarm-tick loop will probe-refresh the cache prefix (max 2 pings "
-        "unless the predictor promotes sustain), book ping spend and realized "
-        "savings honestly, and auto-demote if it ever stops paying.\n"
-        + sched_line
-    ))
+    return True, "Keep-warm enabled. " + _measure_facade._keepwarm_enable_install_scheduler()
 
 
 def _keepwarm_enable_install_scheduler():
@@ -1225,7 +1162,7 @@ def keepwarm_disable():
     _measure_facade._keepwarm_set_consent("declined")
     return (True, (
         "Keep-warm disabled. No pings will fire and you won't be asked again. "
-        "Re-run keepwarm-enable any time to opt back in (API billing only)."
+        "Re-run keepwarm-enable any time to opt back in."
     ))
 
 
@@ -1245,65 +1182,23 @@ def keepwarm_consent_status(env=None, claude_json_path=None, settings_path=None)
     return {
         "billing_mode": mode,
         "consent": consent,
-        "should_ask": bool(mode == "api" and consent == "unasked"),
+        "should_ask": False,
     }
 
 
 def keepwarm_gate(env=None, claude_json_path=None, settings_path=None):
-    """THE pre-ping gate the tick loop calls. Returns (allowed, reason).
-
-    allowed is True ONLY when ALL hold:
-      * not running inside a keep-warm ping subprocess (anti-recursion marker);
-      * billing_mode == 'api';
-      * consent == 'enabled'.
-    Any other state returns (False, <reason>) so the tick loop can log why it
-    skipped without pinging. The ping-marker check is first and unconditional:
-    even a fully-enabled api user must never have a ping spawn another ping.
-    """
+    """Fail closed until cache refresh is proven safe for live sessions."""
     _measure_facade = _compat.facade()
-    if env is None:
-        env = _measure_facade.os.environ
-    # NOTE: the master kill is NOT here. The watcher (tick loop, meter sampling,
-    # resume classification, forecast, quota model) is token-FREE and runs
-    # freely. Only the LLM ping itself is gated -- at the fire point
-    # (_keepwarm_fire_ping), via _keepwarm_llm_ping_disabled() -- so nothing that
-    # spins up a model can spend tokens, while the watcher keeps watching.
-    # Anti-recursion: a keepwarm-tick that somehow runs inside a ping resume
-    # (the ping subprocess inherits this marker) must never ping again.
-    marker = env.get(_measure_facade._KEEPWARM_PING_ENV)
-    if isinstance(marker, str) and marker.strip():
-        return (False, "ping-process")
-    mode = _measure_facade.keepwarm_billing_mode(
-        env=env, claude_json_path=claude_json_path, settings_path=settings_path)
-    consent = _measure_facade.keepwarm_consent()
-    # Order: marker (above) -> explicit decline -> billing -> consent-state.
-    # An explicitly-declined user's refusal must be attributed to THEIR opt-out
-    # (consent-declined), not to billing -- otherwise a declined subscription user
-    # reads as 'billing-subscription' and consent-compliance audits are misled
-    # (integration M3). Declined is terminal regardless of billing mode.
-    if consent == "declined":
-        return (False, "consent-declined")
-    if mode != "api":
-        # Dogfood-only limits-lab (see keepwarm_enable docstring): explicit
-        # double opt-in — the lab config flag AND consent='enabled'. The
-        # product posture for subscription stays OFF.
-        if consent == "enabled" and _measure_facade._read_config_flag(
-                "keepwarm_limits_lab", False):
-            # The tripwire ceiling applies in limits-lab too: a demoted-to-off
-            # verdict refuses even the lab so a bad outcome streak self-heals.
-            if _measure_facade._keepwarm_tripwire_off():
-                return (False, "tripwire-off")
-            return (True, "ok-limits-lab")
-        return (False, "billing-subscription")
-    if consent != "enabled":
-        return (False, "consent-%s" % consent)
-    # The keep-warm tripwire can auto-demote an otherwise-eligible
-    # user to 'off' when the rolling 7d realized/spend ratio stays <= 1.0. The
-    # check is last (only an api+consented user can reach it) and fail-closed
-    # (a corrupt sidecar reads as 'off').
+    env = _measure_facade.os.environ if env is None else env
+    if env.get(_measure_facade._KEEPWARM_PING_ENV):
+        return False, "ping-process"
+    if _measure_facade._keepwarm_llm_ping_disabled(env):
+        return False, "kill-switch"
+    if _measure_facade.keepwarm_consent() == "declined":
+        return False, "consent-declined"
     if _measure_facade._keepwarm_tripwire_off():
-        return (False, "tripwire-off")
-    return (True, "ok")
+        return False, "tripwire-off"
+    return False, "live-resume-unverified"
 
 
 def _keepwarm_tripwire_off():
@@ -1631,6 +1526,7 @@ def _keepwarm_generate_scheduler_plist():
     python3_path = _xml_escape(_measure_facade._keepwarm_python3_path())
     script = _xml_escape(_measure_facade._keepwarm_measure_script_path())
     log_path = _xml_escape(str(_measure_facade._keepwarm_scheduler_log_path()))
+    snapshot_path = _xml_escape(str(_measure_facade.SNAPSHOT_DIR))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1644,6 +1540,8 @@ def _keepwarm_generate_scheduler_plist():
         <string>keepwarm-tick</string>
         <string>--quiet</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict><key>TOKEN_OPTIMIZER_SNAPSHOT_DIR</key><string>{snapshot_path}</string></dict>
     <key>StartInterval</key>
     <integer>{_measure_facade._KEEPWARM_SCHEDULER_START_INTERVAL}</integer>
     <key>ThrottleInterval</key>
@@ -1860,7 +1758,7 @@ def keepwarm_scheduler_install(gate=None, quiet=None):
     if not allowed:
         return (False, (
             f"Keep-warm scheduler not installed: gate refused ({reason}). "
-            "Run keepwarm-enable on an API-billed account first."))
+            "Check the kill switch, opt-out and tripwire."))
     system = _measure_facade._normalized_platform()
     if system != "Darwin":
         return (False, (
@@ -1868,7 +1766,7 @@ def keepwarm_scheduler_install(gate=None, quiet=None):
             "documented gap (the dashboard daemon's systemd/Task-Scheduler "
             "support has not yet been mirrored for keep-warm). Track parity in "
             "the README platform table. The keepwarm-tick CLI still works if you "
-            "wire your own cron/timer to run it every ~5 minutes."))
+            "wire your own cron/timer to run it every minute."))
     with _measure_facade._keepwarm_scheduler_install_lock() as acquired:
         if not acquired:
             return (False, "another keep-warm scheduler install is in progress")
@@ -1968,14 +1866,14 @@ def keepwarm_scheduler_repair(gate=None):
         return "noop-remote"
     # Cheapest gate first: marker existence (one stat) before any gate read.
     marker = _measure_facade._keepwarm_read_scheduler_marker()
-    if marker is None:
-        return "noop-no-marker"
     gate_fn = gate or _measure_facade.keepwarm_gate
     allowed, _reason = gate_fn()
     if not allowed:
         return "noop-gate"
     plist_path = _measure_facade._keepwarm_scheduler_plist_path()
-    needs_repair = False
+    if marker is None and plist_path.exists():
+        return "noop-unowned"
+    needs_repair = marker is None
     if not plist_path.exists():
         needs_repair = True
     else:
@@ -1987,7 +1885,7 @@ def keepwarm_scheduler_repair(gate=None):
             with open(str(plist_path), "r", encoding="utf-8",
                       errors="replace") as _pf:
                 content = _pf.read(8192)
-            if _measure_facade._KEEPWARM_SCHEDULER_LABEL not in content:
+            if content != _measure_facade._keepwarm_generate_scheduler_plist():
                 needs_repair = True
         except OSError:
             needs_repair = True
@@ -2100,8 +1998,9 @@ def _keepwarm_ping_cost_est(prefix_tokens, model):
         prefix = max(0, int(prefix_tokens))
     except (TypeError, ValueError):
         prefix = 0
-    # Read of the full prefix + a ~5% refresh-write overhead estimate.
-    return prefix * read_rate * 1.05
+    # Reserve 1,000 fresh input tokens for the ping's uncached overhead.
+    input_rate = _measure_facade._KEEPWARM_INPUT_USD_PER_TOKEN[key]
+    return prefix * read_rate * 1.05 + 1000 * input_rate
 
 
 def _keepwarm_cadence_for(ttl_kind):
@@ -2115,35 +2014,7 @@ def _keepwarm_cadence_for(ttl_kind):
 
 
 def keepwarm_policy_decision(record, now, tripwire_state=None, history_stats=None):
-    """PURE policy core. Decide what to do with one armed record. Zero IO.
-
-    Returns a dict: {action, reason, phase} where
-        action in ('ping', 'wait', 'stop')
-        phase  in ('probe', 'sustain')   (the phase the decision pertains to)
-
-    Inputs (all plain data so backfill replay can drive identical logic):
-      record         -- an arm record (prefix_proxy, ttl_kind, model, ts,
-                        last_turn_ts, pings_fired list of ping timestamps).
-      now            -- current epoch seconds (injected; never time.time() here).
-      tripwire_state -- optional dict; tripwire_state.get('allow_sustain', True)
-                        gates pings #3+. Default: sustain allowed (U7 wires the
-                        real demotion ladder; absence must not block the floor
-                        probe policy).
-      history_stats  -- optional dict; history_stats.get('predictor_continue',
-                        False) gates sustain. DEFAULT FALSE = probe-only floor
-                        (U6 wires the validated predictor). A missing predictor
-                        means we never sustain -- safe by construction.
-
-    Order of checks (each is a hard gate; this matches the code below):
-      1. prefix floor (>=10k) and a known model -> else stop ('ineligible-*').
-      2. 12h absolute hard cap on pause age      -> stop ('hard-cap').
-      3. phase: pings 0-1 already fired => probe; ping #3+ requires BOTH
-         predictor_continue AND tripwire allow_sustain, else stop ('probe-only').
-      4. break-even: cumulative ping cost already spent (this ping included)
-         must stay < expected avoided write at current elapsed -> else stop.
-      5. cadence: only ping if enough time has elapsed since the last activity
-         (probe #1) or the last ping (probe #2+), else wait.
-    """
+    """Apply the value, expiry, failed-ping and three-attempt limits."""
     _measure_facade = _compat.facade()
     if not isinstance(record, dict):
         return {"action": "stop", "reason": "bad-record", "phase": "probe"}
@@ -2169,6 +2040,8 @@ def keepwarm_policy_decision(record, now, tripwire_state=None, history_stats=Non
     if not isinstance(pings, list):
         pings = []
     ping_count = len(pings)
+    if record.get("ping_failed"):
+        return {"action": "stop", "reason": "previous-ping-failed", "phase": "probe"}
 
     # --- 1. eligibility floor ----------------------------------------------
     if prefix < _measure_facade._KEEPWARM_PREFIX_FLOOR:
@@ -2178,42 +2051,18 @@ def keepwarm_policy_decision(record, now, tripwire_state=None, history_stats=Non
 
     elapsed = max(0.0, float(now) - arm_ts)
 
-    # --- 2. 12h absolute hard cap ------------------------------------------
-    # Absolute upper bound on pause age, checked before phase/economics so a
-    # stale pause is always reported as hard-cap regardless of how it would
-    # otherwise be classified.
-    if elapsed >= _measure_facade._KEEPWARM_HARD_CAP_SECONDS:
+    # Bound both the pause duration and the number of billable refreshes.
+    if elapsed >= 3 * 3600 or ping_count >= 3:
         return {"action": "stop", "reason": "hard-cap", "phase": "probe"}
-
-    # --- 3. phase gate ------------------------------------------------------
-    # pings #1 and #2 (ping_count 0 or 1) are probe. ping #3+ is sustain and
-    # requires BOTH the predictor AND the tripwire. Checked before break-even so
-    # a ping we will not fire on policy grounds is never even priced (and the
-    # plan's order: phase decision -> break-even abort -> hard cap).
-    if ping_count >= 2:
-        predictor_continue = bool(
-            (history_stats or {}).get("predictor_continue", False))
-        allow_sustain = bool((tripwire_state or {}).get("allow_sustain", True))
-        if not predictor_continue:
-            return {"action": "stop", "reason": "probe-only-no-predictor",
-                    "phase": "sustain"}
-        if not allow_sustain:
-            return {"action": "stop", "reason": "tripwire-no-sustain",
-                    "phase": "sustain"}
-        phase = "sustain"
-    else:
-        phase = "probe"
-
-    # --- 4. per-pause break-even abort -------------------------------------
-    # Cumulative cost if we fire one more ping now, vs expected avoided write at
-    # this elapsed time. If the spend would exceed the expected saving, the pause
-    # can never pay back -> stop. Note the ratio is prefix-independent (both
-    # sides scale with prefix); P(resume) decaying with elapsed is what trips it.
+    phase = "probe"
+    key = _measure_facade._keepwarm_model_norm(model)
+    input_rate = _measure_facade._KEEPWARM_INPUT_USD_PER_TOKEN[key]
+    read_rate = _measure_facade._KEEPWARM_CACHE_READ_USD_PER_TOKEN[key]
+    premium = _measure_facade._KEEPWARM_WRITE_PREMIUM.get(ttl_kind, _measure_facade._KEEPWARM_WRITE_PREMIUM["unknown"])
+    avoided_reload = prefix * max(0.0, input_rate * premium - read_rate)
     ping_cost = _measure_facade._keepwarm_ping_cost_est(prefix, model)
-    cumulative_cost = ping_cost * (ping_count + 1)
-    expected_avoided = _measure_facade._keepwarm_avoided_write_usd(prefix, ttl_kind, model, elapsed)
-    if cumulative_cost >= expected_avoided:
-        return {"action": "stop", "reason": "break-even-abort", "phase": phase}
+    if ping_cost <= 0 or avoided_reload < 10 * ping_cost:
+        return {"action": "stop", "reason": "below-tenfold", "phase": phase}
 
     # --- 5. cadence gate ----------------------------------------------------
     cadence = _measure_facade._keepwarm_cadence_for(ttl_kind)
@@ -2227,6 +2076,8 @@ def keepwarm_policy_decision(record, now, tripwire_state=None, history_stats=Non
         except (TypeError, ValueError):
             last_ping = last_activity
         since = float(now) - last_ping
+    if since >= (3600 if ttl_kind == "1h" else 300):
+        return {"action": "stop", "reason": "cache-expired", "phase": phase}
     if since < cadence:
         return {"action": "wait", "reason": "cadence-not-due", "phase": phase}
 
@@ -2536,6 +2387,11 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
     if _measure_facade._keepwarm_llm_ping_disabled():
         result["reason"] = "llm-ping-disabled"
         return result
+    # Resuming a running CLI session can inject a prompt into that session.
+    # Do not launch a real ping until a separate cache-preserving path is proven.
+    if runner is None:
+        result["reason"] = "live-resume-unverified"
+        return result
 
     if not sid or not transcript_path:
         result["reason"] = "missing-session"
@@ -2565,7 +2421,10 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
         result["reason"] = "locked"
         return result
     try:
-        # Idle re-check immediately before exec.
+        # Recheck liveness and the transcript after acquiring the session lock.
+        if _measure_facade.classify_keepwarm_record(record, now=now) != "still_paused":
+            result["reason"] = "session-changed-or-ended"
+            return result
         tp = _measure_facade.Path(transcript_path)
         try:
             mtime = tp.stat().st_mtime
@@ -2588,17 +2447,6 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
             prefix = 0
         est_cost = _measure_facade._keepwarm_ping_cost_est(prefix, model)
 
-        # 4. Pre-log spend BEFORE firing (a crash can't hide spend).
-        _measure_facade._keepwarm_ledger_append({
-            "session_id": str(sid),
-            "ts": float(now),
-            "status": "firing",
-            "phase": record.get("_phase", "probe"),
-            "model": model,
-            "prefix_proxy": prefix,
-            "est_cost_usd": est_cost,
-        })
-
         status = "ok"
         reason = "ok"
         rc = None
@@ -2614,7 +2462,7 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
             if claude_bin is None:
                 outcome = {
                     "session_id": str(sid), "ts": float(_measure_facade.time.time()),
-                    "status": "error", "phase": record.get("_phase", "probe"),
+                    "status": "skip", "phase": record.get("_phase", "probe"),
                     "model": model, "cost_usd": 0.0, "cache_read": 0,
                     "cache_write": 0, "duration_s": 0.0,
                     "reason": "claude-not-found",
@@ -2656,6 +2504,18 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
                     capture_output=True, text=True,
                     encoding="utf-8", errors="replace", creationflags=_measure_facade._NO_WINDOW)
 
+        if _measure_facade.classify_keepwarm_record(record, now=_measure_facade.time.time()) != "still_paused":
+            result["reason"] = "session-changed-or-ended"
+            return result
+        # 4. Pre-log spend BEFORE firing (a crash can't hide spend).
+        if not _measure_facade._keepwarm_ledger_append({
+            "session_id": str(sid), "ts": float(now), "status": "firing",
+            "phase": record.get("_phase", "probe"), "model": model,
+            "prefix_proxy": prefix, "est_cost_usd": est_cost,
+        }):
+            result["reason"] = "ledger-unavailable"
+            return result
+
         # Real monotonic start (NOT the injected logical `now`) so duration_s is
         # sane even on backfill/replay paths that pass a synthetic now (lang M1).
         # Snapshot the 5h/7d quota meters immediately before firing so the
@@ -2666,6 +2526,7 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
         except Exception:
             meters_before = {"available": False}
         wall_start = _measure_facade.time.monotonic()
+        result["fired"] = True  # Count attempts, including timeouts and errors.
         try:
             proc = runner(cmd, cwd, child_env, _measure_facade._KEEPWARM_PING_TIMEOUT_SECONDS)
             duration = max(0.0, _measure_facade.time.monotonic() - wall_start)
@@ -2675,7 +2536,6 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
                 parsed = _measure_facade._keepwarm_parse_ping_json(stdout)
                 status = "ok"
                 reason = "ok"
-                result["fired"] = True
             else:
                 status = "error"
                 # Persist a bounded, path/secret-scrubbed stderr tail so a field
@@ -2698,7 +2558,7 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
             "ts": float(_measure_facade.time.time()),
             "status": status,
             "phase": record.get("_phase", "probe"),
-            "model": model,
+            "model": model, "prefix_proxy": prefix,
             "cost_usd": float(parsed.get("cost_usd", 0.0) or 0.0),
             "cache_read": int(parsed.get("cache_read", 0) or 0),
             "cache_write": int(parsed.get("cache_write", 0) or 0),
@@ -2930,8 +2790,11 @@ def keepwarm_tick(now=None, dry_run=None, env=None, runner=None,
             stage_errors += 1
 
         records = _measure_facade.load_keepwarm_records()
+        ledger_rows = _measure_facade._keepwarm_load_ledger_rows()
+        from . import keepwarm_safety
         changed = False
         for rec in records:
+            changed = keepwarm_safety.reconcile_attempts(rec, ledger_rows) or changed
             sid = rec.get("session_id")
             try:
                 verdict = _measure_facade.classify_keepwarm_record(rec, now=now)
@@ -2977,6 +2840,9 @@ def keepwarm_tick(now=None, dry_run=None, env=None, runner=None,
                     pings = []
                 pings.append(float(now))
                 rec["pings_fired"] = pings
+                if (fire.get("status") != "ok" or int(fire.get("cache_read") or 0) < int(rec.get("prefix_proxy") or 0) * 0.5
+                        or int(fire.get("cache_write") or 0) >= int(rec.get("prefix_proxy") or 0) * 0.5):
+                    rec["ping_failed"] = True
                 changed = True
             else:
                 summary["skipped"] += 1
@@ -3903,7 +3769,7 @@ def _keepwarm_log_realized_savings(tokens_saved, cost_usd, session_id, detail=No
                 "(timestamp, event_type, tokens_saved, cost_saved_usd, "
                 "session_id, session_uuid, detail, model, unjoinable, pause_key) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (_measure_facade.datetime.now().isoformat(), _measure_facade._KEEPWARM_SAVINGS_EVENT_TYPE,
+                (_measure_facade.datetime.now().isoformat(), "keepwarm_estimated",
                  int(tokens_saved), float(cost_usd), session_id, session_uuid,
                  detail, normalized, 1 if unjoinable else 0, pause_key),
             )
@@ -3948,7 +3814,7 @@ def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
         try:
             pings = rec.get("pings_fired")
             n_pings = len(pings) if isinstance(pings, list) else 0
-            if n_pings < 1:
+            if n_pings < 1 or rec.get("ping_failed"):
                 continue
             sid = rec.get("session_id")
             arm_ts = rec.get("ts")
@@ -3963,11 +3829,21 @@ def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
                 # still_paused -> not done yet; gone -> never readable. Neither books.
                 continue
             tp = rec.get("transcript_path")
+            from . import keepwarm_safety
+            if keepwarm_safety.compacted_since(rec):
+                out["skipped"] += 1
+                continue
             turn = _measure_facade._keepwarm_first_usage_after(tp, arm_ts, parse_fn=parse_fn) if tp else None
             if turn is None:
                 # Resumed-but-unreadable (or expired with no post-arm turn): the
                 # classifier said 'resumed' but real usage is unavailable, so we
                 # book NOTHING (classification alone never books).
+                out["skipped"] += 1
+                continue
+            resume_ts = _measure_facade._keepwarm_iso_to_epoch(turn.get("timestamp"))
+            last_activity = rec.get("last_turn_ts") or arm_ts
+            ttl_seconds = 3600 if rec.get("ttl_kind") == "1h" else 300
+            if resume_ts is None or resume_ts - float(last_activity) <= ttl_seconds:
                 out["skipped"] += 1
                 continue
             prefix = rec.get("prefix_proxy")
@@ -3977,11 +3853,11 @@ def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
                 continue
             model = rec.get("model")
             if warm:
-                value = _measure_facade._keepwarm_realized_write_usd(prefix, model)
-                try:
-                    pfx = int(prefix or 0)
-                except (TypeError, ValueError):
-                    pfx = 0
+                from . import savings_story
+                net = savings_story.keepwarm_pause_net(_measure_facade, rec, now, _measure_facade._keepwarm_load_ledger_rows())
+                if net is None:
+                    out["skipped"] += 1
+                    continue
                 # Marker FIRST: a stranded ledger marker with no
                 # savings row only UNDER-counts = safe; the reverse (savings row,
                 # no marker) is what double-books. The DB INSERT OR IGNORE on
@@ -3996,17 +3872,17 @@ def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
                     "model": _measure_facade._keepwarm_model_norm(model),
                     "prefix_proxy": int(prefix or 0),
                     "pings": n_pings,
-                    "realized_usd": round(float(value), 6),
+                    "realized_usd": round(savings_story.keepwarm_reload_value(_measure_facade, rec), 6),
                     "cache_read": int(turn.get("cache_read", 0) or 0),
                     "cache_creation": int(turn.get("cache_creation", 0) or 0),
                 })
                 inserted = _measure_facade._keepwarm_log_realized_savings(
-                    tokens_saved=pfx, cost_usd=value, session_id=sid,
-                    detail="keep-warm warm resume (avoided 1h re-write)",
+                    tokens_saved=0, cost_usd=net, session_id=sid,
+                    detail="estimated avoided reload less ping spend",
                     model=model, pause_key=pause_key)
                 if inserted:
                     out["realized"] += 1
-                    out["booked_usd"] += float(value)
+                    out["booked_usd"] += float(net)
             else:
                 _measure_facade._keepwarm_ledger_append({
                     "session_id": str(sid),
@@ -4101,6 +3977,8 @@ def keepwarm_spend_summary(days=None, now=None, rows=None):
         sid = r.get("session_id") or "unknown"
         if st in ("ok", "error", "timeout"):
             c = float(r.get("cost_usd", 0.0) or 0.0)
+            if c <= 0 and r.get("prefix_proxy"):
+                c = _measure_facade._keepwarm_ping_cost_est(r["prefix_proxy"], r.get("model"))
             spend += c
             pings += 1
             if st == "ok":
@@ -4426,38 +4304,9 @@ def keepwarm_quota_value_summary(days=None, now=None, rows=None,
         else:
             verdict = "quota-neutral"
 
-    # Advisory recommendation copy (NEVER a gate action).
-    if verdict == "insufficient-data":
-        recommendation = (
-            "No completed keep-warm pings or realized resumes yet. Once an "
-            "enrolled (limits-lab) session pauses past the cache window and the "
-            "tick fires a real ping -- and that session is later resumed warm -- "
-            "this fills in with measured meter cost and modeled quota saved. "
-            "Gate unchanged (subscription stays hard-off until measured).")
-    elif verdict == "quota-positive":
-        meas = ""
-        if measured_sd["median_pct"] is not None:
-            meas = (" Measured per-ping 7d-meter movement: "
-                    f"~{measured_sd['median_pct']:.3f} pct-pts "
-                    f"(n={measured_sd['n']}).")
-        ratio_clause = (f" (modeled ratio {modeled_ratio:.1f}x)"
-                        if modeled_ratio is not None
-                        else " (realized savings at ~zero ping spend)")
-        recommendation = (
-            "CANDIDATE: keep-warm is modeled QUOTA-POSITIVE on subscription -- it "
-            "saves more 5h/7d quota (avoided cold-rewrite premium) than it spends"
-            + ratio_clause + "." + meas +
-            " Confirm the SAVED side with controlled cold/warm resume meter "
-            "samples, then decide enablement explicitly. Gate unchanged.")
-    elif verdict == "quota-negative":
-        recommendation = (
-            "Keep-warm is modeled quota-NEGATIVE in this window (modeled ratio "
-            f"{modeled_ratio:.2f}x < 1): pings would spend more quota than they "
-            "save. Stay hard-off. Gate unchanged.")
-    else:
-        recommendation = (
-            "Keep-warm is modeled quota-NEUTRAL in this window. Insufficient edge "
-            "to justify enabling on subscription. Gate unchanged.")
+    # Provider quota weighting is not published; meter movement is observational.
+    recommendation = ("Keep-warm quota impact is not yet measurable." if verdict == "insufficient-data"
+                      else "The saved side is modeled using API rates; observed meter movement may include other activity.")
 
     return {
         "currency": "rate-limit-quota",
@@ -4811,11 +4660,8 @@ def keepwarm_report(days=None, now=None):
         "has_pings": has_pings,
         "empty_state": (
             None if has_pings else
-            "No keep-warm pings yet. Once an eligible (API-billed, consented) "
-            "session pauses past the cache window, the tick will probe-refresh "
-            "the prefix and this report will fill in with spend, realized "
-            "savings, and net. To see what keep-warm would save YOU before "
-            "enabling, run: keepwarm-forecast"),
+            "No keep-warm pings yet. Eligible paused sessions can be refreshed "
+            "before the cache expires; estimated value and ping cost appear here."),
     }
 
 
@@ -4856,8 +4702,6 @@ def keepwarm_cache_health_block(days=None, now=None):
     tw_mode = rep["tripwire_mode"]
     if tw_mode == "off":
         state = "demoted-by-tripwire"
-    elif rep["billing"] != "api" and not rep["limits_lab"]:
-        state = "off-subscription"
     elif rep["mode"] == "sustain":
         state = "active-sustain"
     elif rep["mode"] in ("probe-only", "limits-lab"):
@@ -4883,17 +4727,13 @@ def keepwarm_cache_health_block(days=None, now=None):
         "health": rep["health"],
         "has_pings": rep["has_pings"],
         "top_sessions": rep["top_sessions"],
-        # Predictor transparency: the feature names that gate sustain when it
-        # ever activates. Surfaced so the dashboard can explain WHY.
+        "quota_value": rep["quota_value"],
         "predictor_features": [
             "prior_resume_count", "sibling_active",
             "machine_active", "survival_p",
         ],
         "predictor_threshold": _measure_facade._KEEPWARM_PRED_THRESHOLD,
-        "honest_line": (
-            "Keep-warm is off on subscription billing: pings spend quota and "
-            "recover no write premium. The remedy is behavioral (resume sooner)."
-            if state == "off-subscription" else None),
+        "honest_line": None,
     }
     return block
 

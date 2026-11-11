@@ -56,6 +56,9 @@ def m(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.setenv("TOKEN_OPTIMIZER_RUNTIME", "claude")
+    from _measure import keepwarm_safety
+    monkeypatch.setattr(keepwarm_safety, "find_owner", lambda: {"pid": 123, "start": "fixture"})
+    monkeypatch.setattr(keepwarm_safety, "owner_alive", lambda owner: bool(owner))
     # The LLM ping is dogfood-gated; the duplicate-fire path only exists when
     # the escape hatch is explicitly on.
     monkeypatch.setenv("TOKEN_OPTIMIZER_KEEPWARM_ALLOW_LLM_PING", "1")
@@ -303,3 +306,143 @@ def test_truncated_rotated_transcript_rearms(m, tmp_path):
     assert mod.write_keepwarm_arm_record("abc123", str(transcript)) is not None
     records = [r for r in _sidecar_records(mod) if r.get("session_id") == "abc123"]
     assert len(records) == 2
+
+
+def test_keepwarm_tenfold_threshold_and_three_ping_cap(m):
+    mod, _ = m
+    record = {'ts': 1000, 'last_turn_ts': 1000, 'prefix_proxy': 10000,
+              'model': 'claude-sonnet-4-5', 'ttl_kind': '1h', 'pings_fired': []}
+    assert mod.keepwarm_policy_decision(record, 5000)['reason'] == 'below-tenfold'
+    record['prefix_proxy'] = 200000
+    assert mod.keepwarm_policy_decision(record, 4400)['action'] == 'ping'
+    record['pings_fired'] = [1100, 1200, 1300]
+    assert mod.keepwarm_policy_decision(record, 5000)['reason'] == 'hard-cap'
+    record['pings_fired'] = []
+    assert mod.keepwarm_policy_decision(record, 11800)['reason'] == 'hard-cap'
+
+
+def test_keepwarm_net_is_estimated_and_deducts_ping_cost(m):
+    mod, _ = m
+    from _measure import savings_story
+    record = {'session_id': 'abc123', 'ts': 1000, 'model': 'claude-sonnet-4-5',
+              'prefix_proxy': 200000, 'ttl_kind': '1h', 'pings_fired': [2000, 3000]}
+    rows = [{'session_id': 'abc123', 'ts': 2010, 'status': 'ok', 'cost_usd': 0.03},
+            {'session_id': 'abc123', 'ts': 3010, 'status': 'ok', 'cost_usd': 0.04}]
+    net = savings_story.keepwarm_pause_net(mod, record, 4000, rows)
+    key = mod._keepwarm_model_norm(record['model'])
+    expected = 200000 * (mod._KEEPWARM_INPUT_USD_PER_TOKEN[key] * 2 - mod._KEEPWARM_CACHE_READ_USD_PER_TOKEN[key]) - 0.07
+    assert net == pytest.approx(expected)
+    assert savings_story.keepwarm_pause_net(mod, record, 4000, rows[:1]) is None
+    _, _, measured, _, popped, _ = mod._net_realized_savings([('keepwarm_estimated', 1, 0, net)], {})
+    assert measured == 0 and popped['keepwarm_estimated']['cost_saved_usd'] == pytest.approx(net, abs=0.0001)
+    result = mod._action_savings_components({'keepwarm_estimated': popped['keepwarm_estimated']})
+    assert result['estimates_usd']['keepwarm_estimated'] == pytest.approx(net, abs=0.0001)
+
+
+def test_default_gate_subscription_and_kill_switch(m, monkeypatch):
+    mod, _ = m
+    monkeypatch.setattr(mod, 'keepwarm_consent', lambda: 'unasked')
+    monkeypatch.setattr(mod, '_keepwarm_tripwire_off', lambda: False)
+    monkeypatch.setattr(mod, 'keepwarm_billing_mode', lambda **kw: 'subscription')
+    assert mod.keepwarm_gate(env={}) == (False, 'live-resume-unverified')
+    assert mod.keepwarm_gate(env={'TOKEN_OPTIMIZER_KEEPWARM_DISABLE': '1'}) == (False, 'kill-switch')
+    monkeypatch.setattr(mod, 'keepwarm_consent', lambda: 'declined')
+    assert mod.keepwarm_gate(env={}) == (False, 'consent-declined')
+
+
+def test_compacted_or_ended_session_cannot_be_pinged(m, tmp_path):
+    from _measure import keepwarm_safety
+    mod, _ = m
+    transcript = _arm(m, tmp_path)
+    record = mod.load_keepwarm_records()[0]
+    transcript.write_text('shortened')
+    assert mod.classify_keepwarm_record(record) == 'resumed'
+    assert mod._keepwarm_fire_ping(record, runner=lambda *a, **kw: None)['reason'] == 'session-changed-or-ended'
+    keepwarm_safety.mark_ended(mod.SNAPSHOT_DIR, record['session_id'])
+    assert mod.classify_keepwarm_record(record) == 'gone'
+
+
+def test_owner_identity_requires_matching_start_time():
+    from _measure import keepwarm_safety
+    info = {10: {'ppid': 8, 'start': 'early', 'command': 'bash'},
+            8: {'ppid': 1, 'start': 'original', 'command': 'claude'}}
+    owner = keepwarm_safety.find_owner(10, lookup=info.get)
+    assert owner == {'pid': 8, 'start': 'original'}
+    assert keepwarm_safety.owner_alive(owner, lookup=info.get)
+    info[8]['start'] = 'reused'
+    assert not keepwarm_safety.owner_alive(owner, lookup=info.get)
+
+
+def test_ping_policy_stops_when_cache_expired_or_previous_ping_failed(m):
+    mod, _ = m
+    record = {'ts': 1000, 'last_turn_ts': 1000, 'prefix_proxy': 200000,
+              'model': 'claude-sonnet-4-5', 'ttl_kind': '1h', 'pings_fired': []}
+    assert mod.keepwarm_policy_decision(record, 4600)['reason'] == 'cache-expired'
+    record['ping_failed'] = True
+    assert mod.keepwarm_policy_decision(record, 4400)['reason'] == 'previous-ping-failed'
+
+
+def test_compaction_boundary_after_arm_invalidates_booking(tmp_path):
+    from _measure import keepwarm_safety
+    path = tmp_path / 'transcript.jsonl'
+    path.write_bytes(b'old\n')
+    record = {'transcript_path': str(path), 'byte_size': path.stat().st_size}
+    with path.open('ab') as stream:
+        stream.write(b'{"type":"system","subtype":"compact_boundary"}\n')
+    assert keepwarm_safety.compacted_since(record)
+
+
+def test_warm_resume_books_net_estimate_once(m, tmp_path):
+    import sqlite3
+    mod, _ = m
+    transcript = _arm(m, tmp_path)
+    rec = mod.load_keepwarm_records()[0]
+    rec['prefix_proxy'] = 200000
+    rec['ttl_kind'] = '1h'
+    rec['pings_fired'] = [rec['ts'] + 1]
+    assert mod._keepwarm_ledger_append({'session_id': 'abc123', 'ts': rec['ts'] + 2,
+                                       'status': 'ok', 'cost_usd': 0.05})
+    with transcript.open('a') as stream:
+        stream.write('{"type":"user","message":"resume"}\n')
+    stamp = datetime.fromtimestamp(rec['ts'] + 3, timezone.utc).isoformat()
+    parse = lambda path: [{'timestamp': stamp, 'cache_read': 200000, 'cache_creation': 0}]
+    result = mod.keepwarm_detect_realized(now=rec['ts'] + 5, records=[rec], parse_fn=parse)
+    assert result['realized'] == 1
+    conn = sqlite3.connect(mod.TRENDS_DB)
+    row = conn.execute("SELECT event_type, tokens_saved, cost_saved_usd FROM savings_events WHERE pause_key IS NOT NULL").fetchone()
+    conn.close()
+    from _measure import savings_story
+    assert row[0:2] == ('keepwarm_estimated', 0)
+    assert row[2] == pytest.approx(savings_story.keepwarm_reload_value(mod, rec) - 0.05)
+    assert mod.keepwarm_detect_realized(now=rec['ts'] + 6, records=[rec], parse_fn=parse)['realized'] == 0
+
+
+def test_scheduler_installs_for_new_enabled_user_without_real_launchd(m, monkeypatch):
+    mod, _ = m
+    monkeypatch.setattr(mod, '_remote_lean_profile', lambda: False)
+    monkeypatch.setattr(mod, '_keepwarm_read_scheduler_marker', lambda: None)
+    monkeypatch.setattr(mod, '_normalized_platform', lambda: 'Darwin')
+    calls = []
+    monkeypatch.setattr(mod, '_keepwarm_scheduler_install_macos', lambda quiet: (calls.append(quiet) is None, 'ok'))
+    assert mod.keepwarm_scheduler_repair(gate=lambda: (True, 'ok')) == 'repaired'
+    assert calls == [True]
+
+
+def test_attempt_count_recovers_from_ledger_after_crash():
+    from _measure.keepwarm_safety import reconcile_attempts
+    record = {'session_id': 's', 'ts': 100, 'prefix_proxy': 10000, 'pings_fired': []}
+    rows = [{'session_id': 's', 'ts': 101, 'status': 'firing'},
+            {'session_id': 's', 'ts': 102, 'status': 'ok', 'cache_read': 10000},
+            {'session_id': 's', 'ts': 103, 'status': 'firing'}]
+    assert reconcile_attempts(record, rows)
+    assert record['pings_fired'] == [101, 103]
+    assert record['ping_failed']
+
+
+def test_real_ping_fails_closed_until_live_resume_is_proven_safe(m, monkeypatch):
+    mod, _ = m
+    monkeypatch.setattr(mod, '_keepwarm_llm_ping_disabled', lambda: False)
+    result = mod._keepwarm_fire_ping({'session_id': 's', 'transcript_path': '/unused',
+                                     'model': 'claude-sonnet-4-5'})
+    assert result['fired'] is False
+    assert result['reason'] == 'live-resume-unverified'

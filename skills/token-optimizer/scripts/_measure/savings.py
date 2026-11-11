@@ -1306,7 +1306,7 @@ def _net_realized_savings(rows, reprice_deltas):
     #     a counterfactual (file not read within the follow-up window).
     for name in ("setup_optimization", "mcp_cap", "hint_followed", "verbosity_steer",
                  "resume_lean", "checkpoint_restore", "verbosity_steer_measured",
-                 "codemap_lookup"):
+                 "codemap_lookup", "keepwarm_estimated"):
         entry = popped[name] = by_category.pop(name, None)
         if entry:
             total_tokens -= int(entry.get("tokens_saved", 0) or 0)
@@ -1410,7 +1410,7 @@ def _get_savings_summary(days=None, since=None):
             "period_days": days,
             # A1: one-time first-trim (compare). Reported separately, NEVER summed
             # into the realized total (structural_savings is the ongoing model).
-            "one_time_setup": one_time,
+            "one_time_setup": one_time, "keepwarm_estimated": popped["keepwarm_estimated"],
             # U-G: observed-trigger / estimated-magnitude avoided-search from
             # proactive hints. Estimated tier, never in the realized total.
             "hint_followed_estimated": hint_followed_est,
@@ -6219,7 +6219,7 @@ def _action_savings_components(summary, reread=None):
         for key in (
             "behavioral_estimate", "uncaptured_runtime",
             "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
-            "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated",
+            "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated", "keepwarm_estimated",
         )
     }
     overhead = ((summary.get("session_effect") or {}).get("overhead") or {})
@@ -6407,7 +6407,7 @@ def _get_merged_savings(days=None, since=None):
         # $ is already inside realized tool_archive (re-pops netted); not summed.
         "progressive_disclosure": _measure_facade._progressive_disclosure_summary(days=days),
         # A1: one-time first-trim, surfaced separately, never in the realized total.
-        "one_time_setup": savings.get("one_time_setup"),
+        "one_time_setup": savings.get("one_time_setup"), "keepwarm_estimated": savings.get("keepwarm_estimated"),
         # U-G: deterministically-triggered avoided-search from proactive hints
         # (observed hint->read), estimated magnitude. Estimated tier, never realized.
         "hint_followed": savings.get("hint_followed_estimated"),

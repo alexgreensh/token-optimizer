@@ -15,8 +15,8 @@ installation cannot retain ``__pycache__``. Consolidation pays that startup
 cost once, then runs the real work under one shared deadline.
 
 The ``SessionEnd`` hook (a fourth entry: ``session-end-flush --trigger end
---defer``, async, timeout 60) joins this runner too. It is a separate hooks.json
-entry (different event, ``async: true``, timeout 60) but dispatches the SAME
+--defer``, timeout 60) joins this runner too. It synchronously marks the
+session ended before dispatching the SAME
 runner file, branching on ``hook_event_name`` so the trigger value ``end`` is
 preserved exactly. This saves one more measure.py import per session end.
 
@@ -38,8 +38,7 @@ Key properties:
     ``--trigger`` / ``--defer`` / ``--quiet`` flags.
   - The trigger values ``stop`` and ``end`` are preserved EXACTLY so entry
     budget rules can distinguish the Stop and SessionEnd work.
-  - The ``async: true`` flag on the SessionEnd hooks.json entry is a host-level
-    semantic (fire-and-forget); the runner itself is the same for both events.
+  - SessionEnd runs synchronously to prevent keep-warm from pinging ended sessions.
   - No once-per-session latching exists in the Stop/SessionEnd chain (none of
     the three subcommands use ``_mark_ran_this_session`` or
     ``_ran_once_this_session``), so there is nothing to preserve there.
@@ -205,8 +204,7 @@ def _run_safely(name: str, fn, *args, **kwargs) -> None:
 #     UserPromptSubmit runners use.
 #
 # WHY 58s for SessionEnd:
-#   * The legacy SessionEnd entry declared timeout=60 with async=true. The
-#     consolidated entry preserves both. The internal deadline is 58s (2s
+#   * SessionEnd runs synchronously with timeout=60. Its internal deadline is 58s (2s
 #     margin under 60). The work is trivial (spawn a detached worker and
 #     return), so the deadline is a safety net that never fires in practice.
 #   * The 58s applies to Claude Code only. The Codex
@@ -348,6 +346,8 @@ def _sub_session_end_flush_end(hook_input: dict) -> None:
     matches on it. ``--defer`` is preserved (default defer, but the flag is
     passed through to the detached worker's args).
     """
+    from _measure import keepwarm_safety
+    keepwarm_safety.mark_ended(measure.SNAPSHOT_DIR, hook_input.get("session_id"))
     budget = _runner_budget(60)
     if budget < 0.1:
         return

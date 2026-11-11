@@ -2511,6 +2511,7 @@ function tokenSplitText(h, fmt) {
 /*@include coverage_funnel.js*/
 // Control-group card (Health tab, shown only when the holdout is on): assets/holdout_card.js.
 /*@include holdout_card.js*/
+/*@include keepwarm_health.js*/
 
 function hostRefreshHtml(data) {
   return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard --user</span>');
@@ -5163,87 +5164,6 @@ var DB = (function() {
     chHtml += '</div>';
     if (!CACHE_HEALTH_HIDDEN) html += chHtml;
 
-    // ---- Keep-warm cache automation panel: intentionally hidden (2026-07-03).
-    // In probe-only mode it renders $0 realized / $0 spend / $0 NET, which reads
-    // as "zero value" / broken to users. The keepwarm data is still computed
-    // (measure.py keepwarm_cache_health_block) and carried in
-    // data.cache_health.keepwarm; restore the panel by reverting this hunk.
-    var kw = null;
-    if (kw) {
-      var kwState = kw.state || 'platform-gap';
-      var kwBadge = ({
-        'active-probe': 'probe-only · active',
-        'active-sustain': 'sustain · active',
-        'off-subscription': 'off · subscription',
-        'demoted-by-tripwire': 'off · tripwire',
-        'platform-gap': 'platform gap'
-      })[kwState] || kwState;
-      var kwHtml = '<div class="card wide" style="margin-top:var(--s-3);"><div class="card-header">' +
-        '<span>Keep-warm cache automation</span>' +
-        '<span class="label" style="border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:1px 5px;">' + esc(kwBadge) + '</span>' +
-        '</div>';
-      if (kwState === 'platform-gap') {
-        kwHtml += '<div style="margin-top:var(--s-2);font-size:13px;color:var(--c-text-dim);line-height:1.6;">' +
-          esc(kw.note || 'Keep-warm ships for Claude Code only.') + '</div>';
-      } else if (kwState === 'off-subscription') {
-        kwHtml += '<div style="margin-top:var(--s-2);font-size:13px;color:var(--c-text-dim);line-height:1.6;">' +
-          esc(kw.honest_line || 'Keep-warm is off on subscription billing: pings spend quota and recover no write premium.') + '</div>';
-      } else {
-        if (kwState === 'demoted-by-tripwire') {
-          kwHtml += '<div style="margin-top:var(--s-2);font-size:13px;color:var(--c-amber, #d9a441);line-height:1.6;">' +
-            'Auto-demoted to OFF by the tripwire (rolling 7d realized/spend ≤ 1.0). Re-enable with keepwarm-enable to reset the ladder.</div>';
-        }
-        // Realized vs spend vs NET (30d) — NET prominent.
-        var net = Number(kw.net_usd) || 0;
-        var netColor = net >= 0 ? 'var(--c-savings, #4ade80)' : 'var(--c-waste, #f87171)';
-        kwHtml += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--s-3);margin-top:var(--s-2);">' +
-          '<div><div style="font-size:12px;color:var(--c-text-dim);">Realized (30d)</div>' +
-            '<div style="font-family:var(--font-mono);font-size:20px;">$' + (Number(kw.realized_usd) || 0).toFixed(2) + '</div></div>' +
-          '<div><div style="font-size:12px;color:var(--c-text-dim);">Ping spend (30d)</div>' +
-            '<div style="font-family:var(--font-mono);font-size:20px;color:var(--c-text-dim);">$' + (Number(kw.spend_usd) || 0).toFixed(2) + '</div></div>' +
-          '<div><div style="font-size:12px;color:var(--c-text-dim);">NET (30d)</div>' +
-            '<div style="font-family:var(--font-mono);font-size:20px;color:' + netColor + ';">$' + net.toFixed(2) + '</div></div>' +
-          (kw.tripwire_ratio_7d == null ? '' : '<div><div style="font-size:12px;color:var(--c-text-dim);">Tripwire ratio (7d)</div>' +
-            '<div style="font-family:var(--font-mono);font-size:20px;">' + (Number(kw.tripwire_ratio_7d)).toFixed(2) + '</div></div>') +
-        '</div>';
-        if (!kw.has_pings) {
-          kwHtml += '<div style="margin-top:var(--s-2);font-size:12px;color:var(--c-text-dim);">No keep-warm pings yet — numbers fill in once an eligible paused session is probe-refreshed.</div>';
-        }
-        // Health signal.
-        var hh = kw.health || {};
-        if (Number(hh.total_pings) > 0) {
-          kwHtml += '<div style="margin-top:var(--s-2);font-size:12px;color:' + (hh.alarm ? 'var(--c-waste, #f87171)' : 'var(--c-text-dim)') + ';">' +
-            'Pings on never-resumed pauses: ' + (Number(hh.pings_on_never_resumed) || 0) + '/' + (Number(hh.total_pings) || 0) +
-            ' (' + Math.round((Number(hh.fraction) || 0) * 100) + '%)' + (hh.alarm ? ' — ALARM (>50%)' : '') + '</div>';
-        }
-        // Predictor transparency (feature names; relevant when sustain activates).
-        var feats = kw.predictor_features || [];
-        if (kwState === 'active-sustain' && feats.length) {
-          kwHtml += '<div style="margin-top:var(--s-2);font-size:12px;color:var(--c-text-dim);line-height:1.5;">' +
-            'Sustain predictor (threshold ' + (Number(kw.predictor_threshold) || 0).toFixed(2) + '): ' +
-            feats.map(function(f) { return esc(f); }).join(', ') + '</div>';
-        }
-        // Top sessions by realized.
-        var ts2 = kw.top_sessions || [];
-        if (ts2.length) {
-          kwHtml += '<div style="margin-top:var(--s-3);"><div style="font-size:12px;color:var(--c-text-dim);margin-bottom:6px;">Top sessions by realized</div>' +
-            '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
-            '<thead><tr style="color:var(--c-text-dim);text-align:left;">' +
-            '<th style="padding:4px 6px;">Session</th><th style="padding:4px 6px;">Realized $</th>' +
-            '<th style="padding:4px 6px;">Spend $</th><th style="padding:4px 6px;">Pings</th></tr></thead><tbody>';
-          ts2.forEach(function(t) {
-            kwHtml += '<tr style="border-top:1px solid rgba(255,255,255,0.06);">' +
-              '<td style="padding:4px 6px;font-family:var(--font-mono);">' + esc(String(t.session_id || '').slice(0, 28)) + '</td>' +
-              '<td style="padding:4px 6px;font-family:var(--font-mono);">$' + (Number(t.realized_usd) || 0).toFixed(2) + '</td>' +
-              '<td style="padding:4px 6px;font-family:var(--font-mono);color:var(--c-text-dim);">$' + (Number(t.spend_usd) || 0).toFixed(2) + '</td>' +
-              '<td style="padding:4px 6px;font-family:var(--font-mono);">' + (Number(t.pings) || 0) + '</td></tr>';
-          });
-          kwHtml += '</tbody></table></div>';
-        }
-      }
-      kwHtml += '</div>';
-      html += kwHtml;
-    }
     if (moreFolds.length) html += '<div class="st-morerow">' + moreFolds.join('') + '</div>';
 
     if (el.classList && el.dataset) { el.classList.toggle('st-enter', !el.dataset.storyRendered); el.dataset.storyRendered = '1'; } el.innerHTML = html;
@@ -5266,6 +5186,7 @@ var DB = (function() {
       '</div>' +
       '<div class="last-updated">Last updated: ' + esc(ts) + '</div>';
 
+    if (typeof keepwarmHealthHtml === 'function') html += keepwarmHealthHtml(data);
     if (!h) {
       html += '<div class="empty-state">No health data available. This usually means no ' + esc(data.runtime_label || 'Claude Code') + ' processes are currently running.</div>';
       try { if (typeof featureHealthHtml === 'function') html += featureHealthHtml(data); } catch (e) {}

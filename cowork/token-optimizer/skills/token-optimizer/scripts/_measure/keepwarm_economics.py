@@ -125,6 +125,18 @@ def verified_summary(facade, days, now):
     return facade.keepwarm_spend_summary(days=days, now=now, rows=rows)
 
 
+def manual_count(rows, start):
+    count = 0
+    for row in rows:
+        try:
+            if (row.get('source') == 'claude-code-mod' and row.get('action') == 'warm' and
+                    row.get('status') == 'ok' and float(row.get('ts', 0)) >= start):
+                count += 1
+        except (TypeError, ValueError):
+            continue
+    return count
+
+
 def headline_pool(facade, cutoff):
     """Use the spend ledger, including pings that never led to a return."""
     now = facade.time.time()
@@ -132,13 +144,16 @@ def headline_pool(facade, cutoff):
     if start is None:
         return None
     try:
+        if hasattr(facade, "keepwarm_detect_realized"):
+            facade.keepwarm_detect_realized(now=now)
         summary = verified_summary(facade, max(0, now - start) / 86400, now)
     except Exception:
         return None
     if not summary['pings'] and not summary['realized_count']:
         return None
     return {'events': summary['pings'] + summary['realized_count'],
-            'tokens_saved': 0, 'cost_saved_usd': summary['net_usd']}
+            'tokens_saved': 0, 'cost_saved_usd': summary['net_usd'],
+            'manual_pings': manual_count(facade._keepwarm_load_ledger_rows(), start)}
 
 
 def claim_outcome(outcomes, firing_time):

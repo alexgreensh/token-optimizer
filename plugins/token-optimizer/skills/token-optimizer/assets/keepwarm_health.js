@@ -23,6 +23,7 @@ function keepwarmHealthHtml(data) {
     (paused[kw.gate_reason] ? '<p>Also paused because ' + paused[kw.gate_reason] + '</p>' : '') +
     '<p>' + Number(kw.pings_7d || 0) + ' pings in the last 7 days.</p>' +
     '<p>' + Number(kw.pings_30d || 0) + ' pings in the last 30 days.</p>' +
+    (Number(kw.manual_pings_30d || 0) ? '<p>' + Number(kw.manual_pings_30d) + ' manual warm-ups from the Claude Code mod.</p>' : '') +
     '<p>Estimated net value: $' + Number(kw.net_usd || 0).toFixed(2) + ' at API rates.</p>' +
     meter(samples.five_hour, '5-hour limit') + meter(samples.seven_day, 'Weekly limit') +
     ((!samples.five_hour || samples.five_hour.median_pct == null) &&

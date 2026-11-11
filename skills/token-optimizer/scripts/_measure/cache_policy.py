@@ -4357,7 +4357,7 @@ def keepwarm_report(days=None, now=None):
 
     rows = _measure_facade._keepwarm_load_ledger_rows()
     s7 = keepwarm_economics.verified_summary(_measure_facade, 7, now)
-    s30 = keepwarm_economics.verified_summary(_measure_facade, days, now)
+    s30 = keepwarm_economics.verified_summary(_measure_facade, days, now); s30["manual_pings"] = keepwarm_economics.manual_count(rows, now - float(days or 30) * 86400)
     health = _measure_facade._keepwarm_tripwire_health(rows, now=now)
     try:
         tw_ratio = _measure_facade.json.loads(_measure_facade._keepwarm_tripwire_path().read_text(encoding="utf-8")).get("ratio_7d")
@@ -4459,7 +4459,7 @@ def keepwarm_cache_health_block(days=None, now=None):
         "realized_usd_7d": rep["window_7d"]["realized_usd"],
         "spend_usd_7d": rep["window_7d"]["spend_usd"],
         "net_usd_7d": rep["window_7d"]["net_usd"],
-        "pings_30d": rep["window_30d"]["pings"],
+        "pings_30d": rep["window_30d"]["pings"], "manual_pings_30d": rep["window_30d"].get("manual_pings", 0),
         "tripwire_mode": tw_mode,
         "tripwire_ratio_7d": rep["tripwire_ratio_7d"],
         "health": rep["health"],

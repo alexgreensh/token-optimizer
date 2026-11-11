@@ -66,7 +66,7 @@ import {
   gather,
   mergeStored,
   readHome,
-  runMeasure,
+  runMeasure, bookModAction,
   type DataIo,
   type GatherOptions,
 } from './data.ts'
@@ -667,7 +667,7 @@ async function keepWarm($: EngineInterface): Promise<void> {
 type ForkReply = Awaited<ReturnType<EngineInterface['model']['fork']>>
 
 /** The warm-up fork, or null once `ms` pass without an answer; a late answer is then ignored. */
-function forkWithin($: EngineInterface, ms: number): Promise<ForkReply | null> {
+function forkWithin($: EngineInterface, ms: number, receipt: (reply: ForkReply) => Promise<void>): Promise<ForkReply | null> {
   return new Promise<ForkReply | null>((resolve, reject) => {
     let timer: { cancel: () => void } | null = null
     try {
@@ -676,8 +676,8 @@ function forkWithin($: EngineInterface, ms: number): Promise<ForkReply | null> {
       // No timer: the fork alone decides.
     }
     $.model.fork({ prompt: WARM_PROMPT }).then(
-      reply => {
-        timer?.cancel()
+      async reply => {
+        timer?.cancel(); await receipt(reply).catch(() => undefined)
         resolve(reply)
       },
       error => {
@@ -690,10 +690,10 @@ function forkWithin($: EngineInterface, ms: number): Promise<ForkReply | null> {
 
 async function runWarm($: EngineInterface, known: number | null, gen: number): Promise<void> {
   try {
-    const session = await attempt(() => read($, sessionAtom), null)
+    const session = await attempt(() => read($, sessionAtom), null); const sid = cleanId(await attempt(() => $.session.id(), '')); const path = transcriptFor(sid); const snapshot = path ? await attempt(() => $.fs.stat(path), null) : null; const actionId = `${sid}-${await $.clock.now()}-${Math.random().toString(36).slice(2)}`
     // A recorded 0 is no size at all: fall back to the session's own.
-    const contextTokens = known || session?.contextTokens || 0
-    const reply = await forkWithin($, BUSY_TIMEOUT_MS)
+    const contextTokens = known || session?.contextTokens || 0; let receiptFailed = false
+    const reply = await forkWithin($, BUSY_TIMEOUT_MS, async answer => { if (!answer.isAnswered) return; const booked = await bookModAction(dataIo($), { action: 'warm', action_id: actionId, session_id: sid, timestamp: (await $.clock.now()) / 1000, transcript_path: path, byte_size: snapshot?.size, transcript_mtime: snapshot ? snapshot.mtimeMs / 1000 : null, usage: answer.usage }); receiptFailed = !booked; if (!booked) toast($, 'Warm-up cost could not be recorded in Token Optimizer.') })
     // Cleared meanwhile: this warm-up says nothing about the new session.
     if (gen !== sessionGen) return
     const at = await $.clock.now()
@@ -709,7 +709,7 @@ async function runWarm($: EngineInterface, known: number | null, gen: number): P
         contextTokens,
         cacheRead: reply.usage.cache_read_input_tokens,
         lifetimeS: view(after ?? initialClock(), at, planDefault(session)).lifetime,
-      })
+      }) + (receiptFailed ? ' Cost could not be recorded in Token Optimizer.' : '')
       toast($, line)
       // Also in the sentence for a few seconds, where the eye already is.
       await setUi($, u => withNote(u, line, at))

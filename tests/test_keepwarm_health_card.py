@@ -37,3 +37,11 @@ def test_manage_renders_paused_message_without_keepwarm_toggle():
     assert "if (fname === 'keepwarm')" in html
     assert 'Keep-warm: paused while we prove it is safe and saves you money</div>' in html
     assert "return; }" in html[html.index("if (fname === 'keepwarm')"):html.index("if (fname === 'keepwarm')") + 250]
+
+
+def test_health_labels_manual_warmups_from_mod():
+    asset = Path(__file__).resolve().parents[1] / 'skills/token-optimizer/assets/keepwarm_health.js'
+    data = {'cache_health': {'keepwarm': {'state': 'paused', 'manual_pings_30d': 2}}}
+    code = asset.read_text() + '\nconsole.log(keepwarmHealthHtml(' + json.dumps(data) + '));'
+    output = subprocess.run(['node', '-e', code], capture_output=True, text=True, check=True).stdout
+    assert '2 manual' in output and 'Claude Code mod' in output

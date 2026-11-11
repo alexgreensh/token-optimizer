@@ -860,3 +860,10 @@ def test_archive_full_fetch_count_is_disclosed_without_adding_dollars():
     output = story({'savings': s})
     assert 'Full command output fetched from the archive: 2 outputs, about 5K tokens.' in output
     assert 'does not establish whether a command would otherwise have been re-run' in output
+
+
+def test_savings_fold_labels_manual_warmups_from_mod():
+    data = base()
+    data['keepwarm_estimated'] = {'manual_pings': 2, 'cost_saved_usd': -0.01}
+    html = story({'savings': data})
+    assert 'Manual warm-ups from the Claude Code mod: 2' in html

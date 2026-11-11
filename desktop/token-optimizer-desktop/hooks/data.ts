@@ -579,3 +579,15 @@ export function mergeStored(
 
   return { ...fresh, ...statusFacts, ...seen, quality, sheetOpen: sameSession ? current.sheetOpen : fresh.sheetOpen }
 }
+
+/** Persist one mod action through the installed Token Optimizer CLI. */
+export async function bookModAction(io: DataIo, event: Record<string, unknown>): Promise<boolean> {
+  try {
+    const root = await findTokenOptimizerRoot(io, await readHome(io))
+    if (!root) return false
+    const result = await runMeasure(io, root, ['mod-action'], { timeoutMs: STATUS_TIMEOUT_MS, stdin: JSON.stringify(event) })
+    return result.exitCode === 0 && JSON.parse(result.stdout).ok === true
+  } catch {
+    return false
+  }
+}

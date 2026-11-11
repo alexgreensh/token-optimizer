@@ -380,6 +380,8 @@ test('a Keep warm that lands after a clear leaves the new session\'s clock alone
   await w.clock.advance(2000)
   await w.clock.settle()
   expect(await cacheAlt(ui)).toBe('Cache clock starts after the first reply')
+  const receipt = w.runs.find(r => r.argv.includes('mod-action'))
+  expect(JSON.parse(receipt!.stdin!).session_id).toBe('sess-1')
   expect(w.toasts).toEqual([])
 })
 
@@ -947,4 +949,25 @@ test('a clear uses the new session\'s own start time, not when the event arrived
   await ourClearStarts($, 'sess-2')
   expect(startContext().includes(POINTER)).toBe(true)
   expect(await has(ui, 'Checkpoint ready')).toBe(false)
+})
+
+
+test('answered manual warm-up sends one priced-usage receipt', async ($, on) => {
+  const w = stub(on)
+  w.status = { ...w.status, requestAgoS: 3400 }
+  const transcript = '/work/sess-1.jsonl'
+  w.files[transcript] = [NOW_MS - 5000, '{"synthetic":true}\n']
+  await $.session.start(START)
+  await $.classic.SessionStart({ source: 'startup', session_id: 'sess-1', transcript_path: transcript } as never)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'action' })
+  await w.clock.settle()
+  const receipts = w.runs.filter(r => r.argv.includes('mod-action'))
+  expect(receipts.length).toBe(1)
+  const receipt = JSON.parse(receipts[0]!.stdin!)
+  expect(receipt.action).toBe('warm')
+  expect(receipt.session_id).toBe('sess-1')
+  expect(receipt.transcript_path).toBe(transcript)
+  expect(receipt.usage.cache_read_input_tokens).toBe(600_000)
 })

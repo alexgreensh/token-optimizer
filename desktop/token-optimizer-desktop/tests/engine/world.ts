@@ -377,6 +377,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
       if (w.dashboard === 'browser-fail') return ok('\n  Could not auto-open browser. Open manually:\n  file:///x/dashboard.html\n')
       return ok('  Opened: http://localhost:24842/token-optimizer\n')
     }
+    if (argv.includes('mod-action')) return ok('{"ok":true}\n')
     if (argv.includes('resume-lean')) return ok(w.lean ? `${w.lean}\n` : '', w.lean ? 0 : 1)
     return ok('', 1)
   })

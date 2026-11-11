@@ -1096,7 +1096,6 @@ def main():
             _measure_facade._clear_hook_budget(_measure_facade._tok_hook_old_sig)
     elif _measure_facade.args[0] == "keepwarm-arm":
         # Called by the Stop hook (additive). Appends one arm record to the
-        # keep-warm sidecar so the keepwarm-tick loop can later decide whether to
         # ping. Dumb + fast: a SIGALRM budget plus the writer's own fail-open
         # backstop keep it well inside the hook hot path; any failure is silent so
         # the hook chain is never broken. NO eligibility/policy here.
@@ -1117,7 +1116,8 @@ def main():
             _measure_facade.sys.exit(0)
         finally:
             _measure_facade._clear_hook_budget(_measure_facade._tok_hook_old_sig)
-    elif _measure_facade.args[0] == "keepwarm-enable":
+    elif _measure_facade.args[0] in ("keepwarm-enable", "mod-action"):
+        if _measure_facade.args[0] == "mod-action": from . import mod_action_booking; _measure_facade.sys.exit(mod_action_booking.main(_measure_facade))
         # Explicit opt-in. Refuses on subscription billing with the honest
         # message (no per-write premium to recover). On API billing it records
         # consent='enabled'; the scheduler install is a SEPARATE step.

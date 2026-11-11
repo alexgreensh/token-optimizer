@@ -4,7 +4,8 @@ import type { CacheView, Limit, Snapshot } from './contracts.ts'
 import type { IconName } from './icons.ts'
 import { ago, clock, duration, minutes, gradeOf, relative, renewal, tokens, type FormatOptions } from './format.ts'
 import { KEEP_WARM_MARGIN_MS } from './clock.ts'
-import { LIMIT_WARN, QUALITY_FLOOR, loseRun, type Action, type Run, type Tone } from './ladder.ts'
+import { LIMIT_WARN, QUALITY_FLOOR, loseRun, type Action, type Run, type Sentence, type Tone } from './ladder.ts'
+import type { BandSize } from './size.ts'
 
 const KEEP_WARM_MARGIN_S = KEEP_WARM_MARGIN_MS / 1000
 
@@ -27,7 +28,8 @@ export type Mark = {
   alt: string
 }
 
-export type Card = { id: MarkId; title: string; body: Run[]; actions: Action[] }
+/** A hover card: title, then "What it means:" (`means`) and "What to do:" (`todo`), then action buttons. */
+export type Card = { id: MarkId; title: string; means: Run[]; todo: Run[]; actions: Action[] }
 
 export type Fact = { icon: IconName; runs: Run[] }
 
@@ -141,51 +143,60 @@ function cacheCard(c: CacheView): Card {
   // Offered only while a press can still run: not in the last seconds before the cache drops.
   const warm: Action[] = c.measured && (c.secondsLeft ?? 0) > KEEP_WARM_MARGIN_S ? [{ id: 'warm', label: 'Keep warm' }] : []
   const stake = c.tokensAtStake
+  const left = minutes(c.secondsLeft ?? 0)
   switch (c.state) {
     case 'warm':
       return {
         id: 'cache',
-        title: `Warm for ${minutes(c.secondsLeft ?? 0)}`,
-        body: [plain(stake != null ? `Messages re-read ${tokens(stake)} tokens at a tenth of the price.` : 'Messages re-read the context at a tenth of the price.'), plain(est)],
+        title: `Warm for ${left}`,
+        means: [plain(`Messages re-read ${stake != null ? `${tokens(stake)} tokens` : 'the context'} at a tenth of the price.${est}`)],
+        todo: [plain(warm.length ? `Reply within ${left} or click Keep warm before a break.` : `Reply within ${left} to keep it warm.`)],
         actions: warm,
       }
     case 'warning':
       return {
         id: 'cache',
-        title: c.secondsLeft != null ? `Drops in ${minutes(c.secondsLeft)}` : 'Drops soon',
-        body: [
-          ...(stake != null ? [plain('Then the next message re-reads '), loseRun(stake), plain(' at full price.')] : [plain('Then the next message re-reads the whole context at full price.')]),
-          plain(est),
+        title: c.secondsLeft != null ? `Drops in ${left}` : 'Drops soon',
+        means: [
+          ...(stake != null ? [plain('Then the next message re-reads '), loseRun(stake), plain(` at full price.${est}`)] : [plain(`Then the next message re-reads the whole context at full price.${est}`)]),
         ],
+        todo: [plain(warm.length ? 'Click Keep warm now.' : 'Reply now; after the drop, Clean up first makes the next read cheaper.')],
         actions: warm,
       }
     case 'cold':
       return {
         id: 'cache',
         title: 'Cold',
-        body: [
+        means: [
           ...(stake != null ? [plain('Next message re-reads '), loseRun(stake), plain(' at full price.')] : [plain('Next message re-reads the whole context at full price.')]),
-          plain(' Cleaning up first re-reads it once and makes later messages cheaper.'),
         ],
+        todo: [plain('Clean up first re-reads it once and makes later messages cheaper.')],
         actions: [{ id: 'clean-first', label: 'Clean up first' }],
       }
     case 'refreshing':
-      return { id: 'cache', title: 'Refreshing', body: [plain('Every request in this turn keeps the cache warm.')], actions: [] }
+      return { id: 'cache', title: 'Refreshing', means: [plain('Every request in this turn keeps the cache warm.')], todo: [plain('Nothing to do.')], actions: [] }
     case 'warming':
-      return { id: 'cache', title: 'Keeping warm', body: [plain('A one-line warm-up is running.')], actions: [] }
+      return { id: 'cache', title: 'Keeping warm', means: [plain('A one-line warm-up is running.')], todo: [plain('Nothing to do.')], actions: [] }
     default:
-      return { id: 'cache', title: 'Not started', body: [plain('The clock starts after the first reply.')], actions: [] }
+      return { id: 'cache', title: 'Not started', means: [plain('The clock starts after the first reply.')], todo: [plain('Nothing to do.')], actions: [] }
   }
 }
 
 function limitCard(id: 'fiveHour' | 'week', limit: Limit, now: number, opts: FormatOptions): Card {
+  const p = Math.round(limit.percentUsed)
+  const name = id === 'fiveHour' ? '5-hour' : 'Weekly'
   const when = renewal(limit.resetsAt, now, opts)
   const at = limit.resetsAt ? Date.parse(limit.resetsAt) : NaN
   if (!when || !Number.isFinite(at)) {
-    const name = id === 'fiveHour' ? '5-hour' : 'Weekly'
-    return { id, title: `${name} limit ${Math.round(limit.percentUsed)}% used`, body: [plain('Renewal time not reported.')], actions: [] }
+    return { id, title: `${name} limit ${p}% used`, means: [plain('Renewal time not reported.')], todo: [plain('Nothing to do.')], actions: [] }
   }
-  return { id, title: `Renews ${when}`, body: [plain(`That is ${relative(at, now)}.`)], actions: [] }
+  return {
+    id,
+    title: `Renews ${when}`,
+    means: [plain(`${name} limit ${p}% used; resets ${when}, ${relative(at, now)}.`)],
+    todo: [plain(p >= LIMIT_WARN ? 'Clean up frees context sooner.' : 'Nothing to do.')],
+    actions: [],
+  }
 }
 
 /** Hover card bodies, one per mark, same order and omissions as `marks`. */
@@ -199,10 +210,11 @@ export function cards(s: Snapshot, opts: FormatOptions = {}): Card[] {
     ? {
         id: 'quality',
         title: `Quality ${gradeOf(q.score)} ${Math.round(q.score)}`,
-        body: [plain(q.drag ? `Biggest drag: ${q.drag}.` : 'Nothing is dragging quality down.')],
+        means: [plain(`How clean Claude's working context is, 0 to 100.${q.drag ? ` Biggest drag: ${q.drag}.` : ' Nothing is dragging it down.'}`)],
+        todo: [plain(q.score < QUALITY_FLOOR ? 'Clean up compacts and keeps your direction; Start fresh keeps a checkpoint first.' : 'Nothing to do.')],
         actions: qualityActions,
       }
-    : { id: 'quality', title: 'Quality --', body: [plain('The score appears after the first tool call.')], actions: qualityActions }
+    : { id: 'quality', title: 'Quality --', means: [plain('The score appears after the first tool call.')], todo: [plain('Nothing to do.')], actions: qualityActions }
 
   // With a smaller auto-compact ceiling the ring measures distance to compaction, while
   // quality follows the model window, so the card names both and makes no quality claim.
@@ -213,16 +225,46 @@ export function cards(s: Snapshot, opts: FormatOptions = {}): Card[] {
         ? {
             id: 'context',
             title: `${tokens(s.contextTokens)} of ${tokens(s.contextWindow)} before auto-compact`,
-            body: [plain(`${Math.round((s.contextTokens / model) * 100)}% of the ${tokens(model)} model window.`)],
+            means: [plain(`${Math.round((s.contextTokens / model) * 100)}% of the ${tokens(model)} model window.`)],
+            todo: [plain('Near full, auto-compact may lose details; Clean up compacts sooner and keeps your direction.')],
             actions: [],
           }
-        : { id: 'context', title: `${tokens(s.contextTokens)} of ${tokens(s.contextWindow)} tokens`, body: [plain('Quality holds best under half full.')], actions: [] }
-      : { id: 'context', title: 'Context --', body: [plain('The fill appears after the first reply.')], actions: [] }
+        : {
+            id: 'context',
+            title: `${tokens(s.contextTokens)} of ${tokens(s.contextWindow)} tokens`,
+            means: [plain('Quality holds best under half full.')],
+            todo: [plain('Past 80%, Clean up compacts and keeps your direction.')],
+            actions: [],
+          }
+      : { id: 'context', title: 'Context --', means: [plain('The fill appears after the first reply.')], todo: [plain('Nothing to do.')], actions: [] }
 
   const out = [quality, context, cacheCard(s.cache)]
   if (s.fiveHour) out.push(limitCard('fiveHour', s.fiveHour, s.now, opts))
   if (s.week) out.push(limitCard('week', s.week, s.now, opts))
   return out
+}
+
+export type SavingsPill = { text: string; url: string | null }
+
+/**
+ * Sentence plus savings text that must fit beside "Token Optimizer" on the
+ * title row; past this the pill drops to `display.short`.
+ */
+const PILL_FIT_CELLS = 100
+
+/**
+ * The green savings chip on the title row. It only joins a calm line: a good
+ * tone with no action button always wins, and without `savings_headline`
+ * (older installs, nothing worth a number) there is no pill at all.
+ */
+export function savingsPill(s: Snapshot, say: Sentence, size: BandSize): SavingsPill | null {
+  if (say.tone !== 'good' || say.action !== null) return null
+  const display = s.savingsHeadline?.display
+  if (!display) return null
+  const sentenceCells = say.runs.reduce((n, r) => n + r.text.length, 0)
+  const long = display.long !== '' && sentenceCells + display.long.length <= PILL_FIT_CELLS ? display.long : ''
+  const text = size === 'full' ? long || display.short || display.long : display.short || display.long
+  return text === '' ? null : { text, url: display.url }
 }
 
 function savingsBlock(s: Snapshot): SavingsBlock {

@@ -27,6 +27,7 @@ export function snap(over: Partial<Snapshot> = {}): Snapshot {
     cache: { state: 'warm', secondsLeft: 2483, lifetime: 3600, measured: true, tokensAtStake: 340_000 },
     branch: 'feat/billing-tests',
     savings: { sessionTokens: 640_000, last30Tokens: 48_000_000, daily: Array.from({ length: 30 }, (_, i) => (i + 1) * 1000) },
+    savingsHeadline: null,
     savingsLoading: false,
     busy: null,
     note: null,

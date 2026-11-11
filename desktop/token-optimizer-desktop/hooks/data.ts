@@ -467,6 +467,7 @@ export async function gather(
 
   const kept = {
     savings: base?.savings ?? null,
+    savingsHeadline: base?.savingsHeadline ?? null,
     savingsState: base?.savingsState ?? ('unavailable' as const),
     savingsReason: base?.savingsReason ?? null,
     lastRequestEpoch: base?.lastRequestEpoch ?? null,
@@ -479,15 +480,17 @@ export async function gather(
   const seen = { toolCallsSeen: base?.toolCallsSeen ?? 0, compactionsSeen: base?.compactionsSeen ?? 0 }
 
   const facts = notFound
-    ? { ...kept, savings: null, savingsState: 'unavailable' as const, savingsReason: NOT_FOUND, checkpointEpoch: null }
+    ? { ...kept, savings: null, savingsHeadline: null, savingsState: 'unavailable' as const, savingsReason: NOT_FOUND, checkpointEpoch: null }
     : status === 'outdated'
-      ? { ...kept, savings: null, savingsState: 'unavailable' as const, savingsReason: OUTDATED }
+      ? { ...kept, savings: null, savingsHeadline: null, savingsState: 'unavailable' as const, savingsReason: OUTDATED }
     : status === 'nopython'
-      ? { ...kept, savings: null, savingsState: 'unavailable' as const, savingsReason: NO_PYTHON }
+      ? { ...kept, savings: null, savingsHeadline: null, savingsState: 'unavailable' as const, savingsReason: NO_PYTHON }
     : status
       ? {
           // While savings load, the last known figures stay on show.
           savings: status.savings ?? (status.savingsState === 'loading' ? kept.savings : null),
+          // The pill's figure follows savings: last-known only while a refresh loads.
+          savingsHeadline: status.savingsHeadline ?? (status.savingsState === 'loading' ? kept.savingsHeadline : null),
           savingsState: status.savingsState,
           savingsReason: status.savings ? null : status.savingsReason,
           lastRequestEpoch: status.lastRequestEpoch ?? kept.lastRequestEpoch,
@@ -566,6 +569,7 @@ export function mergeStored(
     sameSession && !savingsRead
       ? {
           savings: current.savings,
+          savingsHeadline: current.savingsHeadline ?? null,
           savingsState: current.savingsState,
           savingsReason: current.savingsReason,
           earlierCheckpoint: current.earlierCheckpoint,

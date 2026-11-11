@@ -1,7 +1,7 @@
 // Token Optimizer's files and the engine's usage, read into the band's shapes.
 // Pure and forgiving: a half-written or foreign file reads as nothing
 // rather than throwing, so one bad read never blanks the band.
-import type { Limit, Quality, Savings } from './contracts.ts'
+import type { Limit, Quality, Savings, SavingsHeadline } from './contracts.ts'
 
 /** How fresh `measure.py status-bar`'s savings are. */
 export type SavingsState = 'fresh' | 'stale' | 'loading' | 'unavailable'
@@ -12,6 +12,8 @@ export type CacheLifetime = '1h' | '5m'
 /** `measure.py status-bar --json`, reduced to what the band uses. Epochs in seconds. */
 export type StatusBar = {
   savings: Savings | null
+  /** The shared savings headline; null on installs that predate it. */
+  savingsHeadline: SavingsHeadline | null
   savingsState: SavingsState
   /** One short reason when savings is null. */
   savingsReason: string | null
@@ -200,6 +202,33 @@ function parseSavings(value: unknown): Savings | null {
   }
 }
 
+const HEADLINE_KINDS = ['week', '30d', 'tokens'] as const
+
+/**
+ * `savings_headline` from `measure.py status-bar`: absent or malformed reads
+ * as null (no pill), a `display` with neither text reads as no display. The
+ * numbers are kept for completeness; the band shows only `display`.
+ */
+export function parseSavingsHeadline(value: unknown): SavingsHeadline | null {
+  const headline = toRecord(value)
+
+  if (!headline) {
+    return null
+  }
+
+  const display = toRecord(headline.display)
+  const short = display ? text(display.short) ?? '' : ''
+  const long = display ? text(display.long) ?? '' : ''
+  const kind = HEADLINE_KINDS.find(k => k === display?.kind) ?? null
+
+  return {
+    usd30d: num(headline.usd_30d),
+    usdWeek: num(headline.usd_week),
+    tokens30d: count(headline.tokens_30d),
+    display: display && (short !== '' || long !== '') ? { kind, short, long, url: text(display.url) } : null,
+  }
+}
+
 const STATES: readonly SavingsState[] = ['fresh', 'stale', 'loading', 'unavailable']
 
 /** `measure.py status-bar --json` stdout, raw text or parsed; null when it is not a JSON object. */
@@ -217,6 +246,7 @@ export function parseStatusBar(json: unknown): StatusBar | null {
 
   return {
     savings: parseSavings(out.savings),
+    savingsHeadline: parseSavingsHeadline(out.savings_headline),
     savingsState: state,
     savingsReason: text(out.savings_reason),
     lastRequestEpoch: lastRequest !== null && lastRequest > 0 ? lastRequest : null,

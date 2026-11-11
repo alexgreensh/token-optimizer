@@ -95,6 +95,8 @@ export const START = { cwd: '/work/project', surface: 'desktop', isInteractive: 
 
 export type Status = {
   savings: { session_tokens: number; total_30d_tokens: number; daily: { date: string; tokens: number }[] } | null
+  /** `savings_headline` verbatim from measure.py; absent means an install that predates it. */
+  savings_headline?: unknown
   savings_state: string
   savings_reason: string | null
   /** Seconds before NOW_MS of the last main-thread request; null for none. */
@@ -196,6 +198,19 @@ export const quality = (score: number, compactions: number) =>
 const DAILY = Array.from({ length: 30 }, (_, i) => ({ date: `2026-09-${String(i + 1).padStart(2, '0')}`, tokens: (i + 1) * 1000 }))
 
 export const SAVED: Status['savings'] = { session_tokens: 41_000, total_30d_tokens: 2_400_000, daily: DAILY }
+
+/** A `savings_headline` as measure.py emits it: the 30-day branch of the shared display contract. */
+export const HEADLINE = {
+  usd_30d: 237,
+  usd_week: null,
+  tokens_30d: 602_700_000,
+  display: {
+    kind: '30d',
+    short: 'Saved $237/30d · 602.7M kept out',
+    long: '$237 saved in 30 days · 602.7M tokens kept out of context',
+    url: 'http://localhost:24842/token-optimizer#savings',
+  },
+}
 
 const CHECKPOINT = '/home/me/.claude/token-optimizer/checkpoints/sess-1-start-fresh.md'
 
@@ -358,6 +373,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
         JSON.stringify({
           schema: 1,
           savings: s.savings ? { unit: 'tokens', ...s.savings } : null,
+          ...(s.savings_headline !== undefined ? { savings_headline: s.savings_headline } : {}),
           savings_state: s.savings_state,
           savings_reason: s.savings_reason,
           last_request_epoch: s.requestAgoS === null ? null : NOW_MS / 1000 - s.requestAgoS,

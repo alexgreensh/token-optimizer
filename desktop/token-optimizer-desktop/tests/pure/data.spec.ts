@@ -37,6 +37,12 @@ const quality = (score: number, compactions: number) =>
 const STATUS = JSON.stringify({
   schema: 1,
   savings: { unit: 'tokens', session_tokens: 41_000, total_30d_tokens: 2_400_000, daily: [{ date: '2026-10-03', tokens: 900, usd: 0.01 }] },
+  savings_headline: {
+    usd_30d: 12.3,
+    usd_week: null,
+    tokens_30d: 2_400_000,
+    display: { kind: 'tokens', short: '2.4M tokens kept out', long: '2.4M tokens kept out of context', url: 'http://localhost:24842/token-optimizer#savings' },
+  },
   savings_state: 'fresh',
   savings_reason: null,
   last_request_epoch: NOW_MS / 1000 - 30,
@@ -228,6 +234,28 @@ test('a status command that times out keeps the last savings and does not throw'
   assert.equal(second.lastRequestEpoch, first.lastRequestEpoch)
   assert.equal(second.contextPercent, 62)
   assert.equal(second.sheetOpen, true)
+})
+
+test('the savings headline lands with the status answer and follows savings while loading', async () => {
+  const w = withTokenOptimizer(world())
+  const io = fakeIo(w)
+  const first = await gather(io, null, { savings: true })
+  assert.equal(first.savingsHeadline?.usd30d, 12.3)
+  assert.equal(first.savingsHeadline?.display?.kind, 'tokens')
+
+  w.status = 'loading'
+  const loading = await gather(io, first, { savings: true })
+  assert.deepEqual(loading.savingsHeadline, first.savingsHeadline)
+
+  // An answer without the field (an older Token Optimizer) clears it, like savings.
+  const bare = { ...JSON.parse(STATUS) }
+  delete bare.savings_headline
+  const older = await gather(
+    { ...io, run: async (argv, init) => (argv.includes('status-bar') ? { exitCode: 0, stdout: JSON.stringify(bare) } : io.run(argv, init)) },
+    first,
+    { savings: true },
+  )
+  assert.equal(older.savingsHeadline, null)
 })
 
 test('while savings load the last known figures stay, marked loading', async () => {

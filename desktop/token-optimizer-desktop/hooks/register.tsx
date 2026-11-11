@@ -51,7 +51,7 @@ import { LIGHT, clawdSvg, type Gaze, type Palette } from '../src/clawd.ts'
 import type { Snapshot } from '../src/contracts.ts'
 import { ICONS, ICON_ALT, iconSvg, type IconName } from '../src/icons.ts'
 import { QUALITY_FLOOR, moodOf, sentence, type ActionId, type Run } from '../src/ladder.ts'
-import { cards, marks, row, type Card, type Mark, type MarkTone } from '../src/marks.ts'
+import { cards, marks, row, savingsPill, type Card, type Mark, type MarkTone, type SavingsPill } from '../src/marks.ts'
 import { envSize, slimSide, storedSize, type BandSize } from '../src/size.ts'
 import { switchedOff, timeOptions } from '../src/switches.ts'
 import { DEBOUNCE_MS, initialPose, reducePose, type PoseEvent, type PoseState } from '../src/pose.ts'
@@ -79,11 +79,11 @@ const uiAtom = atom({ plugin: 'token-optimizer', key: 'ui' } as const, null)
 const frameAtom = atom({ plugin: 'token-optimizer', key: 'frame' } as const, 0)
 
 type Desktop = Elements['desktop']
-type Tones = { good: string; caution: string; bad: string; cold: string; ink: string; track: string; card: string; line: string }
+type Tones = { good: string; caution: string; bad: string; cold: string; ink: string; track: string; card: string; line: string; goodSoft: string }
 
 /** The design page's tone colours (light; each picture follows dark mode itself, see DARK_STYLE). */
 function tonesFor(p: Palette): Tones {
-  return { good: '#2f9e55', caution: '#c98a1b', bad: p.bad, cold: p.cold, ink: p.ink, track: '#d9d6cd', card: p.card, line: '#e2dfd6' }
+  return { good: '#2f9e55', goodSoft: '#e2f3e9', caution: '#c98a1b', bad: p.bad, cold: p.cold, ink: p.ink, track: '#d9d6cd', card: p.card, line: '#e2dfd6' }
 }
 
 // ---- module state: plain variables, rebuilt from the atoms after a reload ----
@@ -1068,14 +1068,22 @@ function clawdLayers($: EngineInterface, layer: ClawdLayer, now: number): ClawdL
   return clawdUnder !== null ? [clawdUnder, layer] : [layer]
 }
 
-/** Below this, "saved this session" is noise and stays off the row. */
-const SESSION_SAVED_MIN = 1000
-
 type Handlers = { act: (id: ActionId) => void; dashboard: () => void; details: () => void; size: () => void }
 
-/** The five marks with their hover cards: one line, never wrapped, in both sizes. */
-function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: Handlers) {
-  const { Box, Text, Svg } = D
+/** The green savings chip right after the sentence: the shared headline's own words, a press opens the dashboard like `Dashboard ↗` does. */
+function savingsChip(D: Desktop, pill: SavingsPill, t: Tones, on: Handlers) {
+  const { Box, Button } = D
+  return (
+    <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} paddingX={1} borderStyle="round" borderColor={t.good} backgroundColor={t.goodSoft}>
+      {icon(D, 'saved', t.good)}
+      <Button key="savings-pill" plain label={`${pill.text} ↗`} onPress={() => on.dashboard()} />
+    </Box>
+  )
+}
+
+/** The five marks with their hover cards: one line, never wrapped, in both sizes. `Dashboard ↗` caps the row; `status` is the slim band's dashboard progress, which has no sentence line to carry it. */
+function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: Handlers, status: string | null = null) {
+  const { Box, Text, Svg, Button } = D
   return (
     <Box flexDirection="row" flexWrap="nowrap" columnGap={3}>
       {markList.map((mark, i) => (
@@ -1091,6 +1099,16 @@ function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: H
           })()}
         </Box>
       ))}
+      <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+        {status !== null ? (
+          <Box key="dashboard-status">
+            <Text>{status}</Text>
+          </Box>
+        ) : (
+          ''
+        )}
+        <Button key="dashboard" plain label="Dashboard ↗" onPress={() => on.dashboard()} />
+      </Box>
     </Box>
   )
 }
@@ -1106,14 +1124,21 @@ function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) 
       display="none"
       hover={{ display: 'flex' }}
       flexDirection="column"
-      width={34}
+      width={44}
       paddingX={1}
       borderStyle="round"
       borderColor={t.line}
       backgroundColor={t.card}
     >
       <Text bold>{card.title}</Text>
-      <Text wrap="wrap">{runsOf(D, card.body, t)}</Text>
+      <Text wrap="wrap">
+        <Text bold>What it means: </Text>
+        {runsOf(D, card.means, t)}
+      </Text>
+      <Text wrap="wrap">
+        <Text bold>What to do: </Text>
+        {runsOf(D, card.todo, t)}
+      </Text>
       {card.actions.length > 0 ? (
         <Box flexDirection="row" columnGap={1} marginTop={1}>
           {card.actions.map(a => (
@@ -1127,8 +1152,8 @@ function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) 
   )
 }
 
-/** The unfolded row, shared by both sizes: the facts, any card action the moment calls for, the savings. */
-function detailRow(D: Desktop, m: Model, on: Handlers, size: BandSize) {
+/** The unfolded row, shared by both sizes: the facts and any card action the moment calls for. Savings live on the title-row chip; behind the arrow only an unavailable reason remains. */
+function detailRow(D: Desktop, m: Model, on: Handlers) {
   const { Box, Text, Button } = D
   const { snap, tones: t } = m
   const say = sentence(snap, timeOpts)
@@ -1143,48 +1168,17 @@ function detailRow(D: Desktop, m: Model, on: Handlers, size: BandSize) {
     ...(m.canWarm && snap.cache.state === 'warning' ? [{ id: 'warm' as const, label: 'Keep warm' }] : []),
   ].filter(a => a.id !== say.action?.id && !(a.id === 'clean' && say.action?.id === 'clean-first'))
 
-  // Said plainly: a bare "47M past 30 days" reads like tokens spent, and a 30-bar chart
-  // ruled by one big day said nothing. The total is the dashboard's own.
-  const sessionSaved = (detail.savings.sessionTokens ?? 0) >= SESSION_SAVED_MIN
-  // No figure yet: say why (or that it is being measured), never "Saved -- tokens".
-  const savingsBlock =
-    detail.savings.last30Tokens == null ? (
+  // First load with no last-known figure draws nothing here, never "Measuring savings…"; the
+  // unavailable reasons stay. A ready figure is the chip's job, not a second savings line.
+  const savingsNote =
+    detail.savings.state === 'unavailable' ? (
       <Box flexDirection="row" alignItems="center" columnGap={1}>
         {icon(D, 'saved', t.ink)}
-        <Text>{detail.savings.state === 'loading' ? 'Measuring savings…' : (m.savingsReason ?? detail.savings.reason ?? 'Savings appear once Token Optimizer has measured some.')}</Text>
+        <Text>{m.savingsReason ?? detail.savings.reason ?? 'Savings appear once Token Optimizer has measured some.'}</Text>
       </Box>
     ) : (
-      <Box flexDirection="row" alignItems="center" columnGap={1}>
-        {icon(D, 'saved', t.good)}
-        <Text>
-          Saved <Text bold>{detail.savings.last30Text}</Text> tokens in 30 days
-          {sessionSaved ? (
-            <Text>
-              {' '}(<Text bold>{detail.savings.sessionText}</Text> this session)
-            </Text>
-          ) : (
-            ''
-          )}
-        </Text>
-      </Box>
+      ''
     )
-
-  // The end of the row: a plain text link (a Button drawn without chrome, the only thing the
-  // desktop lets be pressed), its label its accessible name. The slim band has no sentence
-  // line to carry "Opening the dashboard.", so there the status stands beside the link.
-  const status = size === 'slim' ? dashboardStatus(snap.busy, snap.note) : null
-  const dashboardLink = (
-    <Box flexDirection="row" alignItems="center" columnGap={1}>
-      {status !== null ? (
-        <Box key="dashboard-status">
-          <Text>{status}</Text>
-        </Box>
-      ) : (
-        ''
-      )}
-      <Button key="dashboard" plain label="Full dashboard" onPress={() => on.dashboard()} />
-    </Box>
-  )
 
   return (
     <Box key="row" flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
@@ -1205,10 +1199,7 @@ function detailRow(D: Desktop, m: Model, on: Handlers, size: BandSize) {
           ''
         )}
       </Box>
-      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>
-        {savingsBlock}
-        {dashboardLink}
-      </Box>
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>{savingsNote}</Box>
     </Box>
   )
 }
@@ -1219,8 +1210,9 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
   const say = sentence(snap, timeOpts)
   const markList = marks(snap, timeOpts)
   const cardList = cards(snap, timeOpts)
+  const pill = savingsPill(snap, say, 'full')
   // The artifact's layout: Clawd and his arrow beside the sentence and the marks; the
-  // unfolded row under all of it, from Clawd's left edge, savings on the right.
+  // unfolded row under all of it, from Clawd's left edge.
   return (
     // Keyed: the whole band is one hover zone (the desktop reveals within a keyed Box,
     // not across separate hover groups), so a pointer anywhere on it wakes Clawd to look.
@@ -1262,6 +1254,7 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
               <Text bold>Token Optimizer</Text>
               {icon(D, say.icon, toneColor(say.tone, t))}
               <Text wrap="wrap">{runsOf(D, say.runs, t)}</Text>
+              {pill !== null ? savingsChip(D, pill, t, on) : ''}
             </Box>
             {say.action ? <Button key="action" variant="primary" label={say.action.label} onPress={() => on.act(say.action!.id)} /> : ''}
           </Box>
@@ -1269,7 +1262,7 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
           {markRow(D, markList, cardList, t, on)}
         </Box>
       </Box>
-      {m.sheetOpen ? detailRow(D, m, on, 'full') : ''}
+      {m.sheetOpen ? detailRow(D, m, on) : ''}
     </Box>
   )
 }
@@ -1278,7 +1271,9 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
 function drawSlim(D: Desktop, m: Model, on: Handlers) {
   const { Box, Text, Button, Svg } = D
   const { snap, tones: t } = m
-  const side = slimSide(sentence(snap, timeOpts))
+  const say = sentence(snap, timeOpts)
+  const side = slimSide(say)
+  const pill = side.kind === 'none' ? savingsPill(snap, say, 'slim') : null
   return (
     // Keyed like the full band: the same one hover zone, so pointing still wakes Clawd's look.
     <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
@@ -1302,7 +1297,7 @@ function drawSlim(D: Desktop, m: Model, on: Handlers) {
         <Button key="size" label="+" onPress={() => on.size()} />
       </Box>
       <Box flexGrow={1} flexShrink={1}>
-        {markRow(D, marks(snap, timeOpts), cards(snap, timeOpts), t, on)}
+        {markRow(D, marks(snap, timeOpts), cards(snap, timeOpts), t, on, dashboardStatus(snap.busy, snap.note))}
       </Box>
       {side.kind === 'action' ? (
         <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
@@ -1314,11 +1309,13 @@ function drawSlim(D: Desktop, m: Model, on: Handlers) {
           {icon(D, side.icon, toneColor(side.tone, t))}
           <Text>{runsOf(D, side.runs, t)}</Text>
         </Box>
+      ) : pill !== null ? (
+        savingsChip(D, pill, t, on)
       ) : (
         ''
       )}
     </Box>
-    {m.sheetOpen ? detailRow(D, m, on, 'slim') : ''}
+    {m.sheetOpen ? detailRow(D, m, on) : ''}
     </Box>
   )
 }
@@ -1615,6 +1612,7 @@ export const register: Register = on => {
       cache: view({ ...shownClock, working }, now, planDefault(s)),
       branch: s?.branch ?? null,
       savings: s?.savings ?? null,
+      savingsHeadline: s?.savingsHeadline ?? null,
       savingsLoading: s?.savingsState === 'loading',
       busy: busyNow(ui, now) ?? (shownClock.warming ? 'warming' : null),
       note: noteNow(ui, now),

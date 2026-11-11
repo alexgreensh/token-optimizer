@@ -43,9 +43,10 @@ test('the – button slims the band to one line; + brings the full band back', a
   for (const word of ['quality', 'context', 'cache', '5 hours', 'week']) {
     expect((await exactly(ui, word)).length, word).toBeGreaterThan(0)
   }
-  // Calm: nothing on the right.
+  // Calm: no action and no sentence, but the gauges row still ends with its link.
   expect(await ui.find({ key: 'action' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: 'All clear.' })).toBeUndefined()
+  expect((await ui.find({ key: 'dashboard' }))?.props.label).toBe('Dashboard ↗')
   expect(w.store['status-bar-size']).toBe('slim')
 
   await ui.press({ key: 'size' })

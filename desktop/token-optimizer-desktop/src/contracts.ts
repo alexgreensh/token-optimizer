@@ -63,6 +63,22 @@ export type Savings = {
   daily: number[]
 }
 
+/** `savings_headline.display` from `measure.py status-bar`: the one savings line every surface shares. */
+export type SavingsHeadlineDisplay = {
+  kind: 'week' | '30d' | 'tokens' | null
+  short: string
+  long: string
+  url: string | null
+}
+
+/** `savings_headline` from `measure.py status-bar`; display is null when nothing is worth a number. */
+export type SavingsHeadline = {
+  usd30d: number | null
+  usdWeek: number | null
+  tokens30d: number | null
+  display: SavingsHeadlineDisplay | null
+}
+
 /** Everything the view model needs for one frame. */
 export type Snapshot = {
   now: number
@@ -78,6 +94,7 @@ export type Snapshot = {
   cache: CacheView
   branch: string | null
   savings: Savings | null
+  savingsHeadline: SavingsHeadline | null
   savingsLoading: boolean
   busy: 'clean' | 'fresh-capture' | 'fresh-clear' | 'dashboard' | 'warming' | null
   /** One-line outcome shown in place of "All clear." for a few seconds. */

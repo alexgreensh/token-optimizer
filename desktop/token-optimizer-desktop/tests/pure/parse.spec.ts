@@ -147,6 +147,53 @@ test('status bar: savings, clock anchor, lifetime and checkpoint come through', 
   assert.equal(s.checkpointEpoch, 1_790_985_752)
 })
 
+test('status bar: savings_headline comes through whole; absent reads as no pill', () => {
+  const headline = {
+    usd_30d: 237.4,
+    usd_week: null,
+    tokens_30d: 602_700_000,
+    display: {
+      kind: '30d',
+      short: 'Saved $237/30d · 602.7M kept out',
+      long: '$237 saved in 30 days · 602.7M tokens kept out of context',
+      url: 'http://localhost:24842/token-optimizer#savings',
+    },
+  }
+  const s = parseStatusBar({ ...STATUS, savings_headline: headline })
+  assert.deepEqual(s?.savingsHeadline, {
+    usd30d: 237.4,
+    usdWeek: null,
+    tokens30d: 602_700_000,
+    display: { kind: '30d', short: headline.display.short, long: headline.display.long, url: headline.display.url },
+  })
+  // Older installs and foreign files simply have no pill.
+  assert.equal(parseStatusBar(STATUS)?.savingsHeadline, null)
+  assert.equal(parseStatusBar({ ...STATUS, savings_headline: 'yes' })?.savingsHeadline, null)
+  assert.equal(parseStatusBar({ ...STATUS, savings_headline: 42 })?.savingsHeadline, null)
+})
+
+test('status bar: a malformed savings_headline keeps what parses and drops what does not', () => {
+  const s = parseStatusBar({
+    ...STATUS,
+    savings_headline: {
+      usd_30d: 'lots',
+      usd_week: -3,
+      tokens_30d: 12.9,
+      display: { kind: 'bogus', short: '  Saved $237/30d  ', long: '', url: 7 },
+    },
+  })
+  assert.deepEqual(s?.savingsHeadline, {
+    usd30d: null,
+    usdWeek: -3,
+    tokens30d: 12,
+    display: { kind: null, short: 'Saved $237/30d', long: '', url: null },
+  })
+  // A display with no text at all is no display; numbers alone never make a pill.
+  const bare = parseStatusBar({ ...STATUS, savings_headline: { usd_30d: 5, display: { kind: 'week' } } })
+  assert.equal(bare?.savingsHeadline?.display, null)
+  assert.equal(bare?.savingsHeadline?.usd30d, 5)
+})
+
 test('status bar: loading has no savings, keeps the reason, and the transcript facts still land', () => {
   const s = parseStatusBar({ ...STATUS, savings: null, savings_state: 'loading', savings_reason: 'computing savings' })
   assert.ok(s)

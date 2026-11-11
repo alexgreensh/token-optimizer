@@ -15,7 +15,7 @@ SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS
 
 SOURCES += ('transcript_stream.py', 'quality_continuity.py', 'quality_checkpoint.py', 'codex_quality.py', 'checkpoint_direction.py', 'checkpoint_retention.py', 'lease_candidate_cleanup.py', 'session_store_spool.py', 'upgrade_drain_control.py', 'compression_scan_checkpoint.py')
 SOURCES += ('status_bar_lock.py', 'session_flush_lock.py', 'context_reset_marker.py', 'holdout_fallback.py', 'dashboard_heal_claim.py')
-SOURCES += ('keepwarm_safety.py', 'keepwarm_economics.py', 'keepwarm_linux.py', 'keepwarm_prefix.py', 'keepwarm_response_filter.py', 'keepwarm_guard.py', 'keepwarm_guard_server.py', 'keepwarm_fork.py', 'mod_action_booking.py', 'mod_compaction_booking.py', 'mod_fresh_booking.py')
+SOURCES += ('keepwarm_safety.py', 'keepwarm_economics.py', 'keepwarm_linux.py', 'mod_action_booking.py', 'mod_compaction_booking.py', 'mod_fresh_booking.py')
 
 
 def verify(payload, canonical=REPO):

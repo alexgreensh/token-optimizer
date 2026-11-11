@@ -698,7 +698,7 @@ Every insight is grounded in your actual numbers. "Your short sessions score 68 
 
 ### Keep-Warm
 
-Opt-in feature for API-billed sessions. Issues a tiny cache-read ping just before your prompt cache entry would expire, refreshing its TTL. Costs ~0.1x of the prefix versus the 1.25-2x re-write you'd pay on resume. Tripwire auto-off if pings stop paying for themselves.
+Opt-in feature for API-billed sessions. Issues a tiny cache-read ping just before your prompt cache entry would expire, refreshing its TTL. Costs ~0.1x of the prefix versus the 1.25-2x re-write you'd pay on resume. Tripwire auto-off if pings stop paying for themselves. Automatic pings are paused for now; when they return they will use Claude Code's built-in session fork.
 
 ```bash
 python3 measure.py keepwarm-enable          # opt in (API billing only)

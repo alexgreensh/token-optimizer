@@ -466,7 +466,7 @@ def test_hero_band_leads_with_three_numbers_with_routing_inside():
     assert 'saved since you installed</span>' in h
     vis = _visible(h)
     assert 'estimated' not in vis and 'measured' not in vis and 'st-mega__note' not in h
-    fold = h.split('How since-install is calculated')[1]
+    fold = h.split('How this is calculated')[1]
     assert 'Since Nov 1, 2025, $3,834.00' in fold
     assert 'Measured: $310.00' in fold and 'Estimated: $40.00' in fold and 'Model routing, estimated: $3,484.00' in fold
 
@@ -474,7 +474,7 @@ def test_hero_band_leads_with_three_numbers_with_routing_inside():
 def test_saved_since_install_card_is_gone_and_its_fold_moves_to_hero():
     out = story({'savings': routed()})
     assert 'Saved since install' not in out
-    assert 'How since-install is calculated' in hero(out) and 'How since-install is valued' not in out
+    assert hero(out).count('<details') == 1 and 'Since Nov 1, 2025' in hero(out)
     assert 'st-routing-band' not in out
 
 
@@ -497,7 +497,7 @@ def test_routing_is_in_the_big_numbers_and_explained_in_the_since_install_fold(s
     s['since_install']['all_in']['routing_measured_baseline_opus_share'] = 0.8369
     s['since_install']['all_in']['routing_measured_baseline_realized_cost_usd'] = 0
     out = story({'savings': s})
-    fold = hero(out).split('How since-install is calculated')[1]
+    fold = hero(out).split('How this is calculated')[1]
     assert 'At your stated %d%% Opus baseline. Most of it from Apr to Jul.' % round(share * 100) in fold
     assert '83.69%' in fold and 'never added' not in out
     assert 'st-card--route' not in out and 'Model routing <span class="st-tag">' not in out
@@ -746,7 +746,7 @@ def test_transformation_card_is_big_with_caption_share_and_fold():
     assert 'st-mega st-mega--usd st-mega--card">$3,366<span class="st-mega__per"> a month</span></span>' in card
     assert ('Without Token Optimizer, working the way you work now would cost you this much more, '
             'compared with your own baseline from before you installed.') in card
-    assert '<p class="st-lead">That is 14% of what this work would have cost.</p>' in card
+    assert 'That is 14% of what this work would have cost.</p>' in card
     fold = card.split('<details')[1]
     assert 'How this is calculated' in card
     assert '$23,560.08 a month' in fold and '$20,194.49 a month' in fold and '$3,365.59 a month' in fold
@@ -789,11 +789,11 @@ def test_limits_card_shows_used_and_without_per_window_with_the_big_multiplier()
     out = story({'savings': full(), 'runway': runway()})
     card = limits_card(out)
     assert '<h2 class="st-h">Your limits go further</h2>' in card
-    assert 'st-mega--card">&asymp;2.7%</span><span class="st-mega__unit">more work per token</span>' in card
-    assert '5-hour limit' in card and 'Weekly limit' in card
-    assert 'st-mega--card">17%</span><span class="st-mega__unit">used</span>' in card
+    assert '&asymp;2.7% more work per token' in card
+    assert '5-hour limit' in card and 'weekly limit' in card
+    assert 'st-limit__used">17%</span> of your 5-hour limit used' in card
     assert 'would be <span class="st-limit__num">17%</span> without Token Optimizer' in card
-    assert 'st-mega--card">78%</span>' in card and 'would be <span class="st-limit__num">80%</span> without Token Optimizer' in card
+    assert 'st-limit__used">78%</span>' in card and 'would be <span class="st-limit__num">80%</span> without Token Optimizer' in card
     assert 'How this is calculated' in card and 'Lighter context: &times;1.0233' in card
     assert 'plan goes further' not in _visible(out).lower() and 'estimated $' not in _visible(out).lower()
     assert 'Your plan goes further' not in out
@@ -804,7 +804,7 @@ def test_limits_card_uses_the_last_stored_meter_reading_when_no_window_is_live()
     r = runway(windows=[], meter_ts=1794376851,
                last_known_windows=[{'key': 'seven_day', 'label': '7d', 'used_pct': 78, 'without_used_pct': 80.3}])
     card = limits_card(story({'savings': full(), 'runway': r}))
-    assert 'st-mega--card">78%</span><span class="st-mega__unit">used</span>' in card
+    assert 'st-limit__used">78%</span> of your weekly limit used' in card
     assert 'would be <span class="st-limit__num">80%</span> without Token Optimizer' in card
     assert 'Last reading, ' in card
     assert 'refreshes while you are actively working' not in card

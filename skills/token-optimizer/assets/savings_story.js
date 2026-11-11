@@ -217,8 +217,7 @@ function savingsStoryHtml(data) {
         (SIh && SIh.all > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(SIh.all) + '</span><span class="st-mega__unit">saved since you installed</span></div>' : '') +
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context in ' + days + ' days</span></div>' : '') +
       '</div>' +
-      f.fold('How this is calculated', method) +
-      (SIh && SIh.all > 0 ? f.fold('How since-install is calculated', savingsSinceInstallBody(data, SIh)) : '') +
+      f.fold('How this is calculated', method + (SIh && SIh.all > 0 ? savingsSinceInstallBody(data, SIh) : '')) +
       '</div>';
   }
 
@@ -234,10 +233,10 @@ function savingsStoryHtml(data) {
   var removedOnce = num(cp.removed_tokens), rereads = num(cp.reread_tokens);
   if (removedOnce > 0 && rereads > 0) {
     var carryN = rereads / removedOnce;
-    cards.push('<div class="card st-card">' +
+    cards.push('<div class="card st-card st-reread">' +
       '<h2 class="st-h">' + (as.reread_available !== false && has(as.reread_usd) && num(as.reread_usd) > 0 && bigTotal > 0 ? usd(as.reread_usd) + ' of your ' + usd(bigTotal) + ' came from re-reads avoided' : 'Removed once, saved on every later turn') + '</h2>' +
-      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + Math.round(carryN) + '&times;</span><span class="st-mega__unit">re-reads avoided per token removed</span></p>' +
-      '<p class="st-lead"><strong>' + tok(removedOnce) + ' priced tokens removed</strong> became <strong>' + tok(rereads) + ' tokens not sent</strong> on later reads' + (has(cp.reread_usd) ? ', worth ' + usd(cp.reread_usd) + ' at API rates' : '') + '.</p>' +
+      '<div class="st-reread__body"><p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + Math.round(carryN) + '&times;</span><span class="st-mega__unit">re-reads avoided per token removed</span></p>' +
+      '<p class="st-lead"><strong>' + tok(removedOnce) + ' priced tokens removed</strong> became <strong>' + tok(rereads) + ' tokens not sent</strong> on later reads' + (has(cp.reread_usd) ? ', worth ' + usd(cp.reread_usd) + ' at API rates' : '') + '.</p></div>' +
       '</div>');
   }
   if (cards.length) out += '<div class="st-grid">' + cards.join('') + '</div>';
@@ -324,8 +323,8 @@ function savingsTransformationHtml(data) {
   return '<div class="card st-card st-transform">' +
     '<h2 class="st-h">Your transformation</h2>' +
     '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(ba.monthly_savings_usd) + '<span class="st-mega__per"> a month</span></span>' +
-      '<span class="st-mega__unit">Without Token Optimizer, working the way you work now would cost you this much more, compared with your own baseline from before you installed.</span></p>' +
-    (share > 0 ? '<p class="st-lead">That is ' + share + '% of what this work would have cost.</p>' : '') +
+      '</p><p class="st-lead">Without Token Optimizer, working the way you work now would cost you this much more, compared with your own baseline from before you installed.' +
+    (share > 0 ? ' That is ' + share + '% of what this work would have cost.' : '') + '</p>' +
     f.fold('How this is calculated', method) +
     '</div>';
 }
@@ -346,11 +345,8 @@ function savingsLimitWindows(rw) {
   var html = '<div class="st-limits">' + rows.map(function(w) {
     var used = Math.round(num(w.used_pct));
     var without = isFinite(Number(w.without_used_pct)) ? num(w.without_used_pct) : 100 - num(w.without_headroom_pct);
-    return '<div class="st-limit"><p class="st-limit__name">' + esc(names[w.key] || ((w.label || 'Window') + ' limit')) + '</p>' +
-      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + used + '%</span><span class="st-mega__unit">used</span></p>' +
-      '<p class="st-limit__alt">' + (w.would_be_capped
-        ? 'would already be at the limit without Token Optimizer'
-        : 'would be <span class="st-limit__num">' + Math.round(without) + '%</span> without Token Optimizer') + '</p></div>';
+    return '<p class="st-limit"><span class="st-limit__used">' + used + '%</span> of your ' + esc((names[w.key] || ((w.label || 'Window') + ' limit')).toLowerCase()) + ' used &middot; ' +
+      (w.would_be_capped ? 'would already be at the limit without Token Optimizer' : 'would be <span class="st-limit__num">' + Math.round(without) + '%</span> without Token Optimizer') + '</p>';
   }).join('') + '</div>';
   var ts = Number(rw.meter_ts);
   if (stored && isFinite(ts) && ts > 0) {
@@ -373,10 +369,9 @@ function savingsLimitsHtml(data) {
     (extra ? 'Together that is about ' + extra + '% more work per token.' : '') + '</p>' +
     (windows ? '<p>The without-Token-Optimizer figure is your used share multiplied by that factor, capped at 100%.</p>' : '');
   return '<div class="card st-card st-limits-card">' +
-    '<h2 class="st-h">Your limits go further</h2>' +
-    (extra ? '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">&asymp;' + extra + '%</span><span class="st-mega__unit">more work per token</span></p>' : '') +
-    windows +
-    f.fold('How this is calculated', method) +
+    '<div class="st-limits__top"><h2 class="st-h">Your limits go further</h2>' + windows + '</div>' +
+    '<div class="st-limits__bottom">' + (extra ? '<p>&asymp;' + extra + '% more work per token</p>' : '') +
+    f.fold('How this is calculated', method) + '</div>' +
     '</div>';
 }
 

@@ -66,7 +66,7 @@ def test_template_scopes_host_branch_to_cursor_and_antigravity():
     html = TEMPLATE.read_text(encoding="utf-8")
     assert "data.runtime === 'cursor' || data.runtime === 'antigravity'" in html
     # Claude and Codex text stays reachable.
-    assert "run /token-optimizer" in html
+    assert "Run /token-optimizer" in html
     assert "~/.claude/_backups/skills-archived-DATE/" in html
     # The Manage skill and MCP controls are hidden for these runtimes.
     assert "!m.read_only && !isNoInstructionHost(data)" in html

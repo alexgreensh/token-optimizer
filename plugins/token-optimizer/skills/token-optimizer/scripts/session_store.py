@@ -30,6 +30,7 @@ import re
 import sqlite3
 import time
 import uuid
+import session_store_guard
 from pathlib import Path
 from typing import Any, Optional
 
@@ -221,10 +222,8 @@ class SessionStore(ResetEpochMixin):
         if self._conn is not None:
             return self._conn
         self._store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # Align the connect timeout (seconds) with the PRAGMA busy_timeout (ms)
-        # so the schema init AND later writes honor the same lock-wait budget.
         timeout_s = max(0.05, self._busy_timeout_ms / 1000.0)
-        self._conn = sqlite3.connect(str(self.db_path), timeout=timeout_s)
+        self._conn = session_store_guard.connect(self, timeout_s)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(f"PRAGMA busy_timeout={int(self._busy_timeout_ms)}")
         self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -509,8 +508,9 @@ class SessionStore(ResetEpochMixin):
             try:
                 self._conn.close()
             except Exception:
-                pass
+                return
             self._conn = None
+            session_store_guard.release(self)
 
     _cap_warned = False
 
@@ -1040,18 +1040,4 @@ def context_reset_at(session_id: str, snapshot_dir: Optional[Path] = None) -> fl
 
 def cleanup_old_stores(max_age_hours: int = CLEANUP_AGE_HOURS) -> int:
     """Delete session store DBs older than max_age_hours. Returns count deleted."""
-    if not SESSION_STORE_DIR.exists():
-        return 0
-    cutoff = time.time() - (max_age_hours * 3600)
-    deleted = 0
-    for db_file in SESSION_STORE_DIR.glob("*.db"):
-        try:
-            if db_file.stat().st_mtime < cutoff and not db_file.with_suffix(".db-wal").exists():
-                db_file.unlink()
-                for wal in (db_file.with_suffix(".db-wal"), db_file.with_suffix(".db-shm")):
-                    if wal.exists():
-                        wal.unlink()
-                deleted += 1
-        except OSError:
-            pass
-    return deleted
+    return session_store_guard.prune_old_stores(SESSION_STORE_DIR, time.time() - max_age_hours * 3600)

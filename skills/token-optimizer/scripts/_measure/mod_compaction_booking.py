@@ -199,7 +199,7 @@ def record(facade, event):
         if canonical:
             return {'ok': True, 'priced': True, 'duplicate': True, 'canonical_action_id': canonical}
     if (isinstance(event, dict) and (event.get('observed_manual') is True or event.get('observed_action') is True) and result.get('reason') in
-            ('usage-unavailable', 'cost-unavailable', 'cost-mismatch', 'cache-write-class-unavailable', 'model-unpriced',
+            ('invalid-token-delta', 'existing-compaction-credit', 'usage-unavailable', 'cost-unavailable', 'cost-mismatch', 'cache-write-class-unavailable', 'model-unpriced',
              'manual-boundary-unverified', 'receipt-unavailable')):
         if _observe(facade, event, result.get('reason')):
             return {'ok': True, 'priced': False, 'reason': result.get('reason')}

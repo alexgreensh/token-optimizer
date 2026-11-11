@@ -377,3 +377,12 @@ def test_confirmed_action_without_hook_evidence_is_unpriced(case):
     result = mod_compaction_booking.record(facade, dict(event, usage=None, observed_action=True))
     assert result['ok'] and not result['priced']
     assert mod_compaction_booking.summary(facade, '2025-01-01')['unpriced_events'] == 1
+
+
+@pytest.mark.parametrize("before,after", [(None, 5), (100, 100), (100, 110)])
+def test_confirmed_compaction_without_a_positive_delta_is_counted_unpriced(case, before, after):
+    from _measure import mod_compaction_booking
+    facade, _, event = case
+    result = mod_compaction_booking.record(facade, dict(event, before_tokens=before, after_tokens=after, observed_action=True))
+    assert result["ok"] and not result["priced"]
+    assert mod_compaction_booking.summary(facade, "2025-01-01")["unpriced_events"] == 1

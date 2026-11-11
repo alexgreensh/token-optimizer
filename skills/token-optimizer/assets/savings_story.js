@@ -329,22 +329,32 @@ function savingsTransformationHtml(data) {
 // with neither, the window grid is left out.
 function savingsLimitWindows(rw, ratio) {
   var f = savingsStoryFmt(), num = f.num;
-  var names = { five_hour: '5-hour limit', seven_day: 'weekly limit' };
+  var names = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
   function ok(w) {
     return w && w.used_pct != null && isFinite(Number(w.used_pct)) && Number(w.used_pct) >= 0 && Number(w.used_pct) <= 100;
   }
   var live = (Array.isArray(rw.windows) ? rw.windows : []).filter(ok), rows = live, stored = false;
   if (!rows.length) { rows = (Array.isArray(rw.last_known_windows) ? rw.last_known_windows : []).filter(ok); stored = rows.length > 0; }
   if (!rows.length) return '';
+  // One row per window: name, a bar (solid = used now, striped = without
+  // Token Optimizer) and the two numbers as stat blocks.
   var html = '<div class="st-limits">' + rows.map(function(w) {
     var used = num(w.used_pct), rawWithout = used * ratio;
-    var name = names[w.key] || ((w.label || 'window') + ' limit').toLowerCase();
-    var tail = ratio > 0
-      ? (rawWithout > 100
-        ? ' &middot; would be over your limit without Token Optimizer'
-        : ' &middot; would be <span class="st-limit__num">' + Math.round(rawWithout) + '%</span> without Token Optimizer')
+    var name = names[w.key] || ((w.label || 'window') + ' limit');
+    name = name.charAt(0).toUpperCase() + name.slice(1);
+    var over = ratio > 0 && rawWithout > 100;
+    var without = ratio > 0 ? Math.min(100, Math.round(rawWithout)) : 0;
+    var label = Math.round(used) + '% used now' + (ratio > 0 ? (over ? ', over the limit without Token Optimizer' : ', ' + without + '% without Token Optimizer') : '');
+    var stat = ratio > 0
+      ? (over
+        ? '<span class="st-limit__stat st-limit__stat--over">over the limit without Token Optimizer</span>'
+        : '<span class="st-limit__stat"><span class="st-limit__num">' + without + '%</span> without Token Optimizer</span>')
       : '';
-    return '<p class="st-limit"><span class="st-limit__used">' + Math.round(used) + '%</span> of your ' + esc(name) + ' used' + tail + '</p>';
+    return '<div class="st-limit"><span class="st-limit__name">' + esc(name) + '</span>' +
+      '<span class="st-limit__meter" role="img" aria-label="' + esc(label) + '">' +
+      (ratio > 0 ? '<span class="st-limit__ghost" style="width:' + without + '%"></span>' : '') +
+      '<span class="st-limit__fill" style="width:' + Math.round(used) + '%"></span></span>' +
+      '<span class="st-limit__stat"><span class="st-limit__used">' + Math.round(used) + '%</span> used now</span>' + stat + '</div>';
   }).join('') + '</div>';
   var ts = Number(rw.meter_ts);
   if (stored && isFinite(ts) && ts > 0) {

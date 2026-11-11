@@ -790,8 +790,13 @@ def test_limits_card_uses_transformation_ratio_and_puts_direct_measurement_in_fo
     s['before_after'] = ok_transformation()
     card = limits_card(story({'savings': s, 'runway': runway()}))
     assert '&asymp;14% more room in your limits' in card
-    assert '<span class="st-limit__used">17%</span> of your 5-hour limit used &middot; would be <span class="st-limit__num">19%</span> without Token Optimizer' in card
-    assert '<span class="st-limit__used">78%</span> of your weekly limit used &middot; would be <span class="st-limit__num">91%</span> without Token Optimizer' in card
+    five, week = card.split('<div class="st-limit">')[1:3]
+    assert '5-hour limit' in five and '<span class="st-limit__used">17%</span> used now' in five
+    assert '<span class="st-limit__num">19%</span> without Token Optimizer' in five
+    assert 'class="st-limit__ghost" style="width:19%"' in five and 'class="st-limit__fill" style="width:17%"' in five
+    assert 'Weekly limit' in week and '<span class="st-limit__used">78%</span> used now' in week
+    assert '<span class="st-limit__num">91%</span> without Token Optimizer' in week
+    assert 'aria-label="78% used now, 91% without Token Optimizer"' in week
     assert '2.7% more work per token' in card.split('<details')[1]
     assert 'counterfactual monthly cost divided by actual monthly cost' in card.split('<details')[1]
     assert 'class="st-limits__top"' in card and 'class="st-limits__bottom"' in card
@@ -803,7 +808,9 @@ def test_limits_card_uses_last_reading_and_caps_above_limit():
     r = runway(windows=[], meter_ts=1794376851,
                last_known_windows=[{'key': 'seven_day', 'used_pct': 98}])
     card = limits_card(story({'savings': s, 'runway': r}))
-    assert '98%</span> of your weekly limit used &middot; would be over your limit without Token Optimizer' in card
+    assert '98%</span> used now' in card
+    assert 'st-limit__stat--over">over the limit without Token Optimizer' in card
+    assert 'class="st-limit__ghost" style="width:100%"' in card
     assert 'Last reading, ' in card
 
 

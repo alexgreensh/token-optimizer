@@ -4456,12 +4456,11 @@ def _cleanup_checkpoints():
     if not checkpoints:
         return
 
-    for cp in checkpoint_retention.exclude_active_latest(_measure_facade._checkpoints_to_prune(checkpoints), checkpoints, _measure_facade.CLAUDE_DIR, _measure_facade._checkpoint_session):
+    for cp in checkpoint_retention.exclude_latest(_measure_facade._checkpoints_to_prune(checkpoints), checkpoints, _measure_facade._checkpoint_session, _measure_facade._checkpoint_has_restorable_body):
         try:
             cp["path"].unlink()
         except OSError:
             continue
-        # Also delete the sibling JSON sidecar if present.
         try:
             cp["path"].with_suffix(".json").unlink()
         except OSError:

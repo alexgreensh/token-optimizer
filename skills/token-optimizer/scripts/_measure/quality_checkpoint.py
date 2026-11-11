@@ -1,6 +1,7 @@
 """Validate and serialize the recovery state at a transcript boundary."""
 import hashlib
 import json
+import os
 from collections import Counter, deque
 
 
@@ -10,7 +11,7 @@ def _anchor(handle, offset):
 
 
 def save(handle, offset, rec, **values):
-    stat = __import__('os').fstat(handle.fileno())
+    stat = os.fstat(handle.fileno())
     position = handle.tell()
     anchor = _anchor(handle, offset)
     handle.seek(position)
@@ -25,7 +26,7 @@ def save(handle, offset, rec, **values):
 
 def restore(handle, checkpoint):
     try:
-        stat = __import__('os').fstat(handle.fileno())
+        stat = os.fstat(handle.fileno())
         offset = int(checkpoint['offset'])
         if (offset < 0 or offset > stat.st_size or stat.st_dev != checkpoint['device']
                 or stat.st_ino != checkpoint['inode'] or _anchor(handle, offset) != checkpoint['anchor']):
@@ -159,7 +160,7 @@ def status_telemetry(path, previous=None):
 def restore_codex(handle, checkpoint):
     """Restore Codex state only while the underlying file prefix still matches."""
     try:
-        stat = __import__('os').fstat(handle.fileno())
+        stat = os.fstat(handle.fileno())
         offset = int(checkpoint['offset'])
         if (checkpoint.get('kind') != 'codex' or offset < 0 or offset > stat.st_size
                 or stat.st_dev != checkpoint['device'] or stat.st_ino != checkpoint['inode']

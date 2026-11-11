@@ -526,7 +526,7 @@ def test_paused_fire_never_invokes_injected_runner(m):
 
 def test_guarded_fork_is_disconnected_from_hooks_and_scheduler():
     scripts = REPO / 'skills' / 'token-optimizer' / 'scripts'
-    references = [p for p in scripts.rglob('*.py') if p.name != 'keepwarm_fork.py' and 'run_guarded' in p.read_text()]
+    references = [p for p in scripts.rglob('*.py') if 'run_guarded' in p.read_text(encoding='utf-8')]
     assert references == []
 
 

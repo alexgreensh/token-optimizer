@@ -328,3 +328,17 @@ def test_large_transcripts_counts_only_in_window_files_over_the_cap(tmp_path):
         os.utime(f, (then, then))
     assert large_transcripts.count(tmp_path, 30, limit=10) == {"unscanned_large_sessions": 1}
     assert large_transcripts.count(tmp_path / "missing", 30, limit=10) == {"unscanned_large_sessions": 0}
+
+
+def test_setup_rows_get_the_pricing_cards_the_step_uses(tmp_path, monkeypatch):
+    # A stepped trim priced without cards has calls but $0; the row path must pass them.
+    from _measure import setup_step, structural_report
+    seen = {}
+    monkeypatch.setattr(setup_step, "_MEMO", {})
+    monkeypatch.setattr(setup_step, "collect", lambda *a, **k: seen.setdefault("card_fn", a[3]) and {"steps": []})
+    db = tmp_path / "t.db"
+    db.write_bytes(b"")
+    setup_step.measured_epochs(db, tmp_path, None, card_fn=lambda m, t: {"cache_read": 0.3})
+    assert callable(seen["card_fn"])
+    src = Path(structural_report.__file__).read_text()
+    assert "measured_epochs(f.TRENDS_DB, f.SNAPSHOT_DIR, f.CLAUDE_DIR, value.card_resolver(f))" in src

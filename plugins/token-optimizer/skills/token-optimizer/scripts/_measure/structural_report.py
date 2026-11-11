@@ -87,7 +87,7 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
                 if t.get("origin") == "dated_archive" and t.get("listing_check") == "measured":
                     t["tier"] = "measured"
             from . import setup_step  # a visible first-call step proves the dated trim (W5, capped at its size)
-            stepped = setup_step.measured_epochs(f.TRENDS_DB, f.SNAPSHOT_DIR, f.CLAUDE_DIR)
+            stepped = setup_step.measured_epochs(f.TRENDS_DB, f.SNAPSHOT_DIR, f.CLAUDE_DIR, value.card_resolver(f))
             for t in trims:
                 if t.get("ts_epoch") in stepped and t["tier"] == "estimated":
                     t["tier"], t["step"] = "measured", stepped[t["ts_epoch"]]

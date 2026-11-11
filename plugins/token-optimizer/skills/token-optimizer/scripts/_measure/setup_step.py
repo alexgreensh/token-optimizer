@@ -163,7 +163,7 @@ def observe_step(rows, estimate):
 _MEMO = {}
 
 
-def measured_epochs(db_path, data_dir, claude_dir=None):
+def measured_epochs(db_path, data_dir, claude_dir=None, card_fn=None):
     """{trim epoch: {"share", "drop", "size", "carried"}} for each visible step: the capped drop,
     the trim group's size and the main-thread (ts_epoch, calls, rate) it was carried by.
     One scan per process and DB state."""
@@ -172,7 +172,7 @@ def measured_epochs(db_path, data_dir, claude_dir=None):
     except OSError:
         return {}
     if key not in _MEMO:
-        found = collect(db_path, data_dir, claude_dir, keep_carried=True)
+        found = collect(db_path, data_dir, claude_dir, card_fn, keep_carried=True)
         _MEMO[key] = {s["trim_epoch"]: {"share": min(1.0, s["drop_tokens"] / s["estimated_tokens"]),
                                         "drop": s["drop_tokens"], "size": s["estimated_tokens"],
                                         "carried": s.get("carried", [])}

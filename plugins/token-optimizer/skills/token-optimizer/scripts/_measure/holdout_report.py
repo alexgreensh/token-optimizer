@@ -33,7 +33,11 @@ def wilson(k, n, confidence=CONFIDENCE):
     denom = 1.0 + z2 / n
     center = (point + z2 / (2.0 * n)) / denom
     half = (z / denom) * math.sqrt(point * (1.0 - point) / n + z2 / (4.0 * n * n))
-    return point, max(0.0, center - half), min(1.0, center + half)
+    # At k == 0 the lower bound is exactly 0 and at k == n the upper bound is exactly 1; the two
+    # terms cancel only up to float rounding, which differs by platform (2.8e-17 on Linux and Windows).
+    low = 0.0 if k == 0 else max(0.0, center - half)
+    high = 1.0 if k == n else min(1.0, center + half)
+    return point, low, high
 
 
 def _quantile(sorted_values, q):

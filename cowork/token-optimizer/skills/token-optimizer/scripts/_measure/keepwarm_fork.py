@@ -61,12 +61,23 @@ def _recorded_parent(record):
             os.close(fd)
 
 
+def _posix_ptys():
+    import os
+    return os.name == 'posix'
+
+
 def run_guarded(record, cwd, executable, api_key, source_env, is_paused, timeout=60, forward=None):
     """Run a one-request fork; no model content reaches the CLI.
 
     This entry point is intentionally not enabled by the production gate until
     the cache hit and all safety checks are proven against a real API session.
     """
+    if not isinstance(api_key, str) or not api_key:
+        return {'ok': False, 'reason': 'api-key-unavailable'}
+    if not _posix_ptys():
+        # Before any POSIX-only import: `pty` needs `termios`, which Windows lacks, so importing it
+        # first made this refusal an ImportError instead of a reason.
+        return {'ok': False, 'reason': 'platform-unsupported'}
     import os
     import pty
     import select
@@ -75,10 +86,6 @@ def run_guarded(record, cwd, executable, api_key, source_env, is_paused, timeout
     import time
     from .keepwarm_guard_server import official_forward, server
 
-    if not isinstance(api_key, str) or not api_key:
-        return {'ok': False, 'reason': 'api-key-unavailable'}
-    if os.name != 'posix':
-        return {'ok': False, 'reason': 'platform-unsupported'}
     if str(source_env.get('TOKEN_OPTIMIZER_KEEPWARM', '1')).strip().lower() in ('0', 'false', 'no', 'off'):
         return {'ok': False, 'reason': 'kill-switch'}
     base = source_env.get('ANTHROPIC_BASE_URL', '')

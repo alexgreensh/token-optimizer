@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 
 import hook_provenance as hp
-import settings_owned
+import settings_backup
 
 _SHOWN = 110
 
@@ -69,7 +69,7 @@ def doctor_rows(facade):
             restores = [e for e in entries if e.get("action") == "restore"]
             if restores:
                 last = restores[-1]
-                line = last.get("notice") or settings_owned.restore_notice(last.get("restored_keys") or ["hooks"])
+                line = last.get("notice") or settings_backup.restore_notice(last.get("restored_keys") or [])
                 rows.append(("OK", "Settings self-heal",
                              f"{len(restores)} restore(s). Last: {line} at {last.get('timestamp', '?')[:19]}"))
             else:
@@ -86,7 +86,7 @@ def doctor_rows(facade):
 def health_lines(facade):
     """Lines for `measure.py health` (empty when there is nothing to say)."""
     found = unproven_hooks(facade)
-    restored = settings_owned.last_restore_line(facade)
+    restored = settings_backup.last_restore_line(facade)
     lines = ["", "SETTINGS SELF-HEAL", "  " + restored] if restored else []
     if not found:
         return lines

@@ -874,16 +874,16 @@ def classify_keepwarm_record(rec, now=None):
     except (TypeError, ValueError):
         armed_mtime = 0.0
 
-    from . import keepwarm_safety
-    if not keepwarm_safety.owner_alive(rec.get("owner")) or keepwarm_safety.ended_since(
-            _measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts):
-        return "gone"
     try:
         armed_size = int(rec["byte_size"])
     except (KeyError, TypeError, ValueError):
         return "gone"
     if cur_size != armed_size or cur_mtime != armed_mtime:
         return "resumed"
+    from . import keepwarm_safety
+    if not keepwarm_safety.owner_alive(rec.get("owner")) or keepwarm_safety.ended_since(
+            _measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts):
+        return "gone"
     return "still_paused"
 
 
@@ -2735,7 +2735,7 @@ def keepwarm_tick(now=None, dry_run=None, env=None, runner=None,
     booked_realized = 0
 
     allowed, reason = gate(env=env)
-    summary["reason"] = reason
+    summary["reason"] = reason; keepwarm_economics.reconcile_while_paused(_measure_facade, reason, now, dry_run)
     if not allowed:
         # Gate refusal is the silent-exit path (subscription / unconsented /
         # ping-process). Nothing loads, nothing fires. Still record ONE tick line

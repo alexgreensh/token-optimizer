@@ -167,3 +167,12 @@ def attempt_key(record):
 def already_attempted(rows, key):
     return not key or any(row.get('status') == 'firing' and row.get('attempt_key') == key
                           for row in rows)
+
+
+def reconcile_while_paused(facade, reason, now, dry_run):
+    if reason in ('negative-net', 'kill-switch', 'settings-disabled', 'consent-declined',
+                  'tripwire-off', 'live-resume-unverified', 'accounting-unavailable') and not dry_run:
+        try:
+            facade.keepwarm_detect_realized(now=now)
+        except Exception:
+            pass

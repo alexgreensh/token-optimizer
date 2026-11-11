@@ -98,3 +98,14 @@ def test_attempt_key_is_stable_for_same_pause_and_sequence():
     assert not already_attempted([{'status': 'ok', 'attempt_key': key}], key)
     record['pings_fired'] = [1234]
     assert attempt_key(record) != key
+
+
+def test_paused_reconciliation_never_launches_and_skips_ping_child():
+    from _measure.keepwarm_economics import reconcile_while_paused
+    seen = []
+    class Facade:
+        keepwarm_detect_realized = staticmethod(lambda now: seen.append(now))
+    reconcile_while_paused(Facade, 'kill-switch', 1, False)
+    reconcile_while_paused(Facade, 'ping-process', 2, False)
+    reconcile_while_paused(Facade, 'negative-net', 3, True)
+    assert seen == [1]

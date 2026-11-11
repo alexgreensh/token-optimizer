@@ -618,3 +618,28 @@ def test_keepwarm_toggle_hidden_on_unsupported_hosts(m, monkeypatch):
     monkeypatch.setattr(mod, 'detect_runtime', lambda: 'claude')
     monkeypatch.setattr(mod, '_normalized_platform', lambda: 'Windows')
     assert 'keepwarm' not in mod._get_v5_feature_status()
+
+
+def test_paused_negative_net_still_books_a_return(m, monkeypatch):
+    mod, _ = m
+    calls = []
+    monkeypatch.setattr(mod, 'keepwarm_detect_realized', lambda now: calls.append(now) or {'realized': 1})
+    monkeypatch.setattr(mod, '_keepwarm_emit_tick_observability', lambda **kwargs: None)
+    result = mod.keepwarm_tick(now=12345, dry_run=False, gate=lambda env: (False, 'negative-net'))
+    assert result['fired'] == 0
+    assert calls == [12345]
+
+
+def test_finished_parent_return_is_still_detected_for_accounting(m, monkeypatch, tmp_path):
+    from _measure import keepwarm_safety
+    mod, _ = m
+    transcript = _write_transcript(tmp_path, 7200)
+    stat = transcript.stat()
+    record = {'session_id': 'abc123', 'ts': time.time() - 100,
+              'transcript_path': str(transcript), 'transcript_mtime': stat.st_mtime,
+              'byte_size': stat.st_size, 'owner': {'pid': 123, 'start': 'fixture'}}
+    monkeypatch.setattr(keepwarm_safety, 'owner_alive', lambda owner: False)
+    assert mod.classify_keepwarm_record(record) == 'gone'
+    with transcript.open('a') as stream:
+        stream.write('{"type":"user"}\n')
+    assert mod.classify_keepwarm_record(record) == 'resumed'

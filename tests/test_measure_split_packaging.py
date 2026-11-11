@@ -20,7 +20,14 @@ def _tree_version():
 sys.path.insert(0, str(SCRIPTS))
 
 
-def test_cloud_payload_refuses_missing_domain(tmp_path):
+@pytest.mark.parametrize('missing', [
+    'skills/token-optimizer/scripts/_measure/pricing.py',
+    'skills/token-optimizer/scripts/_measure/transcript_stream.py',
+    'skills/token-optimizer/scripts/_measure/checkpoint_direction.py',
+    'skills/token-optimizer/scripts/_measure/checkpoint_retention.py',
+    'skills/token-optimizer/scripts/session_store_guard.py',
+])
+def test_cloud_payload_refuses_missing_domain(tmp_path, missing):
     import cloud_kit
     from _measure import RUNTIME_SOURCES
     for relative in cloud_kit._REQUIRED:
@@ -30,8 +37,8 @@ def test_cloud_payload_refuses_missing_domain(tmp_path):
     cloud_kit._validate_tree(tmp_path)
     package = tmp_path / 'skills/token-optimizer/scripts/_measure'
     assert all((package / name).is_file() for name in RUNTIME_SOURCES)
-    (package / 'pricing.py').unlink()
-    with pytest.raises(cloud_kit.KitError, match='pricing.py'):
+    (tmp_path / missing).unlink()
+    with pytest.raises(cloud_kit.KitError, match=Path(missing).name):
         cloud_kit._validate_tree(tmp_path)
 
 

@@ -2179,6 +2179,9 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     preserved_lines = _find_preserved_lines(cleaned)
     if not _summarizer_pattern:
         preserved_lines = preserved_lines | _find_distinctive_lines(cleaned)
+    from preserved_reinject import find_priority_lines, reinject
+    priority_lines = find_priority_lines(cleaned, _ERROR_STDERR_PATTERNS + _FOREIGN_ERROR_PATTERNS)
+    preserved_lines = preserved_lines | priority_lines
 
     # Detect pattern
     pattern = _detect_pattern(command_str)
@@ -2220,29 +2223,7 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     # defeats compression. The first N are re-injected; the full original
     # is already archived via progressive disclosure for retrieval.
     if preserved_lines:
-        _MAX_REINJECTED_LINES = max(1, min(20, len(compressed.splitlines()) // 5))
-        original_lines = cleaned.splitlines()
-        compressed_line_set = set(compressed.splitlines())
-        appended: list[str] = []
-        injected = 0
-        for line_idx in preserved_lines:
-            if injected >= _MAX_REINJECTED_LINES:
-                break
-            if line_idx < len(original_lines):
-                preserved_line = original_lines[line_idx]
-                if _summarizer_pattern and preserved_line.strip() in compressed:
-                    continue  # already carried by a summary line
-                if preserved_line not in compressed_line_set:
-                    appended.append(preserved_line)
-                    compressed_line_set.add(preserved_line)
-                    injected += 1
-        if appended:
-            if injected < len(preserved_lines):
-                appended.append(
-                    f"... {len(preserved_lines) - injected} more credential-bearing lines "
-                    f"archived in full original (retrieve via expand key) ..."
-                )
-            compressed = compressed + "\n" + "\n".join(appended)
+        compressed = reinject(compressed, cleaned, preserved_lines, priority_lines, _summarizer_pattern)
 
     try:
         from token_estimate import estimate_tokens as _est

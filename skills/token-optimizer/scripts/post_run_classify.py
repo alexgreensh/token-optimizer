@@ -211,7 +211,12 @@ def unsafe_compound_output(command: str) -> bool:
     if len(producers) == 2 and _literal_echo_boundary(producers) is not None:
         return False
     from bash_compress import _detect_pattern
-    from build_output_compress import classify as build_command, _command_eligible_for_shape_fallback
+    try:
+        from build_output_compress import classify as build_command, _command_eligible_for_shape_fallback
+    except ImportError:
+        # Closed-set payloads (Devin) do not ship the build classifier. A compound
+        # command that cannot be fully classified keeps its raw output.
+        return True
     return any(_detect_pattern(stmt) is not None or build_command(stmt)
                or _command_eligible_for_shape_fallback(stmt) for stmt in producers)
 

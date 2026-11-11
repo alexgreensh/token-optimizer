@@ -281,7 +281,12 @@ def snapshot(home, output):
         elif path.suffix not in ('.pyc',) and not path.name.endswith(('-wal', '-shm', '-journal')):
             dest = files / relative
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, dest)
+            if path.name.startswith('quality-cache') and path.suffix == '.json':
+                # Status telemetry pins the transcript by device and inode, which are
+                # properties of the machine's filesystem, not of the product's output.
+                dest.write_bytes(re.sub(rb'("device": )\d+(, "inode": )\d+', rb'\g<1>0\g<2>0', path.read_bytes()))
+            else:
+                shutil.copyfile(path, dest)
     (output / 'database.json').write_text(json.dumps(databases, ensure_ascii=False, default=repr) + '\n')
 
 

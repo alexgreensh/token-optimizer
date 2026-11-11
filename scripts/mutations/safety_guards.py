@@ -69,7 +69,7 @@ MUTATIONS += [
     ('search recovery 334 hook emits unarchived lossy previews',
      ['tests/test_posttooluse_bash_compress_hook.py::TestSearchRecovery334'],
      'skills/token-optimizer/scripts/bash_compress_hook.py',
-     [('        if _archive_key is None and _detect_pattern(command) == \"search_results\":\n            compressed = stdout\n', '')]),
+     [('        if _archive_key is None and _detect_pattern(compress_command) == \"search_results\":\n            compressed = stdout\n', '')]),
     ('search recovery 334 CLI emits unarchived lossy previews',
      ['tests/test_posttooluse_bash_compress_hook.py::TestSearchRecovery334::test_cli_search_without_archive_keeps_original'],
      'skills/token-optimizer/scripts/bash_compress.py',

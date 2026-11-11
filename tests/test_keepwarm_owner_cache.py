@@ -1,6 +1,8 @@
 """The Stop hook resolves the owning Claude process once per session, not per turn."""
 import os
 import sys
+
+import pytest
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'
@@ -15,6 +17,7 @@ def _counting_finder(monkeypatch, result):
     return calls
 
 
+@pytest.mark.skipif(os.name != 'posix', reason='keep-warm is POSIX-only: _pid_exists is False off POSIX, so no cached owner is ever reused')
 def test_live_owner_is_found_once_per_session(tmp_path, monkeypatch):
     owner = {'pid': os.getpid(), 'start': 'fixture-start'}
     calls = _counting_finder(monkeypatch, owner)

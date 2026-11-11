@@ -34,11 +34,13 @@ def _clean(parent):
 
 
 def publish(marker, now):
+    # A reset (/clear, compaction) is rare, so waiting up to 0.5 s for a competing writer is cheap; the old 50 ms
+    # dropped a reset whenever eight writers raced on a slow-fsync disk (Windows CI), losing the newest timestamp.
     marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     root = marker.parent.parent.parent / "session-store"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     stripe = hashlib.sha256(str(marker).encode("utf-8")).digest()[0] & 15
-    with _exclusive(root / (".context-reset-guard-%x" % stripe), timeout=0.05) as held:
+    with _exclusive(root / (".context-reset-guard-%x" % stripe), timeout=0.5) as held:
         if not held:
             return False
         _clean(marker.parent)

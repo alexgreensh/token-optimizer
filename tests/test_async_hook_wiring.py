@@ -84,10 +84,12 @@ EXPECTED_ASYNC = {
     # the Stop event. Same reasoning as the three legacy sync entries.
     ("Stop", None, "stop_runner.py"): False,
     # SessionEnd joins the stop_runner (same file, different hooks.json entry).
-    # It keeps async=true (host fire-and-forget): session-end-flush --trigger end
-    # --defer spawns a detached worker and returns immediately; the hook's stdout
-    # is never consumed and the work outlives the process.
-    ("SessionEnd", None, "stop_runner.py"): True,
+    # It is sync (not async) since keep-warm: the runner first writes the
+    # session-ended marker (keepwarm_safety.mark_ended) so the keep-warm tick can
+    # never ping an ended session. An async hook races the tick and the host may
+    # exit before the marker lands. The detached flush worker is still
+    # fire-and-forget; only the marker write is awaited (a single small file).
+    ("SessionEnd", None, "stop_runner.py"): False,
     ("StopFailure", None, "compact-capture --trigger stop-failure"): False,
     # The six UserPromptSubmit subcommands are consolidated into a
     # single dispatcher (hooks/userpromptsubmit_runner.py) that imports measure.py
@@ -185,8 +187,8 @@ def test_every_expected_hook_has_the_right_async_value():
     assert not missing, f"hooks.json no longer contains expected entries: {missing}"
 
 
-def test_total_async_count_is_three():
-    """Was seven, then six, now three.
+def test_total_async_count_is_two():
+    """Was seven, then six, then three, now two.
 
     The SessionStart consolidation dropped the `ensure-health --once-mark` async
     entry: its five subcommands now share ONE sync dispatcher and four of them
@@ -197,12 +199,15 @@ def test_total_async_count_is_three():
     dispatcher, and three of the six can never be async, so the group is sync.
     See the PostToolUse note in EXPECTED_ASYNC for what that changes.
 
-    The three that remain are all genuinely output-free and race-free:
-    PreToolUse `checkpoint-trigger`, PreCompact `compact-capture --trigger auto`,
-    and SessionEnd `session-end-flush`."""
+    SessionEnd `session-end-flush` then went sync with keep-warm: it must write
+    the session-ended marker before the host can exit, or the keep-warm tick
+    could ping an ended session.
+
+    The two that remain are genuinely output-free and race-free:
+    PreToolUse `checkpoint-trigger` and PreCompact `compact-capture --trigger auto`."""
     count = sum(1 for *_, is_async in _flatten(HOOKS_JSON) if is_async)
-    assert count == 3, (
-        f"expected exactly 3 async hook entries, found {count}. "
+    assert count == 2, (
+        f"expected exactly 2 async hook entries, found {count}. "
         "If you added or removed one intentionally, update this test and "
         "EXPECTED_ASYNC together."
     )

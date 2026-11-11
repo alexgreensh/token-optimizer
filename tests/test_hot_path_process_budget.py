@@ -252,8 +252,12 @@ def real_dispatch_runs(tmp_path_factory):
     for rnd in (1, 2):
         for i, (event, matcher, tail, _async) in enumerate(_hooks_json_entries()):
             log = tmp_path / f"spawns-{rnd}-{i}.jsonl"
-            proc, rows = _real_dispatch(tmp_path, tail, _payload(event, f"real-{rnd}", tmp_path),
-                                        log)
+            # Stop's steady state is a later turn of the SAME session: keep-warm
+            # resolves the owning Claude process once per session (a `ps` walk),
+            # so round 2 must reuse round 1's session to measure what every
+            # later turn pays. Other events keep a fresh session per round.
+            sid = "real-1" if event == "Stop" else f"real-{rnd}"
+            proc, rows = _real_dispatch(tmp_path, tail, _payload(event, sid, tmp_path), log)
             if rnd == 2:
                 results[i] = (event, matcher, tail, proc, rows)
     return results

@@ -1,5 +1,6 @@
 """Fail-closed liveness checks for paused Claude sessions."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -120,6 +121,61 @@ def find_owner(pid=None, lookup=process_info, eligibility=owner_eligible):
             return {'pid': pid, 'start': info['start']} if eligibility(pid) else None
         pid = info['ppid']
     return None
+
+
+_NO_OWNER_TTL = 300.0
+
+
+def _owner_cache_path(directory, session_id):
+    name = hashlib.sha256(str(session_id).encode('utf-8')).hexdigest()
+    return Path(directory) / ('keepwarm-owner-' + name)
+
+
+def _pid_exists(pid):
+    """Subprocess-free liveness; the tick re-verifies identity with owner_alive."""
+    if os.name != 'posix':
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def session_owner(directory, session_id, now=None):
+    """find_owner once per session, not once per Stop hook.
+
+    The owning Claude process is constant for a session, but find_owner walks the
+    process table with several `ps`/`lsof` children. A positive answer is reused
+    while the pid still exists; a negative one for _NO_OWNER_TTL seconds, so an
+    ineligible session does not re-run the walk on every turn. Fail closed: any
+    cache problem falls through to a fresh lookup.
+    """
+    now = time.time() if now is None else now
+    path = _owner_cache_path(directory, session_id) if session_id else None
+    if path is not None:
+        try:
+            cached = json.loads(path.read_text(encoding='utf-8'))
+            owner = cached.get('owner')
+            if isinstance(owner, dict) and owner.get('pid') and owner.get('start'):
+                if _pid_exists(owner['pid']):
+                    return owner
+            elif owner is None and 0 <= now - float(cached.get('ts')) < _NO_OWNER_TTL:
+                return None
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+    owner = find_owner()
+    if path is not None:
+        try:
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                json.dump({'owner': owner, 'ts': now}, stream)
+        except OSError:
+            pass
+    return owner
 
 
 def owner_alive(owner, lookup=process_info, eligibility=owner_eligible):

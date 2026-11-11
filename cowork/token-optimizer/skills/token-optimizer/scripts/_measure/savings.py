@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, baseline_provenance, own_price_card, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split, keepwarm_economics, upgrade_drain_control
+from . import _compat, baseline_provenance, own_price_card, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split, upgrade_drain_control
 
 def _counted_event_utc(ts):
     """Convert local event timestamps to UTC, respecting local DST."""
@@ -1343,7 +1343,7 @@ def _get_savings_summary(days=None, since=None):
     boundary (e.g. the subscription limit reset). When *since* is None / empty,
     the rolling cutoff is computed from *days* as before.
     """
-    _measure_facade = _compat.facade(); from . import mod_fresh_booking, mod_compaction_booking
+    _measure_facade = _compat.facade(); from . import keepwarm_economics, mod_fresh_booking, mod_compaction_booking
     try:
         conn = _measure_facade._init_trends_db()
         try:

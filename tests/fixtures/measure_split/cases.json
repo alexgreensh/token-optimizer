@@ -114,6 +114,7 @@
     "list-checkpoints",
     "mcp",
     "memory-review",
+    "mod-action",
     "pin-baseline",
     "plugin-cleanup",
     "pricing-tier",
@@ -157,7 +158,8 @@
   ],
   "post_base_commands": [
     "coverage-replay",
-    "file-refetch"
+    "file-refetch",
+    "mod-action"
   ],
   "dispatch_branches": [
     {
@@ -1181,14 +1183,6 @@
       ]
     },
     {
-      "line": 64798,
-      "expression": "args[0] == 'keepwarm-enable'",
-      "lhs": "args[0]",
-      "values": [
-        "keepwarm-enable"
-      ]
-    },
-    {
       "line": 64743,
       "expression": "a == '--trigger'",
       "lhs": "a",
@@ -2083,6 +2077,23 @@
       "values": [
         "--session"
       ]
+    },
+    {
+      "line": 63421,
+      "expression": "args[0] in ('keepwarm-enable', 'mod-action')",
+      "lhs": "args[0]",
+      "values": [
+        "keepwarm-enable",
+        "mod-action"
+      ]
+    },
+    {
+      "line": 63422,
+      "expression": "args[0] == 'mod-action'",
+      "lhs": "args[0]",
+      "values": [
+        "mod-action"
+      ]
     }
   ],
   "required_dispatch_cases": [
@@ -2638,48 +2649,6 @@
       "line": 64383
     },
     {
-      "expression": "args[0] in ('version', '--version', '-v')",
-      "argv": [
-        "version"
-      ],
-      "line": 64383
-    },
-    {
-      "expression": "args[0] in ('version', '--version', '-v')",
-      "argv": [
-        "--version"
-      ],
-      "line": 64383
-    },
-    {
-      "expression": "args[0] in ('version', '--version', '-v')",
-      "argv": [
-        "-v"
-      ],
-      "line": 64383
-    },
-    {
-      "expression": "args[0] in ('version', '--version', '-v')",
-      "argv": [
-        "version"
-      ],
-      "line": 64383
-    },
-    {
-      "expression": "args[0] in ('version', '--version', '-v')",
-      "argv": [
-        "--version"
-      ],
-      "line": 64383
-    },
-    {
-      "expression": "args[0] in ('version', '--version', '-v')",
-      "argv": [
-        "-v"
-      ],
-      "line": 64383
-    },
-    {
       "expression": "args[0] == 'daemon-consent'",
       "argv": [
         "daemon-consent"
@@ -2913,48 +2882,6 @@
       "line": 64638
     },
     {
-      "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
-      "argv": [
-        "inject-routing"
-      ],
-      "line": 64638
-    },
-    {
-      "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
-      "argv": [
-        "inject-coach"
-      ],
-      "line": 64638
-    },
-    {
-      "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
-      "argv": [
-        "setup-coach-injection"
-      ],
-      "line": 64638
-    },
-    {
-      "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
-      "argv": [
-        "inject-routing"
-      ],
-      "line": 64638
-    },
-    {
-      "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
-      "argv": [
-        "inject-coach"
-      ],
-      "line": 64638
-    },
-    {
-      "expression": "args[0] in ('inject-routing', 'inject-coach', 'setup-coach-injection')",
-      "argv": [
-        "setup-coach-injection"
-      ],
-      "line": 64638
-    },
-    {
       "expression": "'--confirm' not in args",
       "argv": [
         "cleanup",
@@ -3014,13 +2941,6 @@
       "line": 64680
     },
     {
-      "expression": "args[0] == 'setup-coach-injection'",
-      "argv": [
-        "setup-coach-injection"
-      ],
-      "line": 64690
-    },
-    {
       "expression": "args[0] == 'deterministic-candidates'",
       "argv": [
         "deterministic-candidates"
@@ -3070,13 +2990,6 @@
         "keepwarm-arm"
       ],
       "line": 64775
-    },
-    {
-      "expression": "args[0] == 'keepwarm-enable'",
-      "argv": [
-        "keepwarm-enable"
-      ],
-      "line": 64798
     },
     {
       "expression": "'--quiet' not in args",
@@ -3254,14 +3167,6 @@
       "line": 65028
     },
     {
-      "expression": "'--quiet' in args",
-      "argv": [
-        "keepwarm-scheduler",
-        "--quiet"
-      ],
-      "line": 64868
-    },
-    {
       "expression": "'--json' in args",
       "argv": [
         "keepwarm-forecast",
@@ -3321,20 +3226,6 @@
         "--new-session-only"
       ],
       "line": 65172
-    },
-    {
-      "expression": "args[0] in ('continue-last', 'codex-continue-last')",
-      "argv": [
-        "continue-last"
-      ],
-      "line": 65234
-    },
-    {
-      "expression": "args[0] in ('continue-last', 'codex-continue-last')",
-      "argv": [
-        "codex-continue-last"
-      ],
-      "line": 65234
     },
     {
       "expression": "args[0] in ('continue-last', 'codex-continue-last')",
@@ -3573,14 +3464,6 @@
       "line": 65427
     },
     {
-      "expression": "'--once-mark' in args",
-      "argv": [
-        "quality-cache",
-        "--once-mark"
-      ],
-      "line": 65452
-    },
-    {
       "expression": "sub == 'enable'",
       "argv": [
         "v5",
@@ -3787,14 +3670,6 @@
       "line": 65854
     },
     {
-      "expression": "'--once-per-session' in args",
-      "argv": [
-        "ensure-health",
-        "--once-per-session"
-      ],
-      "line": 65865
-    },
-    {
       "expression": "'--dry-run' in args",
       "argv": [
         "setup-quality-bar",
@@ -3824,14 +3699,6 @@
         "setup-vscode-extension"
       ],
       "line": 65906
-    },
-    {
-      "expression": "'--once-mark' in args",
-      "argv": [
-        "ensure-health",
-        "--once-mark"
-      ],
-      "line": 65867
     },
     {
       "expression": "'--uninstall' in args",
@@ -3878,20 +3745,6 @@
         "--json"
       ],
       "line": 65969
-    },
-    {
-      "expression": "args[0] in ('trends', 'savings')",
-      "argv": [
-        "trends"
-      ],
-      "line": 65981
-    },
-    {
-      "expression": "args[0] in ('trends', 'savings')",
-      "argv": [
-        "savings"
-      ],
-      "line": 65981
     },
     {
       "expression": "args[0] in ('trends', 'savings')",
@@ -4347,6 +4200,35 @@
         "file-refetch"
       ],
       "line": 63796
+    },
+    {
+      "expression": "args[0] in ('keepwarm-enable', 'mod-action')",
+      "argv": [
+        "keepwarm-enable"
+      ],
+      "line": 63421
+    },
+    {
+      "expression": "args[0] in ('keepwarm-enable', 'mod-action')",
+      "argv": [
+        "mod-action"
+      ],
+      "line": 63421
+    },
+    {
+      "expression": "args[0] == 'mod-action'",
+      "argv": [
+        "mod-action"
+      ],
+      "line": 63422
+    },
+    {
+      "expression": "'--limits-lab' in args",
+      "argv": [
+        "mod-action",
+        "--limits-lab"
+      ],
+      "line": 63428
     }
   ],
   "hooks": [
@@ -19098,6 +18980,50 @@
       "stdout": "cli-cursor-home---help/stdout",
       "stderr": "cli-cursor-home---help/stderr",
       "side_effects": "cli-cursor-home---help/effects.json"
+    },
+    {
+      "id": "cli-mod-action",
+      "entry": "cli",
+      "argv": [
+        "mod-action"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-mod-action/stdout",
+      "stderr": "cli-mod-action/stderr",
+      "side_effects": "cli-mod-action/effects.json"
+    },
+    {
+      "id": "cli-mod-action---json",
+      "entry": "cli",
+      "argv": [
+        "mod-action",
+        "--json"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-mod-action---json/stdout",
+      "stderr": "cli-mod-action---json/stderr",
+      "side_effects": "cli-mod-action---json/effects.json"
+    },
+    {
+      "id": "cli-mod-action---limits-lab",
+      "entry": "cli",
+      "argv": [
+        "mod-action",
+        "--limits-lab"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-mod-action---limits-lab/stdout",
+      "stderr": "cli-mod-action---limits-lab/stderr",
+      "side_effects": "cli-mod-action---limits-lab/effects.json"
     }
   ]
 }

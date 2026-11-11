@@ -341,7 +341,13 @@ def test_keepwarm_net_is_estimated_and_deducts_ping_cost(m):
 
 
 def test_default_gate_subscription_and_kill_switch(m, monkeypatch):
+    import sqlite3
     mod, _ = m
+    def empty_accounting(timeout):
+        conn = sqlite3.connect(':memory:')
+        conn.execute('CREATE TABLE savings_events (pause_key TEXT, event_type TEXT)')
+        return conn
+    monkeypatch.setattr(mod, '_open_trends_db_readonly', empty_accounting)
     monkeypatch.setattr(mod, 'keepwarm_consent', lambda: 'unasked')
     monkeypatch.setattr(mod, '_keepwarm_tripwire_off', lambda: False)
     monkeypatch.setattr(mod, 'keepwarm_billing_mode', lambda **kw: 'subscription')
@@ -393,9 +399,21 @@ def test_compaction_boundary_after_arm_invalidates_booking(tmp_path):
     assert keepwarm_safety.compacted_since(record)
 
 
-def test_warm_resume_books_net_estimate_once(m, tmp_path):
-    import sqlite3
+def test_ledger_append_persists_synthetic_row_without_lease_cleanup(m, monkeypatch):
+    from contextlib import nullcontext
     mod, _ = m
+    monkeypatch.setattr(mod, '_keepwarm_lock', lambda: nullcontext(True))
+    row = {'session_id': 'synthetic', 'status': 'ok', 'cost_usd': 0.05}
+    assert mod._keepwarm_ledger_append(row)
+    assert mod._keepwarm_load_ledger_rows() == [row]
+
+
+@pytest.mark.parametrize("parent_gone", [False, True])
+def test_warm_resume_books_net_estimate_once(m, tmp_path, monkeypatch, parent_gone):
+    import sqlite3
+    from contextlib import nullcontext
+    mod, _ = m
+    monkeypatch.setattr(mod, '_keepwarm_lock', lambda: nullcontext(True))
     transcript = _arm(m, tmp_path)
     rec = mod.load_keepwarm_records()[0]
     rec['prefix_proxy'] = 200000
@@ -405,6 +423,8 @@ def test_warm_resume_books_net_estimate_once(m, tmp_path):
                                        'status': 'ok', 'cost_usd': 0.05})
     with transcript.open('a') as stream:
         stream.write('{"type":"user","message":"resume"}\n')
+    if parent_gone:
+        monkeypatch.setattr(mod, 'classify_keepwarm_record', lambda *args, **kwargs: 'gone')
     stamp = datetime.fromtimestamp(rec['ts'] + 3, timezone.utc).isoformat()
     parse = lambda path: [{'timestamp': stamp, 'cache_read': 200000, 'cache_creation': 0}]
     result = mod.keepwarm_detect_realized(now=rec['ts'] + 5, records=[rec], parse_fn=parse)

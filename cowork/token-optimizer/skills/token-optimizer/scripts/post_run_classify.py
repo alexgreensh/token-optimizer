@@ -177,6 +177,25 @@ def _rewrite_effective(stmt: str) -> str | None:
     return text.strip() or None
 
 
+def unsafe_compound_output(command: str) -> bool:
+    """Avoid summarizing mixed search/test output with a single-output renderer."""
+    statements = _split_statements(command)
+    if statements is None:
+        return bool(re.search(r"\b(?:grep|rg|ag|ack|pytest|py\.test)\b", command))
+    producers = []
+    for statement in statements:
+        try:
+            tokens = shlex.split(statement)
+        except ValueError:
+            return True
+        if not _is_harmless(tokens):
+            producers.append(statement)
+    if len(producers) < 2:
+        return False
+    from bash_compress import _detect_pattern
+    return any(_detect_pattern(stmt) in ("search_results", "pytest") for stmt in producers)
+
+
 def classify(command: str) -> str | None:
     """Return the single effective command, or ``None``.
 

@@ -266,6 +266,17 @@ def _run(payload: dict) -> None:
             _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
         return
 
+    # A single renderer cannot safely separate output from multiple producers.
+    try:
+        from post_run_classify import unsafe_compound_output
+        if unsafe_compound_output(command):
+            _cov("not_read_only", "mixed_output", text=stdout)
+            if _nudge:
+                _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
+            return
+    except Exception:
+        return  # fail open on ambiguous output
+
     # Check pipeline read-only eligibility
     compress_command = command  # command used to pick a compressor
     _post_run_shadow = None  # effective command, shadow mode only

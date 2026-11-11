@@ -2153,13 +2153,16 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     patterns on stderr even with exit 0, return raw output verbatim. Never
     compress failure output — the user needs the full signal to debug.
     """
+    from post_run_classify import unsafe_compound_output
+    if unsafe_compound_output(command_str):
+        return raw_output
+
     if _looks_like_failure(returncode, stderr):
         return raw_output  # fail-open tee: full output, unchanged
 
     if not raw_output or len(raw_output) < 100:
         return raw_output  # too small to bother
 
-    # Strip ANSI codes (always safe)
     cleaned = _strip_ansi(raw_output)
 
     # PRE-compression token preservation scan (credentials + errors), plus
@@ -2183,7 +2186,6 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     priority_lines = find_priority_lines(cleaned, _ERROR_STDERR_PATTERNS + _FOREIGN_ERROR_PATTERNS)
     preserved_lines = preserved_lines | priority_lines
 
-    # Detect pattern
     pattern = _detect_pattern(command_str)
     if pattern is None:
         # Output-based detection: stack traces can appear from any command.
@@ -2212,11 +2214,7 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
         except Exception:
             return cleaned  # fail open
 
-    # Re-inject preserved lines that were stripped by compression.
-    # Uses exact-line membership (not substring) so a short preserved
-    # line that happens to be contained inside a longer compressed line
-    # is still emitted on its own rather than silently folded into the
-    # larger line.
+    # Re-injection checks exact lines, avoiding false substring matches.
     #
     # Cap at _MAX_REINJECTED_LINES: when a credential pattern appears on
     # most lines (e.g. grep for API keys), re-injecting all of them

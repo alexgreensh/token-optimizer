@@ -91,7 +91,7 @@ def _first_task_user_message(filepath):
                     rec = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
                     continue
-                if not isinstance(rec, dict) or rec.get("type") != "user":
+                if not isinstance(rec, dict) or rec.get("type") != "user" or rec.get("isSidechain"):
                     continue
                 text = _measure_facade._task_user_text(rec).strip()
                 if text:
@@ -174,7 +174,7 @@ def _extract_session_state(filepath, tail_lines=None):
     file_count = 0
 
     for record in tail:
-        if not isinstance(record, dict):
+        if not isinstance(record, dict) or record.get("isSidechain"):
             continue
         rec_type = record.get("type")
 

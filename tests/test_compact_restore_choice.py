@@ -88,8 +88,9 @@ def _restore(home, project, tpath, log) -> str:
 
 def _active_task(ctx: str) -> str:
     lines = ctx.splitlines()
-    i = lines.index("## Active Task")
-    return lines[i + 1].strip()
+    heading = "## Current direction" if "## Current direction" in lines else "## Active Task"
+    i = lines.index(heading)
+    return lines[i + 1].removeprefix("- ").strip()
 
 
 @posix_only

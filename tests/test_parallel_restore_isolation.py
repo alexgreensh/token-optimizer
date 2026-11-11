@@ -1,7 +1,9 @@
 """Restore must never mistake a session-id substring for session ownership."""
 import importlib
 import json
+import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -59,29 +61,44 @@ def test_interleaved_parallel_sessions_restore_their_own_transcripts(tmp_path):
     home = consented_home(tmp_path)
     project = tmp_path / "project"
     project.mkdir()
+    git = ["git", "-C", str(project), "-c", "core.hooksPath=/dev/null"]
+    subprocess.run(git + ["init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(git + ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                          "commit", "--allow-empty", "-m", "fixture"], check=True, capture_output=True)
+    other = tmp_path / "other-worktree"
+    subprocess.run(git + ["worktree", "add", "-b", "other", str(other)], check=True, capture_output=True)
     log = tmp_path / "hook-errors.jsonl"
     sessions = []
     for n in range(3):
+        cwd = other if n == 1 else project
         sid = f"{n + 1:08d}-1111-4222-8333-444444444444"
-        path = transcript(project, home)
+        path = transcript(cwd, home)
         text = path.read_text().replace(SESSION_ID, sid).replace(
             "Please refactor the parser in app.py and add tests.", f"Distinct task number {n}")
         path = path.with_name(sid + ".jsonl")
-        path.write_text(text)
-        request = payload("PreCompact", None, path, project)
+        sidechain = {"type": "user", "isSidechain": True, "sessionId": sid,
+                     "uuid": "sidechain", "message": {"role": "user", "content": "Sidechain instruction not for parent"}}
+        path.write_text(text + json.dumps(sidechain) + "\n")
+        request = payload("PreCompact", None, path, cwd)
         request["session_id"] = sid
-        result = run_hook(hook_command("PreCompact", "compact-capture --trigger auto"), REPO,
-                          request, home, log)
-        assert result.returncode == 0, result.stderr
-        sessions.append((sid, path, n))
+        sessions.append((sid, path, n, cwd, request))
 
-    for sid, path, n in reversed(sessions):
-        request = payload("SessionStart", None, path, project)
+    def capture(session):
+        return run_hook(hook_command("PreCompact", "compact-capture --trigger auto"), REPO,
+                        session[4], home, log)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(capture, sessions))
+    assert all(result.returncode == 0 for result in results), [result.stderr for result in results]
+
+    for sid, path, n, cwd, _ in reversed(sessions):
+        request = payload("SessionStart", None, path, cwd)
         request.update(session_id=sid, source="compact")
         result = run_hook(hook_command("SessionStart"), REPO, request, home, log)
         assert result.returncode == 0, result.stderr
         context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
         assert f"Distinct task number {n}" in context
+        assert "Sidechain instruction not for parent" not in context
         assert all(f"Distinct task number {other}" not in context for other in range(3) if other != n)
         assert "Cross-session checkpoint" not in context
         request["source"] = "resume"

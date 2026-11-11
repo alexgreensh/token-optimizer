@@ -577,3 +577,44 @@ def test_windows_health_reports_keepwarm_unavailable(m, monkeypatch):
     health = mod.keepwarm_cache_health_block(days=30)
     assert health['state'] == 'platform-gap'
     assert 'Windows' in health['note']
+
+
+def test_keepwarm_settings_toggle_is_default_on_and_can_pause(m, monkeypatch):
+    mod, _ = m
+    assert mod.V5_FEATURES['keepwarm']['default'] is True
+    monkeypatch.setattr(mod, 'keepwarm_consent', lambda: 'enabled')
+    monkeypatch.setattr(mod, '_keepwarm_tripwire_off', lambda: False)
+    monkeypatch.setattr(mod, '_is_v5_feature_enabled', lambda name: name != 'keepwarm')
+    assert mod.keepwarm_gate(env={}) == (False, 'settings-disabled')
+
+
+def test_keepwarm_environment_kill_switch_stops_gate_and_ping(m):
+    mod, _ = m
+    env = {'TOKEN_OPTIMIZER_KEEPWARM': '0'}
+    assert mod.keepwarm_gate(env=env) == (False, 'kill-switch')
+    assert mod._keepwarm_llm_ping_disabled(env)
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_dashboard_toggle_persists_keepwarm_preference(m, monkeypatch, enabled):
+    mod, _ = m
+    monkeypatch.setattr(mod, '_keepwarm_enable_install_scheduler', lambda: 'paused')
+    monkeypatch.setattr(mod, 'keepwarm_tripwire_repromote', lambda: None)
+    assert mod._set_v5_feature('keepwarm', enabled)
+    assert mod._read_config_flag('v5_keepwarm', None) is enabled
+    assert mod.keepwarm_consent() == ('enabled' if enabled else 'declined')
+
+
+def test_keepwarm_legacy_opt_out_stays_off(m, monkeypatch):
+    mod, _ = m
+    monkeypatch.setattr(mod, '_resolve_feature_env', lambda name: None)
+    monkeypatch.setattr(mod, '_read_config_flag', lambda key, default=None: 'declined' if key == 'keepwarm_consent' else default)
+    assert not mod._is_v5_feature_enabled('keepwarm')
+    assert mod.keepwarm_consent() == 'declined'
+
+
+def test_keepwarm_toggle_hidden_on_unsupported_hosts(m, monkeypatch):
+    mod, _ = m
+    monkeypatch.setattr(mod, 'detect_runtime', lambda: 'claude')
+    monkeypatch.setattr(mod, '_normalized_platform', lambda: 'Windows')
+    assert 'keepwarm' not in mod._get_v5_feature_status()

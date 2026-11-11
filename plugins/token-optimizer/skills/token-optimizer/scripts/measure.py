@@ -6587,7 +6587,7 @@ _write_config_flag = _measure_compat.bind(_measure_providers['lifecycle']._write
 # This lets power users override via env, but persistent state lives in config.json
 # so dashboard toggles work without touching shell profiles.
 
-V5_FEATURES = {
+V5_FEATURES = {**_measure_providers['cache_policy'].keepwarm_economics.feature_settings(),
     "quality_nudges": {
         "env_var": "TOKEN_OPTIMIZER_QUALITY_NUDGES",
         "config_key": "v5_quality_nudges",

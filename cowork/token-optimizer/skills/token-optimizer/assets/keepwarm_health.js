@@ -14,6 +14,7 @@ function keepwarmHealthHtml(data) {
     'negative-net': '30-day net value is negative.',
     'accounting-unavailable': 'cost accounting is unavailable.',
     'kill-switch': 'the environment switch is off.',
+    'settings-disabled': 'keep-warm is off in settings.',
     'consent-declined': 'keep-warm is disabled in settings.',
     'tripwire-off': 'the safety tripwire stopped it.'
   };

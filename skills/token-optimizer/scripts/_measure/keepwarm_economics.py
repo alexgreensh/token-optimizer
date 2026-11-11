@@ -4,6 +4,22 @@ import hashlib
 import json
 
 
+def feature_settings():
+    return {'keepwarm': {'env_var': 'TOKEN_OPTIMIZER_KEEPWARM',
+            'config_key': 'v5_keepwarm', 'default': True,
+            'label': 'Keep-warm', 'what': 'Keeps a paused session cache warm when the expected return exceeds the ping cost.',
+            'value': 'Can avoid rebuilding cached context when you return.', 'impact_pct': 0,
+            'how': 'Runs only when the safety and cost checks pass.',
+            'risk': 'A ping uses plan limits or API credits.', 'risk_level': 'low', 'recommended': True}}
+
+
+def toggle(facade, enabled):
+    result = facade.keepwarm_enable() if enabled else facade.keepwarm_disable()
+    state = facade._read_config_flag('v5_keepwarm', None)
+    return bool(result[0] and state is bool(enabled) and
+                facade.keepwarm_consent() == ('enabled' if enabled else 'declined'))
+
+
 class GapHistory:
     """Index fully observed windows so replays do not rescan all transcripts."""
 

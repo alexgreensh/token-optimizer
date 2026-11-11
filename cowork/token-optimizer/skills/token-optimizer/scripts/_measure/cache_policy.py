@@ -955,7 +955,7 @@ def _keepwarm_llm_ping_disabled(env=None):
     env = _measure_facade.os.environ if env is None else env
     disabled = str(env.get("TOKEN_OPTIMIZER_KEEPWARM_DISABLE", "")).strip().lower()
     old = env.get(_measure_facade._KEEPWARM_ALLOW_LLM_PING_ENV)
-    return disabled in ("1", "true", "yes", "on") or (old is not None and str(old).strip().lower() in ("0", "false", "no", "off"))
+    return str(env.get("TOKEN_OPTIMIZER_KEEPWARM", "1")).strip().lower() in ("0", "false", "no", "off") or disabled in ("1", "true", "yes", "on") or (old is not None and str(old).strip().lower() in ("0", "false", "no", "off"))
 
 
 def _keepwarm_default_claude_json_path():
@@ -1053,7 +1053,6 @@ def keepwarm_billing_mode(env=None, claude_json_path=None, settings_path=None):
         claude_json_path = _measure_facade._keepwarm_default_claude_json_path()
     if settings_path is None:
         settings_path = _measure_facade._keepwarm_default_settings_path()
-    # Rung 1: env (env wins over config — a live key overrides a stale marker).
     if _measure_facade._keepwarm_env_says_api(env):
         return "api"
     # Rung 2: ~/.claude.json. A positive 'api' is decisive; a 'subscription'
@@ -1081,7 +1080,7 @@ def keepwarm_consent():
     Stored via _read_config_flag so it shares config.json's atomic surface.
     """
     _measure_facade = _compat.facade()
-    val = _measure_facade._read_config_flag(_measure_facade._KEEPWARM_CONSENT_KEY, "unasked")
+    val = _measure_facade._read_config_flag("v5_keepwarm", None); val = ("enabled" if val else "declined") if isinstance(val, bool) else _measure_facade._read_config_flag(_measure_facade._KEEPWARM_CONSENT_KEY, "unasked")
     if isinstance(val, str) and val in _measure_facade._KEEPWARM_CONSENT_STATES:
         return val
     return "unasked"
@@ -1097,7 +1096,7 @@ def _keepwarm_set_consent(value):
     _measure_facade = _compat.facade()
     if value not in _measure_facade._KEEPWARM_CONSENT_STATES:
         return None
-    _measure_facade._write_config_flag(_measure_facade._KEEPWARM_CONSENT_KEY, value)
+    _measure_facade._write_config_flag("v5_keepwarm" if value in ("enabled", "declined") else _measure_facade._KEEPWARM_CONSENT_KEY, value == "enabled" if value in ("enabled", "declined") else value)
     return value
 
 
@@ -1194,6 +1193,7 @@ def keepwarm_gate(env=None, claude_json_path=None, settings_path=None):
         return False, "ping-process"
     if _measure_facade._keepwarm_llm_ping_disabled(env):
         return False, "kill-switch"
+    if not _measure_facade._is_v5_feature_enabled("keepwarm"): return False, "settings-disabled"
     if _measure_facade.keepwarm_consent() == "declined":
         return False, "consent-declined"
     if _measure_facade._keepwarm_tripwire_off():

@@ -1,8 +1,13 @@
 # Changelog
 
-## [Unreleased]
+## [5.13.70] - 2026-11-11
 
-- Settings self-heal now keeps a secret-free backup of settings.json: `env`, key helpers, MCP `env`/`headers` and anything the credential detector flags are never stored or restored. Older copies in `settings_heal/` are cleaned on first run, every restore prints one line (and names what was not restored) and shows in doctor/health, and `TOKEN_OPTIMIZER_SETTINGS_HEAL=0` turns it off.
+- A Savings page you can read in five seconds: last 30 days, since install, tokens kept out of context, your transformation, and your usage limits as bars. Every figure says if it is measured or estimated and where its "before" came from.
+- Parallel sessions stay separate: each compaction restores its own work, and busy moments queue tracking writes instead of dropping them.
+- Keep warm, Clean up and Start fresh from the Claude Code mod now count in your savings, with their costs booked too.
+- Your transformation is priced at the models you actually use, so this figure changes after upgrading, in either direction.
+- Settings backup never stores secrets: `env`, key helpers, MCP `env`/`headers` and anything that looks like a credential are left out, old copies are scrubbed, and every restore is announced (`TOKEN_OPTIMIZER_SETTINGS_HEAL=0` turns it off).
+- Also: error lines in chained commands always reach the model; an honest context-quality score; "so far" labels while history updates after an upgrade; restores counted again; keep-warm accounting ships with automatic pings paused until they prove net savings.
 
 ## [5.13.69] - 2026-11-09
 

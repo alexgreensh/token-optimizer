@@ -18,11 +18,10 @@ pipeline: several commands, loops, heredocs, ``$(...)``, backticks, ``||``,
 background ``&``, subshells and brace groups.
 
 Modes (``TOKEN_OPTIMIZER_POST_RUN_CLASSIFY``):
-  ``shadow`` (default) -- compute what would be removed, log it at the
+  ``1`` / ``on`` (default) -- compress newly eligible results, log measured savings.
+  ``shadow``           -- compute what would be removed, log it at the
                           opportunity tier, change nothing the model sees.
-  ``1`` / ``on``       -- compress newly eligible results.
   ``0`` / ``off``      -- kill switch: the classifier is never consulted.
-Flipping the default to on is the one-line change to ``_DEFAULT_MODE``.
 
 Only the pattern-specific compressors in ``ALLOWED_PATTERNS`` may act on a
 newly eligible result. The generic fallback never does.
@@ -35,7 +34,7 @@ import re
 import shlex
 
 ENV_VAR = "TOKEN_OPTIMIZER_POST_RUN_CLASSIFY"
-_DEFAULT_MODE = "shadow"
+_DEFAULT_MODE = "on"
 
 ALLOWED_PATTERNS = frozenset({
     "git_diff", "search_results", "disk_stats", "pytest", "sqlite3", "ls",
@@ -54,7 +53,7 @@ _COMPOUND_WORDS = frozenset({
 
 
 def mode() -> str:
-    """Return ``on``, ``shadow`` or ``off`` from the env (default shadow)."""
+    """Return ``on``, ``shadow`` or ``off`` from the env (default on)."""
     raw = os.environ.get(ENV_VAR, "").strip().lower()
     if raw in ("0", "off", "false", "no"):
         return "off"

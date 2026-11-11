@@ -153,6 +153,36 @@ def _delivered(path, size, mtime):
         return False
 
 
+# Unsearched transcripts read on the spot per call, so a session indexed since
+# the last collect pass does not hold recent events back until the next one.
+_INLINE_FILES = 16
+_INLINE_BYTES = 256 * 1024 * 1024
+
+
+def _deliveries(path):
+    """[(session prefix, epoch seconds)] of every lean-resume marker delivered in
+    a transcript, or None when it cannot be read."""
+    out = []
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as stream:
+            for line in stream:
+                if 'Cold-resume lean (session ' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                att = obj.get('attachment') or {}
+                if obj.get('type') != 'attachment' or obj.get('isSidechain') or att.get('type') != 'hook_additional_context':
+                    continue
+                when = _epoch(obj.get('timestamp'))
+                if when is not None:
+                    out.extend((match.group(1).lower(), when) for match in _MARK.finditer(json.dumps(att)))
+    except OSError:
+        return None
+    return out
+
+
 def resolved(conn):
     """{event id: receiver session} for events with exactly one proven receiver.
 
@@ -170,8 +200,11 @@ def resolved(conn):
         single = {ident: next(iter(r)) for ident, r in candidates.items() if len(r) == 1}
         if not single:
             return {}
-        events = {ident: _epoch(stamp) for ident, stamp in conn.execute(
-            "SELECT id,timestamp FROM savings_events WHERE event_type='resume_lean'") if ident in single}
+        events, prefixes = {}, {}
+        for ident, stamp, sid in conn.execute(
+                "SELECT id,timestamp,COALESCE(session_uuid,session_id) FROM savings_events WHERE event_type='resume_lean'"):
+            if ident in single:
+                events[ident], prefixes[ident] = _epoch(stamp), str(sid or '')[:8].lower()
         single = {ident: receiver for ident, receiver in single.items() if ident in events}
         if not single:
             return {}
@@ -181,8 +214,8 @@ def resolved(conn):
             if generation in covered:
                 scans[path].append((size, mtime, covered[generation]))
         need = max(single)
-        unsearched = []  # (start day, mtime seconds, exact cover id, [(older scan mtime seconds, cover id)])
-        for _sid, path, start in _session_rows(conn):
+        unsearched = []  # (start day, mtime seconds, exact cover id, [(older scan mtime seconds, cover id)], path, receiver, size)
+        for sid, path, start in _session_rows(conn):
             try:
                 st = Path(path).stat()
             except OSError:
@@ -191,16 +224,33 @@ def resolved(conn):
             if exact >= need:
                 continue
             older = [(mtime / 1e9, top) for size, mtime, top in scans.get(path, ()) if size <= st.st_size and mtime < st.st_mtime_ns]
-            unsearched.append((start, st.st_mtime, exact, older))
-        out = {}
+            unsearched.append((start, st.st_mtime, exact, older, path, sid, st.st_size))
+        out, read, budget = {}, {}, [_INLINE_FILES, _INLINE_BYTES]
+
+        def second_delivery(path, size, sid, ident, when):
+            """True when this unsearched transcript holds, or may hold, a delivery
+            of the event to a different session. Reads it once, within a budget."""
+            if path not in read:
+                if budget[0] <= 0 or size > budget[1]:
+                    return True  # over budget: stay conservative until collect scans it
+                budget[0] -= 1
+                budget[1] -= size
+                read[path] = _deliveries(path)
+            found = read[path]
+            if found is None or when is None:
+                return True
+            return sid != single[ident] and any(
+                prefix == prefixes[ident] and abs(stamp - when) <= _MARGIN_S for prefix, stamp in found)
+
         for ident, receiver in single.items():
             when = events[ident]
-            for start, mtime_s, exact, older in unsearched:
+            for start, mtime_s, exact, older, path, sid, size in unsearched:
                 if exact >= ident or not _could_hold(start, mtime_s, when):
                     continue
                 if when is not None and any(top >= ident and when < seen - _MARGIN_S for seen, top in older):
                     continue  # only lines written well after the event are unread
-                break
+                if second_delivery(path, size, sid, ident, when):
+                    break
             else:
                 out[ident] = receiver
         return out

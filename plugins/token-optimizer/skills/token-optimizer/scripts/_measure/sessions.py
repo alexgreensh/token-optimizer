@@ -4485,7 +4485,7 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
     except Exception:
         pass
     try:
-        _measure_facade._pretool_anchor_step(budget_seconds=5.0)
+        _measure_facade._pretool_anchor_step(budget_seconds=3600.0 if drain == "full" else 5.0)
     except Exception:
         pass
 

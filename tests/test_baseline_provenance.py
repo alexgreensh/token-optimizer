@@ -464,3 +464,53 @@ def test_no_baseline_yet_reports_progress_instead_of_a_number(measure):
     result = mod._estimate_before_after_savings(days=30)
     assert result["reason"] == "insufficient_history" and result["monthly_savings_usd"] == 0.0
     assert result["baseline_building"]["sessions_needed"] == 30
+
+
+# ------------------------------------------------- no baseline yet: say so
+
+def _progress(building, reason="insufficient_history"):
+    ba = {"transformation_state": None, "monthly_savings_usd": 0.0, "reason": reason}
+    if building is not None:
+        ba["baseline_building"] = building
+    return _render("savingsTransformationHtml(data)", {"savings": {"before_after": ba}})
+
+
+def test_new_user_sees_baseline_progress_instead_of_a_missing_card():
+    html = _progress({"ready": False, "sessions_in_window": 12, "sessions_needed": 30,
+                      "early_window_days": 30, "days_left": 9})
+    assert "Building your baseline: 12 of 30 sessions, 9 days left." in html
+    assert "st-baseline-progress" in html and "st-transform" not in html and "$" not in html
+
+
+def test_progress_never_shows_more_sessions_than_needed_and_handles_one_day():
+    html = _progress({"ready": False, "sessions_in_window": 44, "sessions_needed": 30,
+                      "early_window_days": 30, "days_left": 1})
+    assert "30 of 30 sessions, 1 day left." in html
+
+
+def test_a_first_month_below_the_floor_is_stated_once_the_window_has_closed():
+    html = _progress({"ready": False, "sessions_in_window": 12, "sessions_needed": 30,
+                      "early_window_days": 30, "days_left": 0})
+    assert "Your first 30 days on record had 12 sessions. A stable baseline needs 30" in html
+    assert "Building your baseline" not in html
+
+
+@pytest.mark.parametrize("building, reason", [
+    (None, "insufficient_history"),
+    ({"ready": True, "sessions_in_window": 40, "sessions_needed": 30, "days_left": 0}, "insufficient_history"),
+    ({"ready": False, "sessions_in_window": 40, "sessions_needed": 30, "days_left": 0}, "insufficient_history"),
+    ({"sessions_in_window": "junk"}, "insufficient_history"),
+    ({"ready": False, "sessions_in_window": 12, "sessions_needed": 30, "days_left": 9}, "net_negative"),
+    ({"ready": False, "sessions_in_window": 12, "sessions_needed": 30, "days_left": 9}, "unsupported_billing"),
+])
+def test_progress_line_is_absent_without_a_real_building_state(building, reason):
+    assert _progress(building, reason) == ""
+
+
+def test_progress_line_comes_from_the_real_payload(measure):
+    mod, tmp = measure
+    _history(tmp, first_days_ago=5)
+    result = mod._estimate_before_after_savings(days=30)
+    html = _render("savingsTransformationHtml(data)", {"savings": {"before_after": result}})
+    # the window opens the day after the first session: 5 days x 2 sessions
+    assert "Building your baseline: 10 of 30 sessions, 25 days left." in html

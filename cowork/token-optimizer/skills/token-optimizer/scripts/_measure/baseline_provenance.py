@@ -206,6 +206,15 @@ def transformation(facade, baseline, weight_pool):
         cov.update(anchor=anchor, pending_anchor=pending,
                    mix_source="stated" if stated else ("measured" if share > 0 else "current_mix"))
         cov["lead"], cov["note"] = _transformation_copy(cov)
+        if cov["coverage"] in ("post_install", "partial"):
+            # The tool ran in the baseline month, so the comparison is with that
+            # month, never with a time before Token Optimizer.
+            unit = "request" if weight_pool else "session"
+            span = _span(cov)
+            cov["versus"] = "at your earliest month's cost per " + unit
+            cov["versus_label"] = "At your earliest month's cost per " + unit
+            cov["claim"] = ("At the cost per %s of your earliest tracked month%s, this period would "
+                            "cost you this much more." % (unit, " (%s)" % span if span else ""))
         cov["mix_note"] = {
             "stated": "stated by you (set-baseline)",
             "measured": "measured in your earliest tracked month",

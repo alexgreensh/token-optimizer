@@ -350,10 +350,13 @@ function savingsTransformationHtml(data) {
   // "now" side is not the user's spend: name the card and show the exact-card cost.
   var wp = ba.session_weight_pool || {}, fr = wp.flat_rates || null;
   var fixed = fr && has(fr.input) && has(fr.output) && has(fr.cache_read) && has(fr.cache_write);
-  var method = '<ul><li>Without Token Optimizer' + (fixed ? ', at the fixed price card' : '') + ': ' + savingsCents(ba.counterfactual_monthly_usd) + ' a month</li>' +
-    '<li>' + (fixed ? 'This period, at the same fixed price card' : 'What you actually spent') + ': ' + savingsCents(ba.actual_monthly_usd) + ' a month</li>' +
+  var own = fixed && wp.price_basis === 'own_prices';
+  var rate = function(v) { return '$' + Number(num(v).toFixed(2)); };
+  var method = '<ul><li>' + (prov.versus_label ? esc(prov.versus_label) : 'Without Token Optimizer') + (own ? ', at your current prices' : fixed ? ', at the fixed price card' : '') + ': ' + savingsCents(ba.counterfactual_monthly_usd) + ' a month</li>' +
+    '<li>' + (own ? 'This period, at your current prices' : fixed ? 'This period, at the same fixed price card' : 'What you actually spent') + ': ' + savingsCents(ba.actual_monthly_usd) + ' a month</li>' +
     '<li>Difference: ' + savingsCents(ba.monthly_savings_usd) + ' a month</li></ul>' +
-    (fixed ? '<p>Both sides are priced at one fixed card (per million tokens: $' + num(fr.input) + ' input, $' + num(fr.output) + ' output, $' + num(fr.cache_read) + ' cache read, $' + num(fr.cache_write) + ' cache write), so a price change between the two periods cannot count as a saving. These are dollars at that card, not your bill.' +
+    (own ? '<p>Both sides are priced at your own current prices (per million tokens: ' + rate(fr.input) + ' input, ' + rate(fr.output) + ' output, ' + rate(fr.cache_read) + ' cache read, ' + rate(fr.cache_write) + ' cache write, averaged over the models you ran this period), so a price change between the two periods cannot count as a saving.</p>'
+    : fixed ? '<p>Both sides are priced at one fixed card (per million tokens: $' + num(fr.input) + ' input, $' + num(fr.output) + ' output, $' + num(fr.cache_read) + ' cache read, $' + num(fr.cache_write) + ' cache write), so a price change between the two periods cannot count as a saving. These are dollars at that card, not your bill.' +
       (num(wp.engine_priced_actual_usd) > 0 ? ' At the prices of the models you actually used, this period comes to ' + savingsCents(wp.engine_priced_actual_usd) + ' at API rates.' : '') + '</p>' : '') +
     (prov.note ? '<p>' + esc(prov.note) + '</p>' : '') +
     (ba.before_mix_label ? '<p>' + (prov.mix_note ? 'Baseline model mix: ' + esc(ba.before_mix_label) + ', ' + esc(prov.mix_note) : 'Baseline mix before you installed: ' + esc(ba.before_mix_label)) + '. Now: ' + esc(ba.after_mix_label || 'your current mix') + '.</p>' : '') +
@@ -361,7 +364,7 @@ function savingsTransformationHtml(data) {
   return '<div class="card st-card st-transform">' +
     '<h2 class="st-h">Your transformation</h2>' +
     '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(ba.monthly_savings_usd) + '<span class="st-mega__per"> a month</span></span>' +
-      '</p><p class="st-lead">Without Token Optimizer, working the way you work now would cost you this much more, ' + against +
+      '</p><p class="st-lead">' + (prov.claim ? esc(prov.claim) : 'Without Token Optimizer, working the way you work now would cost you this much more, ' + against) +
     (share > 0 ? ' That is ' + share + '% of what this work would have cost.' : '') + '</p>' +
     f.fold('How this is calculated', method) +
     '</div>';
@@ -370,7 +373,10 @@ function savingsTransformationHtml(data) {
 // Limits with and without Token Optimizer: per window, the used share and what
 // it would be without. Live windows first, then the last stored meter reading;
 // with neither, the window grid is left out.
-function savingsLimitWindows(rw, ratio) {
+function savingsLimitWindows(rw, ratio, versus) {
+  // What the second number is measured against: a time without Token
+  // Optimizer, or (when it already ran in the baseline month) that month.
+  var vs = versus ? esc(versus) : 'without Token Optimizer';
   var f = savingsStoryFmt(), num = f.num;
   var names = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
   function ok(w) {
@@ -387,11 +393,11 @@ function savingsLimitWindows(rw, ratio) {
     name = name.charAt(0).toUpperCase() + name.slice(1);
     var over = ratio > 0 && rawWithout > 100;
     var without = ratio > 0 ? Math.min(100, Math.round(rawWithout)) : 0;
-    var label = Math.round(used) + '% used now' + (ratio > 0 ? (over ? ', over the limit without Token Optimizer' : ', ' + without + '% without Token Optimizer') : '');
+    var label = Math.round(used) + '% used now' + (ratio > 0 ? (over ? ', over the limit ' + vs : ', ' + without + '% ' + vs) : '');
     var stat = ratio > 0
       ? (over
-        ? '<span class="st-limit__stat st-limit__stat--over">over the limit without Token Optimizer</span>'
-        : '<span class="st-limit__stat"><span class="st-limit__num">' + without + '%</span> without Token Optimizer</span>')
+        ? '<span class="st-limit__stat st-limit__stat--over">over the limit ' + vs + '</span>'
+        : '<span class="st-limit__stat"><span class="st-limit__num">' + without + '%</span> ' + vs + '</span>')
       : '';
     return '<div class="st-limit"><span class="st-limit__name">' + esc(name) + '</span>' +
       '<span class="st-limit__meter" role="img" aria-label="' + esc(label) + '">' +
@@ -415,10 +421,11 @@ function savingsLimitsHtml(data) {
   var actual = num(ba.actual_monthly_usd), before = num(ba.counterfactual_monthly_usd);
   var ratio = ba.transformation_state === 'ok' && actual > 0 && before > actual ? before / actual : 0;
   var extra = ratio > 1 ? Math.round((1 - 1 / ratio) * 100) : 0;
-  var windows = savingsLimitWindows(rw, ratio);
+  var versus = (ba.baseline_provenance || {}).versus || '';
+  var windows = savingsLimitWindows(rw, ratio, versus);
   if (!extra && !windows) return '';
   var direct = num(rw.extra_work_pct);
-  var method = '<p>Your usage is a meter reading. The without-Token-Optimizer comparison is an estimate using the same before-and-after basis as your transformation: counterfactual monthly cost divided by actual monthly cost, multiplied by the used percentage and capped at 100%. Providers do not publish the exact weighting of usage limits.</p>' +
+  var method = '<p>Your usage is a meter reading. The ' + (versus ? 'comparison ' + esc(versus) : 'without-Token-Optimizer comparison') + ' is an estimate using the same before-and-after basis as your transformation: counterfactual monthly cost divided by actual monthly cost, multiplied by the used percentage and capped at 100%. Providers do not publish the exact weighting of usage limits.</p>' +
     (ratio ? '<p>' + savingsCents(before) + ' divided by ' + savingsCents(actual) + ' = &times;' + ratio.toFixed(2) + '.</p>' : '') +
     (direct > 0 ? '<p>Separately, directly measured savings imply about ' + direct + '% more work per token.</p>' : '');
   return '<div class="card st-card st-limits-card">' +

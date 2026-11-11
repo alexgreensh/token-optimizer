@@ -23,7 +23,9 @@ def test_historical_receiver_requires_unique_delivered_hook(tmp_path):
     extra = tmp_path / 'later.jsonl'
     extra.write_text('')
     conn.execute('INSERT INTO session_log VALUES (2, ?, ?)', ('other', str(extra)))
-    assert lr.resolved(conn) == {}
+    # A newly indexed transcript is read on the spot: it holds no second delivery,
+    # so the receiver stands without waiting for the next collect pass.
+    assert lr.resolved(conn) == {1: receiver}
     assert lr.collect(conn, convert, max_files=None)['scanned'] == 1
     assert lr.resolved(conn) == {1: receiver}
     # The receiver's own transcript growing cannot remove a delivered marker, and
@@ -72,12 +74,35 @@ def test_a_session_that_began_later_does_not_withdraw_a_proven_receiver(tmp_path
     assert lr.resolved(conn) == {1: RECEIVER}
 
 
-def test_an_unsearched_session_from_the_event_day_still_holds_the_event_back(tmp_path):
+def test_an_unsearched_session_from_the_event_day_is_read_before_it_can_hold_anything_back(tmp_path):
     conn = _ledger(tmp_path)
-    _add_session(conn, tmp_path, 2, 'same-day', '2026-01-01')
-    assert lr.resolved(conn) == {}
+    _add_session(conn, tmp_path, 2, 'same-day', '2026-01-01', 'no marker here\n')
+    assert lr.resolved(conn) == {1: RECEIVER}  # no collect pass needed
     assert lr.collect(conn, CONVERT.__func__, max_files=None)['scanned'] == 1
     assert lr.resolved(conn) == {1: RECEIVER}
+
+
+def test_an_unsearched_second_delivery_is_caught_before_any_collect_pass(tmp_path):
+    conn = _ledger(tmp_path)
+    _add_session(conn, tmp_path, 2, 'twin', '2026-01-01', _marker('2026-01-01T10:01:00Z'))
+    assert lr.resolved(conn) == {}
+
+
+def test_beyond_the_inline_read_budget_an_unsearched_session_holds_the_event_back(tmp_path, monkeypatch):
+    conn = _ledger(tmp_path)
+    _add_session(conn, tmp_path, 2, 'same-day', '2026-01-01', 'no marker here\n')
+    monkeypatch.setattr(lr, '_INLINE_FILES', 0)
+    assert lr.resolved(conn) == {}
+    monkeypatch.setattr(lr, '_INLINE_FILES', 16)
+    monkeypatch.setattr(lr, '_INLINE_BYTES', 1)
+    assert lr.resolved(conn) == {}
+
+
+def test_an_unreadable_unsearched_session_holds_the_event_back(tmp_path, monkeypatch):
+    conn = _ledger(tmp_path)
+    _add_session(conn, tmp_path, 2, 'same-day', '2026-01-01', 'x\n')
+    monkeypatch.setattr(lr, '_deliveries', lambda path: None)
+    assert lr.resolved(conn) == {}
 
 
 def test_a_second_receiver_makes_the_event_ambiguous(tmp_path):

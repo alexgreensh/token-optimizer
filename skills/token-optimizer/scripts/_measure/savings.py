@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, baseline_provenance, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split
+from . import _compat, baseline_provenance, own_price_card, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split
 
 def _counted_event_utc(ts):
     """Convert local event timestamps to UTC, respecting local DST."""
@@ -4522,48 +4522,8 @@ def _price_parent_window(conn, where, params, tier):
 
 
 def _price_parent_rows(rows, tier, api_calls_unknown=None):
-    _measure_facade = _compat.facade()
-    if not rows:
-        return None
-    default_model = _measure_facade._default_model_for_runtime()
-    fr = _measure_facade._WEIGHT_POOL_FLAT_RATES
-    usd = 0.0
-    flat_usd = 0.0
-    tokens = 0.0
-    api_calls = 0
-    messages = 0
-    for r in rows:
-        fi, cw, cr, out = _measure_facade._session_token_vector(r[:5])
-        tokens += fi + cw + cr + out
-        flat_usd += (fi * fr["input"] + out * fr["output"]
-                     + cr * fr["cache_read"] + cw * fr["cache_write"]) / 1_000_000
-        api_calls += int(r[7] or 0)
-        messages += int(r[8] or 0)
-        usage = _measure_facade._safe_json_dict(r[5]) or _measure_facade._safe_json_dict(r[6]) or {}
-        grand = sum(int(v or 0) for v in usage.values() if v)
-        if len(r) > 9 and _measure_facade._safe_json_dict(r[9]):
-            cost = _measure_facade._cost_from_model_breakdown(_measure_facade._safe_json_dict(r[9]), tier=tier)
-        elif grand > 0:
-            # Share denominator is the session TOTAL, so an unpriced (non-Claude, local)
-            # model is proxy-priced at the runtime default rather than letting a small
-            # priced sliver stand for the whole session. Same rule as _cost_per_session.
-            cost = 0.0
-            for model, toks in usage.items():
-                share = int(toks or 0) / grand
-                if share <= 0:
-                    continue
-                cost += share * _measure_facade._get_model_cost(
-                    model if _measure_facade._is_priced_model(model, tier) else default_model,
-                    int(fi), int(out), int(cr), int(cw), tier=tier)
-        else:
-            cost = _measure_facade._get_model_cost(default_model, int(fi), int(out), int(cr), int(cw),
-                                   tier=tier)
-        usd += cost
-    return {"sessions": len(rows), "usd": usd, "tokens": tokens,
-            "flat_usd": flat_usd, "api_calls": api_calls, "messages": messages,
-            # Sessions whose dated per-day call evidence was never recorded.
-            # api_calls is then a lower bound, not a measured total.
-            "api_calls_unknown": int(api_calls_unknown or 0)}
+    """Sum parent rows: engine-priced and fixed-card USD, class tokens, work units."""
+    return own_price_card.price_rows(_compat.facade(), rows, tier, api_calls_unknown)
 
 
 def _pinned_workload_anchor():
@@ -4605,64 +4565,9 @@ def _pretool_window():
 
 
 def _pretool_anchor_step(budget_seconds=None, tier=None):
-    """Build the pinned pre-install anchor a few transcripts at a time.
-
-    The ledger keeps a rolling window, so the months before install age out of
-    it; their transcripts usually remain on disk. Each call prices up to
-    `budget_seconds` of them with the same ruler as the live pool and banks
-    running sums, then pins the result once the window is done. A window with
-    too few surviving transcripts is marked unavailable, so the check stops.
-    Returns the state string. Never raises.
-    """
-    _measure_facade = _compat.facade()
-    path = _measure_facade.SNAPSHOT_DIR / _measure_facade._PRETOOL_ANCHOR_FILE
-    try:
-        state = _measure_facade.json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        if not isinstance(state, dict) or state.get("activity_basis") != 1:
-            # State written before activity dating (or surviving an archive
-            # collision) was computed on session-date windows; rebuild it.
-            state = {}
-        if state.get("status") in ("pinned", "unavailable"):
-            return state["status"]
-        window = _measure_facade._pretool_window()
-        if not window:
-            return "no_baseline"
-        if tier is None:
-            tier = _measure_facade._load_pricing_tier()
-        start, end = window
-        if state.get("window") != [start, end] or state.get("rates") != _measure_facade._WEIGHT_POOL_FLAT_RATES:
-            state = {"status": "building", "window": [start, end], "rates": _measure_facade._WEIGHT_POOL_FLAT_RATES,
-                     "activity_basis": 1, "cursor": 0, "seen": [],
-                     "metrics": {"sessions": 0, "usd": 0.0, "tokens": 0.0, "flat_usd": 0.0,
-                                 "api_calls": 0, "messages": 0}}
-        files = sorted(str(f) for f, _mtime, _proj in _measure_facade._find_all_jsonl_files(None))
-        seen = set(state["seen"])
-        deadline = _measure_facade.time.monotonic() + budget_seconds
-        cursor = int(state.get("cursor") or 0)
-        while cursor < len(files) and _measure_facade.time.monotonic() < deadline:
-            fp = files[cursor]
-            cursor += 1
-            uuid = _measure_facade._canonical_session_uuid(fp) or fp
-            if uuid in seen:
-                continue  # another copy of a session already priced
-            seen.add(uuid)
-            row = _measure_facade._pretool_session_row(fp, start, end, state.setdefault("requests", {}))
-            priced = _measure_facade._price_parent_rows([row], tier) if row else None
-            if priced:
-                for k in state["metrics"]:
-                    state["metrics"][k] += priced[k]
-        state["cursor"], state["seen"] = cursor, sorted(seen)
-        if cursor >= len(files):
-            m = state["metrics"]
-            ok = m["sessions"] >= _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS and m["api_calls"] > 0 and m["flat_usd"] > 0
-            state = {"status": "pinned" if ok else "unavailable", "window": [start, end],
-                     "rates": _measure_facade._WEIGHT_POOL_FLAT_RATES, "activity_basis": 1, "metrics": m,
-                     "label": f"your earliest tracked month ({start} to {end})",
-                     "pinned_at": _measure_facade.datetime.now().isoformat()}
-        _measure_facade._write_baseline_state(path, state)
-        return state["status"]
-    except Exception:
-        return "error"
+    """Build the pinned pre-install anchor a few transcripts at a time
+    (see own_price_card.anchor_step). Returns the state string. Never raises."""
+    return own_price_card.anchor_step(_compat.facade(), budget_seconds, tier)
 
 
 def _pretool_session_row(filepath, start, end, ledger):
@@ -4706,6 +4611,8 @@ def _stable_workload_anchor(before, month):
                             for k in ("sessions", "usd", "tokens", "flat_usd", "api_calls", "messages"))
                     and metrics["sessions"] >= _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS
                     and metrics["api_calls"] > 0 and metrics["flat_usd"] > 0):
+                if own_price_card.lend_classes(metrics, before if str(frozen["month"]) == month else None):
+                    _measure_facade._write_baseline_state(path, frozen)
                 return metrics, str(frozen["month"])
         if (before and before["sessions"] >= _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS
                 and before["api_calls"] > 0 and before["flat_usd"] > 0):
@@ -4865,6 +4772,11 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
         b_n, b_usd, b_tok = before["sessions"], before["usd"], before["tokens"]
         n_n, n_usd, n_tok = now["sessions"], now["usd"], now["tokens"]
         b_flat, n_flat = before["flat_usd"], now["flat_usd"]
+        # One card for both periods: the user's own current prices when both arms
+        # carry class sums, else the fixed card (an older pinned baseline).
+        own = own_price_card.apply(_measure_facade, before, now, days or 30)
+        if own:
+            b_flat, n_flat = own["before_usd"], own["now_usd"]
         if (b_n < _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS
                 or n_n < _measure_facade._AFTER_MIN_SESSIONS or b_usd <= 0 or b_flat <= 0):
             return None
@@ -4971,7 +4883,7 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
             "coverage": now.get("coverage"),
             "engine_priced_transformation_usd": engine_transformation,
             "engine_priced_actual_usd": n_usd,
-            "price_mix_drift_usd": price_mix_drift,
+            "price_mix_drift_usd": price_mix_drift, "price_card": own,
             "capacity_assumption": capacity_note,
             # Sessions in each window whose dated per-day call evidence was never
             # recorded; api_calls above is a lower bound when either is nonzero.
@@ -5098,7 +5010,7 @@ def _weight_pool_payload(pool):
             float(pool.get("engine_priced_transformation_usd", 0.0)), 2),
         "engine_priced_actual_usd": round(
             float(pool.get("engine_priced_actual_usd", 0.0)), 2),
-        "price_mix_drift_usd": round(float(pool.get("price_mix_drift_usd", 0.0)), 2), "flat_rates": dict(_measure_facade._WEIGHT_POOL_FLAT_RATES),
+        "price_mix_drift_usd": round(float(pool.get("price_mix_drift_usd", 0.0)), 2), "flat_rates": dict((pool.get("price_card") or {}).get("rates") or _measure_facade._WEIGHT_POOL_FLAT_RATES), "price_basis": "own_prices" if pool.get("price_card") else "fixed_card",
         "capacity_assumption": pool["capacity_assumption"],
     }
 

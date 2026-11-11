@@ -146,7 +146,7 @@ Token Optimizer sets `cleanupPeriodDays=99999` in the host platform's `settings.
 
 ## Settings Self-Heal
 
-If `settings.json` is reset, Token Optimizer can put back its own entries. It keeps a private copy (`~/.claude/token-optimizer/settings_heal/`, owner-only) of only what it wrote: `cleanupPeriodDays`, its `statusLine`, its own hook entries and its `compactInstructions` block. It never copies or restores `env`, API keys, `apiKeyHelper`, `permissions`, MCP servers, plugin settings or other tools' hooks. A restore prints one line and shows in `doctor`/`health`. Older full copies in that folder are cut down to those entries on the first run of 5.13.70. Set `TOKEN_OPTIMIZER_SETTINGS_HEAL=0` to turn the snapshot and restore off.
+Token Optimizer keeps a secret-free backup of your `settings.json` (`~/.claude/token-optimizer/settings_heal/`, owner-only) so it can undo an accidental wipe. It is never stored: `env`, `apiKeyHelper` and the other credential helpers, any key named like a token, secret, key, password or auth, MCP server `env` and `headers`, and any value the credential detector flags. Restores only fill in what is missing, never write back a removed secret, print one line saying what was restored and what was not (for example "env was not restored"), and show in `doctor`/`health`. Backups made by older versions are cleaned the same way on the first run of 5.13.70. Set `TOKEN_OPTIMIZER_SETTINGS_HEAL=0` to turn the backup and restore off.
 
 ## Subagent Prompt-Cache Setting
 

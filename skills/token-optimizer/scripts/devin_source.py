@@ -50,6 +50,8 @@ REPO_MODULES = frozenset((
     # Added by the 5.13.69 merges (pristine, codemap, quiet, coverage).
     'archive_verify', 'codemap', 'codemap_hint', 'codemap_index', 'codemap_ledger', 'codemap_reread',
     'coverage_funnel', 'hint_paths', 'holdout', 'post_run_classify', 'large_transcripts', 'preserved_reinject', 'session_store_guard',
+    # Added by 5.13.70 (settings self-heal keeps only owned keys).
+    'settings_owned',
 ))
 
 class SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):

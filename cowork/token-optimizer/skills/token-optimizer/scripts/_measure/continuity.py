@@ -1,34 +1,17 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
+from . import _compat, transcript_stream
 
 
 def _iter_tail_lines(filepath, tail_lines, chunk_size=None):
-    """Return the tail lines of a JSONL transcript covering its last records.
+    """Read a suffix window for small logs, or the indexed tail for large logs.
 
-    Equivalent to what ``for line in open(filepath)`` yields, restricted to a
-    suffix window large enough that the caller's ``deque(maxlen=tail_lines)``
-    sees the same records as a whole-file pass: the window extends backwards
-    from EOF until it holds tail_lines lines that pass the caller's own
-    filters (size cap + json.loads), or the file start is reached. A large
-    transcript then costs a small window read instead of reading and parsing
-    every byte. The window grows geometrically, so even a transcript whose
-    tail needs most of the file costs about one extra pass, not a rescan per
-    chunk.
-
-    Two equivalence details:
-
-    - Lines come from ``StringIO(text, newline=None)``, which iterates with
-      the same universal-newline semantics as text-mode file iteration, so
-      the caller's ``len(line)`` cap and ``json.loads`` see identical
-      strings.
-    - A window starting mid-file can cut inside a line (and inside a
-      multi-byte UTF-8 sequence, where ``errors="replace"`` would diverge
-      from a whole-file decode), so its first line is dropped and the window
-      must hold tail_lines valid records without it. At byte 0 the window is
-      the whole file and nothing is dropped.
+    Small-log windows retain universal-newline semantics and discard a leading
+    partial line. Indexed tails never grow a raw buffer to the source-file size.
     """
     _measure_facade = _compat.facade()
+    if _measure_facade.Path(filepath).stat().st_size > transcript_stream.LARGE_BYTES:
+        return transcript_stream.tail_lines(filepath, tail_lines)
     with open(filepath, "rb") as f:
         f.seek(0, _measure_facade.os.SEEK_END)
         pos = f.tell()
@@ -178,11 +161,6 @@ def _extract_session_state(filepath, tail_lines=None):
 
     # Use deque to only keep the tail in memory (avoids loading entire file)
     records = _measure_facade.deque(maxlen=tail_lines)
-    try:
-        if _measure_facade.os.stat(filepath).st_size > _measure_facade.codex_session.MAX_PARSE_FILE_BYTES:
-            return None
-    except OSError:
-        return None
     try:
         for line in _measure_facade._iter_tail_lines(filepath, tail_lines):
             if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:

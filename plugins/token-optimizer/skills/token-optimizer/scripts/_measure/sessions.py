@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
+from . import _compat, transcript_stream
 
 
 def _find_all_jsonl_files(days=None):
@@ -82,15 +82,8 @@ def _extract_skills_and_agents_from_subagent(filepath):
     skills = {}
     subagents = {}
     try:
-        if _measure_facade.os.stat(filepath).st_size > _measure_facade.codex_session.MAX_PARSE_FILE_BYTES:
-            return skills, subagents
-    except OSError:
-        return skills, subagents
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        with transcript_stream.open_transcript(filepath) as f:
             for line in f:
-                if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:
-                    continue
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
@@ -220,16 +213,8 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=None):
     pending_prompt = None
 
     try:
-        if _measure_facade.os.stat(jsonl_path).st_size > _measure_facade.codex_session.MAX_PARSE_FILE_BYTES:
-            return prompts
-    except OSError:
-        return prompts
-
-    try:
-        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        with transcript_stream.open_transcript(jsonl_path) as f:
             for line in f:
-                if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:
-                    continue
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
@@ -577,8 +562,8 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
     _measure_facade = _compat.facade()
     try:
         st = _measure_facade.os.stat(filepath)
-        cache_key = (str(filepath), st.st_mtime_ns, st.st_size, window_start, window_end)
-        if cache_key in _measure_facade._parse_session_jsonl_cache:
+        cache_key = (str(filepath), st.st_mtime_ns, st.st_size, window_start, window_end) if st.st_size <= transcript_stream.LARGE_BYTES else None
+        if cache_key in _measure_facade._parse_session_jsonl_cache and not transcript_stream.needs_resume(filepath):
             return _measure_facade._parse_session_jsonl_cache[cache_key]
     except OSError:
         cache_key = None  # stat failed — parse without caching
@@ -625,18 +610,9 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
     is_sidechain = sidechain_reason is not None
     first_user_record_seen = False
 
-    # Bound the work like the Codex adapter's _iter_json_records: a multi-GB
-    # transcript or one pathological line must not dominate a parse. st is set
-    # when the initial os.stat above succeeded; skip oversized files outright
-    # and oversized lines individually.
-    if cache_key is not None and st.st_size > _measure_facade.codex_session.MAX_PARSE_FILE_BYTES:
-        return None
-
     try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        with transcript_stream.open_transcript(filepath) as f:
             for line in f:
-                if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:
-                    continue
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
@@ -1034,19 +1010,9 @@ def parse_session_turns(filepath):
     turn_by_key = {}
     parts_by_key = {}
 
-    # Bound the work like the Codex adapter's _iter_json_records (see
-    # _parse_session_jsonl): skip oversized files and oversized lines.
     try:
-        if _measure_facade.os.stat(filepath).st_size > _measure_facade.codex_session.MAX_PARSE_FILE_BYTES:
-            return turns
-    except OSError:
-        return turns
-
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        with transcript_stream.open_transcript(filepath) as f:
             for line in f:
-                if len(line) > _measure_facade.codex_session.MAX_JSONL_LINE_CHARS:
-                    continue
                 try:
                     record = _measure_facade.json.loads(line)
                 except _measure_facade.json.JSONDecodeError:
@@ -1409,8 +1375,12 @@ def _is_file_collected(conn, jsonl_path, check_mtime=None):
     try:
         collected = _measure_facade.datetime.fromisoformat(row[0]).timestamp()
         path = _measure_facade.Path(jsonl_path)
+        if path.stat().st_size > transcript_stream.LARGE_BYTES:
+            observed = conn.execute('SELECT transcript_mtime FROM session_log WHERE jsonl_path=?', (str(path),)).fetchone()
+            if observed and observed[0] != path.stat().st_mtime:
+                return False
         paths = [path, *_measure_facade._find_subagent_jsonl_files(path)]
-        return all(path.stat().st_mtime <= collected for path in paths)
+        return all(path.stat().st_mtime <= collected and not transcript_stream.needs_resume(path) for path in paths)
     except (OSError, TypeError, ValueError):
         return False
 

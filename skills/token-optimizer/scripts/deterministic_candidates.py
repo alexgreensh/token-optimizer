@@ -74,8 +74,6 @@ PROMPT_KEY_CHARS = 300
 MAX_CALLS_PER_SESSION = 5000
 INLINE_READ_CHARS = 8000
 PARTIAL_CACHE_TTL_S = 600
-MAX_PARSE_FILE_BYTES = 96 * 1024 * 1024
-MAX_JSONL_LINE_CHARS = 8 * 1024 * 1024
 _BIG_LINE_CHARS = 20000
 
 WITHHELD = "[example withheld: credential redactor unavailable]"
@@ -639,17 +637,11 @@ def _safe_int(value: Any) -> int:
 
 
 def _iter_lines(path: Path, deadline: float | None):
-    try:
-        if os.stat(path).st_size > MAX_PARSE_FILE_BYTES:
-            return
-    except OSError:
-        return
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    from _measure.transcript_stream import open_transcript
+    with open_transcript(path) as fh:
         for n, line in enumerate(fh):
             if deadline is not None and (n & 1023) == 0 and time.monotonic() >= deadline:
                 raise BudgetExceeded()
-            if len(line) > MAX_JSONL_LINE_CHARS:
-                continue
             yield line
 
 

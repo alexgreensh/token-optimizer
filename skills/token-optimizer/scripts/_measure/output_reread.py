@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 from bisect import bisect_left, bisect_right
 
-from . import _compat
+from . import _compat, transcript_stream
 
 # A control needs this many un-nudged boundaries before the pool is credited.
 MIN_CONTROL_SAMPLES = 30
@@ -80,11 +80,12 @@ def walk_requests(path):
     by_key, turn_at, seen_lines = {}, {}, 0
     last_prompt_tokens = 0
     try:
-        handle = open(path, "r", encoding="utf-8", errors="replace")
+        from .transcript_stream import open_transcript
+        handle = open_transcript(path)
     except OSError:
         return out
-    with handle:
-        for line in handle:
+    with handle as lines:
+        for line in lines:
             if '"assistant"' not in line and '"user"' not in line and "compact_boundary" not in line:
                 continue
             try:
@@ -154,7 +155,7 @@ def cached_walk(path, cache_dir):
         target = cache_dir / name
         try:
             saved = json.loads(target.read_text(encoding="utf-8"))
-            if saved["version"] == 1 and saved["identity"] == identity:
+            if saved["version"] == 1 and saved["identity"] == identity and not transcript_stream.needs_resume(path):
                 walk = saved["walk"]
                 walk["outputs"] = [(r[0], r[1], r[2], facade.datetime.fromisoformat(r[3]) if r[3] else None) for r in walk["outputs"]]
                 walk["turns"] = [(facade.datetime.fromisoformat(r[0]), *r[1:]) for r in walk["turns"]]
@@ -166,7 +167,7 @@ def cached_walk(path, cache_dir):
             pass
         walk = walk_requests(path)
         after = path.stat()
-        if identity == [after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns]:
+        if identity == [after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns] and not transcript_stream.needs_resume(path):
             cache_dir.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_dir, delete=False) as handle:
                 json.dump({"version": 1, "identity": identity, "walk": walk}, handle,

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 
 import hook_provenance as hp
+import settings_owned
 
 _SHOWN = 110
 
@@ -68,11 +69,9 @@ def doctor_rows(facade):
             restores = [e for e in entries if e.get("action") == "restore"]
             if restores:
                 last = restores[-1]
-                keys = ", ".join(last.get("restored_keys", [])[:5])
-                if len(last.get("restored_keys", [])) > 5:
-                    keys += f" (+{len(last['restored_keys']) - 5} more)"
+                line = last.get("notice") or settings_owned.restore_notice(last.get("restored_keys") or ["hooks"])
                 rows.append(("OK", "Settings self-heal",
-                             f"{len(restores)} restore(s), last: {keys} at {last.get('timestamp', '?')[:19]}"))
+                             f"{len(restores)} restore(s). Last: {line} at {last.get('timestamp', '?')[:19]}"))
             else:
                 rows.append(("OK", "Settings self-heal", "no restores needed"))
         else:
@@ -87,6 +86,8 @@ def doctor_rows(facade):
 def health_lines(facade):
     """Lines for `measure.py health` (empty when there is nothing to say)."""
     found = unproven_hooks(facade)
+    restored = settings_owned.last_restore_line(facade)
+    lines = ["", "SETTINGS SELF-HEAL", "  " + restored] if restored else []
     if not found:
-        return []
-    return ["", f"HOOKS LEFT ALONE ({len(found)})"] + ["  - " + describe(*entry) for entry in found]
+        return lines
+    return lines + ["", f"HOOKS LEFT ALONE ({len(found)})"] + ["  - " + describe(*entry) for entry in found]

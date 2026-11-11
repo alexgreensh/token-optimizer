@@ -117,6 +117,9 @@ def test_component_helper_is_pure_and_counts_only_rereads(measure):
         "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
         "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated",
         "hint_followed", "expand_overhead", "structural_estimated",
+        # Added by keep-warm and the mod actions; both are $0 in this fixture,
+        # so the sums below are unchanged.
+        "keepwarm_estimated", "mod_fresh_estimated",
     }
     assert sum(components["estimates_usd"].values()) == 59
     assert measure._action_savings_components({})["total_usd"] == 0

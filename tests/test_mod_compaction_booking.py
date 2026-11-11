@@ -18,8 +18,8 @@ def case(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home))
     monkeypatch.setenv('TOKEN_OPTIMIZER_SNAPSHOT_DIR', str(tmp_path / 'snap'))
     monkeypatch.setenv('TOKEN_OPTIMIZER_RUNTIME', 'claude')
-    import measure
-    facade = importlib.reload(measure)
+    sys.modules.pop('measure', None)
+    facade = importlib.import_module('measure')
     sid = '11111111-2222-4333-8444-555555555555'
     path = tmp_path / (sid + '.jsonl')
     boundary = {'type': 'system', 'subtype': 'compact_boundary', 'sessionId': sid, 'uuid': 'boundary-1',

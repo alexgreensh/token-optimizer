@@ -409,7 +409,10 @@ def test_advisor_keepwarm_books_executor_resume_once(m, monkeypatch, warm, flip_
     assert mod.keepwarm_resume_is_warm(turn, 500_000) is warm
     markers, bookings = [], []
     monkeypatch.setattr(mod, "classify_keepwarm_record", lambda *a, **kw: "resumed")
-    monkeypatch.setattr(mod, "_keepwarm_load_ledger_rows", lambda: markers)
+    # A warm resume is credited net of the pause's real ping spend, so the one
+    # ping this record fired needs its outcome row in the spend ledger.
+    ping_outcome = {"session_id": "advisor-session", "ts": arm_ts + 31, "status": "ok", "cost_usd": 0.05}
+    monkeypatch.setattr(mod, "_keepwarm_load_ledger_rows", lambda: [ping_outcome] + markers)
     monkeypatch.setattr(mod, "_keepwarm_ledger_append", lambda row: markers.append(row))
     def book(**kw):
         bookings.append(kw)
@@ -417,6 +420,10 @@ def test_advisor_keepwarm_books_executor_resume_once(m, monkeypatch, warm, flip_
     monkeypatch.setattr(mod, "_keepwarm_log_realized_savings", book)
     rec = {"session_id": "advisor-session", "ts": arm_ts,
            "transcript_path": str(path), "prefix_proxy": 500_000,
+           # Real arm records carry the transcript size at arm time; without it
+           # the compaction guard fails closed and books nothing. The resumed
+           # turn is the first thing appended after that offset.
+           "byte_size": 0,
            "model": "claude-sonnet-5-5", "pings_fired": [arm_ts + 30]}
     result = mod.keepwarm_detect_realized(now=arm_ts + 7200, records=[rec])
     assert result["realized"] == int(warm)

@@ -134,6 +134,8 @@ Each key below is one line in the report. All are priced at the window's input-r
 | `resume_lean_verified` | Receiver-verified reload and carry estimate, capped at the old session's compaction window and the receiver's next compaction. |
 | `checkpoint_restore_estimated` | Unverified restore estimate, excluded from totals. |
 | `structural_estimated` | Realized setup cleanup estimated from dated archives or owner-attested trims, priced at each eligible call's cache-read rate. |
+| `keepwarm_estimated` | Keep-warm, net and signed. The cache-rewrite cost avoided by verified warm resumes, minus the full cost of every warm-up ping (pings that never led to a return, and manual warm-ups booked from the Claude Code mod, included). A paused session is credited once however many warm-ups it received. Can be negative, and is then subtracted. |
+| `mod_fresh_estimated` | Start-fresh actions taken from the Claude Code mod. The dropped old context (less the handoff) is priced at the cache-read rate for a continuation estimated from your own earlier sessions (cohort median, capped at 10 turns, needs a cohort of 5). Counted as 0 when `handover_rerun` is already positive, so the two overlapping counterfactuals are never stacked. |
 | `expand_overhead` | Estimated expansion-command and reread overhead, subtracted from action savings. |
 | `uncaptured_runtime` | Compression inside sub-agent runs that is never logged as an event |
 | `behavioral_estimate` | One more loop span avoided per caught loop |

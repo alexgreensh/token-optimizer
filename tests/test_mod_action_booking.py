@@ -18,8 +18,8 @@ def facade(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / 'claude'))
     monkeypatch.setenv('TOKEN_OPTIMIZER_SNAPSHOT_DIR', str(tmp_path / 'snap'))
     monkeypatch.setenv('TOKEN_OPTIMIZER_RUNTIME', 'claude')
-    import measure
-    measure = importlib.reload(measure)
+    sys.modules.pop('measure', None)
+    measure = importlib.import_module('measure')
     monkeypatch.setattr(measure, '_keepwarm_lock', lambda: nullcontext(True))
     return measure
 

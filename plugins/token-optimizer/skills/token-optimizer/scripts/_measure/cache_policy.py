@@ -681,7 +681,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
         except Exception:
             pass
         from . import keepwarm_safety
-        owner = keepwarm_safety.find_owner()
+        owner = keepwarm_safety.session_owner(_measure_facade.SNAPSHOT_DIR, session_id)
         if owner is None:
             return None
         tp = _measure_facade.Path(transcript_path)

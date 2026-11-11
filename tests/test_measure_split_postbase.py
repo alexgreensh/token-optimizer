@@ -48,7 +48,8 @@ def test_an_unknown_or_duplicate_entry_fails():
 
 def test_exempt_cases_are_exactly_the_listed_commands_rows():
     ids = postbase.exempt_case_ids(MANIFEST)
-    assert ids == {'cli-coverage-replay', 'cli-coverage-replay---json', 'cli-file-refetch', 'cli-file-refetch---json'}
+    assert ids == {'cli-coverage-replay', 'cli-coverage-replay---json', 'cli-file-refetch', 'cli-file-refetch---json',
+                   'cli-mod-action', 'cli-mod-action---json', 'cli-mod-action---limits-lab'}
     assert postbase.exempt_case_ids(dict(MANIFEST, post_base_commands=[])) == set()
 
 

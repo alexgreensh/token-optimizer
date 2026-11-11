@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, keepwarm_economics
+from . import _compat, keepwarm_economics, keepwarm_linux
 
 
 def _input_and_cached_read_rates(model):
@@ -1744,13 +1744,7 @@ def _keepwarm_scheduler_install_macos(quiet=None):
 def keepwarm_scheduler_install(gate=None, quiet=None):
     """Install the keep-warm interval agent. REFUSES unless the gate allows.
 
-    Consent drives install: keepwarm_gate() must return allowed=True (api billing
-    + consent=enabled, or the dogfood limits-lab double opt-in). A refused gate
-    prints the reason and the caller exits 1; nothing is written.
-
-    Per-OS: macOS implemented; Linux/Windows are an explicit documented gap
-    (honest message + the caller exits 1). Returns (ok, message).
-    `gate` injectable for tests.
+    A refused gate leaves scheduler configuration untouched.
     """
     _measure_facade = _compat.facade()
     gate_fn = gate or _measure_facade.keepwarm_gate
@@ -1760,11 +1754,14 @@ def keepwarm_scheduler_install(gate=None, quiet=None):
             f"Keep-warm scheduler not installed: gate refused ({reason}). "
             "Check the kill switch, opt-out and tripwire."))
     system = _measure_facade._normalized_platform()
+    if system == "Linux":
+        with _measure_facade._keepwarm_scheduler_install_lock() as acquired:
+            return keepwarm_linux.install(_measure_facade) if acquired else (False, "another keep-warm scheduler install is in progress")
     if system != "Darwin":
         return (False, (
-            f"Keep-warm scheduler is macOS-only in this release; {system} is a "
-            "documented gap (the dashboard daemon's systemd/Task-Scheduler "
-            "support has not yet been mirrored for keep-warm). Track parity in "
+            f"Keep-warm scheduler is unavailable on {system}; this is a "
+            "documented gap (Task Scheduler support is not yet implemented). "
+            "Track parity in "
             "the README platform table. The keepwarm-tick CLI still works if you "
             "wire your own cron/timer to run it every minute."))
     with _measure_facade._keepwarm_scheduler_install_lock() as acquired:
@@ -1786,6 +1783,7 @@ def keepwarm_scheduler_uninstall(quiet=None):
     _measure_facade = _compat.facade()
     if _measure_facade._daemon_snapshot_sandboxed():
         return (False, _measure_facade._SCHEDULER_REFUSAL)
+    if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.uninstall(_measure_facade)
     plist_path = _measure_facade._keepwarm_scheduler_plist_path()
     removed = []
     system = _measure_facade._normalized_platform()
@@ -1824,6 +1822,7 @@ def keepwarm_scheduler_status(gate=None):
     """
     _measure_facade = _compat.facade()
     gate_fn = gate or _measure_facade.keepwarm_gate
+    if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.status(_measure_facade, gate_fn)
     plist_path = _measure_facade._keepwarm_scheduler_plist_path()
     marker = _measure_facade._keepwarm_read_scheduler_marker()
     plist_exists = plist_path.exists()
@@ -1864,6 +1863,7 @@ def keepwarm_scheduler_repair(gate=None):
     _measure_facade = _compat.facade()
     if _measure_facade._remote_lean_profile():
         return "noop-remote"
+    if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.repair(_measure_facade, gate or _measure_facade.keepwarm_gate)
     # Cheapest gate first: marker existence (one stat) before any gate read.
     marker = _measure_facade._keepwarm_read_scheduler_marker()
     gate_fn = gate or _measure_facade.keepwarm_gate
@@ -4676,16 +4676,15 @@ def keepwarm_cache_health_block(days=None, now=None):
         runtime = _measure_facade.detect_runtime()
     except Exception:
         runtime = "claude"
-    if runtime != "claude":
+    if runtime != "claude" or _measure_facade._normalized_platform() == "Windows":
         return {
             "state": "platform-gap",
-            "runtime": runtime,
-            "note": ("Keep-warm ships for Claude Code only. Codex automatic "
-                     "caching has no write premium to recover; other runtimes "
-                     "are documented gaps."),
+            "runtime": runtime, "platform": _measure_facade._normalized_platform(),
+            "note": ("Keep-warm is unavailable on Windows." if _measure_facade._normalized_platform() == "Windows" else
+                     "Keep-warm is available for Claude Code only."),
         }
     if rep is None:
-        return {"state": "platform-gap", "runtime": runtime,
+        return {"state": "status-unavailable", "runtime": runtime,
                 "note": "Keep-warm status unavailable."}
 
     tw_mode = rep["tripwire_mode"]

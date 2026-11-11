@@ -22,3 +22,11 @@ def test_health_explains_negative_net_and_weekly_pings():
     output = subprocess.run(['node', '-e', code], capture_output=True, text=True, check=True).stdout
     assert 'net' in output.lower() and 'negative' in output.lower()
     assert '4 pings' in output and '7 days' in output
+
+
+def test_unsupported_platform_explains_keepwarm_is_unavailable():
+    asset = Path(__file__).resolve().parents[1] / 'skills/token-optimizer/assets/keepwarm_health.js'
+    data = {'cache_health': {'keepwarm': {'state': 'platform-gap', 'runtime': 'claude'}}}
+    code = asset.read_text() + '\nconsole.log(keepwarmHealthHtml(' + json.dumps(data) + '));'
+    output = subprocess.run(['node', '-e', code], capture_output=True, text=True, check=True).stdout
+    assert 'Keep-warm is unavailable on this platform' in output

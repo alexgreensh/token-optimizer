@@ -553,3 +553,27 @@ def test_two_processes_cannot_ping_same_session_at_once(m, monkeypatch, tmp_path
     outcomes = [results.get(timeout=2), results.get(timeout=2)]
     assert sum(bool(item['fired']) for item in outcomes) == 1
     assert {item['reason'] for item in outcomes} == {'ok', 'locked'}
+
+
+def test_linux_scheduler_dispatches_only_after_gate(m, monkeypatch):
+    from contextlib import nullcontext
+    from _measure import keepwarm_linux
+    mod, _ = m
+    calls = []
+    monkeypatch.setattr(mod, '_normalized_platform', lambda: 'Linux')
+    monkeypatch.setattr(mod, '_keepwarm_scheduler_install_lock', lambda: nullcontext(True))
+    monkeypatch.setattr(keepwarm_linux, 'install', lambda facade: (calls.append('install') or True, 'ok'))
+    assert not mod.keepwarm_scheduler_install(gate=lambda: (False, 'disabled'))[0]
+    assert calls == []
+    assert mod.keepwarm_scheduler_install(gate=lambda: (True, 'enabled'))[0]
+    assert calls == ['install']
+
+
+def test_windows_health_reports_keepwarm_unavailable(m, monkeypatch):
+    mod, _ = m
+    monkeypatch.setattr(mod, 'keepwarm_report', lambda **kwargs: {})
+    monkeypatch.setattr(mod, 'detect_runtime', lambda: 'claude')
+    monkeypatch.setattr(mod, '_normalized_platform', lambda: 'Windows')
+    health = mod.keepwarm_cache_health_block(days=30)
+    assert health['state'] == 'platform-gap'
+    assert 'Windows' in health['note']

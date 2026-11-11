@@ -1,7 +1,9 @@
 // Keep-warm activity belongs in Health, separate from savings headline claims.
 function keepwarmHealthHtml(data) {
   var kw = ((data || {}).cache_health || {}).keepwarm;
-  if (!kw || kw.state === 'platform-gap') return '';
+  if (!kw) return '';
+  if (kw.state === 'platform-gap') return '<div class="card wide"><div class="card-header"><span>Keep-warm</span></div><p>Keep-warm is unavailable on ' + (kw.platform === 'Windows' ? 'Windows' : 'this platform') + '.</p></div>';
+  if (kw.state === 'status-unavailable') return '<div class="card wide"><div class="card-header"><span>Keep-warm</span></div><p>Keep-warm status is unavailable.</p></div>';
   var q = kw.quota_value || {}, samples = q.measured || {};
   function meter(sample, label) {
     if (!sample || sample.median_pct == null) return '';

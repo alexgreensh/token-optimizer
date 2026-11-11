@@ -855,3 +855,10 @@ def test_runway_card_template_drops_eyebrow_chip_and_placeholder():
     assert 'refreshes while you are actively working' not in runway_fn
     assert 'Your window usage is measured. The savings comparison is an estimate.' not in runway_fn
     assert 'savingsLimitWindows(rw)' in runway_fn
+
+def test_archive_full_fetch_count_is_disclosed_without_adding_dollars():
+    s = full()
+    s['progressive_disclosure'] = {'full_bash_fetches': 2, 'full_bash_tokens': 5000}
+    output = story({'savings': s})
+    assert 'Full command output fetched from the archive: 2 outputs, about 5K tokens.' in output
+    assert 'does not establish whether a command would otherwise have been re-run' in output

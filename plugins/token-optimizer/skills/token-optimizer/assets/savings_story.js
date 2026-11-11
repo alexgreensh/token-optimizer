@@ -196,6 +196,7 @@ function savingsStoryHtml(data) {
       table('Estimated, sized by a documented method', estimated) +
       routingRow +
       setupDetail +
+      (num((s.progressive_disclosure || {}).full_bash_fetches) > 0 ? '<p>Full command output fetched from the archive: ' + count(s.progressive_disclosure.full_bash_fetches) + ' outputs, about ' + tok(s.progressive_disclosure.full_bash_tokens) + ' tokens. This does not establish whether a command would otherwise have been re-run.</p>' : '') +
       (archive ? '<p>Tool archive, net of re-expands: ' + usd(archive.cost_saved_usd) + ' once, before repeat-reads.</p>' : '') +
       (bashExpand ? '<p>Bash compression, net of re-expands: ' + usd(bashNet) + ' once, before repeat-reads.</p>' : '') +
       (num((as.estimates_usd || {}).expand_overhead) ? '<p>Estimated expand-command overhead: ' + usd(as.estimates_usd.expand_overhead) + '.</p>' : '') +

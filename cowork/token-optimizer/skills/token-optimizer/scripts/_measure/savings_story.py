@@ -95,3 +95,55 @@ def last_known_windows(meters, mult, live):
         return out
     except (TypeError, ValueError):
         return []
+
+
+def record_full_bash_fetch(facade, session_id, tool_use_id, response):
+    """Record a full fetch separately from savings, including repeat fetches."""
+    try:
+        conn = facade._init_trends_db()
+        try:
+            conn.execute('CREATE TABLE IF NOT EXISTS archive_full_fetches '
+                         '(timestamp TEXT NOT NULL, session_id TEXT NOT NULL, '
+                         'tool_use_id TEXT NOT NULL, tokens INTEGER NOT NULL)')
+            conn.execute('INSERT INTO archive_full_fetches VALUES (?, ?, ?, ?)',
+                         (facade.datetime.now().isoformat(), session_id, tool_use_id,
+                          facade._estimate_tokens(response)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def full_bash_fetch_totals(conn, cutoff, legacy_rows, is_fixture, snapshot_dir=None):
+    """Combine new fetch events with older, provably full archive debits."""
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_full_fetches'").fetchone()
+    rows = conn.execute('SELECT timestamp, session_id, tool_use_id, tokens FROM archive_full_fetches WHERE timestamp >= ?', (cutoff,)).fetchall() if exists else []
+    rows = [row for row in rows if not is_fixture(row[1])]
+    first = {}
+    for ts, session, key, _ in rows:
+        pair = (session, key)
+        first[pair] = min(ts, first.get(pair, ts))
+    from datetime import datetime
+    def before_new(ts, pair):
+        if pair not in first:
+            return True
+        try:
+            return datetime.fromisoformat(ts).timestamp() + 2 < datetime.fromisoformat(first[pair]).timestamp()
+        except (TypeError, ValueError, OSError, OverflowError):
+            return False
+    def verified_full(session, key):
+        import json
+        from pathlib import Path
+        if not snapshot_dir or not session or Path(session).name != session or Path(key).name != key:
+            return False
+        try:
+            item = json.loads((Path(snapshot_dir) / 'tool-archive' / session / (key + '.json')).read_text(encoding='utf-8'))
+            return item.get('tool_name') == 'Bash' and item.get('truncated') is False
+        except (OSError, ValueError, TypeError):
+            return False
+    legacy = [int(tokens or 0) for detail, tokens, session, ts in legacy_rows
+              if detail and ' (Bash)' in detail and ' chars ' not in detail
+              and verified_full(session, detail.split(' ', 1)[0])
+              and before_new(ts, (session, detail.split(' ', 1)[0]))]
+    return len(rows) + len(legacy), sum(int(row[3]) for row in rows) + sum(legacy)

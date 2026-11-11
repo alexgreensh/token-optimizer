@@ -3238,15 +3238,14 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=None, window_fla
                         print(f"[Error] {exc}", file=_measure_facade.sys.stderr)
                         _measure_facade.sys.exit(1)
                 if spec is None:
-                    # B6 integrity: re-popping an archived result means it did
-                    # NOT stay collapsed, so reverse its tool_archive credit.
-                    # Log the re-popped tokens as a debit (netted in
-                    # _get_savings_summary), deduped per identical range set.
                     _measure_facade._log_reexpand_debit(sd.name, tool_use_id, response,
                                         data.get("tool_name") or "")
                     # No added newline: expand returns the stored text as stored.
                     _measure_facade.sys.stdout.write(response)
                     _measure_facade.sys.stdout.flush()
+                    if data.get("tool_name") == "Bash" and data.get("truncated") is False:
+                        from . import savings_story
+                        savings_story.record_full_bash_fetch(_measure_facade, sd.name, tool_use_id, response)
                     return
                 out, ranges = _measure_facade._expand_bounded(data, response, tool_use_id,
                                               sd.name, spec)

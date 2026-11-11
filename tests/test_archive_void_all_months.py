@@ -6,7 +6,12 @@ rescanned once so their other months are not skipped.
 """
 import importlib
 import json
+import os
+import select
+import signal
+import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -104,3 +109,55 @@ def test_session_memoized_by_august_scan_is_rescanned_for_july(m, tmp_path):
     conn = m._init_trends_db()
     assert _counted(m, conn) == 1
     conn.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="kill -9 fixture requires POSIX")
+def test_killed_archive_scan_preserves_completed_sessions(m, tmp_path, monkeypatch):
+    from _measure import archive_void_evidence as av
+
+    when = datetime(2026, 7, 18, 11, 0, tzinfo=timezone.utc)
+    conn = m._init_trends_db()
+    for i in range(2):
+        sid = f"11111111-2222-3333-4444-55555555555{i}"
+        path = tmp_path / f"archive-{i}.jsonl"
+        _transcript(path, when, 4000)
+        conn.execute("INSERT INTO session_log (session_uuid,jsonl_path,date) VALUES (?,?,?)", (sid, str(path), "2026-07-18"))
+        _archive(conn, when, 4000, sid=sid)
+    conn.commit()
+    baseline = tmp_path / "archive-baseline.db"
+    with sqlite3.connect(str(baseline)) as copy:
+        conn.backup(copy)
+    conn.close()
+    monkeypatch.setenv("TOKEN_OPTIMIZER_UPGRADE_DRAIN", "1")
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        original = av.full_result_ids
+        calls = [0]
+        def pause_second(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] == 2:
+                os.write(write_fd, b"ready")
+                time.sleep(60)
+            return original(*args, **kwargs)
+        av.full_result_ids = pause_second
+        with sqlite3.connect(str(m.TRENDS_DB)) as child:
+            av.collect(child, max_sessions=None)
+        os._exit(0)
+    os.close(write_fd)
+    try:
+        assert select.select([read_fd], [], [], 10)[0]
+        assert os.read(read_fd, 5) == b"ready"
+    finally:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        os.close(read_fd)
+    with sqlite3.connect(str(m.TRENDS_DB)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM archive_void_scans_v3").fetchone()[0] == 1
+        av.collect(conn, max_sessions=None)
+        actual = conn.execute("SELECT event_id,parent FROM archive_void_evidence_v2 ORDER BY event_id").fetchall()
+    with sqlite3.connect(str(baseline)) as conn:
+        av.collect(conn, max_sessions=None)
+        expected = conn.execute("SELECT event_id,parent FROM archive_void_evidence_v2 ORDER BY event_id").fetchall()
+    assert actual == expected

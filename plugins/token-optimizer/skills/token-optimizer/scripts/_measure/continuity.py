@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, transcript_stream, checkpoint_direction, checkpoint_retention
+from . import _compat, transcript_stream, checkpoint_direction, checkpoint_retention, upgrade_drain_control
 
 
 def _iter_tail_lines(filepath, tail_lines, chunk_size=None):
@@ -4533,7 +4533,7 @@ def _prune_trends_db():
             return
         cutoff_iso = (_measure_facade.datetime.now() - _measure_facade.timedelta(days=_measure_facade._TRENDS_RETENTION_DAYS)).isoformat()
         cutoff_date = cutoff_iso[:10]  # session_log.date is YYYY-MM-DD
-        conn = _measure_facade.sqlite3.connect(str(trends_path), timeout=5)
+        conn = _measure_facade.sqlite3.connect(str(trends_path), timeout=5, factory=upgrade_drain_control.SessionLogConnection)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")

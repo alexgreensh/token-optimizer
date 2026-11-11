@@ -88,6 +88,7 @@ def collect(conn, max_sessions=8, deadline_seconds=None):
     period where archiving worked produces no evidence.
     """
     import time
+    from . import upgrade_drain_control
     started = time.monotonic()
     conn.execute('CREATE TABLE IF NOT EXISTS archive_void_evidence_v2 (event_id INTEGER, path TEXT, size INTEGER, mtime_ns INTEGER, parent TEXT, fingerprint TEXT, PRIMARY KEY(event_id,path,size,mtime_ns,fingerprint))')
     conn.execute('CREATE TABLE IF NOT EXISTS ' + _SCANS + ' (session_id TEXT, parent TEXT, fingerprint TEXT, PRIMARY KEY(session_id,parent,fingerprint))')
@@ -120,6 +121,7 @@ def collect(conn, max_sessions=8, deadline_seconds=None):
         out['scanned'] += 1
         if codex is not None:
             _record_codex(conn, out, codex, events, proof)
+            upgrade_drain_control.commit_drain_session(conn)
             continue
         matches = {}
         for index, path in enumerate(session_files(parent)):
@@ -139,6 +141,7 @@ def collect(conn, max_sessions=8, deadline_seconds=None):
             inserted = conn.execute('INSERT OR IGNORE INTO archive_void_evidence_v2 VALUES (?,?,?,?,?,?)', (ident, str(path), st.st_size, st.st_mtime_ns, parent, fingerprint))
             out['proven'] += max(0, inserted.rowcount)
         conn.execute('INSERT OR IGNORE INTO ' + _SCANS + ' VALUES (?,?,?)', proof)
+        upgrade_drain_control.commit_drain_session(conn)
     conn.commit()
     return out
 

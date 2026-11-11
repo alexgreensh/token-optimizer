@@ -73,6 +73,9 @@ def collect(conn, event_utc, projects_dir, deadline_seconds=None):
     pad = timedelta(seconds=MATCH_SECONDS)
     low, high = min(r[1] for r in rows) - pad, max(r[1] for r in rows) + pad
     commands = {r[2] for r in rows}
+    from . import compression_scan_checkpoint
+    import os
+    checkpoint = compression_scan_checkpoint.FixtureScan(conn, commands) if os.environ.get("TOKEN_OPTIMIZER_UPGRADE_DRAIN") == "1" else None
     spans, calls = [], {}
     files = [(p, False) for p in projects_dir.glob("*/*.jsonl")] + \
             [(p, True) for p in projects_dir.glob("*/*/subagents/agent-*.jsonl")]
@@ -81,9 +84,21 @@ def collect(conn, event_utc, projects_dir, deadline_seconds=None):
             out["pending"] = len(rows)
             return out
         try:
-            last = _utc_mtime(path)
+            before = path.stat()
+            last = datetime.fromtimestamp(before.st_mtime, timezone.utc).replace(tzinfo=None)
         except (OSError, OverflowError, ValueError):
+            if checkpoint:
+                out["pending"] = len(rows)
+                return out
             continue
+        if checkpoint and last < low:
+            checkpoint.track_metadata(path, before)
+        elif checkpoint:
+            try:
+                checkpoint.track(path, before)
+            except OSError:
+                out["pending"] = len(rows)
+                return out
         if last < low:
             continue
         first = _first_ts(path)
@@ -91,11 +106,28 @@ def collect(conn, event_utc, projects_dir, deadline_seconds=None):
             continue
         if not sidechain:
             spans.append((first, last))
-        for dt, _tid, name, command, _size in sub.index_results(path, sidechain):
-            if name == "Bash" and command:
-                stored = sub._stored_command(command)
-                if stored in commands:
-                    calls.setdefault(stored, []).append(dt)
+        if checkpoint:
+            try:
+                found = checkpoint.calls(path, sidechain, before, commands, sub)
+            except (OSError, ValueError):
+                found = None
+            if found is None:
+                out["pending"] = len(rows)
+                return out
+        else:
+            found = []
+            for dt, _tid, name, command, _size in sub.index_results(path, sidechain):
+                if name == "Bash" and command:
+                    stored = sub._stored_command(command)
+                    if stored in commands:
+                        found.append((stored, dt))
+        for stored, dt in found:
+            calls.setdefault(stored, []).append(dt)
+    if checkpoint:
+        current = [(p, False) for p in projects_dir.glob("*/*.jsonl")] + [(p, True) for p in projects_dir.glob("*/*/subagents/agent-*.jsonl")]
+        if not checkpoint.stable() or set(files) != set(current):
+            out["pending"] = len(rows)
+            return out
     for ident, when, command in rows:
         if any(abs((dt - when).total_seconds()) <= MATCH_SECONDS for dt in calls.get(command, ())):
             verdict = LOCATED

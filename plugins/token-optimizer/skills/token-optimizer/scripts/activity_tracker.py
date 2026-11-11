@@ -106,38 +106,9 @@ def log_tool_use(store, tool_name: str, command: str = "", has_error: bool = Fal
         Current detected mode string, or None on failure
     """
     try:
-        bucket = classify_tool(tool_name, command)
-        conn = store._connect()
-
-        conn.execute(
-            "INSERT INTO activity_log (tool_name, tool_bucket, has_error, timestamp) "
-            "VALUES (?, ?, ?, ?)",
-            (tool_name[:64], bucket, 1 if has_error else 0, time.time()),
-        )
-
-        rows = conn.execute(
-            "SELECT tool_bucket, has_error FROM activity_log "
-            "ORDER BY id DESC LIMIT ?",
-            (_WINDOW_SIZE,),
-        ).fetchall()
-
-        row_count = conn.execute("SELECT COUNT(*) FROM activity_log").fetchone()[0]
-        if row_count > _PRUNE_THRESHOLD:
-            conn.execute(
-                "DELETE FROM activity_log WHERE id NOT IN "
-                "(SELECT id FROM activity_log ORDER BY id DESC LIMIT ?)",
-                (_PRUNE_KEEP,),
-            )
-
-        recent_buckets = [r[0] for r in rows]
-        has_recent_errors = any(r[1] for r in rows)
-        mode = detect_mode(recent_buckets, has_recent_errors)
-
-        conn.execute(
-            "INSERT OR REPLACE INTO session_meta (key, value) VALUES (?, ?)",
-            ("current_mode", mode),
-        )
-        conn.commit()
-        return mode
+        from _measure import session_store_spool
+        session_store_spool.enqueue(store, {"kind": "activity", "tool_name": tool_name[:64],
+            "bucket": classify_tool(tool_name, command), "has_error": int(bool(has_error)), "timestamp": time.time()})
+        return store.get_meta("current_mode") if store._conn is not None else None
     except Exception:
         return None

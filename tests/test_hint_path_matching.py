@@ -58,6 +58,7 @@ def test_relative_hint_is_credited(tmp_path, monkeypatch):
 
 def test_home_relative_hint_is_credited(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    monkeypatch.setenv('USERPROFILE', str(tmp_path / 'home'))  # Windows expands "~" from this, not HOME
     target = tmp_path / 'home' / 'proj' / 'a.py'
     target.parent.mkdir(parents=True)
     target.write_text('a = 1\n')

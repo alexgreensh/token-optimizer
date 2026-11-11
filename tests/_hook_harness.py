@@ -77,7 +77,9 @@ def transcript(project: Path, home: Path) -> Path:
          "message": {"id": "msg_3", "model": "claude-opus-4-6", "role": "assistant", "usage": usage,
                      "content": [{"type": "text", "text": "Decided to split the parser into tokenize() and parse()."}]}},
     ]
-    slug = "-" + str(project).strip("/").replace("/", "-").replace(".", "-")
+    # Claude Code names a project dir by turning every non-alphanumeric of the path into "-"
+    # (a Windows path has ":" and "\\", which no directory name can hold).
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(project))
     path = home / ".claude" / "projects" / slug / f"{SESSION_ID}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")

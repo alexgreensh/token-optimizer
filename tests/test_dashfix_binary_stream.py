@@ -27,7 +27,7 @@ def test_large_binary_stream_preserves_indexed_records(tmp_path, monkeypatch):
     path = tmp_path / 'large.jsonl'
     records = [{'type': 'assistant', 'timestamp': '2026-01-01T00:00:00Z',
                 'message': {'id': 'a', 'content': 'שלום'}}]
-    path.write_text(''.join(json.dumps(record, ensure_ascii=False) + '\n' for record in records))
+    path.write_text(''.join(json.dumps(record, ensure_ascii=False) + '\n' for record in records), encoding='utf-8')
     assert [json.loads(line) for line in transcript_stream.binary_lines(path)] == records
     def no_decode(*args, **kwargs):
         raise AssertionError('indexed records should not be decoded and re-encoded')

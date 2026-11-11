@@ -70,8 +70,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
-import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -1176,8 +1175,8 @@ SL_JS = "skills/token-optimizer/scripts/statusline.js"
 CODEX_CACHE_SL = "{home}/.codex/plugins/cache/alexgreensh-token-optimizer/token-optimizer/{ver}/" + SL_JS
 # A script (install.sh) install: not under /plugins/cache/, so the old
 # cache-root heal never applied to it.
-SCRIPT_INSTALL = dataclasses.replace(HOSTS["cli"], name="cli_script_install",
-                                     plugin="home/alex/.claude/token-optimizer", marketplace_install=False)
+SCRIPT_INSTALL = replace(HOSTS["cli"], name="cli_script_install",
+                         plugin="home/alex/.claude/token-optimizer", marketplace_install=False)
 
 
 def _seed_statusline(home: Path, command: str) -> tuple[Path, dict]:

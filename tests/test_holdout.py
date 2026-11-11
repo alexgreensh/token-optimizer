@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import shutil
 import subprocess
 import sys
 import uuid
@@ -369,7 +370,7 @@ def test_wilson_and_bootstrap_are_correct_and_deterministic():
 # ---- dashboard --------------------------------------------------------------
 
 def test_renderer_is_silent_unless_ready(tmp_path):
-    node = subprocess.run(['which', 'node'], capture_output=True, text=True).stdout.strip()
+    node = shutil.which('node') or ''
     if not node:
         pytest.skip('node not installed')
     js = (ROOT / 'skills/token-optimizer/assets/holdout_card.js').read_text(encoding='utf-8')

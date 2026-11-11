@@ -368,6 +368,12 @@ def test_drain_owner_handoff_is_never_partial(m, tmp_path, monkeypatch):
         while not stop.is_set():
             try:
                 value = marker.read_text()
+            except PermissionError:
+                # Windows refuses to open a file while it is being replaced (sharing violation).
+                # That is a refused read, not a partial one; POSIX never refuses, so there it still fails.
+                if os.name == 'nt':
+                    continue
+                value = None
             except OSError:
                 value = None
             if value != owner:

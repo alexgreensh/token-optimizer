@@ -55,3 +55,17 @@ def test_missing_session_id_never_caches(tmp_path, monkeypatch):
     keepwarm_safety.session_owner(tmp_path, None)
     keepwarm_safety.session_owner(tmp_path, None)
     assert len(calls) == 2 and not list(tmp_path.iterdir())
+
+
+def test_no_process_is_spawned_to_find_an_owner_off_posix(monkeypatch):
+    # Windows has no `ps`: the Stop hook must answer "no owner" without starting one (hot-path budget).
+    class Off:
+        name = 'nt'
+        def __getattr__(self, attr):
+            return getattr(os, attr)
+    monkeypatch.setattr(keepwarm_safety, 'os', Off())
+    def forbidden(*args, **kwargs):
+        raise AssertionError('a process was started')
+    monkeypatch.setattr(keepwarm_safety.subprocess, 'run', forbidden)
+    assert keepwarm_safety.process_info(os.getpid()) is None
+    assert keepwarm_safety.find_owner() is None

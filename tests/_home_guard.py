@@ -210,6 +210,11 @@ _REPO_ANCESTORS: tuple[str, ...] = tuple(
 _TEMP_ANCESTORS: tuple[str, ...] = tuple(
     str(p) for p in Path(os.path.realpath(tempfile.gettempdir())).parents
     if str(p) == REAL_HOME or str(p).startswith(REAL_HOME + os.sep))
+# The names an upward project-root walk (run.py's work-tree probe, the code map's root finder)
+# stats at every ancestor. Existence probes of these names only; ``~/.claude`` and any other
+# real directory still count as a touch.
+_PROJECT_ROOT_MARKERS = (".git", "pyproject.toml", "package.json", "setup.py", "setup.cfg",
+                         "go.mod", "Cargo.toml")
 HITS: list[tuple[str, str, str, str]] = []  # (nodeid, event, kind, path)
 _current: dict[str, str] = {"id": ""}
 _installed = False
@@ -252,13 +257,13 @@ def _stat_exempt(full: str) -> bool:
     """Existence probes that are not reads of user data (kind STAT only):
     executable lookup along PATH, and the cwd-upward walk for CLAUDE.md that
     probes ``<ancestor-of-repo>/CLAUDE.md`` and ``<ancestor>/.claude/CLAUDE.md``,
-    and ``<temp-dir ancestor>/.git`` (an upward work-tree walk from a tmp_path;
-    only ``.git``, so ``~/.claude`` and other real dirs still count)."""
+    and ``<temp-dir ancestor>/<project root marker>`` (an upward work-tree or project-root walk
+    from a tmp_path; only those names, so ``~/.claude`` and other real dirs still count)."""
     for ex in _PATH_DIRS:
         if full == ex or full.startswith(ex + os.sep) or ex.startswith(full + os.sep):
             return True
     parent = os.path.dirname(full)
-    if parent in _TEMP_ANCESTORS and os.path.basename(full) == ".git":
+    if parent in _TEMP_ANCESTORS and os.path.basename(full) in _PROJECT_ROOT_MARKERS:
         return True
     for anc in _REPO_ANCESTORS:
         if parent == anc or (os.path.basename(parent) == ".claude"
@@ -420,8 +425,13 @@ def sanitize_child_env(env):
         return env
     home = str(SANDBOX / "home")
     fixed = dict(env)
+    # A test that names one home variable means THAT home. Windows reads USERPROFILE and POSIX
+    # reads HOME, so the missing sibling takes the named value; only an env naming neither gets the
+    # sandbox. (Defaulting USERPROFILE to the sandbox sent a Windows child to the wrong home
+    # whenever a test passed only HOME: CI 5.13.70, ~15 Windows failures.)
+    named = next((fixed[v] for v in _CHILD_HOME_VARS if isinstance(fixed.get(v), str) and fixed[v]), home)
     for var in _CHILD_HOME_VARS:
-        fixed.setdefault(var, home)
+        fixed.setdefault(var, named)
     for var in _CHILD_DIR_VARS:
         value = fixed.get(var)
         if not isinstance(value, str) or not value:

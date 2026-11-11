@@ -1,6 +1,7 @@
 """Synthetic recommendation-followed compactions are deduplicated and priced."""
 import importlib
 import json
+from datetime import datetime
 from pathlib import Path
 import sys
 
@@ -332,12 +333,15 @@ def test_unlinked_mod_removal_never_falls_back_to_initial_input_credit(case, mon
             stream.write(json.dumps({'type': 'assistant', 'timestamp': f'2026-01-01T00:00:0{second}Z',
                 'requestId': f'raw-{second}', 'message': {'model': event['model'], 'usage': {
                     'input_tokens': 2, 'cache_read_input_tokens': 20000, 'cache_creation_input_tokens': 0}}}) + '\n')
+    # The ledger stamps compression rows in naive LOCAL time; this removal happens at 00:00:00Z, before
+    # both raw requests, whatever zone the machine is in (a literal '...T02:00:00' only meant that in UTC+2).
+    removed_at = datetime.fromtimestamp(1767225600).isoformat(timespec='seconds')
     conn = facade._init_trends_db()
     try:
         conn.execute('INSERT INTO session_log(jsonl_path,date,session_uuid) VALUES(?,?,?)',
                      (str(path), '2026-01-01', event['session_id']))
         conn.execute("INSERT INTO compression_events(timestamp,feature,original_tokens,compressed_tokens,verified,tier,session_uuid) "
-                     "VALUES(?,?,?,?,?,?,?)", ('2026-01-01T02:00:00', 'mod_clean', 20000, 5000, 1, 'measured', event['session_id']))
+                     "VALUES(?,?,?,?,?,?,?)", (removed_at, 'mod_clean', 20000, 5000, 1, 'measured', event['session_id']))
         conn.commit()
         facade._update_counted_cumulative(conn, max_sessions=100, quiet=True)
         row = conn.execute('SELECT oneshot_usd,reread_tokens,reread_usd FROM counted_reread').fetchone()

@@ -1,5 +1,6 @@
 """W5: setup savings measured as a step in the first-call series. Synthetic transcripts only."""
 import json
+import shutil
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -224,7 +225,7 @@ def test_observer_stops_at_the_first_call_and_keeps_time_and_model():
 def test_card_words_each_status_plainly(tmp_path):
     import os
     import subprocess
-    node = subprocess.run(['which', 'node'], capture_output=True, text=True).stdout.strip()
+    node = shutil.which('node') or ''
     if not node:
         pytest.skip('node not installed')
     js = (ROOT / 'skills/token-optimizer/assets/first_call_context.js').read_text(encoding='utf-8')
@@ -280,7 +281,7 @@ def test_a_step_larger_than_the_trim_is_capped_at_the_trim_size():
 def test_first_call_card_leads_with_the_latest_median_and_change_since_the_first_month(tmp_path):
     import os
     import subprocess
-    node = subprocess.run(['which', 'node'], capture_output=True, text=True).stdout.strip()
+    node = shutil.which('node') or ''
     if not node:
         pytest.skip('node not installed')
     js = (ROOT / 'skills/token-optimizer/assets/first_call_context.js').read_text(encoding='utf-8')

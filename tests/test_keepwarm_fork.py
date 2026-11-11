@@ -1,13 +1,16 @@
 """A keep-warm fork must not attach, persist, or inherit unrelated secrets."""
+import os
 import sys
 from pathlib import Path
 import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'))
+# An absolute path on every platform ('/bin/claude' has no drive on Windows).
+CLAUDE = os.path.abspath('/bin/claude')
 
 
 def test_fork_command_and_environment_are_isolated():
     from _measure.keepwarm_fork import fork_command, fork_environment
-    command = fork_command('/bin/claude', 'session-id', 'model-id', 'Reply with ok')
+    command = fork_command(CLAUDE, 'session-id', 'model-id', 'Reply with ok')
     assert '--resume' in command and '--fork-session' in command
     assert '--print' not in command and '-p' not in command
     assert '{"disableAllHooks":true}' in command
@@ -21,11 +24,12 @@ def test_fork_command_and_environment_are_isolated():
 
 def test_fork_rejects_bad_identifiers_and_missing_key():
     from _measure.keepwarm_fork import fork_command, fork_environment
-    with pytest.raises(ValueError): fork_command('/bin/claude', '--bad', 'model', 'ok')
+    with pytest.raises(ValueError): fork_command(CLAUDE, '--bad', 'model', 'ok')
     with pytest.raises(ValueError): fork_environment({}, '', 'http://127.0.0.1:1234')
     with pytest.raises(ValueError): fork_environment({}, 'key', 'https://example.com')
 
 
+@pytest.mark.skipif(os.name != 'posix', reason='the guarded fork drives the CLI through a POSIX pty')
 def test_guarded_fork_uses_fake_cli_and_suppresses_tool(tmp_path):
     import json
     import os
@@ -75,3 +79,12 @@ def test_guarded_fork_refuses_missing_key_before_any_io(tmp_path):
     from _measure.keepwarm_fork import run_guarded
     result = run_guarded({}, str(tmp_path), '/fake/claude', '', {}, lambda: True)
     assert not result['ok'] and result['reason'] == 'api-key-unavailable'
+
+
+def test_guarded_fork_names_an_unsupported_platform_before_importing_pty(tmp_path, monkeypatch):
+    # Windows has no `termios`, so `import pty` raises there: the refusal must come first.
+    from _measure import keepwarm_fork
+    monkeypatch.setattr(keepwarm_fork, '_posix_ptys', lambda: False)
+    monkeypatch.setitem(sys.modules, 'pty', None)  # an import of it now raises ImportError
+    result = keepwarm_fork.run_guarded({}, str(tmp_path), CLAUDE, 'key', {}, lambda: True)
+    assert result == {'ok': False, 'reason': 'platform-unsupported'}

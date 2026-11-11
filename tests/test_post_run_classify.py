@@ -8,6 +8,9 @@ the gate red on items the real code passes.
 """
 from __future__ import annotations
 
+import json
+import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -78,8 +81,8 @@ def test_eligible_effective_allows_pattern_specific():
 
 
 @pytest.mark.parametrize("raw,expected", [
-    ("", "shadow"), ("shadow", "shadow"), ("1", "on"), ("on", "on"),
-    ("0", "off"), ("off", "off"), ("bogus", "shadow"),
+    ("", "on"), ("shadow", "shadow"), ("1", "on"), ("on", "on"),
+    ("0", "off"), ("off", "off"), ("bogus", "on"),
 ])
 def test_mode_env(monkeypatch, raw, expected):
     monkeypatch.setenv(prc.ENV_VAR, raw)
@@ -97,7 +100,7 @@ def test_fixture_hash_is_pinned():
 
 def test_shadow_changes_nothing_and_logs_opportunity(tmp_path):
     it = _item("P00-cd_semi")  # `cd /work/project; git diff`
-    shadow = gate_harness.run_hook(SCRIPTS, tmp_path, "sh", it["command"], it["stdout"])
+    shadow = gate_harness.run_hook(SCRIPTS, tmp_path, "sh", it["command"], it["stdout"], mode="shadow")
     off = gate_harness.run_hook(SCRIPTS, tmp_path, "off", it["command"], it["stdout"], mode="0")
     assert shadow["rc"] == 0 and off["rc"] == 0
     assert shadow["emitted"] is None and off["emitted"] is None
@@ -112,6 +115,59 @@ def test_on_mode_matches_bare_command(tmp_path):
     assert on["emitted"] is not None
     assert gate_harness.norm(on["emitted"]) == gate_harness.norm(ref["emitted"])
     assert len(on["emitted"]) < len(it["stdout"])
+
+
+@pytest.mark.parametrize("mode", ["0", "off"])
+def test_kill_switch_leaves_newly_eligible_output_raw(tmp_path, mode):
+    it = _item("P00-cd_semi")
+    off = gate_harness.run_hook(SCRIPTS, tmp_path, "off", it["command"], it["stdout"], mode=mode)
+    assert off["rc"] == 0 and off["emitted"] is None
+    assert gate_harness.opportunity_rows(off["snap"]) == (0, 0)
+
+
+@pytest.mark.parametrize("mode", [None, "1"])
+def test_on_compression_is_measured_without_shadow_rows_and_expand_nets(tmp_path, mode):
+    it = _item("P00-cd_semi")
+    sid = "11111111-2222-3333-4444-555555555555"
+    result = gate_harness.run_hook(SCRIPTS, tmp_path, "active", it["command"], it["stdout"],
+                                   session=sid, mode=mode)
+    assert result["rc"] == 0 and result["emitted"] is not None
+    key = gate_harness.KEY_RE.findall(result["emitted"])[-1]
+    assert gate_harness.archive_text(result["snap"], key) == it["stdout"]
+    with sqlite3.connect(str(Path(result["snap"]) / "trends.db")) as conn:
+        rows = conn.execute("SELECT feature, tier, verified, command_pattern, original_tokens - compressed_tokens "
+                            "FROM compression_events").fetchall()
+    assert len(rows) == 1
+    assert rows[0][:4] == ("bash_compress_pipeline", "measured", 1, it["command"])
+    credit = rows[0][4]
+    assert credit > 0
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "active"),
+           "TOKEN_OPTIMIZER_SNAPSHOT_DIR": result["snap"], "CLAUDE_SESSION_ID": sid,
+           "TOKEN_OPTIMIZER_RUNTIME": "claude", "PYTHONPATH": str(SCRIPTS),
+           "CLAUDE_PLUGIN_DATA": str(tmp_path / "active" / "plugin-data"),
+           "TOKEN_OPTIMIZER_PLUGIN_DATA": str(tmp_path / "active" / "plugin-data")}
+    code = ("import json, measure; "
+            "print(json.dumps(measure._get_merged_savings(days=30)))")
+
+    def summary():
+        p = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+        return json.loads(p.stdout)
+
+    assert summary()["total_tokens"] == credit
+    for _ in range(2):
+        expanded = subprocess.run([sys.executable, str(SCRIPTS / "measure.py"), "expand", key],
+                                  env=env, capture_output=True, text=True)
+        assert expanded.returncode == 0, expanded.stderr
+        assert it["stdout"] in expanded.stdout
+    with sqlite3.connect(str(Path(result["snap"]) / "trends.db")) as conn:
+        debits = conn.execute("SELECT tokens_saved, detail FROM savings_events "
+                             "WHERE event_type='tool_archive_reexpand'").fetchall()
+    assert len(debits) == 1 and debits[0][0] > 0
+    assert debits[0][1] == key + " (Bash)"
+    net = summary()
+    assert net["by_category"]["bash_archive_reexpand"]["tokens_saved"] == -debits[0][0]
+    assert net["total_tokens"] == credit - debits[0][0]
 
 
 _VERIFY_IDS = "D-00,E-02-bare,E-02-cd,P00-bare,P00-cd_semi"

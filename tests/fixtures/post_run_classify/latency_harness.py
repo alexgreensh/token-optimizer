@@ -47,7 +47,7 @@ def main(argv=None) -> int:
     # --baseline-dir equal to --hook-dir = kill-switch arm on the same install
     # (removes install-path confounds; the gate proves it byte-identical).
     same = a.baseline_dir.resolve() == a.hook_dir.resolve()
-    arms = {"baseline": (a.baseline_dir, "0" if same else None), "on": (a.hook_dir, "1"), "shadow": (a.hook_dir, None)}
+    arms = {"baseline": (a.baseline_dir, "0" if same else None), "on": (a.hook_dir, "1"), "shadow": (a.hook_dir, "shadow")}
     samples = {(c, arm): [] for c in CLASSES for arm in arms}
     cpu = {(c, arm): [] for c in CLASSES for arm in arms}
     for rnd in range(a.n):

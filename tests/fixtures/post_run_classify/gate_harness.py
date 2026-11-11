@@ -9,7 +9,8 @@ Arms: every fixture item is run through the real hook in a subprocess with an
 isolated HOME / snapshot dir and a fresh session id.
   baseline  hook from --baseline-dir (start commit), or the kill switch arm
   on        TOKEN_OPTIMIZER_POST_RUN_CLASSIFY=1 (the bar applies here)
-  shadow    env unset (tonight's default): must equal baseline on every item
+  default   env unset: must equal the explicit on arm, without shadow logging
+  shadow    =shadow: must equal baseline on every item
   off       =0: must equal baseline on every item
 """
 from __future__ import annotations
@@ -213,7 +214,8 @@ def run_arms(items, hook_dir, base_dir, workdir, bad, jobs):
             else:
                 tasks[("baseline", it["id"])] = ex.submit(run_hook, hook_dir, workdir, f"b-{it['id']}", *args, mode="0")
             tasks[("on", it["id"])] = ex.submit(run_hook, hook_dir, workdir, f"on-{it['id']}", *args, mode="1", bad=bad)
-            tasks[("shadow", it["id"])] = ex.submit(run_hook, hook_dir, workdir, f"sh-{it['id']}", *args, bad=bad)
+            tasks[("default", it["id"])] = ex.submit(run_hook, hook_dir, workdir, f"def-{it['id']}", *args, bad=bad)
+            tasks[("shadow", it["id"])] = ex.submit(run_hook, hook_dir, workdir, f"sh-{it['id']}", *args, mode="shadow", bad=bad)
             tasks[("off", it["id"])] = ex.submit(run_hook, hook_dir, workdir, f"off-{it['id']}", *args, mode="0", bad=bad)
         res = {k: f.result() for k, f in tasks.items()}
         again_tasks = {}
@@ -223,7 +225,7 @@ def run_arms(items, hook_dir, base_dir, workdir, bad, jobs):
                 again_tasks[it["id"]] = ex.submit(run_hook, hook_dir, workdir, f"re-{it['id']}", it["command"],
                                                   on["emitted"], it["stderr"], it["exit_code"], mode="1", bad=bad)
         again = {k: f.result() for k, f in again_tasks.items()}
-    out = {"baseline": {}, "on": {}, "shadow": {}, "off": {}, "again": again}
+    out = {"baseline": {}, "on": {}, "default": {}, "shadow": {}, "off": {}, "again": again}
     for (arm, iid), r in res.items():
         out[arm][iid] = r
     return out
@@ -241,6 +243,15 @@ def evaluate(items, arms, nc):
     for it in items:
         bare = arms["on"].get(it["pair_of"]) if it.get("pair_of") else None
         fails = check_item(it, arms["on"][it["id"]], arms["baseline"][it["id"]], bare, arms["again"].get(it["id"]))
+        default, on = arms["default"][it["id"]], arms["on"][it["id"]]
+        if default["rc"] != 0:
+            fails.append("default-crash")
+        elif norm(default["emitted"]) != norm(on["emitted"]):
+            fails.append("default-not-identical-to-on")
+        if opportunity_rows(default["snap"]) != opportunity_rows(on["snap"]):
+            fails.append("default-accounting-not-identical-to-on")
+        if opportunity_rows(on["snap"])[0] != 0:
+            fails.append("on-logged-opportunity")
         base_v = visible(arms["baseline"][it["id"]], it["stdout"])
         for arm in ("shadow", "off"):
             r = arms[arm][it["id"]]

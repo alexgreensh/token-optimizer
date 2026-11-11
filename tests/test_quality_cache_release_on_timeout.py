@@ -126,11 +126,13 @@ def test_quality_cache_releases_lock_on_normal_return(m, monkeypatch, tmp_path):
         "_parse_jsonl_for_quality",
         lambda fp: {},
     )
-    # Force the empty-session branch (returns 100) without touching real scoring.
-    monkeypatch.setattr(m, "_parse_jsonl_for_quality", lambda fp: {})
+    # A parser failure is unmeasured, even when no prior score is available.
 
     score = m.quality_cache(
         throttle_seconds=120, quiet=True, session_jsonl=str(session), force=True
     )
-    assert score == 100
+    assert score is not None
+    cached = json.loads(next(cache_dir.glob("quality-cache-*.json")).read_text())
+    assert cached["measured"] is False
+    assert cached["grade"] != "S"
     assert _candidate_files(cache_dir) == [], "candidate leaked on normal return"

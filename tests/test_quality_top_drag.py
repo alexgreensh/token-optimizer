@@ -86,15 +86,12 @@ def test_fill_is_the_drag_when_fill_dominates(m):
     assert drag["points"] > 40
 
 
-def test_compactions_alone_are_never_the_drag(m):
-    """3 compactions on a nearly-empty context: the count carries no quality
-    weight (COMPACTION-QUALITY.md). Recovery friction, not the count, is what
-    gets reported — and only as measured evidence, never as a drag."""
+def test_compactions_alone_are_the_drag(m):
+    """The v3 continuity prior is named when it dominates the deficit."""
     mod, _ = m
     result = mod.compute_quality_score(_qdata(compactions=3))
-    assert result["top_drag"] is None
-    assert result["recovery_status"] in ("unmeasurable", "no_concerning_signal_observed", "observing")
-    assert result["breakdown"]["compactions"]["weighted"] is False
+    assert result["top_drag"]["key"] == "compactions"
+    assert result["breakdown"]["compactions"]["weighted"] is True
 
 
 def test_waste_is_the_drag_when_waste_dominates(m, monkeypatch):

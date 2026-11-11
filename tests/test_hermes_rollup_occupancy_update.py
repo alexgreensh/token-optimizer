@@ -68,20 +68,19 @@ def _stored_quality(db, slug="sess-live"):
 
 
 def test_rollup_refreshes_row_locked_by_earlier_collect(trends_db, monkeypatch):
-    # A non-rollup collect stores the row with occupancy unavailable: fill is
-    # omitted and the score renormalizes to message/output signals (100 / S).
+    # V3 marks missing occupancy unmeasured rather than grading it S.
     assert measure._collect_hermes_sessions(quiet=True) == 1
-    assert _stored_quality(trends_db) == (100, "S")
+    assert _stored_quality(trends_db) == (100, "?")
 
     # The session's own rollup later carries the real last-prompt occupancy:
-    # 180k prompt against gpt-4o's 128k window -> fill 1.0 -> fill_score 10 ->
-    # 10*.40 + 100*.35 + 100*.25 = 64 (C). No new row is inserted — the dedup
+    # 180k prompt against gpt-4o's 128k window clamps fill to 1.0.
+    # The shared v3 scorer returns 28.6/F. No new row is inserted — the dedup
     # key is taken — but the stored quality must still move to the real grade.
     monkeypatch.setattr(
         measure, "_HERMES_ROLLUP_CONTEXT", {"sess-live": 180_000}, raising=False
     )
     assert measure._collect_hermes_sessions(quiet=True) == 0
-    assert _stored_quality(trends_db) == (64, "C")
+    assert _stored_quality(trends_db) == (28.6, "F")
 
 
 def test_rollup_without_occupancy_does_not_overwrite(trends_db, monkeypatch):
@@ -91,12 +90,12 @@ def test_rollup_without_occupancy_does_not_overwrite(trends_db, monkeypatch):
         measure, "_HERMES_ROLLUP_CONTEXT", {"sess-live": 180_000}, raising=False
     )
     assert measure._collect_hermes_sessions(quiet=True) == 1
-    assert _stored_quality(trends_db) == (64, "C")
+    assert _stored_quality(trends_db) == (28.6, "F")
 
     # A later collect with no live reading must not downgrade the stored grade.
     monkeypatch.setattr(measure, "_HERMES_ROLLUP_CONTEXT", {}, raising=False)
     assert measure._collect_hermes_sessions(quiet=True) == 0
-    assert _stored_quality(trends_db) == (64, "C")
+    assert _stored_quality(trends_db) == (28.6, "F")
 
 
 def test_rollup_context_arg_requires_positive_int():

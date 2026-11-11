@@ -8,20 +8,14 @@ Slice D / U6. The load-bearing contracts pinned here:
   (the C-surface bug class: a stale 95% peak presented as "ctx 95% now").
 - No lifetime token sum is ever a fill numerator, and historical preCompact
   occupancy is never graded as current fill: context_fill is omitted (fill
-  reported as metadata, feeding compaction_depth only) and the remaining
-  signals renormalize.
+  reported as metadata) and the shared v3 score is unmeasured.
 - Cursor disk transcripts carry NO tool results (bundle-proven writer,
   2026.11.05): no signal may read their absence as healthy execution, and
   ``bloated_results`` stays omitted with that named evidence.
-- Terminal ``turn_ended`` status/error is the disk's only failure signal and
-  must reach the score (the scorer reads ``read_cursor_messages`` directly
-  for the full status/error detail; the CC-record translation carries only a
-  reduced terminal provenance).
+- Terminal ``turn_ended`` status/error remains a diagnostic, not a v3 score input.
 - hook_measured_tokens are quarantined (unproven per-response vs cumulative
   semantics) and must never enter tokens, fill, or the score.
-- When only the base Hermes-style signals are active the score is identical
-  to ``hermes_session.compute_quality_score`` (shared composite, same grade
-  scale); extra signals extend it, never fork it.
+- Cursor uses the shared v3 scorer; the earlier signal values are diagnostics.
 
 Transcript fixtures are SYNTHETIC, built from the bundle-proven writer schema
 (``synthetic-bundle-schema``) - not captures from a live Cursor install.
@@ -144,10 +138,12 @@ def test_full_data_session_all_signals_active(cursor_home):
     assert q["signal_scores"]["compaction_depth"] is not None
     assert abs(sum(q["signal_weights"].values()) - 1.0) < 1e-3  # weights rounded to 4dp
     assert 0 <= q["score"] <= 100
-    assert q["grade"] in ("S", "A", "B", "C", "D", "F")
+    # V3 does not grade historical-only occupancy as a current measurement.
+    assert q["grade"] == "?"
+    assert q["measured"] is False
     assert q["quality_pending"] is False
-    # Weights cover exactly the active signals and sum to ~1.
-    assert set(q["signal_weights"]) == active
+    # Diagnostic signals remain available, but the score uses v3 weights.
+    assert set(q["signal_weights"]) == {"context_fill", "absolute_waste_tokens"}
     assert abs(sum(q["signal_weights"].values()) - 1.0) < 1e-3  # weights rounded to 4dp
     # Per-signal provenance is present and names real Cursor sources.
     for name in active:
@@ -220,8 +216,9 @@ def test_precompact_peak_never_moves_current_composite(cursor_home):
     # The only movement is the event-heat term: 80 vs 100 on compaction_depth.
     assert hot["signal_scores"]["compaction_depth"] == 80
     assert cool["signal_scores"]["compaction_depth"] == 100
-    expected_delta = 20 * hot["signal_weights"]["compaction_depth"]
-    assert cool["score"] - hot["score"] == round(expected_delta)
+    # Historical peak is diagnostic only in the common v3 score.
+    assert cool["score"] == hot["score"]
+    assert not hot["measured"] and not cool["measured"]
 
 
 def test_context_window_reported_only_for_single_known_model(cursor_home):

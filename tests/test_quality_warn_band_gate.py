@@ -129,7 +129,7 @@ def test_quality_cache_warn_does_not_repeat_within_a_band(m, monkeypatch, tmp_pa
     scores = iter([66, 64, 62])  # same band (6), three ticks in a row
 
     def _fake_score(quality_data, session_id=None):
-        return {"score": next(scores), "breakdown": {}, "signals": {}}
+        return {"score": next(scores), "measured": True, "breakdown": {}, "signals": {}}
 
     monkeypatch.setattr(m, "compute_quality_score", _fake_score)
 
@@ -163,7 +163,7 @@ def test_quality_cache_warn_fires_again_on_band_drop(m, monkeypatch, tmp_path, c
     scores = iter([66, 45])  # band 6, then band 4
 
     def _fake_score(quality_data, session_id=None):
-        return {"score": next(scores), "breakdown": {}, "signals": {}}
+        return {"score": next(scores), "measured": True, "breakdown": {}, "signals": {}}
 
     monkeypatch.setattr(m, "compute_quality_score", _fake_score)
 
@@ -205,7 +205,7 @@ def test_quality_cache_warn_false_does_not_print(m, monkeypatch, tmp_path, capsy
     monkeypatch.setattr(m, "_parse_jsonl_for_quality", lambda fp: _quiet_quality_data())
     monkeypatch.setattr(
         m, "compute_quality_score",
-        lambda quality_data, session_id=None: {"score": 10, "breakdown": {}, "signals": {}},
+        lambda quality_data, session_id=None: {"score": 10, "measured": True, "breakdown": {}, "signals": {}},
     )
 
     capsys.readouterr()

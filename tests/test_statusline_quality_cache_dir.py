@@ -103,3 +103,16 @@ def test_recovery_flags_always_render_as_observing(tmp_path, status):
     out = _run(tmp_path)
     assert "Compacts:3(observing)" in out
     assert "needs attention" not in out and "recovery ok" not in out
+
+
+@pytest.mark.skipif(not _has_node(), reason="node not available")
+def test_unmeasured_cache_never_renders_a_grade(tmp_path):
+    cache_dir = tmp_path / '.claude' / 'token-optimizer'
+    _write_cache(cache_dir)
+    path = cache_dir / f'quality-cache-{SID}.json'
+    cache = json.loads(path.read_text())
+    cache.update(score=56.0, resource_health=56.0, grade='?', resource_health_grade='?', measured=False, score_version=3)
+    path.write_text(json.dumps(cache))
+    out = _run(tmp_path)
+    assert 'ContextQ:~56' in out
+    assert 'ContextQ:S' not in out

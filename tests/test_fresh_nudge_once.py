@@ -90,16 +90,18 @@ def test_unreadable_transcript_keeps_nudge_state(m, tmp_path, monkeypatch):
     transcript = tmp_path / f"{SID}.jsonl"
     transcript.write_text('{"type":"user"}\n', encoding="utf-8")
     cache = _cache(m, SID)
-    # score_version 2: a legacy unversioned cache would (correctly) reseed the
-    # nudge baseline instead of carrying a v1 score into v2 comparisons.
-    cache.write_text(json.dumps({"score": 67.7, "score_version": 2, "_fresh_nudge_fired": True,
+    # Use v3 so the nudge baseline is comparable across the failed parse.
+    cache.write_text(json.dumps({"score": 67.7, "score_version": 3, "_fresh_nudge_fired": True,
                                  "_nudge_previous_score": 67.7, "_nudge_count": 2}), encoding="utf-8")
     # The parser gives up (a very large transcript): the blank cache it writes
     # must not re-arm nudges that already fired.
     monkeypatch.setattr(m, "_parse_jsonl_for_quality", lambda path: None)
     m.quality_cache(quiet=True, session_jsonl=str(transcript), force=True, session_id=SID)
     after = json.loads(cache.read_text(encoding="utf-8"))
-    assert after["score"] == 100
+    # A failed parse must retain the last measurement, not invent a perfect score.
+    assert after["score"] <= 67.7
+    assert after["measured"] is False
+    assert after["grade"] != "S"
     assert after["_fresh_nudge_fired"] is True
     assert after["_nudge_previous_score"] == 67.7
     assert after["_nudge_count"] == 2

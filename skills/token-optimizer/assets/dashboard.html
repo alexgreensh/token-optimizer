@@ -4171,7 +4171,7 @@ var DB = (function() {
           (isCodex ? '' : '<td style="font-family:var(--font-mono);font-size:11px;">' + esc(ttlStr) + '</td>') +
           '<td style="font-family:var(--font-mono);font-size:11px;">' + esc(pacingStr) + '</td>' +
           '<td style="color:var(--c-accent-cyan);font-family:var(--font-mono);font-size:12px;">' + costStr + '</td>' +
-          '<td><span class="quality-badge ' + qBadgeClass + '">' + qGrade + ' (' + qs + ')</span></td>' +
+          '<td><span class="quality-badge ' + qBadgeClass + '">' + (sd.quality_measured === false ? (sd.quality_score == null ? '--' : '~' + qs) : qGrade + ' (' + qs + ')') + '</span></td>' +
           '<td style="color:var(--c-text-dim);font-size:11px;">' + esc(modelStr) + '</td>' +
           '<td style="color:var(--c-text-dim);font-size:12px;" title="' + esc(sdTopic) + '">' + esc(sdTopic.length > 35 ? sdTopic.slice(0,33) + '\u2026' : sdTopic) + '</td>' +
           '</tr>';

@@ -1,51 +1,9 @@
 #!/usr/bin/env python3
-"""Cursor session quality scoring with per-signal provenance (Slice D / U6).
+"""Cursor quality uses the shared v3 scorer with explicit provenance.
 
-Moves the Cursor quality score off the bare three-signal fallback toward the
-full seven-signal model - one proven data source at a time, and never past
-what Cursor actually carries.
-
-Data-source reality (bundle-proven against Cursor CLI 2026.11.05, and the
-recorded hook contract this repo observes):
-
-- preCompact ``context_tokens`` / ``context_window_size`` /
-  ``context_usage_percent`` are the host's occupancy AT COMPACTION TIME.
-  They are HISTORICAL evidence: after the compaction the real occupancy is
-  whatever the host rebuilt, which no hook observes. They are reported as
-  fill metadata (labeled ``cursor_precompact_historical``,
-  ``fill_is_current`` False) and feed ``compaction_depth`` - a signal about
-  the compaction event, itself historical. ``context_fill`` is NEVER graded
-  from them: a past peak must not poison the current composite, so the
-  signal is omitted and the composite renormalizes.
-- A lifetime token sum is never a fill numerator. With no current host
-  occupancy source the fill signal stays omitted.
-- Disk transcripts carry NO tool results (the writer reduces tool-result
-  content to ``{toolName}`` and drops it). ``bloated_results`` therefore has
-  no source and stays omitted; absence of failure records reflects hook
-  coverage, never proof of clean runs.
-- Terminal ``turn_ended`` status/error lines are the disk's ONLY failure
-  evidence. This module reads ``cursor_transcript.read_cursor_messages``
-  directly for the full status/error detail (the CC-record translation
-  carries only a reduced terminal provenance).
-- ``hook_measured_tokens`` (afterAgentResponse usage) are quarantined:
-  per-response vs cumulative semantics are unproven, so they never enter
-  tokens, fill, or this score.
-- Cursor exposes no local billing data. Nothing here computes dollars.
-
-Composite: the base signals (context fill, message count, output/input
-ratio) reuse the EXACT banding tables and relative weights of
-``hermes_session.compute_quality_score`` (0.40 / 0.35 / 0.25, renormalized
-over active signals) and the same measure.py grade scale. When deeper
-Cursor signals are active they take a 0.40 family share (compaction depth
-0.15, agent efficiency 0.15, decision density 0.10) and the base family
-keeps its Hermes proportions scaled by 0.6 - the resource/efficiency split
-ported from the Claude composite. A session with only base signals active
-gets a byte-identical score to the shared Hermes scorer; extra evidence
-extends the score, it never forks the scale.
-
-Consumers: ``compute_cursor_quality(tally, ...)`` for one session tally;
-``quality_for_session`` is the seam ``cursor_session.normalize_session`` (and
-the status surfaces) call so there is exactly one Cursor scorer.
+Cursor's pre-compaction occupancy is historical, not current fill. Without a
+current occupancy reading the score is unmeasured. Existing per-signal data
+is retained as diagnostics and does not affect the composite score.
 """
 
 from __future__ import annotations
@@ -433,24 +391,14 @@ def compute_cursor_quality(
         for name, reason in _NEVER_AVAILABLE.items():
             _omit(name, reason)
 
-        # --- composite ------------------------------------------------------
-        extras_active = [n for n in _EXTRA_WEIGHTS if n in signals_active]
-        base_scale = _BASE_FAMILY_SCALE_WITH_EXTRAS if extras_active else 1.0
-        weights: dict[str, float] = {}
-        for name in signals_active:
-            if name in _BASE_WEIGHTS:
-                weights[name] = _BASE_WEIGHTS[name] * base_scale
-            else:
-                weights[name] = _EXTRA_WEIGHTS[name]
-        total_weight = sum(weights.values())
-        if total_weight <= 0:
-            return None
-        weights = {k: v / total_weight for k, v in weights.items()}
-        raw = sum(signal_scores[name] * weights[name] for name in signals_active)
-        score = int(round(min(100, max(0, raw))))
-        grade, band = _grade_and_band(score)
+        # Cursor's pre-compaction occupancy is historical. With no current
+        # occupancy, the common scorer marks the estimate unmeasured.
+        from _measure.quality_continuity import session_quality
+        common = session_quality(None, ctx_window, model, len(compactions))
+        score, grade, band = common["score"], common["grade"], common["band"]
+        weights = {"context_fill": 5 / 7, "absolute_waste_tokens": 2 / 7}
 
-        caveats = [_NO_TOOL_RESULTS_CAVEAT]
+        caveats = [_NO_TOOL_RESULTS_CAVEAT, "Per-signal Cursor values are diagnostics, not v3 score inputs."]
         if snapshot is not None:
             caveats.append(_HISTORICAL_FILL_CAVEAT)
         if token_source != "cursor_state_vscdb":
@@ -461,10 +409,14 @@ def compute_cursor_quality(
 
         return {
             "score": score,
+            "measured": common["measured"],
+            "score_version": common["score_version"],
+            "continuity": common["continuity"],
             "grade": grade,
             "band": band,
             "runtime": "cursor",
             "quality_pending": False,
+            "score_signals_active": [],
             "signals_active": signals_active,
             "signals_omitted": signals_omitted,
             "omitted_reasons": omitted_reasons,

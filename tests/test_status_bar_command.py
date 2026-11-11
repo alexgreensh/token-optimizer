@@ -581,9 +581,9 @@ def test_post_compact_counts_a_compaction_the_transcript_does_not_show_yet(sb):
     assert sb._settled_compactions(0, {"compactions": 1, "_compact_bumped_at": 1000}, post_compact=True, now=1030) == 1
     # The next real compaction, later: counted again.
     assert sb._settled_compactions(1, {"compactions": 1, "_compact_bumped_at": 1000}, post_compact=True, now=5000) == 2
-    # Never lower than what was known; a parse that sees more wins.
-    assert sb._settled_compactions(0, {"compactions": 3}, post_compact=False) == 3
-    assert sb._settled_compactions(4, {"compactions": 3}, post_compact=True, now=9000) == 4
+    # V3 corrects an unconfirmed historical over-count after the pending window.
+    assert sb._settled_compactions(0, {"compactions": 3}, post_compact=False) == 0
+    assert sb._settled_compactions(4, {"compactions": 3}, post_compact=True, now=9000) == 5
 
 
 def test_recent_compact_boundary_reads_the_tail(sb, tmp_path):

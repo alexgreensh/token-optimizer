@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, transcript_stream
+from . import _compat, transcript_stream, quality_continuity
 
 
 def _find_all_jsonl_files(days=None):
@@ -1151,103 +1151,10 @@ def parse_session_turns(filepath):
 
 
 def score_session_quality(session_data):
-    """Score a single session's quality on a 0-100 scale.
-
-    Uses a simplified version of the 5-signal quality score:
-    - Context fill at session end (25%)
-    - Message count risk (25%)
-    - Cache hit rate (20%)
-    - Output/input ratio (15%)
-    - Compaction events (15%)
-
-    session_data should include: total_input_tokens, total_output_tokens,
-    message_count, cache_hit_rate, api_calls, and optionally total_cache_read.
-    """
-    _measure_facade = _compat.facade()
-    score = 0.0
-
-    # Signal 1: Context fill (25%)
-    # Lower fill = better (more room for work)
-    context_window = _measure_facade.detect_context_window()[0]
-    total_input = session_data.get("total_input_tokens", 0)
-    fill_ratio = total_input / context_window if context_window > 0 else 0
-    if fill_ratio < 0.3:
-        fill_score = 100
-    elif fill_ratio < 0.5:
-        fill_score = 80
-    elif fill_ratio < 0.7:
-        fill_score = 55
-    elif fill_ratio < 0.85:
-        fill_score = 30
-    else:
-        fill_score = 10
-    score += fill_score * 0.25
-
-    # Signal 2: Message count risk (25%)
-    # More messages = higher risk of quality degradation
-    msg_count = session_data.get("message_count", 0)
-    if msg_count <= 20:
-        msg_score = 100
-    elif msg_count <= 40:
-        msg_score = 80
-    elif msg_count <= 60:
-        msg_score = 55
-    elif msg_count <= 100:
-        msg_score = 30
-    else:
-        msg_score = 10
-    score += msg_score * 0.25
-
-    # Signal 3: Cache hit rate (20%)
-    # Higher cache = better (reusing context efficiently)
-    chr_ = session_data.get("cache_hit_rate", 0)
-    if chr_ >= 0.8:
-        cache_score = 100
-    elif chr_ >= 0.6:
-        cache_score = 80
-    elif chr_ >= 0.4:
-        cache_score = 55
-    elif chr_ >= 0.2:
-        cache_score = 30
-    else:
-        cache_score = 10
-    score += cache_score * 0.20
-
-    # Signal 4: Output/input ratio (15%)
-    # Very low ratio = wasteful (loading lots of context, producing little)
-    total_output = session_data.get("total_output_tokens", 0)
-    if total_input > 0:
-        oi_ratio = total_output / total_input
-    else:
-        oi_ratio = 1.0
-    if oi_ratio >= 0.05:
-        oi_score = 100
-    elif oi_ratio >= 0.02:
-        oi_score = 70
-    elif oi_ratio >= 0.01:
-        oi_score = 40
-    else:
-        oi_score = 15
-    score += oi_score * 0.15
-
-    # Signal 5: API calls vs messages (15%)
-    # Healthy: roughly 1 API call per 2 messages
-    api_calls = session_data.get("api_calls", 0)
-    if msg_count > 0 and api_calls > 0:
-        calls_per_msg = api_calls / msg_count
-        if calls_per_msg <= 0.6:
-            api_score = 100
-        elif calls_per_msg <= 0.8:
-            api_score = 75
-        else:
-            api_score = 50
-    else:
-        api_score = 50
-    score += api_score * 0.15
-
-    final = int(round(min(100, max(0, score))))
-
-    return {"score": final, "band": _measure_facade.score_to_band(final), "grade": _measure_facade.score_to_grade(final)}
+    """Score observed current occupancy through the common v3 scorer."""
+    return quality_continuity.session_quality(
+        session_data.get("context_tokens"), session_data.get("model_context_window"),
+        session_data.get("model"), session_data.get("compactions", 0))
 
 
 def _record_model(msg):

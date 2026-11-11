@@ -315,143 +315,21 @@ def compute_quality_score(
     cache_read: int = 0,
     context_tokens: int | None | object = _LIVE_CONTEXT_UNSET,
 ) -> dict[str, Any]:
-    """Score Hermes session context quality from available session-level fields.
-
-    Two fill modes, chosen by whether the caller passes ``context_tokens``:
-
-    - Not passed (the Cursor/Copilot/Grok/Antigravity adapters): the legacy
-      lifetime fill numerator ``input_tokens + cache_read`` — both occupy the
-      same context window, so a session that read 160K cached tokens against
-      a 200K window is 80% full, not 0%.
-    - Passed (the Hermes path): live prompt occupancy only. Hermes session
-      rows store lifetime totals — every API call re-sends the prompt, so
-      summing them is never a context-window measurement — and only the
-      provider-reported latest prompt counts. A non-positive or non-numeric
-      value is "measured but unavailable": fill is omitted rather than
-      fabricated and the two remaining signals renormalize below.
-
-    Grade thresholds reuse measure.py's ``score_to_grade`` / ``score_to_band``
-    exactly.
-
-    Returns a dict with: score (0-100 int), grade (letter), band (label),
-    signals_active (list), signals_omitted (list).
-    """
+    """Use the common scorer with the latest measured prompt occupancy."""
+    from _measure.quality_continuity import session_quality
     ctx_win = context_window if context_window and context_window > 0 else _context_window_for_model(model)
-    # Only a live prompt reading proves a window; the legacy lifetime sum
-    # re-counts every call and exceeds any window by construction.
-    if context_tokens is not _LIVE_CONTEXT_UNSET:
-        ctx_win = promote_window_for_observed_tokens(model, ctx_win, context_tokens)
-
-    # Signal 1: Context fill (40% weight when present).
-    if context_tokens is _LIVE_CONTEXT_UNSET:
-        fill_available = True
-        fill_numerator = input_tokens + max(0, cache_read)
-        fill_ratio = min(1.0, max(0.0, fill_numerator / ctx_win)) if ctx_win > 0 else 0.0
-        context_source = "lifetime_tokens"
-    else:
-        fill_available = (
-            isinstance(context_tokens, (int, float))
-            and not isinstance(context_tokens, bool)
-            and context_tokens > 0
-        )
-        fill_ratio = min(1.0, max(0.0, context_tokens / ctx_win)) if fill_available and ctx_win > 0 else None
-        context_source = "provider_prompt_tokens" if fill_available else "unavailable"
-    if not fill_available:
-        fill_score = None
-    elif fill_ratio < 0.30:
-        fill_score = 100
-    elif fill_ratio < 0.50:
-        fill_score = 80
-    elif fill_ratio < 0.70:
-        fill_score = 55
-    elif fill_ratio < 0.85:
-        fill_score = 30
-    else:
-        fill_score = 10
-
-    # Signal 2: Message count risk (35% weight)
-    if message_count <= 20:
-        msg_score = 100
-    elif message_count <= 40:
-        msg_score = 80
-    elif message_count <= 60:
-        msg_score = 55
-    elif message_count <= 100:
-        msg_score = 30
-    else:
-        msg_score = 10
-
-    # Signal 3: Output / input ratio (25% weight)
-    if input_tokens > 0:
-        oi_ratio = output_tokens / input_tokens
-    else:
-        oi_ratio = 1.0
-    if oi_ratio >= 0.05:
-        oi_score = 100
-    elif oi_ratio >= 0.02:
-        oi_score = 70
-    elif oi_ratio >= 0.01:
-        oi_score = 40
-    else:
-        oi_score = 15
-
-    if fill_available:
-        weights = {"fill": 0.40, "message_count": 0.35, "output_input_ratio": 0.25}
-        raw = (
-            fill_score * weights["fill"]
-            + msg_score * weights["message_count"]
-            + oi_score * weights["output_input_ratio"]
-        )
-    else:
-        # Preserve the relative 35:25 weighting when occupancy is unavailable.
-        weights = {"fill": 0.0, "message_count": 7 / 12, "output_input_ratio": 5 / 12}
-        raw = msg_score * weights["message_count"] + oi_score * weights["output_input_ratio"]
-    final = int(round(min(100, max(0, raw))))
-
-    helpers = _get_measure_helpers()
-    if helpers:
-        score_to_grade, score_to_band = helpers[0], helpers[1]
-        grade = score_to_grade(final)
-        band = score_to_band(final)
-    else:
-        # Inline fallback thresholds matching measure.py exactly.
-        if final >= 90:
-            grade = "S"
-        elif final >= 80:
-            grade = "A"
-        elif final >= 70:
-            grade = "B"
-        elif final >= 55:
-            grade = "C"
-        elif final >= 40:
-            grade = "D"
-        else:
-            grade = "F"
-        if final >= 80:
-            band = "Good"
-        elif final >= 60:
-            band = "Fair"
-        elif final >= 40:
-            band = "Needs Work"
-        else:
-            band = "Poor"
-
-    return {
-        "score": final,
-        "grade": grade,
-        "band": band,
-        "fill_ratio": round(fill_ratio, 4) if fill_ratio is not None else None,
-        "context_window_used": ctx_win,
-        "context_source": context_source,
-        "signals_active": list(ACTIVE_QUALITY_SIGNALS if fill_available else ACTIVE_QUALITY_SIGNALS[1:]),
-        "signals_omitted": list(OMITTED_QUALITY_SIGNALS) + ([] if fill_available else ["context_fill"]),
-        "signal_scores": {
-            "fill": fill_score,
-            "message_count": msg_score,
-            "output_input_ratio": oi_score,
-        },
-        "signal_weights": weights,
-    }
+    current = context_tokens if context_tokens is not _LIVE_CONTEXT_UNSET else None
+    ctx_win = promote_window_for_observed_tokens(model, ctx_win, current)
+    result = session_quality(current, ctx_win, model)
+    result["fill_ratio"] = (round(min(1.0, current / ctx_win), 4)
+                            if result["measured"] and ctx_win > 0 else None)
+    result["context_window_used"] = ctx_win
+    result["context_source"] = "provider_prompt_tokens" if result["measured"] else "unavailable"
+    result["signals_active"] = ["context_fill"] if result["measured"] else []
+    result["signals_omitted"] = [] if result["measured"] else ["context_fill"]
+    result["signal_scores"] = {"fill": result["signals"]["context_fill_degradation"] if result["measured"] else None}
+    result["signal_weights"] = {"fill": 5 / 7 if result["measured"] else 0.0, "waste": 2 / 7 if result["measured"] else 0.0}
+    return result
 
 
 # ---------------------------------------------------------------------------

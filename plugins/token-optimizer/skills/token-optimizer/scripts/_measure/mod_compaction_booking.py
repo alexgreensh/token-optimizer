@@ -102,23 +102,30 @@ def _record_verified(facade, event):
                     return {'ok': True, 'duplicate': True, 'canonical_action_id': old[0][0]}
                 return {'ok': False, 'reason': 'identity-conflict'}
             marker = 'compaction_id=' + compact_id
-            # Existing compaction credits with the same identity take precedence.
-            existing = conn.execute("SELECT 1 FROM savings_events WHERE session_uuid = ? AND detail LIKE ? "
-                                    "UNION ALL SELECT 1 FROM compression_events WHERE session_uuid = ? AND detail LIKE ? LIMIT 1",
-                                    (uuid, '%' + marker + '%', uuid, '%' + marker + '%')).fetchone()
-            if existing:
-                conn.rollback()
-                return {'ok': False, 'reason': 'existing-compaction-credit'}
+            # Unidentified legacy compaction credit could be this boundary. Suppress
+            # our credit for the session, but still book the actual compaction cost.
+            existing = conn.execute(
+                "SELECT 1 FROM savings_events WHERE (session_uuid=? OR session_id=?) "
+                "AND event_type != 'mod_compaction_cost' AND (detail LIKE ? OR "
+                "(instr(lower(coalesce(detail,'')), 'compaction_id=')=0 AND "
+                "(lower(coalesce(event_type,'')) LIKE '%compact%' OR lower(coalesce(detail,'')) LIKE '%compact%'))) "
+                "UNION ALL SELECT 1 FROM compression_events WHERE (session_uuid=? OR session_id=?) "
+                "AND feature NOT IN ('mod_clean','mod_clean_first') AND (detail LIKE ? OR "
+                "(instr(lower(coalesce(detail,'')), 'compaction_id=')=0 AND "
+                "(lower(coalesce(feature,'')) LIKE '%compact%' OR lower(coalesce(detail,'')) LIKE '%compact%'))) LIMIT 1",
+                (uuid, sid, '%' + marker + '%', uuid, sid, '%' + marker + '%')).fetchone()
             stamp = datetime.fromtimestamp(timestamp).isoformat()
             feature = 'mod_clean_first' if event['action'] == 'clean-first' else 'mod_clean'
             detail = 'from the Claude Code mod; compaction cost from engine session cost delta; ' + marker
-            cur = conn.execute('INSERT INTO compression_events(timestamp,session_id,session_uuid,feature,command_pattern,'
-                'original_tokens,compressed_tokens,compression_ratio,quality_preserved,verified,detail,model,tier) '
-                'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', (stamp, sid, uuid, feature, 'manual-compaction', before, after,
-                after / before, 0, 1, detail, model, 'measured'))
-            if cur.rowcount != 1:
-                raise ValueError('removal not written')
-            compression_id = cur.lastrowid
+            compression_id = 0  # No compression row when an older credit takes precedence.
+            if not existing:
+                cur = conn.execute('INSERT INTO compression_events(timestamp,session_id,session_uuid,feature,command_pattern,'
+                    'original_tokens,compressed_tokens,compression_ratio,quality_preserved,verified,detail,model,tier) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', (stamp, sid, uuid, feature, 'manual-compaction', before, after,
+                    after / before, 0, 1, detail, model, 'measured'))
+                if cur.rowcount != 1:
+                    raise ValueError('removal not written')
+                compression_id = cur.lastrowid
             cur = conn.execute('INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_id,'
                 'session_uuid,detail,model,unjoinable) VALUES(?,?,?,?,?,?,?,?,?)',
                 (stamp, 'mod_compaction_cost', 0, -cost, sid, uuid, detail, model, 0))
@@ -130,7 +137,7 @@ def _record_verified(facade, event):
             if cur.rowcount != 1:
                 raise ValueError('receipt not written')
             conn.commit()
-            return {'ok': True, 'duplicate': False, 'removed_tokens': before - after, 'cost_usd': cost}
+            return {'ok': True, 'duplicate': False, 'removed_tokens': 0 if existing else before - after, 'cost_usd': cost, **({'reason': 'existing-compaction-credit'} if existing else {})}
         except Exception:
             conn.rollback()
             raise

@@ -78,7 +78,8 @@ def test_existing_compaction_credit_is_not_duplicated(case):
     finally:
         conn.close()
     result = mod_compaction_booking.record(facade, event)
-    assert not result['ok'] and result['reason'] == 'existing-compaction-credit'
+    assert result['ok'] and result['reason'] == 'existing-compaction-credit'
+    assert result['removed_tokens'] == 0 and result['cost_usd'] == pytest.approx(event['cost_usd'])
 
 
 def test_clean_first_is_tagged_separately(case):
@@ -386,3 +387,43 @@ def test_confirmed_compaction_without_a_positive_delta_is_counted_unpriced(case,
     result = mod_compaction_booking.record(facade, dict(event, before_tokens=before, after_tokens=after, observed_action=True))
     assert result["ok"] and not result["priced"]
     assert mod_compaction_booking.summary(facade, "2025-01-01")["unpriced_events"] == 1
+
+
+@pytest.mark.parametrize("table", ["savings_events", "compression_events"])
+def test_legacy_unidentified_compaction_suppresses_credit_but_books_cost(case, table):
+    from _measure import mod_compaction_booking
+    facade, _, event = case
+    conn = facade._init_trends_db()
+    try:
+        if table == "savings_events":
+            conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_id,detail) VALUES(?,?,?,?,?,?)",
+                         ("2026-01-01", "legacy_compaction", 15000, 0.1, event["session_id"], "legacy row without id"))
+        else:
+            conn.execute("INSERT INTO compression_events(timestamp,session_id,feature,original_tokens,compressed_tokens,detail) VALUES(?,?,?,?,?,?)",
+                         ("2026-01-01", event["session_id"], "manual_compaction", 20000, 5000, "legacy row without id"))
+        conn.commit()
+    finally:
+        conn.close()
+    result = mod_compaction_booking.record(facade, dict(event, observed_action=True))
+    assert result["ok"] and result["reason"] == "existing-compaction-credit"
+    assert mod_compaction_booking.record(facade, dict(event, observed_action=True))["duplicate"]
+    conn = facade._init_trends_db()
+    try:
+        assert conn.execute("SELECT count(*) FROM compression_events WHERE feature='mod_clean'").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*), sum(cost_saved_usd) FROM savings_events WHERE event_type='mod_compaction_cost'").fetchone() == (1, pytest.approx(-event['cost_usd']))
+    finally:
+        conn.close()
+
+
+def test_other_sessions_legacy_compaction_does_not_suppress_credit(case):
+    from _measure import mod_compaction_booking
+    facade, _, event = case
+    conn = facade._init_trends_db()
+    try:
+        conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_id,detail) VALUES(?,?,?,?,?,?)",
+                     ("2026-01-01", "legacy_compaction", 15000, 0.1, "another-session", "no id"))
+        conn.commit()
+    finally:
+        conn.close()
+    result = mod_compaction_booking.record(facade, event)
+    assert result['ok'] and result['removed_tokens'] == 15000

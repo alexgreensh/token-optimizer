@@ -785,49 +785,44 @@ def runway(**kw):
     return r
 
 
-def test_limits_card_shows_used_and_without_per_window_with_the_big_multiplier():
-    out = story({'savings': full(), 'runway': runway()})
-    card = limits_card(out)
-    assert '<h2 class="st-h">Your limits go further</h2>' in card
-    assert 'st-mega--card">&asymp;2.7%</span><span class="st-mega__unit">more work per token</span>' in card
-    assert '5-hour limit' in card and 'Weekly limit' in card
-    assert 'st-mega--card">17%</span><span class="st-mega__unit">used</span>' in card
-    assert 'would be <span class="st-limit__num">17%</span> without Token Optimizer' in card
-    assert 'st-mega--card">78%</span>' in card and 'would be <span class="st-limit__num">80%</span> without Token Optimizer' in card
-    assert 'How this is calculated' in card and 'Lighter context: &times;1.0233' in card
-    assert 'plan goes further' not in _visible(out).lower() and 'estimated $' not in _visible(out).lower()
-    assert 'Your plan goes further' not in out
-    assert out.index('st-limits-card') < out.index('class="st-grid"')
+def test_limits_card_uses_transformation_ratio_and_puts_direct_measurement_in_fold():
+    s = full()
+    s['before_after'] = ok_transformation()
+    card = limits_card(story({'savings': s, 'runway': runway()}))
+    assert '&asymp;14% more room' in card
+    assert '<span class="st-limit__used">17%</span> of your 5-hour limit used with Token Optimizer.' in card
+    assert 'Without Token Optimizer you\'d be at <span class="st-limit__num">19%</span> of your 5-hour limit.' in card
+    assert '<span class="st-limit__used">78%</span> of your weekly limit used with Token Optimizer.' in card
+    assert 'Without Token Optimizer you\'d be at <span class="st-limit__num">91%</span> of your weekly limit.' in card
+    assert '2.7% more work per token' in card.split('<details')[1]
+    assert 'counterfactual monthly cost divided by actual monthly cost' in card.split('<details')[1]
+    assert 'class="st-limits__top"' in card and 'class="st-limits__bottom"' in card
 
 
-def test_limits_card_uses_the_last_stored_meter_reading_when_no_window_is_live():
+def test_limits_card_uses_last_reading_and_caps_above_limit():
+    s = full()
+    s['before_after'] = ok_transformation()
     r = runway(windows=[], meter_ts=1794376851,
-               last_known_windows=[{'key': 'seven_day', 'label': '7d', 'used_pct': 78, 'without_used_pct': 80.3}])
-    card = limits_card(story({'savings': full(), 'runway': r}))
-    assert 'st-mega--card">78%</span><span class="st-mega__unit">used</span>' in card
-    assert 'would be <span class="st-limit__num">80%</span> without Token Optimizer' in card
+               last_known_windows=[{'key': 'seven_day', 'used_pct': 98}])
+    card = limits_card(story({'savings': s, 'runway': r}))
+    assert 'Without Token Optimizer you\'d be at <span class="st-limit__num">100%</span> of your weekly limit, over your limit.' in card
     assert 'Last reading, ' in card
-    assert 'refreshes while you are actively working' not in card
 
 
-def test_limits_card_capped_window_says_it_would_be_at_the_limit():
-    r = runway(windows=[{'key': 'seven_day', 'label': '7d', 'used_pct': 98, 'without_used_pct': 100, 'would_be_capped': True}])
-    card = limits_card(story({'savings': full(), 'runway': r}))
-    assert 'would already be at the limit without Token Optimizer' in card
+def test_limits_card_shows_meter_without_inventing_a_baseline():
+    card = limits_card(story({'savings': full(), 'runway': runway()}))
+    assert '<span class="st-limit__used">78%</span>' in card
+    assert 'comparison needs a before-and-after baseline' in card
+    assert 'st-limit__num' not in card
+    s = full()
+    s['before_after'] = dict(ok_transformation(), actual_monthly_usd=0)
+    card = limits_card(story({'savings': s, 'runway': runway()}))
+    assert 'st-limit__num' not in card
 
 
-def test_limits_window_block_hidden_without_any_reading_but_multiplier_stays():
-    card = limits_card(story({'savings': full(), 'runway': runway(windows=[], last_known_windows=[])}))
-    assert 'class="st-limits"' not in card and 'st-limit__name' not in card
-    assert '&asymp;2.7%' in card and 'actively working' not in card and 'unavailable' not in card.lower()
-
-
-@pytest.mark.parametrize('rw', [None, {}, {'windows': 'junk', 'extra_work_pct': 0}, {'windows': [{'used_pct': 'x'}], 'last_known_windows': [None]}])
-def test_limits_card_absent_when_there_is_nothing_to_show(rw):
-    data = {'savings': full()}
-    if rw is not None:
-        data['runway'] = rw
-    assert 'st-limits-card' not in story(data)
+def test_limits_card_ignores_invalid_meter_readings():
+    r = runway(windows=[{'key': 'seven_day', 'used_pct': None}, {'key': 'five_hour', 'used_pct': 101}])
+    assert 'st-limits-card' not in story({'savings': full(), 'runway': r})
 
 
 def test_savings_page_has_no_removed_cards_and_no_apologetic_copy_above_the_folds():

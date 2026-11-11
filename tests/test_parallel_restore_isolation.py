@@ -1,8 +1,10 @@
 """Restore must never mistake a session-id substring for session ownership."""
 import importlib
 import json
+import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +46,15 @@ def test_ceiling_keeps_latest_of_every_live_session(measure):
     assert measure._checkpoints_to_prune(checkpoints, now=now, total_max=1) == []
 
 
+def test_active_session_can_restore_its_old_checkpoint(measure, capsys):
+    cp = measure.CHECKPOINT_DIR / "active-20260101-120000.md"
+    cp.write_text("# checkpoint\nGenerated: test\n## Active Task\nOld but still active\n")
+    old = time.time() - 8 * 86400
+    os.utime(cp, (old, old))
+    measure.compact_restore(session_id="active", is_compact=True)
+    assert "Old but still active" in capsys.readouterr().out
+
+
 def test_session_lookup_uses_session_and_date_index(measure):
     conn = measure._init_trends_db()
     try:
@@ -53,6 +64,61 @@ def test_session_lookup_uses_session_and_date_index(measure):
         assert not any("TEMP B-TREE" in str(row) for row in plan)
     finally:
         conn.close()
+
+
+def test_resume_candidates_use_activity_index(measure):
+    conn = measure._init_trends_db()
+    try:
+        query = ("SELECT session_uuid,date FROM session_log WHERE session_uuid IS NOT NULL "
+                 "AND session_uuid != '' AND COALESCE(NULLIF(last_activity_day,''),NULLIF(date,'')) >= date('now', ?) "
+                 "ORDER BY COALESCE(NULLIF(last_activity_day,''),NULLIF(date,'')) DESC, "
+                 "COALESCE(collected_at,'') DESC,id DESC LIMIT ?")
+        plan = conn.execute("EXPLAIN QUERY PLAN " + query, ("-7 days", 30)).fetchall()
+        assert any("idx_session_log_resume_activity" in str(row) for row in plan)
+        assert not any("TEMP B-TREE" in str(row) for row in plan)
+    finally:
+        conn.close()
+
+
+def test_simultaneous_captures_in_same_second_keep_both(measure, monkeypatch, tmp_path):
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 11, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(measure, "datetime", FrozenDatetime)
+    monkeypatch.setattr(measure, "_cleanup_checkpoints", lambda: None)
+    paths = []
+    for n in range(2):
+        path = tmp_path / f"transcript-{n}.jsonl"
+        path.write_text(json.dumps({"type": "user", "uuid": str(n),
+                                   "message": {"role": "user", "content": f"Distinct capture {n}"}}) + "\n")
+        paths.append(path)
+    def capture(path):
+        return measure.compact_capture(session_id="same-session", trigger="auto", _trusted_transcript=str(path))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        captures = list(pool.map(capture, paths))
+    assert all(captures) and len(set(captures)) == 2
+    bodies = [Path(path).read_text() for path in captures]
+    assert all(any(f"Distinct capture {n}" in body for body in bodies) for n in range(2))
+    assert all(Path(path).with_suffix(".json").exists() for path in captures)
+
+
+def test_forked_transcript_restores_its_own_continuation(measure, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(measure, "_cleanup_checkpoints", lambda: None)
+    def user(text, ident):
+        return json.dumps({"type": "user", "uuid": ident, "message": {"role": "user", "content": text}})
+    original = user("Original shared objective", "root")
+    parent = tmp_path / "parent.jsonl"
+    fork = tmp_path / "fork.jsonl"
+    parent.write_text(original + "\n" + user("Parent private direction", "parent") + "\n")
+    fork.write_text(original + "\n" + user("Fork private direction", "fork") + "\n")
+    for sid, path in (("parent-session", parent), ("fork-session", fork)):
+        assert measure.compact_capture(session_id=sid, trigger="auto", _trusted_transcript=str(path))
+    measure.compact_restore(session_id="fork-session", is_compact=True)
+    result = capsys.readouterr().out
+    assert "Fork private direction" in result
+    assert "Parent private direction" not in result
 
 
 def test_interleaved_parallel_sessions_restore_their_own_transcripts(tmp_path):
@@ -105,3 +171,9 @@ def test_interleaved_parallel_sessions_restore_their_own_transcripts(tmp_path):
         resumed = run_hook(hook_command("SessionStart"), REPO, request, home, log)
         assert resumed.returncode == 0, resumed.stderr
         assert "Cross-session checkpoint" not in resumed.stdout
+
+    fresh = payload("SessionStart", None, sessions[0][1], project)
+    fresh.update(session_id="00000009-1111-4222-8333-444444444444", source="startup")
+    result = run_hook(hook_command("SessionStart"), REPO, fresh, home, log)
+    assert result.returncode == 0, result.stderr
+    assert "Cross-session checkpoint" in result.stdout and "Not your session" in result.stdout

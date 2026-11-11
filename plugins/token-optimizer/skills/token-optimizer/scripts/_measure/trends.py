@@ -892,11 +892,9 @@ def _init_trends_db():
     _measure_facade.ensure_activity_schema(conn)
     # Backfill session_uuid from jsonl_path basename stem for existing rows,
     # then create an index so joins are O(log n) instead of full-table LIKE scans.
-    # Done in Python (not a single SQL UPDATE) because SQLite lacks a basename
-    # function and the path separator can vary on Windows.
     try:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_session_log_uuid_date ON session_log (session_uuid, date DESC)"
+        conn.executescript(
+            "CREATE INDEX IF NOT EXISTS idx_session_log_uuid_date ON session_log (session_uuid, date DESC); CREATE INDEX IF NOT EXISTS idx_session_log_resume_activity ON session_log (COALESCE(NULLIF(last_activity_day,''),NULLIF(date,'')) DESC, COALESCE(collected_at,'') DESC, id DESC) WHERE session_uuid IS NOT NULL AND session_uuid != '';"
         )
         rows = conn.execute(
             "SELECT id, jsonl_path FROM session_log "

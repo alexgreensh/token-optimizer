@@ -105,6 +105,19 @@ def test_age_window_still_applies(m):
     assert not old.exists() and fresh.exists()
 
 
+def test_old_latest_checkpoint_survives_if_session_transcript_is_active(m, tmp_path, monkeypatch):
+    old_active = _save(m, QUIET, 8 * 86400)
+    old_inactive = _save(m, BUSY, 8 * 86400)
+    claude_dir = tmp_path / "claude"
+    transcript = claude_dir / "projects" / "project" / f"{QUIET}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{}\n')
+    monkeypatch.setattr(m, "CLAUDE_DIR", claude_dir)
+    m._cleanup_checkpoints()
+    assert old_active.exists()
+    assert not old_inactive.exists()
+
+
 def test_ceiling_drops_extras_before_any_sessions_newest(m):
     now = datetime.now()
     cps = []

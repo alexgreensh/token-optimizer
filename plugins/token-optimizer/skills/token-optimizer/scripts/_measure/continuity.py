@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, transcript_stream, checkpoint_direction
+from . import _compat, transcript_stream, checkpoint_direction, checkpoint_retention
 
 
 def _iter_tail_lines(filepath, tail_lines, chunk_size=None):
@@ -767,7 +767,7 @@ def compact_capture(transcript_path=None, session_id=None, trigger=None, cwd=Non
     # stale. The offset suffix keeps it unambiguous; selection/age still use mtime.
     now = _measure_facade.datetime.now().astimezone()
     ts = now.strftime("%Y-%m-%dT%H:%M:%S%z")
-    ts_file = now.strftime("%Y%m%d-%H%M%S")
+    ts_file = now.strftime("%Y%m%d-%H%M%S") + "-u" + _measure_facade.os.urandom(8).hex()
 
     if _trusted_transcript is not None:
         filepath = _measure_facade.Path(_trusted_transcript)
@@ -1936,24 +1936,11 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
         return
 
     if is_compact and sid_safe:
-        # Post-compaction: find best checkpoint for this session.
-        # Progressive checkpoints (captured at 50/65/80% fill) are preferred because
-        # they contain richer context than emergency checkpoints at ~98%.
-        # All checkpoint types use the retention-days window here: this path is
-        # both session-matched (sid_safe in filename) and post-compaction, so the
-        # most recent stop/end checkpoint from THIS session is the best continuity
-        # source after a compact regardless of wall-clock age. The old 5-min TTL
-        # gated out stop/end (the common triggers) and produced 0 restores.
-        # Selection is module-level (_order_checkpoints_for_restore) so the
-        # cold-resume-lean path shares the same "latest valid checkpoint"
-        # preference order.
+        # Exact-session restore can use an older save retained for an active session.
         now = _measure_facade.datetime.now()
-        retention_cutoff = now - _measure_facade.timedelta(days=_measure_facade._CHECKPOINT_RETENTION_DAYS)
         session_checkpoints = []
         for cp in checkpoints:
             if sid_safe != _measure_facade._checkpoint_session(cp["filename"]):
-                continue
-            if cp["created"] < retention_cutoff:
                 continue
             session_checkpoints.append(cp)
 
@@ -4384,9 +4371,9 @@ def list_checkpoints(max_age_minutes=None):
 
             # Parse trigger type from filename suffix.
             trigger = "auto"
-            match = _measure_facade.re.search(r'-\d{8}-\d{6}-(.+)\.md$', safe_cp.name)
+            match = _measure_facade.re.search(r'-\d{8}-\d{6}-(?:u[0-9a-f]{16}(?:-(.+))?|(.+))\.md$', safe_cp.name)
             if match:
-                trigger = match.group(1)
+                trigger = match.group(1) or match.group(2) or "auto"
 
             checkpoints.append({
                 "path": safe_cp,
@@ -4469,7 +4456,7 @@ def _cleanup_checkpoints():
     if not checkpoints:
         return
 
-    for cp in _measure_facade._checkpoints_to_prune(checkpoints):
+    for cp in checkpoint_retention.exclude_active_latest(_measure_facade._checkpoints_to_prune(checkpoints), checkpoints, _measure_facade.CLAUDE_DIR, _measure_facade._checkpoint_session):
         try:
             cp["path"].unlink()
         except OSError:

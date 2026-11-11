@@ -1,0 +1,95 @@
+"""Conservative return estimates from this installation's session history."""
+from bisect import bisect_right
+
+
+class GapHistory:
+    """Index fully observed windows so replays do not rescan all transcripts."""
+
+    def __init__(self, sessions):
+        self.sessions = sessions
+        self.index = {}
+
+    def counts(self, now, elapsed, horizon):
+        key = (elapsed, horizon)
+        if key not in self.index:
+            at_risk, returned = [], []
+            for session in self.sessions:
+                times = sorted(t for t in session if isinstance(t, (int, float)))
+                for index, start in enumerate(times):
+                    end = times[index + 1] if index + 1 < len(times) else None
+                    if end is not None and end <= start + elapsed:
+                        continue
+                    cutoff = start + elapsed + horizon
+                    at_risk.append(cutoff)
+                    if end is not None and end <= cutoff:
+                        returned.append(cutoff)
+            self.index[key] = (sorted(at_risk), sorted(returned))
+        at_risk, returned = self.index[key]
+        return bisect_right(at_risk, now), bisect_right(returned, now)
+
+
+def return_probability(sessions, now, elapsed, horizon, minimum=20, prior=10):
+    """Estimate returns in the cover window for pauses surviving to elapsed.
+
+    Each session is an ordered sequence of turn timestamps. A terminal pause is
+    counted as no return once its whole observation window has elapsed. Windows
+    not yet fully observed are excluded, avoiding look-ahead and censor bias.
+    Ten prior no-return observations shrink small samples; cold starts return 0.
+    """
+    if elapsed < 0 or horizon <= 0:
+        return 0.0
+    if isinstance(sessions, GapHistory):
+        candidates, successes = sessions.counts(now, elapsed, horizon)
+        return successes / (candidates + prior) if candidates >= minimum else 0.0
+    candidates = successes = 0
+    for session in sessions:
+        times = sorted(t for t in session if isinstance(t, (int, float)) and t <= now)
+        for index, start in enumerate(times):
+            end = times[index + 1] if index + 1 < len(times) else None
+            cutoff = start + elapsed + horizon
+            if cutoff > now or (end is not None and end <= start + elapsed):
+                continue
+            candidates += 1
+            if end is not None and end <= cutoff:
+                successes += 1
+    if candidates < minimum:
+        return 0.0
+    return successes / (candidates + prior)
+
+
+def decision(history, now, elapsed, ttl_kind, since, reload_value, ping_cost, phase):
+    ttl = 3600 if ttl_kind == '1h' else 300
+    cover = max(0, ttl - since) + ttl
+    probability = return_probability((history or {}).get('gap_sessions', []),
+                                     float(now), elapsed, cover)
+    if probability * reload_value <= 10 * ping_cost:
+        return {'action': 'stop', 'reason': 'insufficient-return-value', 'phase': phase}
+    return {'action': 'ping', 'reason': 'due', 'phase': phase}
+
+
+def load_history(facade, supplied, records):
+    """Read local main-session transcripts only when an active tick needs them."""
+    if supplied is not None or not records:
+        return supplied
+    sessions = []
+    try:
+        paths = facade._find_all_jsonl_files(30)
+        for path, _, _ in paths:
+            turns = facade.parse_session_turns(path)
+            times = [facade._keepwarm_iso_to_epoch(t.get('timestamp')) for t in turns]
+            sessions.append([t for t in times if t is not None])
+    except (OSError, ValueError, TypeError, KeyError):
+        return {'gap_sessions': []}
+    return {'gap_sessions': GapHistory(sessions)}
+
+
+def with_gaps(stats, sessions):
+    return dict(stats, gap_sessions=sessions or [])
+
+
+def trailing_net_negative(facade):
+    try:
+        summary = facade.keepwarm_spend_summary(days=30)
+        return bool(summary['pings'] and summary['net_usd'] < 0)
+    except (KeyError, TypeError, ValueError, OSError):
+        return False

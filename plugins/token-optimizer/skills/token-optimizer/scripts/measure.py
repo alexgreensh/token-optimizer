@@ -2878,7 +2878,7 @@ keepwarm_resume_predictor = _measure_compat.bind(_measure_providers['cache_polic
 _keepwarm_reconstruct_session_events = _measure_compat.bind(_measure_providers['cache_policy']._keepwarm_reconstruct_session_events, __name__)
 
 
-_keepwarm_replay_pause = _measure_compat.bind(_measure_providers['cache_policy']._keepwarm_replay_pause, __name__, defaults=(None, None, None, False,))
+_keepwarm_replay_pause = _measure_compat.bind(_measure_providers['cache_policy']._keepwarm_replay_pause, __name__, defaults=(None, None, None, False, None,))
 
 
 _keepwarm_schedule_covers = _measure_compat.bind(_measure_providers['cache_policy']._keepwarm_schedule_covers, __name__)

@@ -14,7 +14,7 @@ SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS
 
 
 SOURCES += ('transcript_stream.py', 'quality_continuity.py', 'quality_checkpoint.py', 'codex_quality.py', 'checkpoint_direction.py', 'checkpoint_retention.py')
-SOURCES += ('keepwarm_safety.py',)
+SOURCES += ('keepwarm_safety.py', 'keepwarm_economics.py')
 
 
 def verify(payload, canonical=REPO):

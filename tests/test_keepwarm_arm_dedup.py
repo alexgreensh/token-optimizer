@@ -310,15 +310,16 @@ def test_truncated_rotated_transcript_rearms(m, tmp_path):
 
 def test_keepwarm_tenfold_threshold_and_three_ping_cap(m):
     mod, _ = m
-    record = {'ts': 1000, 'last_turn_ts': 1000, 'prefix_proxy': 10000,
+    record = {'ts': 100000, 'last_turn_ts': 100000, 'prefix_proxy': 10000,
               'model': 'claude-sonnet-4-5', 'ttl_kind': '1h', 'pings_fired': []}
-    assert mod.keepwarm_policy_decision(record, 5000)['reason'] == 'below-tenfold'
+    assert mod.keepwarm_policy_decision(record, 104000)['reason'] == 'below-tenfold'
     record['prefix_proxy'] = 200000
-    assert mod.keepwarm_policy_decision(record, 4400)['action'] == 'ping'
+    history = {'gap_sessions': [[1000 + 4000 * i for i in range(6)] for _ in range(50)]}
+    assert mod.keepwarm_policy_decision(record, 103400, history_stats=history)['action'] == 'ping'
     record['pings_fired'] = [1100, 1200, 1300]
-    assert mod.keepwarm_policy_decision(record, 5000)['reason'] == 'hard-cap'
+    assert mod.keepwarm_policy_decision(record, 104000)['reason'] == 'hard-cap'
     record['pings_fired'] = []
-    assert mod.keepwarm_policy_decision(record, 11800)['reason'] == 'hard-cap'
+    assert mod.keepwarm_policy_decision(record, 110800)['reason'] == 'hard-cap'
 
 
 def test_keepwarm_net_is_estimated_and_deducts_ping_cost(m):
@@ -446,3 +447,35 @@ def test_real_ping_fails_closed_until_live_resume_is_proven_safe(m, monkeypatch)
                                      'model': 'claude-sonnet-4-5'})
     assert result['fired'] is False
     assert result['reason'] == 'live-resume-unverified'
+
+
+def test_keepwarm_requires_history_and_positive_expected_value(m):
+    mod, _ = m
+    record = {'ts': 100000, 'last_turn_ts': 100000, 'prefix_proxy': 200000,
+              'model': 'claude-sonnet-4-5', 'ttl_kind': '1h', 'pings_fired': []}
+    assert mod.keepwarm_policy_decision(record, 103400)['reason'] == 'insufficient-return-value'
+    histories = [[1000 + 4000 * i for i in range(6)] for _ in range(50)]
+    decision = mod.keepwarm_policy_decision(record, 103400, history_stats={'gap_sessions': histories})
+    assert decision['action'] == 'ping'
+    abandoned = [[1000] for _ in range(50)]
+    assert mod.keepwarm_policy_decision(record, 103400, history_stats={'gap_sessions': abandoned})['reason'] == 'insufficient-return-value'
+
+
+def test_replay_charges_abandoned_tail_and_stops_at_cutoff(m):
+    mod, _ = m
+    pause = {'pause_start_ts': 100000, 'prefix_proxy': 200000,
+             'model': 'claude-sonnet-4-5', 'ttl_kind': '1h'}
+    history = [[1000 + 4000 * i for i in range(6)] for _ in range(50)]
+    count, cost, gross = mod._keepwarm_replay_pause(
+        pause, 'probe', 103500, gap_sessions=history, is_tail=True)
+    assert count == 1
+    assert cost > 0
+    assert gross == 0
+
+
+def test_gate_reports_negative_trailing_net(m, monkeypatch):
+    mod, _ = m
+    monkeypatch.setattr(mod, 'keepwarm_consent', lambda: 'enabled')
+    monkeypatch.setattr(mod, '_keepwarm_tripwire_off', lambda: False)
+    monkeypatch.setattr(mod, 'keepwarm_spend_summary', lambda days: {'pings': 1, 'net_usd': -0.12})
+    assert mod.keepwarm_gate(env={}) == (False, 'negative-net')

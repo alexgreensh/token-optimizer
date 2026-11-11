@@ -8,8 +8,16 @@ function keepwarmHealthHtml(data) {
     return '<p>' + label + ': median ' + Number(sample.median_pct).toFixed(3) +
       ' percentage points per ping (' + Number(sample.n || 0) + ' samples).</p>';
   }
+  var paused = {
+    'negative-net': '30-day net value is negative.',
+    'kill-switch': 'the environment switch is off.',
+    'consent-declined': 'keep-warm is disabled in settings.',
+    'tripwire-off': 'the safety tripwire stopped it.'
+  };
   return '<div class="card wide"><div class="card-header"><span>Keep-warm</span></div>' +
-    '<p>Automatic pings are paused while the session-safe refresh method is verified.</p>' +
+    '<p>Automatic pings are paused ' + (paused[kw.gate_reason] ?
+      'because ' + paused[kw.gate_reason] : 'while the session-safe refresh method is verified.') + '</p>' +
+    '<p>' + Number(kw.pings_7d || 0) + ' pings in the last 7 days.</p>' +
     '<p>' + Number(kw.pings_30d || 0) + ' pings in the last 30 days.</p>' +
     '<p>Estimated net value: $' + Number(kw.net_usd || 0).toFixed(2) + ' at API rates.</p>' +
     meter(samples.five_hour, '5-hour limit') + meter(samples.seven_day, 'Weekly limit') +

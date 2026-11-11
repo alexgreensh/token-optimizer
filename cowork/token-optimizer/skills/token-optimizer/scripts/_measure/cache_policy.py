@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
+from . import _compat, keepwarm_economics
 
 
 def _input_and_cached_read_rates(model):
@@ -1198,7 +1198,7 @@ def keepwarm_gate(env=None, claude_json_path=None, settings_path=None):
         return False, "consent-declined"
     if _measure_facade._keepwarm_tripwire_off():
         return False, "tripwire-off"
-    return False, "live-resume-unverified"
+    return False, "negative-net" if keepwarm_economics.trailing_net_negative(_measure_facade) else "live-resume-unverified"
 
 
 def _keepwarm_tripwire_off():
@@ -2081,7 +2081,7 @@ def keepwarm_policy_decision(record, now, tripwire_state=None, history_stats=Non
     if since < cadence:
         return {"action": "wait", "reason": "cadence-not-due", "phase": phase}
 
-    return {"action": "ping", "reason": "due", "phase": phase}
+    return keepwarm_economics.decision(history_stats, now, max(0.0, float(now) - last_activity), ttl_kind, since, avoided_reload, ping_cost, phase)
 
 
 def _keepwarm_ledger_path():
@@ -2779,17 +2779,7 @@ def keepwarm_tick(now=None, dry_run=None, env=None, runner=None,
         except Exception:
             stage_errors += 1
 
-        # 3d. Ledger compaction (FIX-A4): trim the spend/outcome ledger to the
-        # last 30d (or when >5MB). Safe AFTER detect_realized (3a) booked this
-        # tick's realized rows -- the SQLite UNIQUE index, not the ledger marker,
-        # is the dedup authority, so old markers can drop without risking a
-        # re-book. Best-effort; never blocks the tick.
-        try:
-            _measure_facade._keepwarm_compact_ledger(now=now)
-        except Exception:
-            stage_errors += 1
-
-        records = _measure_facade.load_keepwarm_records()
+        records = _measure_facade.load_keepwarm_records(); history_stats = keepwarm_economics.load_history(_measure_facade, history_stats, records)
         ledger_rows = _measure_facade._keepwarm_load_ledger_rows()
         from . import keepwarm_safety
         changed = False
@@ -3047,7 +3037,7 @@ def _keepwarm_reconstruct_session_events(turns, now):
 
 def _keepwarm_replay_pause(pause, predictor_mode, now, project_resume_index=None,
                            machine_resume_index=None, own_resume_times=None,
-                           is_tail=None):
+                           is_tail=None, gap_sessions=None):
     """Replay the LIVE policy over one pause/tail and return (pings, cost, saving).
 
     Drives keepwarm_policy_decision step by step exactly as the tick would, in
@@ -3082,7 +3072,7 @@ def _keepwarm_replay_pause(pause, predictor_mode, now, project_resume_index=None
     # The replay clock runs from pause start to resume (or to a sane horizon for a
     # tail: the 12h hard cap, where the policy stops anyway).
     horizon = (resume_ts if resume_ts is not None
-               else pause["pause_start_ts"] + _measure_facade._KEEPWARM_HARD_CAP_SECONDS)
+               else min(now, pause["pause_start_ts"] + _measure_facade._KEEPWARM_HARD_CAP_SECONDS))
 
     ping_ts = []
     clock = pause["pause_start_ts"]
@@ -3096,9 +3086,9 @@ def _keepwarm_replay_pause(pause, predictor_mode, now, project_resume_index=None
         decision = _measure_facade.keepwarm_policy_decision(
             record, clock,
             tripwire_state={"allow_sustain": True},
-            history_stats=_measure_facade._keepwarm_replay_history_stats(
+            history_stats=keepwarm_economics.with_gaps(_measure_facade._keepwarm_replay_history_stats(
                 pause, predictor_mode, clock, project_resume_index,
-                machine_resume_index, own_resume_times))
+                machine_resume_index, own_resume_times), gap_sessions))
         action = decision.get("action")
         if action == "stop":
             break
@@ -3261,12 +3251,12 @@ def keepwarm_backfill(days=None, now=None, files=None, parse_fn=None):
 
     # First pass: reconstruct every session's events + tail, and a machine-wide
     # index of all resume timestamps (for the machine-activity feature).
-    sessions = []  # list of (project_key, recon)
+    sessions = []; gap_sessions = []  # list of (project_key, recon)
     machine_resume_index = []
     project_index = {}  # project_key -> sorted resume ts list
     for fp in files:
         try:
-            turns = parse_fn(fp)
+            turns = parse_fn(fp); gap_sessions.append([t for t in (_measure_facade._keepwarm_iso_to_epoch(turn.get('timestamp')) for turn in turns) if t is not None])
         except Exception:
             continue
         if not turns:
@@ -3282,7 +3272,7 @@ def keepwarm_backfill(days=None, now=None, files=None, parse_fn=None):
         for rt in recon["resume_times"]:
             machine_resume_index.append(rt)
             project_index.setdefault(project_key, []).append(rt)
-    machine_resume_index.sort()
+    machine_resume_index.sort(); gap_sessions = keepwarm_economics.GapHistory(gap_sessions)
     for k in project_index:
         project_index[k].sort()
 
@@ -3291,7 +3281,7 @@ def keepwarm_backfill(days=None, now=None, files=None, parse_fn=None):
         "predictor-sustain": "predictor",
         "oracle-sustain": "oracle",
     }
-    out = {m: {"pings": 0, "ping_cost_usd": 0.0, "avoided_writes": 0,
+    out = {m: {"pings": 0, "ping_cost_usd": 0.0, "tail_cost_usd": 0.0, "avoided_writes": 0,
                "tokens_saved": 0, "saving_usd": 0.0, "net_usd": 0.0}
            for m in modes}
 
@@ -3308,7 +3298,7 @@ def keepwarm_backfill(days=None, now=None, files=None, parse_fn=None):
                 n, cost, saving = _measure_facade._keepwarm_replay_pause(
                     ev, mode, now, project_resume_index=proj_idx,
                     machine_resume_index=machine_resume_index,
-                    own_resume_times=own_resume_times, is_tail=False)
+                    own_resume_times=own_resume_times, gap_sessions=gap_sessions, is_tail=False)
                 agg["pings"] += n
                 agg["ping_cost_usd"] += cost
                 agg["saving_usd"] += saving
@@ -3323,15 +3313,15 @@ def keepwarm_backfill(days=None, now=None, files=None, parse_fn=None):
                     n, cost, _ = _measure_facade._keepwarm_replay_pause(
                         recon["tail"], mode, now, project_resume_index=proj_idx,
                         machine_resume_index=machine_resume_index,
-                        own_resume_times=own_resume_times, is_tail=True)
+                        own_resume_times=own_resume_times, gap_sessions=gap_sessions, is_tail=True)
                     agg["pings"] += n
-                    agg["ping_cost_usd"] += cost
+                    agg["ping_cost_usd"] += cost; agg["tail_cost_usd"] += cost
 
     for label in out:
         agg = out[label]
         agg["net_usd"] = round(agg["saving_usd"] - agg["ping_cost_usd"], 4)
         agg["saving_usd"] = round(agg["saving_usd"], 4)
-        agg["ping_cost_usd"] = round(agg["ping_cost_usd"], 4)
+        agg["ping_cost_usd"] = round(agg["ping_cost_usd"], 4); agg["tail_cost_usd"] = round(agg["tail_cost_usd"], 4)
 
     return {
         "period_days": days,
@@ -4710,7 +4700,7 @@ def keepwarm_cache_health_block(days=None, now=None):
         state = "off-subscription"
 
     block = {
-        "state": state,
+        "state": state, "gate_reason": rep["gate_reason"], "pings_7d": rep["window_7d"]["pings"],
         "mode": rep["mode"],
         "billing": rep["billing"],
         "consent": rep["consent"],

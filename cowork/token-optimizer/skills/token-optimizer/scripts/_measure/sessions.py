@@ -4037,6 +4037,9 @@ def _run_upgrade_drain(days=None, quiet=None):
     """Body of `measure.py upgrade-drain`: one uncapped collect (usage re-parse,
     per-day usage, counted ledger and markers), then release the lock."""
     _measure_facade = _compat.facade()
+    # Scoped to this run: the CLI exits right after, but an in-process caller (a test, an embedding host)
+    # must not keep every later collect_sessions() in drain mode.
+    previous_flag = _measure_facade.os.environ.get("TOKEN_OPTIMIZER_UPGRADE_DRAIN")
     _measure_facade.os.environ["TOKEN_OPTIMIZER_UPGRADE_DRAIN"] = "1"
     try:
         with upgrade_drain_control.running(_measure_facade) as held:
@@ -4049,6 +4052,10 @@ def _run_upgrade_drain(days=None, quiet=None):
         return 0
     finally:
         _measure_facade._upgrade_drain_release_lock()
+        if previous_flag is None:
+            _measure_facade.os.environ.pop("TOKEN_OPTIMIZER_UPGRADE_DRAIN", None)
+        else:
+            _measure_facade.os.environ["TOKEN_OPTIMIZER_UPGRADE_DRAIN"] = previous_flag
 
 
 def collect_sessions(days=None, quiet=None, rebuild=None):

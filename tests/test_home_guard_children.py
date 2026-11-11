@@ -60,3 +60,18 @@ def test_a_named_home_variable_fills_its_sibling_not_the_sandbox(request, tmp_pa
     sandbox = str(_home_guard.SANDBOX / "home")
     assert neither["HOME"] == sandbox and neither["USERPROFILE"] == sandbox
     assert _clear(request) == []
+
+
+def test_windows_home_alias_follows_a_named_home_but_not_an_explicit_profile(tmp_path):
+    sandbox = str(tmp_path / "sandbox-home")
+    named = str(tmp_path / "named")
+    # A copy of os.environ with only HOME changed: USERPROFILE is still the sandbox default.
+    env = _home_guard.windows_home_alias({"HOME": named, "USERPROFILE": sandbox}, sandbox)
+    assert env["USERPROFILE"] == named
+    # A test that set USERPROFILE itself keeps it.
+    other = str(tmp_path / "other")
+    env = _home_guard.windows_home_alias({"HOME": named, "USERPROFILE": other}, sandbox)
+    assert env["USERPROFILE"] == other
+    # HOME still the sandbox: nothing to alias.
+    env = _home_guard.windows_home_alias({"HOME": sandbox, "USERPROFILE": sandbox}, sandbox)
+    assert env["USERPROFILE"] == sandbox

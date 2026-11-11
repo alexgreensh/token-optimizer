@@ -433,7 +433,7 @@ def test_cli_lookup_is_logged(sandbox):
     finally:
         conn.close()
     assert row[0] == "show" and row[1] == SESSION and row[2] > 0 and row[4] == "pending"
-    assert json.loads(row[3])[0][0].endswith("pkg/core.py")
+    assert json.loads(row[3])[0][0].replace("\\", "/").endswith("pkg/core.py")  # Windows stores backslashes
 
 
 def test_codemap_lookup_is_estimated_tier():

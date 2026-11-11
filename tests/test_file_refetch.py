@@ -113,7 +113,7 @@ def test_head_tail_nl_default_ranges(tmp_path):
     assert file_refetch.print_targets('tail -n 30 /x/a', '/')[0][1] is None
     assert file_refetch.print_targets('nl /x/a', '/')[0][1] is None
     assert file_refetch.print_targets("sed -n '7p' /x/a", '/')[0][1] == (7, 7)
-    assert [t[0] for t in file_refetch.print_targets('cat /x/a /x/b', '/')] == ['/x/a', '/x/b']
+    assert [t[0] for t in file_refetch.print_targets('cat /x/a /x/b', '/')] == [os.path.normpath('/x/a'), os.path.normpath('/x/b')]
 
 
 @pytest.mark.parametrize('events,refetched,expected', [

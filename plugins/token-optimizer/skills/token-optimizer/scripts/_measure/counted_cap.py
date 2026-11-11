@@ -6,12 +6,14 @@ def contradicted(alias):
     chars = "CAST(REPLACE(substr({d}, instr({d}, '(')+1, instr({d}, ' chars >=')-instr({d}, '(')-1), ',', '') AS INTEGER)".format(d=detail)
     cap = "CAST(REPLACE(substr({d}, instr({d}, 'cap=')+4, instr({d}, ' tok,')-instr({d}, 'cap=')-4), ',', '') AS INTEGER)".format(d=detail)
     tool = "substr({d}, 12, instr(substr({d}, 12), ' result at cap')-1)".format(d=detail)
-    return ("({a}.event_type = 'mcp_cap' AND ((instr({d}, ' chars >=') > 0 AND instr({d}, 'cap=') > 0 "
+    # CASE, not AND: SQLite before ~3.50 ran the EXISTS scan for every row whatever its event type, so
+    # a ledger of N archive rows cost N*N (the 50k-row status-bar test never finished on Linux and Windows).
+    return ("(CASE WHEN {a}.event_type = 'mcp_cap' THEN ((instr({d}, ' chars >=') > 0 AND instr({d}, 'cap=') > 0 "
             "AND {chars} > 0 AND {cap} > 0 AND {chars} <= 4 * {cap}) OR "
             "(COALESCE({a}.session_id, '') != '' AND {tool} != '' AND EXISTS "
             "(SELECT 1 FROM main.savings_events ar WHERE ar.event_type = 'tool_archive' "
             "AND ar.session_id = {a}.session_id AND substr(ar.detail, 1, length('replaced ' || {tool} || ' (')) = 'replaced ' || {tool} || ' (' "
-            "AND abs((julianday(ar.timestamp)-julianday({a}.timestamp))*86400) <= 3))))").format(
+            "AND abs((julianday(ar.timestamp)-julianday({a}.timestamp))*86400) <= 3))) ELSE 0 END)").format(
                 a=alias, d=detail, chars=chars, cap=cap, tool=tool)
 
 

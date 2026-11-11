@@ -441,7 +441,44 @@ def sanitize_child_env(env):
             continue
         HITS.append((_current["id"], "subprocess.env", "W", "%s=~/%s" % (var, rel)))
         fixed[var] = home if var in _CHILD_HOME_VARS or rel == "." else os.path.join(home, rel)
+    if os.name == "nt":
+        windows_home_alias(fixed, home)
     return fixed
+
+
+def windows_home_alias(env: dict, sandbox_home: str) -> dict:
+    """Make a test's HOME mean the home on Windows, where Python reads USERPROFILE.
+
+    Tests are written for POSIX, where ``HOME`` is the home. A test that copies ``os.environ`` and sets
+    only ``HOME`` would, on Windows, leave the sandbox ``USERPROFILE`` in place and its child would
+    resolve the wrong home (CI 5.13.70: ~25 failures). When USERPROFILE is still the sandbox default
+    and HOME names something else, USERPROFILE follows HOME. A test that sets USERPROFILE itself is left alone.
+    """
+    named = env.get("HOME")
+    if isinstance(named, str) and named and env.get("USERPROFILE") == sandbox_home and named != sandbox_home:
+        env["USERPROFILE"] = named
+    return env
+
+
+def install_windows_home_alias() -> None:
+    """``monkeypatch.setenv("HOME", x)`` also moves USERPROFILE on Windows (see windows_home_alias)."""
+    if os.name != "nt" or SANDBOX is None or not sandbox_enabled():
+        return
+    import pytest
+
+    original = pytest.MonkeyPatch.setenv
+    if getattr(original, "_home_alias", False):
+        return
+    sandbox_home = str(SANDBOX / "home")
+
+    def setenv(self, name, value, prepend=None):
+        before = os.environ.get("HOME")
+        original(self, name, value, prepend)
+        if name == "HOME" and os.environ.get("USERPROFILE") in (sandbox_home, before):
+            original(self, "USERPROFILE", str(value), None)
+
+    setenv._home_alias = True
+    pytest.MonkeyPatch.setenv = setenv
 
 
 def install_subprocess_guard() -> None:

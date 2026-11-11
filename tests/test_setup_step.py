@@ -240,7 +240,8 @@ def test_card_words_each_status_plainly(tmp_path):
       {status: 'overlap', trim_epoch: 1893456000, window: 20, n_after: 20},
       {status: 'cannot_measure', trim_epoch: 1893456000, reason: '<b>x</b>', window: 20, n_after: 0}];
     var h = firstCallContextHtml(Object.assign({}, base, {setup_steps: {available: true, steps: steps}}));
-    var need = ['fell from 60,000 to 45,000 tokens', 'step of 15,000', '1,250 calls since', '$5.63', '(measured)',
+    var need = ['fell from 60,000 to 45,000 tokens', 'step of 15,000', '1,250 main-thread calls since the trim', '$5.63', '(measured)',
+                'st-mega', '60K', "What's in it", 'Components overlap and do not add up',
                 'no step down is visible', 'waiting for 8 more sessions', 'too close to tell them apart', '&lt;b>x&lt;/b>'];
     need.forEach(function(t) { if (h.indexOf(t) < 0) throw new Error('missing: ' + t); });
     if (h.indexOf('<b>x</b>') >= 0) throw new Error('unescaped reason');
@@ -274,3 +275,56 @@ def test_a_step_larger_than_the_trim_is_capped_at_the_trim_size():
     assert steps[0]['drop_tokens'] == 800 and steps[0]['estimated_tokens'] == 800
     small = setup_step.measure_step(rows, trim, rate_fn=rate, cap_tokens=50_000)
     assert small['drop_tokens'] == small['observed_drop_tokens']
+
+
+def test_first_call_card_leads_with_the_latest_median_and_change_since_the_first_month(tmp_path):
+    import os
+    import subprocess
+    node = subprocess.run(['which', 'node'], capture_output=True, text=True).stdout.strip()
+    if not node:
+        pytest.skip('node not installed')
+    js = (ROOT / 'skills/token-optimizer/assets/first_call_context.js').read_text(encoding='utf-8')
+    script = js + """
+    var months = [{month: '2026-03', median: 39000, p25: 30000, p75: 45000, n: 9, components: {}},
+                  {month: '2026-11', median: 82000, p25: 70000, p75: 90000, n: 9,
+                   components: {skills: {median: 7000, observed: 9}, agents: {median: 1400, observed: 9}}}];
+    var h = firstCallContextHtml({months: months, trim_dates: []});
+    var hero = h.slice(0, h.indexOf('<svg'));
+    ['82K', '+43K since March', 'st-mega'].forEach(function(t) { if (hero.indexOf(t) < 0) throw new Error('hero missing ' + t); });
+    if (h.indexOf('>90K<') < 0 || h.indexOf('>45K<') < 0) throw new Error('y ticks in K');
+    var fold = h.slice(h.indexOf('<details'));
+    if (fold.indexOf('Skills listing') < 0 || fold.indexOf('Skills listing') > fold.indexOf('Agents')) throw new Error('components sorted by size in fold');
+    if (hero.indexOf('Skills listing') >= 0) throw new Error('components belong in the fold');
+    """
+    path = tmp_path / 'fc2.js'
+    path.write_text(script, encoding='utf-8')
+    r = subprocess.run([node, str(path)], capture_output=True, text=True, env=dict(os.environ))
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_stepped_trim_is_priced_on_main_thread_calls_since_the_trim_in_the_window():
+    from _measure import structural_report
+    t = {"tokens": 400, "step": {"share": 1.0, "drop": 800, "size": 800,
+                                  "carried": [(datetime(2030, 1, 5, 12).timestamp(), 10, 2e-6),
+                                              (datetime(2030, 1, 6, 12).timestamp(), 5, None),
+                                              (datetime(2029, 12, 1, 12).timestamp(), 99, 2e-6)]}}
+    r0 = {"requests": 777, "read_tokens": 1, "write_tokens": 2, "usd": 9.0, "read_usd": 9.0, "write_1h_usd": 1.0,
+          "write_5m_usd": 0.0, "unpriced_tokens": 0}
+    r, p = structural_report._step_value(t, r0, dict(r0), "2030-01-01", "2030-01-30")
+    assert r["requests"] == 15 and r["read_tokens"] == 400 * 15 and r["write_tokens"] == 0
+    assert abs(r["usd"] - 400 * 10 * 2e-6) < 1e-12 and r["write_1h_usd"] == 0
+
+
+def test_large_transcripts_counts_only_in_window_files_over_the_cap(tmp_path):
+    import os
+    import time
+    import large_transcripts
+    proj = tmp_path / "projects" / "p"
+    proj.mkdir(parents=True)
+    for name, size, age in (("big.jsonl", 50, 1), ("small.jsonl", 5, 1), ("old.jsonl", 50, 90)):
+        f = proj / name
+        f.write_bytes(b"x" * size)
+        then = time.time() - age * 86400
+        os.utime(f, (then, then))
+    assert large_transcripts.count(tmp_path, 30, limit=10) == {"unscanned_large_sessions": 1}
+    assert large_transcripts.count(tmp_path / "missing", 30, limit=10) == {"unscanned_large_sessions": 0}

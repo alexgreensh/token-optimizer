@@ -73,7 +73,7 @@ def test_first_call_chart_renders_in_savings_view():
                'trim_dates': ['2026-11-03']}
     html = render_savings({}, extra={'trends': {'first_call_context': context}})
     assert 'Context before your first message' in html
-    assert 'Skills listing: 50 estimated tokens (2/2 observed)' in html
+    assert 'Skills listing<span class="st-sub">seen in 2 of 2</span>' in html
     assert '2026-11-03' in html and '<svg' in html
 
 
@@ -660,3 +660,60 @@ def test_cost_trend_names_its_constant_opus_prices():
     s = full()
     s['cost_per_message_trend'] = [{'month': '2026-03', 'index': 100}, {'month': '2026-04', 'index': 70}]
     assert 'at constant Opus prices for every model' in story({'savings': s})
+
+
+def _setup_payload():
+    s = full()
+    s['structural_detail'] = {
+        'method': 'trim_ledger', 'cost_saved_usd': 7.5, 'tokens_saved': 900,
+        'estimated': {'cost_saved_usd': 2.0, 'tokens_saved': 100},
+        'budget_observed': {'usd': 0.5}, 'connector_observed': {'usd': 0.0},
+        'trims': [
+            {'item': 'agent-a', 'component': 'agents', 'tier': 'measured', 'source': 'dated_archive', 'step_measured': True,
+             'step_share': 1.0, 'ts': '2026-10-30T00:00:00+00:00', 'tokens_per_call': 40, 'requests': 100, 'cost_saved_usd': 3.0},
+            {'item': 'agent-b', 'component': 'agents', 'tier': 'measured', 'source': 'dated_archive', 'step_measured': True,
+             'step_share': 1.0, 'ts': '2026-10-30T00:00:00+00:00', 'tokens_per_call': 40, 'requests': 100, 'cost_saved_usd': 3.0},
+            {'item': 'MEMORY.md', 'component': 'memory', 'tier': 'measured', 'source': 'audit_action',
+             'ts': '2026-11-09T00:00:00+00:00', 'tokens_per_call': 10, 'requests': 50, 'cost_saved_usd': 1.0},
+            {'item': 'old-skill', 'component': 'skills', 'tier': 'estimated', 'source': 'dated_archive',
+             'ts': '2026-10-01T00:00:00+00:00', 'tokens_per_call': 10, 'requests': 50, 'cost_saved_usd': 2.0,
+             'closed_at': '2026-10-20T00:00:00+00:00'}]}
+    return s
+
+
+def test_setup_rows_group_by_day_and_sum_to_the_breakdown_lines():
+    s = _setup_payload()
+    groups = json.loads(call('JSON.stringify(setupCleanupGroups(data.savings.structural_detail))', {'savings': s}))
+    measured = sum(g['usd'] for g in groups if g['tier'] == 'measured')
+    estimated = sum(g['usd'] for g in groups if g['tier'] == 'estimated')
+    sd = s['structural_detail']
+    assert abs(measured - sd['cost_saved_usd']) < 1e-9 and abs(estimated - sd['estimated']['cost_saved_usd']) < 1e-9
+    step = [g for g in groups if 'first-call step' in g['sub']]
+    assert len(step) == 1 and step[0]['label'] == '2 agents' and step[0]['usd'] == 6.0
+    out = story({'savings': s})
+    assert 'measured by the first-call step' in out
+    assert 'agent-a<span class="st-sub">' not in out  # grouped, not one archive row per agent
+    assert "main-thread calls since the trim, at each call&rsquo;s cache-read rate" in out
+    bands = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
+    assert any(r['label'].endswith('(realized, measured)') for r in bands['measured'])
+
+
+def test_cache_drop_is_never_summed_into_a_saved_total():
+    s = _setup_payload()
+    before = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
+    s['cache_drop'] = {'cost_saved_usd': 999.0, 'drop_sessions': 4, 'est_drops': 4, 'evidence': 'opportunity'}
+    s['by_category'] = dict(s.get('by_category') or {}, cache_drop={'cost_saved_usd': 999.0})
+    after = json.loads(call('JSON.stringify(savingsStoryBands(data))', {'savings': s}))
+    assert after['totalUsd'] == before['totalUsd'] and after['mUsd'] == before['mUsd'] and after['eUsd'] == before['eUsd']
+    src = (ROOT / 'skills/token-optimizer/scripts/_measure/savings.py').read_text(encoding='utf-8')
+    # The realized aggregators exclude cache_drop by name; it is an opportunity only.
+    assert '"cache_drop": cache_drop' in src and 'cache_drop["cost_saved_usd"]' not in src
+
+
+def test_hero_fold_explains_handover_and_estimated_reload_tokens():
+    s = full()
+    s['action_savings']['estimates_usd']['handover_rerun'] = 0.5
+    s['token_headline']['reload_avoided_tokens'] = 10400000
+    out = story({'savings': s})
+    assert 'Continuity handovers' in out and 'saved checkpoint re-read fewer stale files' in out
+    assert 'tokens kept out of context are measured and estimated: 10.4M of them are estimated reloads avoided' in out

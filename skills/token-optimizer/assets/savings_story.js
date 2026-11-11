@@ -66,7 +66,8 @@ function savingsStoryBands(data) {
     var group = trims.filter(function(x) { return (x.source === 'attested' || x.tier === 'estimated') === (tier === 'estimated'); })
       .sort(function(a, b) { return String(b.ts).localeCompare(String(a.ts)); });
     var t = group[0], when = t && group.every(function(x) { return String(x.ts).slice(0, 10) === String(t.ts).slice(0, 10); }) ? f.day(t.ts) : '';
-    return 'Setup cleanup' + (when ? ', ' + when : '') + (tier === 'estimated' ? (t && t.source === 'dated_archive' ? ' (realized, archive estimate)' : ' (realized, your figure)') : ' (realized, recorded)');
+    var stepped = group.some(function(x) { return x.step_measured; });
+    return 'Setup cleanup' + (when ? ', ' + when : '') + (tier === 'estimated' ? (t && t.source === 'dated_archive' ? ' (realized, archive estimate)' : ' (realized, your figure)') : stepped ? ' (realized, measured)' : ' (realized, recorded)');
   }
   var trimMeasuredUsd = trimLedger ? num(sd.cost_saved_usd) : 0;
   var trimMeasuredTok = trimLedger ? num(sd.tokens_saved) : 0;
@@ -168,6 +169,8 @@ function savingsStoryHtml(data) {
     var method = (archive ? '<p>Tool archive, net of re-expands: ' + usd(archive.cost_saved_usd) + ' once, before repeat-reads.</p>' : '') +
       (bashExpand ? '<p>Bash compression, net of re-expands: ' + usd(bashNet) + ' once, before repeat-reads.</p>' : '') +
       (num((as.estimates_usd || {}).expand_overhead) ? '<p>Estimated expand-command overhead: ' + usd(as.estimates_usd.expand_overhead) + '.</p>' : '') +
+      (num((as.estimates_usd || {}).handover_rerun) > 0 ? '<p>Continuity handovers, ' + usd(as.estimates_usd.handover_rerun) + ' (estimated): sessions resumed from a saved checkpoint re-read fewer stale files than sessions that started cold, and that gap is counted here.</p>' : '') +
+      (totalTok > 0 ? '<p>The ' + tok(totalTok) + ' tokens kept out of context are measured and estimated' + (num(th.reload_avoided_tokens) > 0 ? ': ' + tok(th.reload_avoided_tokens) + ' of them are estimated reloads avoided' : '') + '.</p>' : '') +
       table('Measured, counted event by event', measured) +
       table('Estimated, sized by a documented method', estimated) +
       '<p>Measured rows come from the ledger: each removal, the cache rate the next call would have paid, and every later turn that would have re-read it, up to the session&rsquo;s next compaction.</p>' +
@@ -225,16 +228,14 @@ function savingsStoryHtml(data) {
   } else {
     var valuedTrims = trims.filter(function(t) { return t.tier !== 'unattributed' && (num(t.cost_saved_usd) > 0 || num(t.projected_30d_usd) > 0); })
       .sort(function(a, b) { return num(b.projected_30d_usd) - num(a.projected_30d_usd); });
-    var rows = valuedTrims.slice(0, 4).map(function(t) {
-      var attested = t.source === 'attested' || t.tier === 'estimated';
-      return '<li><span>' + esc(t.label || t.item || t.component || 'Setup cleanup') +
-        '<span class="st-sub">' + esc(f.day(t.ts) || 'undated') + ', ' + (t.source === 'dated_archive' ? 'estimated from archive' : attested ? 'your figure' : 'recorded by the audit') + '</span></span>' +
-        '<span class="st-v">' + usd(t.cost_saved_usd) + '</span></li>';
+    var rows = setupCleanupGroups(sd).map(function(g) {
+      return '<li><span>' + esc(g.label) + '<span class="st-sub">' + esc(g.sub) + '</span></span>' +
+        '<span class="st-v">' + usd(g.usd) + '</span></li>';
     }).join('');
     var opts = sd.attested_options || [];
     var formula = valuedTrims.map(function(t) {
-      return '<li>' + esc(t.label || t.item || 'Setup cleanup') + ': ' + count(t.tokens_per_call) + ' tokens per call &times; ' + count(t.requests) +
-        ' calls since' + (num(t.projected_30d_usd) > 0 ? '. Estimated next 30 days at the recent rate: ' + (num(t.projected_30d_usd) < 1 ? '' : 'about ') + usd(t.projected_30d_usd) + '.' : '.') + '</li>';
+      return '<li>' + esc(t.label || t.item || 'Setup cleanup') + ': ' + count(num(t.tokens_per_call) * (t.step_measured ? num(t.step_share) : 1)) + ' tokens per call &times; ' + count(t.requests) +
+        (t.step_measured ? ' calls; priced on main-thread calls since the trim, at each call&rsquo;s cache-read rate' : ' calls since') + (num(t.projected_30d_usd) > 0 ? '. Estimated next 30 days at the recent rate: ' + (num(t.projected_30d_usd) < 1 ? '' : 'about ') + usd(t.projected_30d_usd) + '.' : '.') + '</li>';
     }).join('');
     cards.push('<div class="card st-card">' +
       '<h2 class="st-h">Setup cleanup' + '</h2>' +
@@ -532,4 +533,32 @@ function savingsLedgerHtml(data) {
   var cp = s.counted_period || {};
   if (cp.pricing_note) out += '<p>' + esc(cp.pricing_note) + '</p>';
   return out;
+}
+
+
+// Setup cleanup rows: every valued trim grouped by day and evidence, plus the
+// observed listing/connector reductions, so the rows sum exactly to the
+// measured and estimated "Setup cleanup" lines of the 30-day breakdown.
+function setupCleanupGroups(sd) {
+  var f = savingsStoryFmt(), num = f.num, groups = {}, order = [];
+  (sd.trims || []).forEach(function(t) {
+    if (!t || t.tier === 'unattributed' || !(num(t.cost_saved_usd) > 0)) return;
+    var kind = t.step_measured ? 'step' : t.source === 'dated_archive' ? 'archive' : (t.source === 'attested' || t.tier === 'estimated') ? 'figure' : 'audit';
+    var key = (f.day(t.ts) || 'undated') + '|' + kind;
+    if (!groups[key]) { groups[key] = {day: f.day(t.ts) || 'undated', kind: kind, tier: t.tier, items: [], usd: 0}; order.push(key); }
+    groups[key].items.push(t); groups[key].usd += num(t.cost_saved_usd);
+  });
+  var words = {step: 'measured by the first-call step', archive: 'estimated from archive', figure: 'your figure', audit: 'recorded by the audit'};
+  var out = order.map(function(k) {
+    var g = groups[k], one = g.items.length === 1, comps = g.items.map(function(t) { return t.component; });
+    var same = comps.every(function(c) { return c === comps[0]; });
+    return {label: one ? (g.items[0].label || g.items[0].item || g.items[0].component || 'Setup cleanup')
+                       : g.items.length + ' ' + (same && comps[0] ? comps[0] : 'items'),
+            sub: g.day + ', ' + words[g.kind], usd: g.usd, tier: g.tier};
+  });
+  [['budget_observed', 'Skill listing reduction', 'observed on later calls'], ['connector_observed', 'Disconnected connectors', 'observed on later calls']].forEach(function(b) {
+    var o = sd[b[0]] || {};
+    if (num(o.usd) > 0) out.push({label: b[1], sub: b[2], usd: num(o.usd), tier: 'measured'});
+  });
+  return out.sort(function(a, b) { return b.usd - a.usd; });
 }

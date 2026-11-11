@@ -38,6 +38,23 @@ def _sum(rows, key):
     return sum(r.get(key, 0) or 0 for r in rows)
 
 
+def _step_value(t, r, p, start, end):
+    """A trim proven by a first-call step: its share of the capped drop times the
+    main-thread calls since the trim inside [start, end], each at its cache-read rate."""
+    st = t["step"]
+    per_call = st["drop"] * int(t["tokens"]) / st["size"]
+    lo = datetime.strptime(start, "%Y-%m-%d").astimezone().timestamp()
+    hi = (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)).astimezone().timestamp()
+    calls = [(n, rate) for ts, n, rate in st["carried"] if lo <= ts < hi]
+    usd = sum(per_call * n * rate for n, rate in calls if rate is not None)
+    toks = int(per_call * sum(n for n, _ in calls))
+    r = {**{k: 0 if isinstance(v, int) else 0.0 for k, v in r.items()}, "requests": sum(n for n, _ in calls),
+         "read_tokens": toks, "usd": usd, "read_usd": usd}
+    share = st["share"]
+    p = {k: (v * share if isinstance(v, float) else int(v * share)) if k != "requests" else v for k, v in p.items()}
+    return r, p
+
+
 def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30):
     """Realized structural savings from the trim ledger, plus the forward
     30-day run-rate of the trims still holding. Never raises."""
@@ -73,7 +90,7 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
             stepped = setup_step.measured_epochs(f.TRENDS_DB, f.SNAPSHOT_DIR, f.CLAUDE_DIR)
             for t in trims:
                 if t.get("ts_epoch") in stepped and t["tier"] == "estimated":
-                    t["tier"], t["step_measured"] = "measured", True
+                    t["tier"], t["step"] = "measured", stepped[t["ts_epoch"]]
             start, end = value.window(days, now)
             card = value.card_resolver(f)
             from . import setup_budget_monitor, setup_connector_ledger
@@ -93,6 +110,8 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
         rows = []
         for t in trims:
             r, p = real["trims"][t["id"]], proj["trims"][t["id"]]
+            if t.get("step"):  # priced on main-thread calls since the trim, at each call's cache-read rate
+                r, p = _step_value(t, r, p, start, end)
             rows.append({
                 "id": t["id"], "component": t["component"], "item": t["item"], "scope": t["scope"],
                 "source": t["source"], "tier": t["tier"], "ts": t["ts"], "closed_at": t.get("closed_at"),
@@ -105,6 +124,7 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
                 "write_1h_usd": r["write_1h_usd"], "write_5m_usd": r["write_5m_usd"],
                 "projected_30d_tokens": p["read_tokens"] + p["write_tokens"],
                 "projected_30d_usd": p["usd"],
+                **({"step_measured": True, "step_share": t["step"]["share"]} if t.get("step") else {}),
             })
         tiers = {k: [r for r in rows if r["tier"] == k] for k in ("measured", "estimated", "unattributed")}
         meas = tiers["measured"]

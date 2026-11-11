@@ -90,7 +90,7 @@ def measure_step(sessions, trim_epoch, closed_epoch=None, other_trim_epochs=(), 
     observed_drop = int(round(drop))
     # A step can never be credited above what the trim itself removed per call.
     drop_tokens = min(observed_drop, int(cap_tokens)) if cap_tokens else observed_drop
-    calls, usd, unpriced = 0, 0.0, 0
+    calls, usd, unpriced, carried = 0, 0.0, 0, []
     for s in after_all:
         if closed_epoch is not None and s["ts_epoch"] >= closed_epoch:
             continue
@@ -104,13 +104,14 @@ def measure_step(sessions, trim_epoch, closed_epoch=None, other_trim_epochs=(), 
             except Exception:
                 rate = None
         calls += n
+        carried.append((s["ts_epoch"], n, rate))
         if rate is None:
             unpriced += n
         else:
             usd += drop_tokens * n * rate
     return {**base, "status": "measured", "tier": "measured", "reason": "", "drop_tokens": drop_tokens,
             "calls_since": calls, "tokens_saved": drop_tokens * calls, "usd": round(usd, 4),
-            "unpriced_calls": unpriced, "observed_drop_tokens": observed_drop}
+            "unpriced_calls": unpriced, "observed_drop_tokens": observed_drop, "carried": carried}
 
 
 def measure_all(sessions, trims, rate_fn=None, window=WINDOW):
@@ -130,7 +131,9 @@ def measure_all(sessions, trims, rate_fn=None, window=WINDOW):
     return out
 
 
-def summarize(steps):
+def summarize(steps, keep_carried=False):
+    if not keep_carried:
+        steps = [{k: v for k, v in s.items() if k != "carried"} for s in steps]
     measured = [s for s in steps if s["status"] == "measured"]
     return {"available": True, "steps": steps,
             "measured_usd": round(sum(s["usd"] for s in measured), 4),
@@ -161,18 +164,24 @@ _MEMO = {}
 
 
 def measured_epochs(db_path, data_dir, claude_dir=None):
-    """Trim epochs with a visible (measured) first-call step. One scan per process and DB state."""
+    """{trim epoch: {"share", "drop", "size", "carried"}} for each visible step: the capped drop,
+    the trim group's size and the main-thread (ts_epoch, calls, rate) it was carried by.
+    One scan per process and DB state."""
     try:
         key = (str(db_path), str(data_dir), str(claude_dir), Path(db_path).stat().st_mtime_ns)
     except OSError:
-        return set()
+        return {}
     if key not in _MEMO:
-        found = collect(db_path, data_dir, claude_dir)
-        _MEMO[key] = {s["trim_epoch"] for s in found.get("steps", []) if s.get("status") == "measured"}
+        found = collect(db_path, data_dir, claude_dir, keep_carried=True)
+        _MEMO[key] = {s["trim_epoch"]: {"share": min(1.0, s["drop_tokens"] / s["estimated_tokens"]),
+                                        "drop": s["drop_tokens"], "size": s["estimated_tokens"],
+                                        "carried": s.get("carried", [])}
+                      for s in found.get("steps", [])
+                      if s.get("status") == "measured" and s.get("estimated_tokens")}
     return _MEMO[key]
 
 
-def collect(db_path, data_dir, claude_dir=None, card_fn=None):
+def collect(db_path, data_dir, claude_dir=None, card_fn=None, keep_carried=False):
     """Steps for every dated trim, from the user's own ledger and transcripts. Read-only."""
     from . import first_call_context, structural_ledger as ledger
     path = Path(db_path) if db_path else None
@@ -206,6 +215,6 @@ def collect(db_path, data_dir, claude_dir=None, card_fn=None):
             def rate_fn(model):
                 card = card_fn(model, 0)
                 return float(card["cache_read"]) / 1e6 if card else None
-        return summarize(measure_all(sessions, trims, rate_fn))
+        return summarize(measure_all(sessions, trims, rate_fn), keep_carried)
     except (sqlite3.Error, OSError, ValueError, TypeError, KeyError):
         return {"available": False, "why": "ledger unreadable"}

@@ -9,7 +9,7 @@ import stat
 import sys
 
 PAYLOAD = ('devin_compress.py', 'devin_state.py', 'devin_doctor.py', 'devin_verify.py', 'devin_source.py',
-           'bash_compress.py', 'bash_search_results.py', 'bash_whitelist.py', 'credential_patterns.py',
+           'bash_compress.py', 'preserved_reinject.py', 'bash_search_results.py', 'bash_whitelist.py', 'credential_patterns.py',
            'credential_url_patterns.py',
            'token_estimate.py', 'command_filters.py', 'runtime_env.py', 'py_trust.py', 'plugin_env.py', 'refetch_fingerprint.py',
            '_tomli.py', 'devin_hooks.py')
@@ -49,7 +49,7 @@ REPO_MODULES = frozenset((
     'cursor_transcript',
     # Added by the 5.13.69 merges (pristine, codemap, quiet, coverage).
     'archive_verify', 'codemap', 'codemap_hint', 'codemap_index', 'codemap_ledger', 'codemap_reread',
-    'coverage_funnel', 'hint_paths', 'holdout', 'post_run_classify',
+    'coverage_funnel', 'hint_paths', 'holdout', 'post_run_classify', 'large_transcripts', 'preserved_reinject',
 ))
 
 class SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):

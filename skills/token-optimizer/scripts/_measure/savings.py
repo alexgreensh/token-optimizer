@@ -6343,7 +6343,7 @@ def _get_merged_savings(days=None, since=None):
     retrieval_serve = _measure_facade._estimate_retrieval_serve_savings(days=days)
     model_routing = _measure_facade._compute_model_routing_savings(days=days, since=since)
     output_waste = _measure_facade._estimate_output_waste(days=days)
-    cache_drop = _measure_facade._estimate_cache_drop_savings(days=days)
+    cache_drop = {**_measure_facade._estimate_cache_drop_savings(days=days), **__import__("large_transcripts").count(_measure_facade.CLAUDE_DIR, days)}
     before_after = _measure_facade._estimate_before_after_savings(days=days, since=since, estimated_pools={
         "uncaptured_runtime": uncaptured,
         "behavioral_loops": behavioral,

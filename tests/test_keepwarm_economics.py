@@ -47,13 +47,43 @@ def test_indexed_history_matches_observations_at_each_cutoff():
         assert return_probability(index, now, 100, 100) == return_probability(sessions, now, 100, 100)
 
 
-def test_negative_trailing_net_pauses_even_for_abandoned_pings():
-    from _measure.keepwarm_economics import trailing_net_negative
+def test_negative_trailing_net_pauses_even_for_abandoned_pings(monkeypatch):
+    from _measure import keepwarm_economics
 
     class Facade:
-        @staticmethod
-        def keepwarm_spend_summary(days):
+        class time:
+            time = staticmethod(lambda: 100000)
+
+    def summary(facade, days, now):
             assert days == 30
             return {'pings': 1, 'net_usd': -0.12}
 
-    assert trailing_net_negative(Facade)
+    monkeypatch.setattr(keepwarm_economics, 'verified_summary', summary)
+    assert keepwarm_economics.gate_reason(Facade) == 'negative-net'
+
+
+def test_headline_includes_cost_of_pings_with_no_return():
+    from _measure.keepwarm_economics import headline_pool
+
+    class Facade:
+        class time:
+            time = staticmethod(lambda: 100000)
+        class Conn:
+            def execute(self, query):
+                return [('verified',)]
+            def close(self):
+                pass
+        _open_trends_db_readonly = staticmethod(lambda timeout: Facade.Conn())
+        _keepwarm_load_ledger_rows = staticmethod(lambda: [
+            {'status': 'realized', 'pause_key': 'verified'},
+            {'status': 'realized', 'pause_key': 'stranded'},
+            {'status': 'ok'}])
+        _keepwarm_iso_to_epoch = staticmethod(lambda value: 90000)
+        @staticmethod
+        def keepwarm_spend_summary(days, now, rows):
+            assert len(rows) == 2
+            return {'pings': 2, 'realized_count': 1, 'net_usd': -0.08}
+
+    result = headline_pool(Facade, 'window-start')
+    assert result['cost_saved_usd'] == -0.08
+    assert result['events'] == 3

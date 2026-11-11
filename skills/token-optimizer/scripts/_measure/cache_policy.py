@@ -1198,7 +1198,7 @@ def keepwarm_gate(env=None, claude_json_path=None, settings_path=None):
         return False, "consent-declined"
     if _measure_facade._keepwarm_tripwire_off():
         return False, "tripwire-off"
-    return False, "negative-net" if keepwarm_economics.trailing_net_negative(_measure_facade) else "live-resume-unverified"
+    return False, keepwarm_economics.gate_reason(_measure_facade)
 
 
 def _keepwarm_tripwire_off():
@@ -3984,9 +3984,9 @@ def keepwarm_spend_summary(days=None, now=None, rows=None):
             # Orphan iff no outcome row for this session landed at/after the firing
             # ts AND the firing is older than the grace window (a fresh firing may
             # simply be mid-ping). Counted at its recorded est_cost_usd.
-            siblings = outcome_ts_by_session.get(sid, ())
-            has_outcome = any(o >= ts - 0.001 for o in siblings)
-            if (not has_outcome) and (now - ts) > _measure_facade._KEEPWARM_ORPHAN_FIRING_SECONDS:
+            siblings = outcome_ts_by_session.get(sid, [])
+            has_outcome = keepwarm_economics.claim_outcome(siblings, ts)
+            if not has_outcome:
                 ec = float(r.get("est_cost_usd", 0.0) or 0.0)
                 spend += ec
                 pings += 1
@@ -4607,8 +4607,8 @@ def keepwarm_report(days=None, now=None):
         mode = "probe-only"
 
     rows = _measure_facade._keepwarm_load_ledger_rows()
-    s7 = _measure_facade.keepwarm_spend_summary(days=7, now=now, rows=rows)
-    s30 = _measure_facade.keepwarm_spend_summary(days=days, now=now, rows=rows)
+    s7 = keepwarm_economics.verified_summary(_measure_facade, 7, now)
+    s30 = keepwarm_economics.verified_summary(_measure_facade, days, now)
     health = _measure_facade._keepwarm_tripwire_health(rows, now=now)
     try:
         tw_ratio = _measure_facade.json.loads(_measure_facade._keepwarm_tripwire_path().read_text(encoding="utf-8")).get("ratio_7d")

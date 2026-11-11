@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split
+from . import _compat, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split, keepwarm_economics
 
 def _counted_event_utc(ts):
     """Convert local event timestamps to UTC, respecting local DST."""
@@ -1410,7 +1410,7 @@ def _get_savings_summary(days=None, since=None):
             "period_days": days,
             # A1: one-time first-trim (compare). Reported separately, NEVER summed
             # into the realized total (structural_savings is the ongoing model).
-            "one_time_setup": one_time, "keepwarm_estimated": popped["keepwarm_estimated"],
+            "one_time_setup": one_time, "keepwarm_estimated": keepwarm_economics.headline_pool(_measure_facade, cutoff),
             # U-G: observed-trigger / estimated-magnitude avoided-search from
             # proactive hints. Estimated tier, never in the realized total.
             "hint_followed_estimated": hint_followed_est,

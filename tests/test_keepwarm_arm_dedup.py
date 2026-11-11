@@ -475,7 +475,21 @@ def test_replay_charges_abandoned_tail_and_stops_at_cutoff(m):
 
 def test_gate_reports_negative_trailing_net(m, monkeypatch):
     mod, _ = m
+    from _measure import keepwarm_economics
     monkeypatch.setattr(mod, 'keepwarm_consent', lambda: 'enabled')
     monkeypatch.setattr(mod, '_keepwarm_tripwire_off', lambda: False)
-    monkeypatch.setattr(mod, 'keepwarm_spend_summary', lambda days: {'pings': 1, 'net_usd': -0.12})
+    monkeypatch.setattr(keepwarm_economics, 'verified_summary', lambda facade, days, now: {'pings': 1, 'net_usd': -0.12})
     assert mod.keepwarm_gate(env={}) == (False, 'negative-net')
+
+
+def test_spend_ledger_counts_each_attempt_including_unresolved(m):
+    mod, _ = m
+    rows = [
+        {'session_id': 's', 'ts': 100, 'status': 'firing', 'est_cost_usd': 0.05},
+        {'session_id': 's', 'ts': 101, 'status': 'firing', 'est_cost_usd': 0.06},
+        {'session_id': 's', 'ts': 102, 'status': 'ok', 'cost_usd': 0.04},
+    ]
+    result = mod.keepwarm_spend_summary(days=None, now=103, rows=rows)
+    assert result['pings'] == 2
+    assert result['spend_usd'] == 0.10
+    assert result['net_usd'] == -0.10

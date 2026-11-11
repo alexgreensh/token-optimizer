@@ -87,9 +87,48 @@ def with_gaps(stats, sessions):
     return dict(stats, gap_sessions=sessions or [])
 
 
-def trailing_net_negative(facade):
+def gate_reason(facade):
     try:
-        summary = facade.keepwarm_spend_summary(days=30)
-        return bool(summary['pings'] and summary['net_usd'] < 0)
-    except (KeyError, TypeError, ValueError, OSError):
-        return False
+        summary = verified_summary(facade, 30, facade.time.time())
+        if summary['pings'] and summary['net_usd'] < 0:
+            return 'negative-net'
+        return 'live-resume-unverified'
+    except Exception:
+        return 'accounting-unavailable'
+
+
+def verified_summary(facade, days, now):
+    conn = facade._open_trends_db_readonly(timeout=1.0)
+    try:
+        keys = {row[0] for row in conn.execute(
+            "SELECT pause_key FROM savings_events WHERE event_type = 'keepwarm_estimated' AND pause_key IS NOT NULL")}
+    finally:
+        conn.close()
+    rows = [row for row in facade._keepwarm_load_ledger_rows()
+            if row.get('status') != 'realized' or row.get('pause_key') in keys]
+    return facade.keepwarm_spend_summary(days=days, now=now, rows=rows)
+
+
+def headline_pool(facade, cutoff):
+    """Use the spend ledger, including pings that never led to a return."""
+    now = facade.time.time()
+    start = facade._keepwarm_iso_to_epoch(cutoff)
+    if start is None:
+        return None
+    try:
+        summary = verified_summary(facade, max(0, now - start) / 86400, now)
+    except Exception:
+        return None
+    if not summary['pings'] and not summary['realized_count']:
+        return None
+    return {'events': summary['pings'] + summary['realized_count'],
+            'tokens_saved': 0, 'cost_saved_usd': summary['net_usd']}
+
+
+def claim_outcome(outcomes, firing_time):
+    """Match each completed ping to at most one reserved attempt."""
+    for index, outcome_time in enumerate(outcomes):
+        if outcome_time >= firing_time - 0.001:
+            outcomes.pop(index)
+            return True
+    return False

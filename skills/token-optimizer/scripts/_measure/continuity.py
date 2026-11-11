@@ -1838,7 +1838,7 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
         # relevance winner either.
         candidates = []
         for cp in checkpoints:
-            if sid_safe and sid_safe in cp["filename"]:
+            if sid_safe and sid_safe == _measure_facade._checkpoint_session(cp["filename"]):
                 continue
             try:
                 age_seconds = (_measure_facade.datetime.now() - cp["created"]).total_seconds()
@@ -1951,7 +1951,7 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
         retention_cutoff = now - _measure_facade.timedelta(days=_measure_facade._CHECKPOINT_RETENTION_DAYS)
         session_checkpoints = []
         for cp in checkpoints:
-            if sid_safe not in cp["filename"]:
+            if sid_safe != _measure_facade._checkpoint_session(cp["filename"]):
                 continue
             if cp["created"] < retention_cutoff:
                 continue
@@ -1991,12 +1991,7 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
                 pass
             return
 
-        # No matching checkpoint found for this session. Never auto-restore a
-        # different session's body into post-compaction context; only surface a
-        # short pointer so the user can opt in if it is actually relevant.
-        latest = checkpoints[0]
-        if latest["created"] >= retention_cutoff:
-            print(f"[Token Optimizer] No matching checkpoint. Recent: {latest['path']}. Load if relevant.")
+        # No matching checkpoint: do not suggest a sibling during compaction.
         return
 
 
@@ -2849,7 +2844,7 @@ def _continuity_resume_block(text, checkpoints, sid_safe, cwd):
 
     same_project = []
     for cp in checkpoints[:50]:
-        if sid_safe and sid_safe in cp.get("filename", ""):
+        if sid_safe and sid_safe == _measure_facade._checkpoint_session(cp.get("filename", "")):
             continue  # same-session recovery is SessionStart/compact's job
         sidecar = _measure_facade._read_checkpoint_sidecar(cp["path"])
         if not _measure_facade._checkpoint_in_project(sidecar, cwd):
@@ -3048,7 +3043,7 @@ def _continuity_prompt_hint(prompt_text=None, session_id=None, cwd=None, max_age
         # but among similar-relevance sessions the more active one wins.
         activity_weight = 1.0 + 0.5 * min(density, 20) / 20.0
         for checkpoint in _cps[:_per_session_scan]:
-            if sid_safe and sid_safe in checkpoint.get("filename", ""):
+            if sid_safe and sid_safe == _measure_facade._checkpoint_session(checkpoint.get("filename", "")):
                 continue
             score, sidecar = _measure_facade._checkpoint_topic_score(text, checkpoint, cwd=cwd)
             # Collect from the teaser floor (default 0.3); the full-block gate
@@ -3289,7 +3284,7 @@ def _best_checkpoint_for_session(session_id, within_retention=None):
     cutoff = _measure_facade.datetime.now() - _measure_facade.timedelta(days=_measure_facade._CHECKPOINT_RETENTION_DAYS)
     cands = []
     for cp in _measure_facade.list_checkpoints():
-        if sid_safe not in cp.get("filename", ""):
+        if sid_safe != _measure_facade._checkpoint_session(cp.get("filename", "")):
             continue
         if within_retention and cp["created"] < cutoff:
             continue
@@ -4420,9 +4415,8 @@ def _checkpoints_to_prune(checkpoints, now=None, days=None, total_max=None, per_
     - older than the retention window: removed;
     - per session: the newest `per_session`, plus the newest of each trigger
       (restore prefers earlier, richer saves over late stop saves), are kept;
-    - over the disk ceiling: extra saves go oldest first, then sessions' newest
-      saves oldest first, so a session's newest checkpoint is the last to go.
-    A session's newest checkpoint is removed only by age or the ceiling, never
+    - over the disk ceiling: extra saves go oldest first; newest saves survive.
+    A session's newest checkpoint is removed only by age, never
     by another session's activity. A file a writer has not seen yet is never in
     its list, so it cannot be removed by that writer.
     """
@@ -4457,8 +4451,6 @@ def _checkpoints_to_prune(checkpoints, now=None, days=None, total_max=None, per_
         drop_extra = extra[::-1][:over]
         prune.extend(drop_extra)
         over -= len(drop_extra)
-    if over > 0:
-        prune.extend(newest[::-1][:over])
     return prune
 
 

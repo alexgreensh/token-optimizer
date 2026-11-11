@@ -119,14 +119,13 @@ def test_ceiling_drops_extras_before_any_sessions_newest(m):
     assert {m._checkpoint_session(c["filename"]) for c in kept} == {f"{s:08d}-aaaa" for s in range(4)}
 
 
-def test_ceiling_below_session_count_keeps_the_newest_sessions(m):
+def test_ceiling_below_session_count_keeps_each_sessions_newest(m):
     now = datetime.now()
     cps = [{"path": None, "filename": f"{s:08d}-aaaa-20261004-120000.md",
             "created": now - timedelta(minutes=s), "trigger": "auto"} for s in range(5)]
     prune = m._checkpoints_to_prune(cps, now=now, days=7, total_max=2, per_session=5)
-    assert [c["filename"] for c in cps if c not in prune] == [cps[0]["filename"], cps[1]["filename"]]
-    # Zero or negative settings never remove everything.
-    assert len(m._checkpoints_to_prune(cps, now=now, days=7, total_max=0, per_session=0)) == 4
+    assert not prune
+    assert not m._checkpoints_to_prune(cps, now=now, days=7, total_max=0, per_session=0)
 
 
 def test_session_ids_parse_from_every_name_shape(m):

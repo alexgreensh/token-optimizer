@@ -499,6 +499,8 @@ def _sub_compact_restore_new_session(hook_input: dict, sink: list) -> None:
     """
     sid = hook_input.get("session_id")
     measure._mark_ran_this_session("compact-restore-new-session", sid)
+    if hook_input.get("source", "startup") != "startup" or _is_compact_start(hook_input):
+        return
     budget = _runner_budget(measure._int_env("TOKEN_OPTIMIZER_COMPACT_RESTORE_BUDGET", 8))
     if budget < 0.1:
         return

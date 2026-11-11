@@ -3806,7 +3806,7 @@ def _set_v5_feature(feature_name, enabled):
     _measure_facade = _compat.facade()
     feat = _measure_facade.V5_FEATURES.get(feature_name)
     if not feat: return False
-    if feature_name == "keepwarm": return _measure_facade._measure_providers['cache_policy'].keepwarm_economics.toggle(_measure_facade, enabled)
+    if feature_name == "keepwarm": return False
     _measure_facade._write_config_flag(feat["config_key"], bool(enabled))
     return True
 

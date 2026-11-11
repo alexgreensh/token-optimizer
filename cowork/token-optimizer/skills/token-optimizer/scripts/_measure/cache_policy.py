@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, keepwarm_economics, keepwarm_linux
+from . import _compat
 
 
 def _input_and_cached_read_rates(model):
@@ -1181,7 +1181,7 @@ def keepwarm_consent_status(env=None, claude_json_path=None, settings_path=None)
 
 def keepwarm_gate(env=None, claude_json_path=None, settings_path=None):
     """Fail closed until cache refresh is proven safe for live sessions."""
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_economics
     env = _measure_facade.os.environ if env is None else env
     if env.get(_measure_facade._KEEPWARM_PING_ENV):
         return False, "ping-process"
@@ -1740,7 +1740,7 @@ def keepwarm_scheduler_install(gate=None, quiet=None):
 
     A refused gate leaves scheduler configuration untouched.
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_linux
     gate_fn = gate or _measure_facade.keepwarm_gate
     allowed, reason = gate_fn()
     if not allowed:
@@ -1774,7 +1774,7 @@ def keepwarm_scheduler_uninstall(quiet=None):
     """
     # Per-account scheduler job: never touched from a redirected HOME
     # (a test sandbox or scratch run would re-point the user's live job).
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_linux
     if _measure_facade._daemon_snapshot_sandboxed():
         return (False, _measure_facade._SCHEDULER_REFUSAL)
     if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.uninstall(_measure_facade)
@@ -1814,7 +1814,7 @@ def keepwarm_scheduler_status(gate=None):
     proves WE installed it; the plist proves it is still wired). Pure-ish: reads
     files + the gate, never installs. `gate` injectable for tests.
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_linux
     gate_fn = gate or _measure_facade.keepwarm_gate
     if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.status(_measure_facade, gate_fn)
     plist_path = _measure_facade._keepwarm_scheduler_plist_path()
@@ -1854,7 +1854,7 @@ def keepwarm_scheduler_repair(gate=None):
     'repair-failed'. Does NOT touch the dashboard plist/lock/regen loop.
     """
     # Claude Code cloud: no launchd/systemd user scheduler in the VM.
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_linux
     if _measure_facade._remote_lean_profile():
         return "noop-remote"
     if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.repair(_measure_facade, gate or _measure_facade.keepwarm_gate)
@@ -2009,7 +2009,7 @@ def _keepwarm_cadence_for(ttl_kind):
 
 def keepwarm_policy_decision(record, now, tripwire_state=None, history_stats=None):
     """Apply the value, expiry, failed-ping and three-attempt limits."""
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_economics
     if not isinstance(record, dict):
         return {"action": "stop", "reason": "bad-record", "phase": "probe"}
 
@@ -2469,7 +2469,7 @@ def keepwarm_tick(now=None, dry_run=None, env=None, runner=None,
     `gate`/`runner` are injectable for tests; defaults use the real gate and
     subprocess.
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_economics
     if now is None:
         now = _measure_facade.time.time()
     if env is None:
@@ -2786,7 +2786,7 @@ def _keepwarm_reconstruct_session_events(turns, now):
 
 def _keepwarm_replay_pause(pause, predictor_mode, now, project_resume_index=None,
                            machine_resume_index=None, own_resume_times=None,
-                           is_tail=None, gap_sessions=None):
+                           is_tail=None):
     """Replay the LIVE policy over one pause/tail and return (pings, cost, saving).
 
     Drives keepwarm_policy_decision step by step exactly as the tick would, in
@@ -2805,7 +2805,7 @@ def _keepwarm_replay_pause(pause, predictor_mode, now, project_resume_index=None
       * a tail (never resumed) accrues its ping cost, never a saving.
     Returns (n_pings, ping_cost_usd, saving_usd).
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_economics
     record = {
         "session_id": "replay",
         "transcript_path": "/replay",
@@ -2837,7 +2837,7 @@ def _keepwarm_replay_pause(pause, predictor_mode, now, project_resume_index=None
             tripwire_state={"allow_sustain": True},
             history_stats=keepwarm_economics.with_gaps(_measure_facade._keepwarm_replay_history_stats(
                 pause, predictor_mode, clock, project_resume_index,
-                machine_resume_index, own_resume_times), gap_sessions))
+                machine_resume_index, own_resume_times), pause.get("gap_sessions")))
         action = decision.get("action")
         if action == "stop":
             break
@@ -2987,7 +2987,7 @@ def keepwarm_backfill(days=None, now=None, files=None, parse_fn=None):
     cost. Returns a dict with per-mode {pings, ping_cost_usd, avoided_writes,
     saving_usd, net_usd} plus reconciliation diagnostics.
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_economics
     if now is None:
         now = _measure_facade.time.time()
     if files is None:
@@ -3045,9 +3045,9 @@ def keepwarm_backfill(days=None, now=None, files=None, parse_fn=None):
                 if int(ev["prefix_proxy"]) < _measure_facade._KEEPWARM_PREFIX_FLOOR:
                     continue
                 n, cost, saving = _measure_facade._keepwarm_replay_pause(
-                    ev, mode, now, project_resume_index=proj_idx,
+                    dict(ev, gap_sessions=gap_sessions), mode, now, project_resume_index=proj_idx,
                     machine_resume_index=machine_resume_index,
-                    own_resume_times=own_resume_times, gap_sessions=gap_sessions, is_tail=False)
+                    own_resume_times=own_resume_times, is_tail=False)
                 agg["pings"] += n
                 agg["ping_cost_usd"] += cost
                 agg["saving_usd"] += saving
@@ -3060,9 +3060,9 @@ def keepwarm_backfill(days=None, now=None, files=None, parse_fn=None):
             if recon["tail"]:
                 if int(recon["tail"]["prefix_proxy"]) >= _measure_facade._KEEPWARM_PREFIX_FLOOR:
                     n, cost, _ = _measure_facade._keepwarm_replay_pause(
-                        recon["tail"], mode, now, project_resume_index=proj_idx,
+                        dict(recon["tail"], gap_sessions=gap_sessions), mode, now, project_resume_index=proj_idx,
                         machine_resume_index=machine_resume_index,
-                        own_resume_times=own_resume_times, gap_sessions=gap_sessions, is_tail=True)
+                        own_resume_times=own_resume_times, is_tail=True)
                     agg["pings"] += n
                     agg["ping_cost_usd"] += cost; agg["tail_cost_usd"] += cost
 
@@ -3539,7 +3539,7 @@ def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
     drops resumed records). Returns {realized, loss, skipped, booked_usd}.
     Never raises.
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_economics
     if now is None:
         now = _measure_facade.time.time()
     if records is None:
@@ -3664,7 +3664,7 @@ def keepwarm_spend_summary(days=None, now=None, rows=None):
     all). Read-only; the merge total comes from savings_events, NOT this -- this
     is the dedicated spend cost-line and the per-session realized breakdown.
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_economics
     if now is None:
         now = _measure_facade.time.time()
     if rows is None:
@@ -4314,7 +4314,7 @@ def keepwarm_report(days=None, now=None):
     ratio, top-5 sessions by realized. Honest empty-state when no pings yet.
     Never raises (each sub-read is fail-open).
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import keepwarm_economics
     if now is None:
         now = _measure_facade.time.time()
     try:

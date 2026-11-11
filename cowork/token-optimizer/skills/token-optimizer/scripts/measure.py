@@ -2878,7 +2878,7 @@ keepwarm_resume_predictor = _measure_compat.bind(_measure_providers['cache_polic
 _keepwarm_reconstruct_session_events = _measure_compat.bind(_measure_providers['cache_policy']._keepwarm_reconstruct_session_events, __name__)
 
 
-_keepwarm_replay_pause = _measure_compat.bind(_measure_providers['cache_policy']._keepwarm_replay_pause, __name__, defaults=(None, None, None, False, None,))
+_keepwarm_replay_pause = _measure_compat.bind(_measure_providers['cache_policy']._keepwarm_replay_pause, __name__, defaults=(None, None, None, False,))
 
 
 _keepwarm_schedule_covers = _measure_compat.bind(_measure_providers['cache_policy']._keepwarm_schedule_covers, __name__)
@@ -6587,7 +6587,7 @@ _write_config_flag = _measure_compat.bind(_measure_providers['lifecycle']._write
 # This lets power users override via env, but persistent state lives in config.json
 # so dashboard toggles work without touching shell profiles.
 
-V5_FEATURES = {**_measure_providers['cache_policy'].keepwarm_economics.feature_settings(),
+V5_FEATURES = {**__import__('_measure.keepwarm_economics', fromlist=['feature_settings']).feature_settings(),
     "quality_nudges": {
         "env_var": "TOKEN_OPTIMIZER_QUALITY_NUDGES",
         "config_key": "v5_quality_nudges",

@@ -487,7 +487,7 @@ def test_replay_charges_abandoned_tail_and_stops_at_cutoff(m):
              'model': 'claude-sonnet-4-5', 'ttl_kind': '1h'}
     history = [[1000 + 4000 * i for i in range(6)] for _ in range(50)]
     count, cost, gross = mod._keepwarm_replay_pause(
-        pause, 'probe', 103500, gap_sessions=history, is_tail=True)
+        dict(pause, gap_sessions=history), 'probe', 103500, is_tail=True)
     assert count == 1
     assert cost > 0
     assert gross == 0
@@ -542,6 +542,20 @@ def test_linux_scheduler_dispatches_only_after_gate(m, monkeypatch):
     assert calls == []
     assert mod.keepwarm_scheduler_install(gate=lambda: (True, 'enabled'))[0]
     assert calls == ['install']
+
+
+def test_safety_pause_is_exposed_even_when_accounting_is_unavailable(m, monkeypatch):
+    mod, _ = m
+    monkeypatch.setattr(mod, 'detect_runtime', lambda: 'claude')
+    monkeypatch.setattr(mod, '_normalized_platform', lambda: 'Darwin')
+    def unavailable(**kwargs):
+        raise OSError('synthetic unavailable accounting')
+    monkeypatch.setattr(mod, 'keepwarm_report', unavailable)
+    health = mod.keepwarm_cache_health_block()
+    assert health['state'] == 'paused'
+    assert health['note'] == 'Keep-warm: paused while we prove it is safe and saves you money'
+    feature = mod._get_v5_feature_status()['keepwarm']
+    assert feature['enabled'] is False and feature['source'] == 'paused'
 
 
 def test_windows_health_reports_keepwarm_unavailable(m, monkeypatch):

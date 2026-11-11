@@ -1,12 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { marks, cards, row, type Card } from '../../src/marks.ts'
+import { marks, cards, row, savingsPill, type Card } from '../../src/marks.ts'
+import { sentence } from '../../src/ladder.ts'
 import { iconSvg, ICONS } from '../../src/icons.ts'
 import { snap, withQuality, TZ } from './fixtures.ts'
-import type { CacheView } from '../../src/contracts.ts'
+import type { CacheView, SavingsHeadline } from '../../src/contracts.ts'
 
-const body = (c: Card) => c.body.map((r) => r.text).join('')
+const means = (c: Card) => c.means.map((r) => r.text).join('')
+const todo = (c: Card) => c.todo.map((r) => r.text).join('')
 const cacheCard = (cache: CacheView) => cards(snap({ cache }), TZ).find((c) => c.id === 'cache')!
 const actionIds = (c: Card) => c.actions.map((a) => a.id)
 
@@ -82,27 +84,40 @@ test('cache card offers Keep warm only when warm or warning and measured', () =>
   }
   const cold = cacheCard({ ...base, state: 'cold', secondsLeft: 0, measured: true })
   assert.deepEqual(actionIds(cold), ['clean-first'])
-  assert.deepEqual(cold.body.filter((r) => r.lose), [{ text: '720k tokens', lose: true }])
-  assert.match(body(cold), /makes later messages cheaper/)
+  assert.deepEqual(cold.means.filter((r) => r.lose), [{ text: '720k tokens', lose: true }])
+  assert.match(todo(cold), /makes later messages cheaper/)
 })
 
 test('warning cache card flags the tokens at stake', () => {
   const c = cacheCard({ state: 'warning', secondsLeft: 40, lifetime: 3600, measured: true, tokensAtStake: 720_000 })
   assert.equal(c.title, 'Drops in 1m')
-  assert.deepEqual(c.body.filter((r) => r.lose), [{ text: '720k tokens', lose: true }])
+  assert.deepEqual(c.means.filter((r) => r.lose), [{ text: '720k tokens', lose: true }])
+})
+
+test('every card says what it means and what to do, in plain short words', () => {
+  for (const c of cards(snap(), TZ)) {
+    assert.ok(means(c).length > 0, `${c.id} means`)
+    assert.ok(todo(c).length > 0, `${c.id} todo`)
+    for (const line of [means(c), todo(c)]) {
+      assert.doesNotMatch(line, /—/, `${c.id} em-dash`)
+      assert.doesNotMatch(line, /\b(compaction continuity|top_drag|tokens_at_stake)\b/, `${c.id} internal name`)
+    }
+  }
 })
 
 test('quality, context and limit cards', () => {
   const all = cards(snap(), TZ)
   const q = all.find((c) => c.id === 'quality')!
   assert.equal(q.title, 'Quality S 92')
-  assert.equal(body(q), 'Biggest drag: 3 oversized tool results, about 4k tokens.')
+  assert.equal(means(q), "How clean Claude's working context is, 0 to 100. Biggest drag: 3 oversized tool results, about 4k tokens.")
+  assert.equal(todo(q), 'Nothing to do.')
   assert.deepEqual(q.actions, [{ id: 'clean', label: 'Clean up' }, { id: 'fresh', label: 'Start fresh' }])
   const ctx = all.find((c) => c.id === 'context')!
   assert.equal(ctx.title, '340k of 1M tokens')
   const five = all.find((c) => c.id === 'fiveHour')!
   assert.equal(five.title, 'Renews today at 3:20 PM')
-  assert.equal(body(five), 'That is in 2h 14m.')
+  assert.equal(means(five), '5-hour limit 41% used; resets today at 3:20 PM, in 2h 14m.')
+  assert.equal(todo(five), 'Nothing to do.')
   const week = all.find((c) => c.id === 'week')!
   assert.equal(week.title, 'Renews Thursday, Oct 8 at 9:00 AM')
   assert.deepEqual(cards(snap({ fiveHour: null, week: null }), TZ).map((c) => c.id), ['quality', 'context', 'cache'])
@@ -171,12 +186,50 @@ test('#270: a smaller auto-compact window is described as distance to compaction
   // 213k on a 1M model with autoCompactWindow 300k: the ring is 71%, quality sees 21%.
   const c = cards(snap({ contextTokens: 213_000, contextWindow: 300_000, contextPercent: 71, contextModelWindow: 1_000_000 }), TZ).find((x) => x.id === 'context')!
   assert.equal(c.title, '213k of 300k before auto-compact')
-  assert.equal(body(c), '21% of the 1M model window.')
-  assert.doesNotMatch(body(c), /half full/)
+  assert.equal(means(c), '21% of the 1M model window.')
+  assert.doesNotMatch(means(c), /half full/)
 })
 
 test('#270: without a smaller auto-compact window the context card is unchanged', () => {
   const c = cards(snap({ contextTokens: 213_000, contextWindow: 1_000_000, contextPercent: 21, contextModelWindow: null }), TZ).find((x) => x.id === 'context')!
   assert.equal(c.title, '213k of 1M tokens')
-  assert.equal(body(c), 'Quality holds best under half full.')
+  assert.equal(means(c), 'Quality holds best under half full.')
+})
+
+const HEADLINE: SavingsHeadline = {
+  usd30d: 237,
+  usdWeek: null,
+  tokens30d: 602_700_000,
+  display: {
+    kind: '30d',
+    short: 'Saved $237/30d · 602.7M kept out',
+    long: '$237 saved in 30 days · 602.7M tokens kept out of context',
+    url: 'http://localhost:24842/token-optimizer#savings',
+  },
+}
+
+test('savingsPill: the calm line gets the headline, long in full and short in slim', () => {
+  const s = snap({ savingsHeadline: HEADLINE })
+  const say = sentence(s, TZ)
+  assert.equal(say.tone, 'good')
+  assert.equal(say.action, null)
+  assert.deepEqual(savingsPill(s, say, 'full'), { text: HEADLINE.display!.long, url: HEADLINE.display!.url })
+  assert.deepEqual(savingsPill(s, say, 'slim'), { text: HEADLINE.display!.short, url: HEADLINE.display!.url })
+})
+
+test('savingsPill: a sentence plus long text that would not fit drops to short', () => {
+  const s = snap({ savingsHeadline: HEADLINE, note: `Compacts:2 (observing). ${'detail '.repeat(12)}`.trim() })
+  const say = sentence(s, TZ)
+  const pill = savingsPill(s, say, 'full')
+  assert.equal(pill?.text, HEADLINE.display!.short)
+})
+
+test('savingsPill: no headline, no display, or a sentence that asks for something means no pill', () => {
+  assert.equal(savingsPill(snap(), sentence(snap(), TZ), 'full'), null) // installs that predate savings_headline
+  const noDisplay = snap({ savingsHeadline: { ...HEADLINE, display: null } })
+  assert.equal(savingsPill(noDisplay, sentence(noDisplay, TZ), 'full'), null)
+  const urgent = snap({ savingsHeadline: HEADLINE, fiveHour: { percentUsed: 95, resetsAt: '2026-10-03T19:20:00Z' } })
+  assert.equal(savingsPill(urgent, sentence(urgent, TZ), 'full'), null)
+  const armed = snap({ savingsHeadline: HEADLINE, freshArmed: true })
+  assert.equal(savingsPill(armed, sentence(armed, TZ), 'full'), null)
 })

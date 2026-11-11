@@ -32,6 +32,19 @@ export type TokenOptimizerDesktopSavings = {
   daily: number[]
 }
 
+/** `savings_headline` from `measure.py status-bar`; display is null when nothing is worth a number. */
+export type TokenOptimizerDesktopSavingsHeadline = {
+  usd30d: number | null
+  usdWeek: number | null
+  tokens30d: number | null
+  display: {
+    kind: 'week' | '30d' | 'tokens' | null
+    short: string
+    long: string
+    url: string | null
+  } | null
+} | null
+
 export type TokenOptimizerDesktopSession = {
   sessionId: string
   /** `$.clock.now()` when these figures were gathered (ms). */
@@ -50,6 +63,8 @@ export type TokenOptimizerDesktopSession = {
   branch: string | null
   /** Last known savings; kept while a refresh loads or times out. */
   savings: TokenOptimizerDesktopSavings | null
+  /** The shared savings headline; kept like savings, null on installs that predate it. */
+  savingsHeadline?: TokenOptimizerDesktopSavingsHeadline
   savingsState: 'fresh' | 'stale' | 'loading' | 'unavailable'
   /** One short reason when savings is null. */
   savingsReason: string | null

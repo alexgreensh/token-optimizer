@@ -1,10 +1,10 @@
-// The "Full dashboard" link in the unfolded band, both sizes: where it sits, what its click
-// runs, the busy guard and the failure note, through register.tsx inside the engine.
+// The "Dashboard ↗" link capping the gauges row in both sizes, folded or not: what its
+// click runs, the busy guard and the failure note, through register.tsx inside the engine.
 import type { On } from 'claude-code'
 import { expect, type Engine } from 'claude-code/testing'
 
 import { BUSY_TIMEOUT_MS, busyTimeoutMs, DASHBOARD_TIMEOUT_MS, NOTE_MS } from '../../src/actions.ts'
-import { BAND, START, quality, stub, SCRIPTS, type World, test } from './world.ts'
+import { BAND, HEADLINE, SAVED, START, quality, stub, SCRIPTS, type Status, type World, test } from './world.ts'
 
 const OPENING = 'Opening the dashboard.'
 const FAILED = 'Could not open the dashboard.'
@@ -20,6 +20,16 @@ function sag(w: World): void {
   w.files[key] = [1, quality(60, 0)]
 }
 
+/** The calm status answer, with `savings_headline` added when a test wants the pill. */
+const calmStatus = (savings_headline?: unknown): Status => ({
+  savings: SAVED,
+  savings_headline,
+  savings_state: 'fresh',
+  savings_reason: null,
+  requestAgoS: 30,
+  cache_lifetime: '1h',
+})
+
 async function mounted($: Engine, on: On, patch: Partial<World> = {}, size: 'full' | 'slim' = 'full') {
   const w = stub(on, patch)
   await $.session.start(START)
@@ -30,42 +40,30 @@ async function mounted($: Engine, on: On, patch: Partial<World> = {}, size: 'ful
 }
 
 for (const size of ['full', 'slim'] as const) {
-  test(`${size}: the folded band has no dashboard link, the unfolded one has a plain "Full dashboard" link`, async ($, on) => {
+  test(`${size}: the folded band already ends its gauges with a plain "Dashboard ↗" link`, async ($, on) => {
     const { ui } = await mounted($, on, {}, size)
-    expect(await ui.find({ key: 'dashboard' })).toBeUndefined()
-    expect(await has(ui, 'Full dashboard')).toBe(false)
-
-    await ui.press({ key: 'details' })
     const link = await ui.find({ key: 'dashboard' })
     expect(link).toBeDefined()
-    expect(link?.props.label).toBe('Full dashboard')
+    expect(link?.props.label).toBe('Dashboard ↗')
     // A link, not a fourth button: drawn without chrome, no variant, no dimmed or new colour.
     expect(link?.props.plain).toBe(true)
     expect(link?.props.variant).toBeUndefined()
     expect(link?.props.dimColor).toBeUndefined()
     expect(link?.props.role).toBeUndefined()
 
-    // Folding it again takes the link away.
+    // Unfolding keeps the same single link: it lives on the gauges row, not in the row.
     await ui.press({ key: 'details' })
-    expect(await ui.find({ key: 'dashboard' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Button' })).filter(b => b.props.key === 'dashboard').length).toBe(1)
   })
 
-  test(`${size}: the link ends the unfolded area, after the row's own buttons`, async ($, on) => {
-    const w = stub(on)
-    sag(w)
-    await $.session.start(START)
-    await w.clock.settle()
-    const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-    if (size === 'slim') await ui.press({ key: 'size' })
-    await ui.press({ key: 'details' })
+  test(`${size}: the link is the last button on the gauges row while folded`, async ($, on) => {
+    const { ui } = await mounted($, on, {}, size)
     const keys = (await ui.findAll({ type: 'Button' })).map(b => String(b.props.key))
-    expect(keys.some(k => k.startsWith('row-'))).toBe(true)
     expect(keys[keys.length - 1]).toBe('dashboard')
   })
 
   test(`${size}: a click runs measure.py dashboard through the runner with its own bounded timeout, argv only`, async ($, on) => {
     const { w, ui } = await mounted($, on, {}, size)
-    await ui.press({ key: 'details' })
     await ui.press({ key: 'dashboard' })
     await w.clock.settle()
 
@@ -91,7 +89,6 @@ for (const size of ['full', 'slim'] as const) {
 
   test(`${size}: while it runs the note says "Opening the dashboard." and a second click is ignored`, async ($, on) => {
     const { w, ui } = await mounted($, on, { dashboardDelayMs: 5_000 }, size)
-    await ui.press({ key: 'details' })
     await ui.press({ key: 'dashboard' })
     await w.clock.advance(1_000)
     expect(await has(ui, OPENING)).toBe(true)
@@ -116,7 +113,6 @@ for (const size of ['full', 'slim'] as const) {
   for (const how of ['fail', 'browser-fail', 'throws'] as const) {
     test(`${size}: a dashboard that ${how === 'fail' ? 'exits non-zero' : how === 'throws' ? 'cannot run' : 'cannot open the browser'} says "Could not open the dashboard." for NOTE_MS and nothing else`, async ($, on) => {
       const { w, ui } = await mounted($, on, { dashboard: how }, size)
-      await ui.press({ key: 'details' })
       await ui.press({ key: 'dashboard' })
       await w.clock.settle()
 
@@ -140,7 +136,6 @@ for (const size of ['full', 'slim'] as const) {
 
   test(`${size}: a dashboard that never answers ends at the busy timeout with the failure note`, async ($, on) => {
     const { w, ui } = await mounted($, on, { dashboard: 'hang' }, size)
-    await ui.press({ key: 'details' })
     await ui.press({ key: 'dashboard' })
     await w.clock.advance(1_000)
     expect(await has(ui, OPENING)).toBe(true)
@@ -155,7 +150,6 @@ for (const size of ['full', 'slim'] as const) {
   test(`${size}: a heavy rebuild is still "Opening the dashboard." past 120 s, then opens`, async ($, on) => {
     // 150 s: past the old 120 s busy limit, inside the dashboard's own.
     const { w, ui } = await mounted($, on, { dashboardDelayMs: 150_000 }, size)
-    await ui.press({ key: 'details' })
     await ui.press({ key: 'dashboard' })
     await w.clock.advance(BUSY_TIMEOUT_MS + 1_000)
     expect(await has(ui, OPENING)).toBe(true)
@@ -179,7 +173,6 @@ for (const size of ['full', 'slim'] as const) {
     await w.clock.settle()
     const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
     if (size === 'slim') await ui.press({ key: 'size' })
-    await ui.press({ key: 'details' })
     await ui.press({ key: 'dashboard' })
     await w.clock.settle()
     expect(dashboardRuns(w).length).toBe(0)
@@ -193,7 +186,6 @@ for (const size of ['full', 'slim'] as const) {
     await w.clock.settle()
     const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
     if (size === 'slim') await ui.press({ key: 'size' })
-    await ui.press({ key: 'details' })
 
     await ui.press({ key: 'dashboard' })
     await w.clock.advance(1_000)
@@ -207,16 +199,15 @@ for (const size of ['full', 'slim'] as const) {
   })
 }
 
-test('full: the sentence line carries the status; slim has no sentence line, so the link shows it beside itself', async ($, on) => {
+test('slim: the dashboard progress stands beside the link on the one line; full carries it on the sentence', async ($, on) => {
   const { w, ui } = await mounted($, on, { dashboardDelayMs: 5_000 }, 'slim')
-  await ui.press({ key: 'details' })
-  expect(await ui.find({ key: 'dashboard-status' })).toBeUndefined()
   await ui.press({ key: 'dashboard' })
   await w.clock.advance(1_000)
   expect((await ui.find({ key: 'dashboard-status' }))?.props).toBeDefined()
   expect(await has(ui, OPENING)).toBe(true)
-  // Only once: the full band draws it on its sentence line, not twice.
+  // Only once: the full band draws it on its sentence line, not beside the link too.
   await ui.press({ key: 'size' })
+  expect(await ui.find({ key: 'dashboard-status' })).toBeUndefined()
   expect((await texts(ui)).filter(t => t.includes(OPENING)).length).toBe(1)
 })
 
@@ -229,4 +220,38 @@ test('the link is text like the rest of the row: nothing grey, nothing italic, n
   }
   const svgs = (await ui.findAll({ type: 'Svg' })).map(s => String(s.props.alt))
   expect(svgs.some(a => /dashboard/i.test(a))).toBe(false)
+})
+
+test('the savings pill shows the headline on a calm line, long in full and short in slim, and opens the dashboard', async ($, on) => {
+  const { w, ui } = await mounted($, on, { status: calmStatus(HEADLINE) })
+  const pill = await ui.find({ key: 'savings-pill' })
+  expect(pill?.props.label).toBe(`${HEADLINE.display.long} ↗`)
+  // A link like Dashboard ↗: plain, no chrome of its own.
+  expect(pill?.props.plain).toBe(true)
+
+  await ui.press({ key: 'size' })
+  expect((await ui.find({ key: 'savings-pill' }))?.props.label).toBe(`${HEADLINE.display.short} ↗`)
+
+  await ui.press({ key: 'savings-pill' })
+  await w.clock.settle()
+  expect(dashboardRuns(w).length).toBe(1)
+})
+
+test('no pill when the status answer has no savings_headline (an older install)', async ($, on) => {
+  const { ui } = await mounted($, on)
+  expect(await ui.find({ key: 'savings-pill' })).toBeUndefined()
+})
+
+test('no pill when the headline has no display text', async ($, on) => {
+  const { ui } = await mounted($, on, { status: calmStatus({ ...HEADLINE, display: null }) })
+  expect(await ui.find({ key: 'savings-pill' })).toBeUndefined()
+})
+
+test('no pill while the sentence asks for something: the sentence and its button win', async ($, on) => {
+  const w = stub(on, { status: calmStatus(HEADLINE) })
+  sag(w)
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ key: 'savings-pill' })).toBeUndefined()
 })

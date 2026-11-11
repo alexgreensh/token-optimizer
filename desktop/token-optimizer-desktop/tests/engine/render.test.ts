@@ -92,8 +92,8 @@ test("the arrow under Clawd unfolds the row, points up while open, and folds it 
   expect((await arrow())?.label).toBe('▴')
   expect(await ui.find({ key: 'row' })).toBeDefined()
   expect((await exactly(ui, 'feat/band')).length).toBeGreaterThan(0)
-  expect((await exactly(ui, '41k')).length).toBeGreaterThan(0)
-  expect(await ui.find({ type: 'Text', text: /^Saved / })).toBeDefined()
+  // Savings live on the title-row pill now; with no headline the row shows no savings line.
+  expect(await ui.find({ type: 'Text', text: /^Saved / })).toBeUndefined()
 
   await ui.press({ key: 'details' })
   expect(await ui.find({ key: 'row' })).toBeUndefined()
@@ -116,7 +116,7 @@ test('a cold cache draws the token count bold red, and Keep warm nowhere', async
   expect((await exactly(ui, 'cold')).length).toBeGreaterThan(0)
 })
 
-test('without savings the row shows "--" totals and the reason, and every other fact', async ($, on) => {
+test('without savings the row shows the reason and every other fact, never a "Saved -- tokens" line', async ($, on) => {
   const w = stub(on)
   w.status = { ...w.status, savings: null, savings_state: 'unavailable', savings_reason: 'Savings database not found.' }
   await $.session.start(START)
@@ -325,7 +325,7 @@ test("a compaction Token Optimizer has already counted is not counted again by t
   expect(await ui.find({ type: 'Text', text: /2×/ })).toBeUndefined()
 })
 
-test('while savings are first measured the row says so, never "Saved -- tokens"', async ($, on) => {
+test('while savings are first measured the row draws nothing in their slot, never "Saved -- tokens" or "Measuring"', async ($, on) => {
   const w = stub(on)
   w.status = { ...w.status, savings: null, savings_state: 'loading', savings_reason: null }
   await $.session.start(START)
@@ -334,7 +334,10 @@ test('while savings are first measured the row says so, never "Saved -- tokens"'
   await ui.press({ key: 'details' })
   await w.clock.settle()
   expect(await ui.find({ type: 'Text', text: /^Saved / })).toBeUndefined()
-  expect((await exactly(ui, 'Measuring savings…')).length).toBeGreaterThan(0)
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  expect(texts.some(t => t.includes('Measuring'))).toBe(false)
+  // The facts still stand on their own.
+  expect((await exactly(ui, 'feat/band')).length).toBeGreaterThan(0)
 })
 
 test('a reduced window with unknown tokens never shows the old quality-cache fill', async ($, on) => {

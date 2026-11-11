@@ -176,3 +176,12 @@ def reconcile_while_paused(facade, reason, now, dry_run):
             facade.keepwarm_detect_realized(now=now)
         except Exception:
             pass
+
+
+def transcript_changed(record):
+    try:
+        from pathlib import Path
+        stat = Path(record['transcript_path']).stat()
+        return stat.st_size != int(record['byte_size']) or stat.st_mtime != float(record['transcript_mtime'])
+    except (KeyError, TypeError, ValueError, OSError):
+        return False

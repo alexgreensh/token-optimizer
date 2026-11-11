@@ -874,16 +874,16 @@ def classify_keepwarm_record(rec, now=None):
     except (TypeError, ValueError):
         armed_mtime = 0.0
 
+    from . import keepwarm_safety
+    if not keepwarm_safety.owner_alive(rec.get("owner")) or keepwarm_safety.ended_since(
+            _measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts):
+        return "gone"
     try:
         armed_size = int(rec["byte_size"])
     except (KeyError, TypeError, ValueError):
         return "gone"
     if cur_size != armed_size or cur_mtime != armed_mtime:
         return "resumed"
-    from . import keepwarm_safety
-    if not keepwarm_safety.owner_alive(rec.get("owner")) or keepwarm_safety.ended_since(
-            _measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts):
-        return "gone"
     return "still_paused"
 
 
@@ -3814,7 +3814,7 @@ def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
                 verdict = _measure_facade.classify_keepwarm_record(rec, now=now)
             except Exception:
                 verdict = "gone"
-            if verdict != "resumed":
+            if verdict != "resumed" and not (verdict == "gone" and keepwarm_economics.transcript_changed(rec)):
                 # still_paused -> not done yet; gone -> never readable. Neither books.
                 continue
             tp = rec.get("transcript_path")

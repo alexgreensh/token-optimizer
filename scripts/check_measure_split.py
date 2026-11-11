@@ -12,7 +12,7 @@ PASS1_PROVIDER_CEILING = 9000
 # Pure helper modules: imported by domain modules, never facade providers.
 HELPER_NAMES = ('dashboard_history', 'weekly_activity', 'headline', 'structural_ledger', 'structural_archives', 'structural_listing', 'structural_report', 'structural_seed', 'structural_value', 'counted_position', 'counted_pricing_v5', 'transcript_backfill', 'counted_subagents', 'lean_resume_threshold', 'output_reread', 'session_effect', 'rework_metrics', 'counted_orphans', 'counted_cap', 'archive_void_evidence', 'cost_per_message_trend', 'lean_resume_receivers', 'routing_period', 'fixture_context', 'session_best', 'savings_story', 'transcript_product', 'periphery_exposure', 'structure_funnel', 'setup_attachment_counter', 'first_read_outcomes', 'setup_budget_monitor', 'setup_connector_ledger', 'first_call_context', 'first_read_revive', 'mcp_archive_tripwire', 'compaction_survival', 'archive_void_codex', 'compression_fixture_void', 'feature_health', 'archive_health', 'coverage_report', 'file_refetch', 'holdout_report', 'structural_dedupe', 'setup_step')
 HELPER_NAMES += ('transcript_stream', 'quality_continuity', 'quality_checkpoint', 'codex_quality', 'checkpoint_direction', 'timestamp_cache', 'token_type_split', 'evidence_parallel', 'ttl_period', 'checkpoint_retention')
-HELPER_NAMES += ('keepwarm_safety', 'keepwarm_economics', 'keepwarm_linux')
+HELPER_NAMES += ('keepwarm_safety', 'keepwarm_economics', 'keepwarm_linux', 'keepwarm_prefix', 'keepwarm_response_filter', 'keepwarm_guard', 'keepwarm_guard_server', 'keepwarm_fork')
 HELPERS = {name + '.py' for name in HELPER_NAMES}
 
 def check(root=split.REPO):

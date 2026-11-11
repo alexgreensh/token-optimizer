@@ -367,11 +367,11 @@ def test_owner_identity_requires_matching_start_time():
     from _measure import keepwarm_safety
     info = {10: {'ppid': 8, 'start': 'early', 'command': 'bash'},
             8: {'ppid': 1, 'start': 'original', 'command': 'claude'}}
-    owner = keepwarm_safety.find_owner(10, lookup=info.get)
+    owner = keepwarm_safety.find_owner(10, lookup=info.get, eligibility=lambda pid: True)
     assert owner == {'pid': 8, 'start': 'original'}
-    assert keepwarm_safety.owner_alive(owner, lookup=info.get)
+    assert keepwarm_safety.owner_alive(owner, lookup=info.get, eligibility=lambda pid: True)
     info[8]['start'] = 'reused'
-    assert not keepwarm_safety.owner_alive(owner, lookup=info.get)
+    assert not keepwarm_safety.owner_alive(owner, lookup=info.get, eligibility=lambda pid: True)
 
 
 def test_ping_policy_stops_when_cache_expired_or_previous_ping_failed(m):
@@ -632,6 +632,7 @@ def test_paused_negative_net_still_books_a_return(m, monkeypatch):
 
 def test_finished_parent_return_is_still_detected_for_accounting(m, monkeypatch, tmp_path):
     from _measure import keepwarm_safety
+    from _measure import keepwarm_economics
     mod, _ = m
     transcript = _write_transcript(tmp_path, 7200)
     stat = transcript.stat()
@@ -642,4 +643,5 @@ def test_finished_parent_return_is_still_detected_for_accounting(m, monkeypatch,
     assert mod.classify_keepwarm_record(record) == 'gone'
     with transcript.open('a') as stream:
         stream.write('{"type":"user"}\n')
-    assert mod.classify_keepwarm_record(record) == 'resumed'
+    assert mod.classify_keepwarm_record(record) == 'gone'
+    assert keepwarm_economics.transcript_changed(record)

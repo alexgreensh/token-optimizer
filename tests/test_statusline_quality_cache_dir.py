@@ -3,7 +3,7 @@
 The hooks write quality-cache under _STATE_BASE = ${CLAUDE_PLUGIN_DATA}/token-
 optimizer (~/.claude/plugins/data/{id}/...) in the desktop plugin hook context.
 The statusline runs WITHOUT CLAUDE_PLUGIN_DATA and used to read only
-~/.claude/token-optimizer, so ContextQ/Eff showed "--" for every desktop plugin
+~/.claude/token-optimizer, so Quality showed "--" for every desktop plugin
 user even though a valid score existed under plugins/data. The read now searches
 plugin-data dirs too. This test builds that exact layout and asserts the score
 renders (not "--").
@@ -70,9 +70,10 @@ def test_reads_quality_cache_from_plugin_data_dir(tmp_path):
     plugin_data = home / ".claude" / "plugins" / "data" / "token-optimizer-alexgreensh-token-optimizer" / "token-optimizer"
     _write_cache(plugin_data)
     out = _run(home)
-    assert "ContextQ:--" not in out, f"score not read from plugin-data dir:\n{out}"
-    assert re.search(r"ContextQ:[~]?[A-F]\(\d+\)", out), f"no ContextQ score:\n{out}"
-    assert re.search(r"Eff:[A-F]\(\d+\)", out), f"no Eff score:\n{out}"
+    assert "Quality --" not in out, f"score not read from plugin-data dir:\n{out}"
+    assert re.search(r"Quality [~]?[A-F] \d+", out), f"no Quality score:\n{out}"
+    # F12: the second score (Eff) is cut from the line entirely.
+    assert "Eff:" not in out
 
 
 @pytest.mark.skipif(not _has_node(), reason="node not available")
@@ -81,19 +82,19 @@ def test_still_reads_from_runtime_fallback_dir(tmp_path):
     home = tmp_path
     _write_cache(home / ".claude" / "token-optimizer")
     out = _run(home)
-    assert re.search(r"ContextQ:[~]?[A-F]\(\d+\)", out), f"fallback dir not read:\n{out}"
+    assert re.search(r"Quality [~]?[A-F] \d+", out), f"fallback dir not read:\n{out}"
 
 
 @pytest.mark.skipif(not _has_node(), reason="node not available")
 def test_no_cache_anywhere_degrades_to_placeholder(tmp_path):
     """No cache at all -> the honest '--' placeholder, never a crash."""
     out = _run(tmp_path)
-    assert "ContextQ:--" in out, f"expected -- placeholder when no cache:\n{out}"
+    assert "Quality --" in out, f"expected -- placeholder when no cache:\n{out}"
 
 
 @pytest.mark.skipif(not _has_node(), reason="node not available")
 @pytest.mark.parametrize("status", ["needs_attention", "no_concerning_signal_observed", "unmeasurable", "observing", None])
-def test_recovery_flags_always_render_as_observing(tmp_path, status):
+def test_compactions_render_plain_count(tmp_path, status):
     cache_dir = tmp_path / ".claude" / "token-optimizer"
     _write_cache(cache_dir)
     path = cache_dir / f"quality-cache-{SID}.json"
@@ -101,7 +102,9 @@ def test_recovery_flags_always_render_as_observing(tmp_path, status):
     cache.update(score_version=2, compactions=3, recovery_status=status)
     path.write_text(json.dumps(cache))
     out = _run(tmp_path)
-    assert "Compacts:3(observing)" in out
+    # F12: plain "compacted N×"; the internal recovery state never leaks.
+    assert "compacted 3×" in out
+    assert "observing" not in out
     assert "needs attention" not in out and "recovery ok" not in out
 
 
@@ -114,5 +117,5 @@ def test_unmeasured_cache_never_renders_a_grade(tmp_path):
     cache.update(score=56.0, resource_health=56.0, grade='?', resource_health_grade='?', measured=False, score_version=3)
     path.write_text(json.dumps(cache))
     out = _run(tmp_path)
-    assert 'ContextQ:~56' in out
-    assert 'ContextQ:S' not in out
+    assert 'Quality ~56' in out
+    assert 'Quality S' not in out

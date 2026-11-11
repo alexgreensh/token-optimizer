@@ -98,14 +98,14 @@ def test_quality_cache_read_from_config_dir(tmp_path):
     home, cfg = _layout(tmp_path)
     _write_quality_cache(cfg / "token-optimizer")
     out = _run(home, str(cfg))
-    assert re.search(r"ContextQ:[~]?[A-F]\(\d+\)", out), f"no ContextQ score:\n{out}"
+    assert re.search(r"Quality [~]?[A-F] \d+", out), f"no Quality score:\n{out}"
 
 
 def test_quality_cache_read_from_config_dir_plugin_data(tmp_path):
     home, cfg = _layout(tmp_path)
     _write_quality_cache(cfg / "plugins" / "data" / "token-optimizer-x" / "token-optimizer")
     out = _run(home, str(cfg))
-    assert re.search(r"ContextQ:[~]?[A-F]\(\d+\)", out), f"no ContextQ score:\n{out}"
+    assert re.search(r"Quality [~]?[A-F] \d+", out), f"no Quality score:\n{out}"
 
 
 def test_effort_fallback_reads_config_dir_settings(tmp_path):

@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 // Token Optimizer - Claude Code Status Line (two-row layout)
 //
-// Row 1: model | effort | project | context bar used% | ContextQ:grade(score)
-// Row 2: Eff:grade(score) | warnings | Compacts:N(observing) | duration | Agents
+// Row 1: model | effort | project | context bar used% | Quality grade(score)
+// Row 2: savings headline | warnings | duration | Agents | limits
 //
 // Install: python3 measure.py setup-quality-bar
 // The quality score is updated by a UserPromptSubmit hook every ~2 minutes.
 // Reads from the most recent per-session quality-cache-*.json for accuracy.
 // Effort level comes from the stdin payload (data.effort.level) when Claude
 // Code provides it, falling back to settings.json effortLevel on older versions.
+// The savings segment is read from the status-bar JSON cache that
+// `measure.py status-bar` writes under SNAPSHOT_DIR/status-bar/; this script
+// never spawns Python (it runs on every render).
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 // --- Self-disabling guard ---
@@ -123,6 +127,105 @@ function _claudeHome() {
   return fallback;
 }
 const CLAUDE_HOME = _claudeHome();
+
+// ---- OSC 8 hyperlink support ----
+// Emit \x1b]8;;URL\x07TEXT\x1b]8;;\x07 only where the terminal is known to
+// render it; everywhere else the segment stays plain text (the approved
+// artboard's fallback). TOKEN_OPTIMIZER_HYPERLINKS=0/1 forces either way.
+// tmux/screen are treated as unsupported: passthrough needs allow-passthrough
+// AND a capable outer terminal, neither of which is detectable here.
+function _supportsOsc8() {
+  try {
+    const env = process.env;
+    const override = String(env.TOKEN_OPTIMIZER_HYPERLINKS || '').trim().toLowerCase();
+    if (override === '0' || override === 'false' || override === 'off') return false;
+    if (override === '1' || override === 'true' || override === 'on') return true;
+    if (env.TMUX || env.STY) return false;
+    const tp = String(env.TERM_PROGRAM || '').toLowerCase();
+    if (['iterm.app', 'wezterm', 'kitty', 'ghostty', 'vscode', 'visual studio code',
+         'hyper', 'tabby', 'warpterminal', 'alacritty', 'rio', 'contour',
+         'mintty', 'cursor', 'windsurf'].includes(tp)) return true;
+    if (tp === 'apple_terminal') return false;
+    if (env.WT_SESSION || env.KONSOLE_VERSION || env.ALACRITTY_WINDOW_ID ||
+        env.ALACRITTY_LOG || env.KITTY_WINDOW_ID || env.GHOSTTY_RESOURCES_DIR) return true;
+    if (/foot|wezterm|kitty|alacritty|ghostty|contour|rio/.test(String(env.TERM || '').toLowerCase())) return true;
+    const vte = parseInt(env.VTE_VERSION || '0', 10);
+    if (vte >= 5000) return true;
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ---- Status-bar cache (savings headline) ----
+// measure.py resolves SNAPSHOT_DIR as TOKEN_OPTIMIZER_SNAPSHOT_DIR, else
+// <plugin-data>/data, else <runtime>/_backups/token-optimizer. The status line
+// has no CLAUDE_PLUGIN_DATA, so mirror the quality-cache fan-out: check every
+// candidate status-bar dir and keep the freshest cache file for this session.
+function _statusBarDirs() {
+  const dirs = [];
+  const snap = String(process.env.TOKEN_OPTIMIZER_SNAPSHOT_DIR || '').trim();
+  if (snap) dirs.push(path.join(snap, 'status-bar'));
+  for (const v of [process.env.CLAUDE_PLUGIN_DATA, process.env.TOKEN_OPTIMIZER_PLUGIN_DATA]) {
+    const p = String(v || '').trim();
+    if (p) dirs.push(path.join(p, 'data', 'status-bar'));
+  }
+  try {
+    const dataRoot = path.join(CLAUDE_HOME, 'plugins', 'data');
+    for (const d of fs.readdirSync(dataRoot)) {
+      if (d.includes('token-optimizer')) {
+        dirs.push(path.join(dataRoot, d, 'data', 'status-bar'));
+      }
+    }
+  } catch (e) {}
+  dirs.push(path.join(CLAUDE_HOME, '_backups', 'token-optimizer', 'status-bar'));
+  return dirs;
+}
+
+// Python twin of sanitize_session_id + _status_bar_key: strip unsafe chars,
+// "unknown" under 6, and long ids are shortened with a sha256 suffix.
+function _statusBarSessionKey(sessionId) {
+  let sid = sessionId === null || sessionId === undefined ? '' : String(sessionId);
+  sid = sid.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (sid.length < 6) sid = 'unknown';
+  if (sid.length <= 100) return sid;
+  const hash = crypto.createHash('sha256').update(sid, 'utf8').digest('hex').slice(0, 16);
+  return sid.slice(0, 64) + '-' + hash;
+}
+
+// The freshest status-bar cache's savings_headline.display, or null.
+// Freshness is decided on computed_at across all candidate dirs BEFORE
+// reading display, so a newer "below threshold" cache correctly hides an
+// older number that no longer applies.
+function _statusBarHeadlineDisplay(sessionId) {
+  try {
+    const key = _statusBarSessionKey(sessionId);
+    if (!key || key === 'unknown') return null;
+    let best = null, bestTs = -1;
+    for (const dir of _statusBarDirs()) {
+      try {
+        const file = path.join(dir, key + '.json');
+        const raw = fs.readFileSync(file, 'utf8');
+        const data = JSON.parse(raw);
+        if (!data || typeof data !== 'object') continue;
+        const ts = Number(data.computed_at);
+        const tsOrMtime = Number.isFinite(ts) ? ts : fs.statSync(file).mtimeMs / 1000;
+        if (tsOrMtime <= bestTs) continue;
+        bestTs = tsOrMtime;
+        best = data;
+      } catch (e) {}
+    }
+    const headline = best && best.savings && best.savings.savings_headline;
+    const display = headline && headline.display;
+    if (display && typeof display === 'object' &&
+        typeof display.short === 'string' && display.short) {
+      return display;
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
 
 // Host parse (Claude Code 2.1.296 Dd/FOo): scientific notation and thousand
 // separators first, then a decimal prefix. NaN or <= 0 is invalid and IGNORED
@@ -463,7 +566,7 @@ process.stdin.on('end', () => {
         // Keep the score's value-color (green/yellow/orange/red) regardless of
         // staleness; the `~` prefix is the only stale indicator so the number
         // stays readable. (Dimming the whole score made it barely visible.)
-        const tag = q.measured === false ? `ContextQ:~${score}` : `ContextQ:${stale ? '~' : ''}${grade}(${score})`;
+        const tag = q.measured === false ? `Quality ~${score}` : `Quality ${stale ? '~' : ''}${grade} ${score}`;
         if (score >= 85) {
           qScore = `${SEP}\x1b[32m${tag}${RESET}`;
         } else if (score >= 75) {
@@ -475,7 +578,7 @@ process.stdin.on('end', () => {
         }
       }
     } else {
-      qScore = `${SEP}${DIM}ContextQ:--${RESET}`;
+      qScore = `${SEP}${DIM}Quality --${RESET}`;
     }
 
     const dirname = path.basename(dir);
@@ -494,7 +597,22 @@ process.stdin.on('end', () => {
     ].filter(Boolean);
 
     // ---- ROW 2: Session details ----
+    // The savings headline leads the row so packRows keeps it on the first
+    // physical line when the terminal is narrow. It comes from the status-bar
+    // cache (never a Python spawn) and is omitted entirely when the shared
+    // headline's display is null.
     const row2Parts = [];
+    const savingsDisplay = _statusBarHeadlineDisplay(sessionId);
+    let savingsSeg = null;
+    if (savingsDisplay) {
+      const label = `${savingsDisplay.short} ↗`;
+      const url = typeof savingsDisplay.url === 'string' && savingsDisplay.url
+        ? savingsDisplay.url : null;
+      savingsSeg = (url && _supportsOsc8())
+        ? `\x1b[32m\x1b]8;;${url}\x07${label}\x1b]8;;\x07${RESET}`
+        : `\x1b[32m${label}${RESET}`;
+      row2Parts.push(savingsSeg);
+    }
 
     // U3: near-zero-cost "resumable checkpoint" existence signal.
     // When the SessionStart pointer fired (a relevance-cleared checkpoint
@@ -510,23 +628,11 @@ process.stdin.on('end', () => {
           const flag = JSON.parse(fs.readFileSync(flagPath, 'utf8'));
           const ts = typeof flag.ts === 'number' ? flag.ts : NaN;
           if (isFinite(ts) && (Date.now() - ts) < (30 * 60 * 1000)) {
-            row2Parts.push(`\x1b[36m⤸resumable${RESET}`);
+            row2Parts.push(`\x1b[36m⤸ resumable${RESET}`);
           }
         }
       }
     } catch (e) {}
-
-    // SessionEfficiency
-    if (q) {
-      const se = q.session_efficiency;
-      if (se != null) {
-        const seScore = Math.round(se);
-        const seGrade = q.session_efficiency_grade || gradeFor(seScore);
-        row2Parts.push(`${DIM}Eff:${seGrade}(${seScore})${RESET}`);
-      }
-    } else {
-      row2Parts.push(`${DIM}Eff:--${RESET}`);
-    }
 
     // Biggest drag: the actual signal pulling the score down — context fill,
     // compactions, or the dominant waste cause — computed upstream by weighted
@@ -555,16 +661,11 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Recovery thresholds remain shadow-only until calibrated.
+    // Compactions only when there were any: "Compacts:0" announced nothing.
     if (q) {
       const c = q.compactions;
-      if (c != null) {
-        if (c > 0) {
-          // Recovery evidence is shadow-only, even for older cached flags.
-          row2Parts.push(`${DIM}Compacts:${c}(observing)${RESET}`);
-        } else {
-          row2Parts.push(`\x1b[32mCompacts:0${RESET}`);
-        }
+      if (c != null && c > 0) {
+        row2Parts.push(`${DIM}compacted ${c}×${RESET}`);
       }
     }
 
@@ -580,7 +681,12 @@ process.stdin.on('end', () => {
     }
 
     // Active agents
-    const stripAnsi = s => String(s).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[\x00-\x1f]/g, '');
+    // stripAnsi must drop OSC sequences (\x1b]…\x07 / \x1b]…\x1b\\) as well as
+    // CSI: the savings segment is an OSC 8 hyperlink whose raw bytes would
+    // otherwise count toward the packed-row width.
+    const stripAnsi = s => String(s)
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[\x00-\x1f]/g, '');
     if (cacheMatchesSession && q.active_agents && q.active_agents.length > 0) {
       const running = q.active_agents.filter(a => a.status === 'running');
       if (running.length > 0) {
@@ -616,11 +722,13 @@ process.stdin.on('end', () => {
       pct >= 90 ? '\x1b[5;31m' : pct >= 75 ? '\x1b[38;5;208m' : pct >= 50 ? '\x1b[33m' : '\x1b[32m';
     if (fiveHour) {
       const p = Math.ceil(fiveHour.used_percentage);
-      row2Parts.push(`${limitColor(p)}5h:${p}%${fmtReset(fiveHour.resets_at)}${RESET}`);
+      row2Parts.push(`${limitColor(p)}5 hours ${p}%${fmtReset(fiveHour.resets_at)}${RESET}`);
     }
     if (sevenDay) {
       const p = Math.ceil(sevenDay.used_percentage);
-      row2Parts.push(`${DIM}7d:${p}%${RESET}`);
+      // Same pressure colours as the 5-hour window: a weekly limit near the
+      // cap is the most important number on the line, not a dim footnote.
+      row2Parts.push(`${limitColor(p)}week ${p}%${RESET}`);
     }
 
     // Responsive layout: when Claude Code exports COLUMNS (v2.1.153+), greedily pack
@@ -645,12 +753,18 @@ process.stdin.on('end', () => {
     // fields (row 1), never wrapped, whatever COLUMNS says.
     const _slim = (process.env.TOKEN_OPTIMIZER_STATUS_BAR_SIZE || '').trim().toLowerCase() === 'slim';
     if (_slim) {
-      process.stdout.write(row1Segs.join(SEP));
+      // Slim prints row 1 only, so the savings pill is appended there or it
+      // would never be seen.
+      process.stdout.write(savingsSeg ? row1Segs.concat([savingsSeg]).join(SEP) : row1Segs.join(SEP));
     } else if (_width) {
       const rows = [...packRows(row1Segs, _width), ...packRows(row2Parts, _width)];
       process.stdout.write(rows.join('\n'));
     } else {
-      process.stdout.write(`${row1Segs.join(SEP)}\n${row2Parts.join(SEP)}`);
+      // Row 2 can be legitimately empty (no savings display, no quality cache,
+      // no limits): emit one line rather than a dangling blank second row.
+      const row1Text = row1Segs.join(SEP);
+      const row2Text = row2Parts.join(SEP);
+      process.stdout.write(row2Text ? `${row1Text}\n${row2Text}` : row1Text);
     }
   } catch (e) {
     // Silent fail - never break the status line

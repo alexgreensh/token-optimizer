@@ -1,7 +1,7 @@
 """U3 — near-zero-cost statusline existence signal for a resumable checkpoint.
 
 Never silently miss a resume (R2): when a relevance-cleared checkpoint exists
-for the current session, the statusline shows a compact ``⤸resumable`` token.
+for the current session, the statusline shows a compact ``⤸ resumable`` token.
 The signal is terminal UI ONLY -- it must never appear in any hook
 ``additionalContext`` payload (zero billed tokens). The SessionStart hook
 (compact_restore) writes a per-session flag file when its pointer fires; the
@@ -29,7 +29,7 @@ STATUSLINE = SCRIPTS / "statusline.js"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-_SIGNAL = "⤸resumable"
+_SIGNAL = "⤸ resumable"
 
 
 def _node_available() -> bool:

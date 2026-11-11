@@ -182,48 +182,30 @@ def test_ensure_health_daemon_update_runs_after_html_heal(m):
 #    single REGEN_STEP_TIMEOUT shot.
 # --------------------------------------------------------------------------
 
-def test_daemon_regen_forces_dashboard_step_and_retries(m):
+def test_daemon_regen_forces_dashboard_step_in_background(m):
     script = m._generate_daemon_script()
     # The dashboard step forces past the 60s throttle so a human's Regenerate can
     # never silently no-op into serving the same stale file.
     assert 'argv.append("--force")' in script
-    # retry ONLY the flaky "dashboard" step, and NEVER double the per-step
-    # cap. The old "2 attempts per step + doubled retry cap" put the worst case at
-    # REGEN_STEP_TIMEOUT*(1+2)*2 = 6x = 270s, WORSE than the ~240s wedge the
-    # original cap fixed. `collect` has no observed hang, so it is single-shot.
-    assert '_max_attempts = 2 if step == "dashboard" else 1' in script
-    assert "for _attempt in range(_max_attempts)" in script
-    assert "REGEN_STEP_TIMEOUT * 2" not in script, (
-        "the retry must not double the per-step cap -- that regressed the worst "
-        "case to ~270s, worse than the wedge the cap was added to fix"
-    )
-    assert "except subprocess.TimeoutExpired" in script
+    assert 'threading.Thread(target=run_regen, daemon=True).start()' in script
+    assert 'timeout=180 if step == "dashboard" else REGEN_STEP_TIMEOUT' in script
     # The generated daemon must still be valid Python.
     import ast
     ast.parse(script)
 
 
 def test_daemon_regen_worst_case_is_bounded_well_under_240s(m):
-    """retry cap, computed bound. Parse REGEN_STEP_TIMEOUT out of the
-    GENERATED daemon script and assert the true worst case -- one collect shot
-    plus two dashboard shots, each capped at REGEN_STEP_TIMEOUT (no doubling) --
-    stays comfortably under the ~240s wedge the original per-step cap fixed. This
-    guards the *number*, not just the code shape: a future edit that bumps the cap
-    or re-adds a retry to `collect` trips here."""
+    """One collect and one dashboard attempt remain bounded."""
     import re
     script = m._generate_daemon_script()
     match = re.search(r"REGEN_STEP_TIMEOUT\s*=\s*(\d+)", script)
     assert match, "REGEN_STEP_TIMEOUT literal missing from the generated daemon"
     step_timeout = int(match.group(1))
-    # collect: 1 attempt; dashboard: 2 attempts; every attempt capped at the flat
-    # per-step timeout (no *2 anywhere in the retry path).
-    worst_case = step_timeout * (1 + 2)
+    worst_case = step_timeout + 180
     assert worst_case < 240, (
         f"regen worst case {worst_case}s must stay under the 240s wedge "
         f"(REGEN_STEP_TIMEOUT={step_timeout})"
     )
-    # And it must be strictly better than the retired doubled-cap design (6x).
-    assert worst_case < step_timeout * 6
 
 
 # --------------------------------------------------------------------------
@@ -291,17 +273,11 @@ def test_stale_meter_empties_windows_the_placeholder_state(m, monkeypatch):
     assert r["windows"] == []
 
 
-def test_placeholder_is_strictly_the_empty_windows_branch():
-    """Source contract: the placeholder text appears exactly once in the shipped
-    dashboard, as the else-branch of ``rwCards ? <bars> : <placeholder>``, and
-    ``rwCards`` is built from ``rw.windows``. So whenever the injected runway
-    carries windows, the bars render and the placeholder cannot show -- tying the
-    functional tests above to what the user actually sees."""
+def test_empty_windows_are_omitted():
+    """Missing window data has no placeholder; real windows still render."""
     html = ASSET.read_text(encoding="utf-8")
-    assert html.count(PLACEHOLDER) == 1
-    idx = html.index(PLACEHOLDER)
-    window = html[idx - 400:idx]
-    assert "rwCards" in window and "?" in window, "placeholder must be the rwCards ternary else-branch"
+    assert PLACEHOLDER not in html
+    assert "(rwCards ?" in html
     assert "rw.windows.map(" in html, "rwCards must derive from rw.windows"
 
 

@@ -91,6 +91,20 @@ def test_first_listing_chars_reads_initial_attachment(tmp_path):
     assert listing.first_listing_chars(str(p)) == 1234
 
 
+def test_first_listing_chars_replaces_invalid_utf8(tmp_path):
+    p = tmp_path / 't.jsonl'
+    p.write_bytes(b'{"type":"user","text":"\xff"}\n'
+                  b'{"attachment":{"type":"skill_listing","isInitial":true,"content":"a\xffb"}}\n')
+    assert listing.first_listing_chars(str(p)) == 3
+
+
+def test_first_listing_chars_supports_carriage_return_lines(tmp_path):
+    p = tmp_path / 't.jsonl'
+    p.write_bytes(b'{"type":"user"}\r'
+                  b'{"attachment":{"type":"skill_listing","isInitial":true,"content":"abc"}}\r')
+    assert listing.first_listing_chars(str(p)) == 3
+
+
 class _Facade:
     def __init__(self, path):
         self.TRENDS_DB = path

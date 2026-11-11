@@ -2552,6 +2552,7 @@ MEASURE_PY_FALLBACK = {measure_py_literal}
 MEASURE_PY_MARKETPLACE = {measure_marketplace_literal}
 _MEASURE_PY_CACHE = ("", 0.0)
 _regen_inflight = False
+_regen_job = {{}}
 REGEN_STEP_TIMEOUT = 45
 # Regen race: the background stale-while-revalidate refresh
 # is a fire-and-forget Popen, so nothing reaps its child inline. A daemon reaper
@@ -3122,96 +3123,69 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             self._json_response(200 if payload.get("ok") else 500, payload)
             return
-        if clean == "api/regenerate":
+        if clean in ("api/regenerate", "api/regenerate/status"):
+            import subprocess
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 if length < 0 or length > 4096: raise ValueError()
                 body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {{}}
+                if not isinstance(body, dict): raise ValueError()
                 days = body.get("days")
                 if days is not None and not (days == "all" or type(days) is int and 1 <= days <= 365000): raise ValueError()
             except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
-                self._json_response(400, {{"ok": False, "msg": "invalid history window"}})
+                self._json_response(400, {{"ok": False, "msg": "Invalid request."}})
                 return
-            # Synchronous, unlike the background freshness regen: the caller is a
-            # human who pressed a button and needs a real success/failure answer,
-            # not a fire-and-forget that looks identical whether it worked or not.
-            # That ambiguity is exactly what let the daemon serve a two-day-old
-            # dashboard while every health check reported green.
-            import subprocess
-            target = _resolve_measure_py()
-            if not os.path.isfile(target):
-                _log_regen("MANUAL regen failed: measure.py not found at " + target)
-                self._json_response(500, {{"ok": False, "msg": "measure.py not found; reinstall or run setup-daemon"}})
+            global _regen_inflight, _regen_job
+            if clean.endswith("/status"):
+                with _STATE_LOCK:
+                    result = dict(_regen_job) if body.get("job_id") == _regen_job.get("job_id") and _regen_job else None
+                self._json_response(200 if result else 404, result or {{"ok": False, "msg": "Regeneration job not found."}})
                 return
-            # The server is now a ThreadingTCPServer, so a regen no
-            # longer blocks other requests. The _regen_inflight guard still
-            # refuses OVERLAPPING regens (a second click while the first runs).
-            # The lock is held ONLY for the check+set and the final clear -- never
-            # across subprocess.run(), or it would re-introduce the single-threaded
-            # block for every other request that touches any guarded global.
-            global _regen_inflight
+            try:
+                job_id = os.urandom(16).hex()
+            except OSError:
+                self._json_response(500, {{"ok": False, "msg": "Could not start the update. Please try again."}})
+                return
             with _STATE_LOCK:
                 if _regen_inflight:
-                    self._json_response(409, {{"ok": False, "msg": "a regeneration is already running"}})
+                    self._json_response(409, {{"ok": False, "msg": "A regeneration is already running."}})
                     return
                 _regen_inflight = True
+                _regen_job = {{"ok": True, "job_id": job_id, "state": "running", "progress": "Collecting usage data."}}
+            def run_regen():
+                global _regen_inflight
+                try:
+                    target = _resolve_measure_py()
+                    if not os.path.isfile(target): raise OSError("measure.py missing")
+                    for step in ("collect", "dashboard"):
+                        with _STATE_LOCK:
+                            _regen_job["progress"] = "Collecting usage data." if step == "collect" else "Updating the dashboard."
+                        argv = [sys.executable, target, step, "--quiet"]
+                        if step == "dashboard":
+                            argv.append("--force")
+                            if days is not None: argv.extend(["--days", str(days)])
+                        result = subprocess.run(argv, capture_output=True, text=True,
+                            timeout=180 if step == "dashboard" else REGEN_STEP_TIMEOUT,
+                            creationflags=_NO_WINDOW, env={{**os.environ, "TOKEN_OPTIMIZER_INTERACTIVE": "1"}})
+                        if result.returncode:
+                            _log_regen("MANUAL regen failed at %s: %s" % (step, (result.stderr or result.stdout)[:300]))
+                            raise RuntimeError("regeneration failed")
+                    with _STATE_LOCK:
+                        _regen_job.update(state="done", progress="Dashboard updated.")
+                except Exception as exc:
+                    _log_regen("MANUAL regen failed: %s" % exc)
+                    with _STATE_LOCK:
+                        _regen_job.update(state="failed", progress="Could not update the dashboard. Please try again.")
+                finally:
+                    with _STATE_LOCK:
+                        _regen_inflight = False
             try:
-                for step in ("collect", "dashboard"):
-                    # A human pressed Regenerate: the "dashboard" step MUST carry
-                    # --force so the 60s write throttle can never silently no-op the
-                    # click into serving the same stale file (the very ambiguity that
-                    # let a two-day-old dashboard look freshly regenerated). collect
-                    # has no such throttle, so it needs no flag.
-                    argv = [sys.executable, target, step, "--quiet"]
-                    if step == "dashboard":
-                        argv.append("--force")
-                        if days is not None: argv.extend(["--days", str(days)])
-                    # Full-history dashboards can exceed the normal collect timeout.
-                    _max_attempts = 2 if step == "dashboard" else 1
-                    r = None
-                    _timeout_exc = None
-                    for _attempt in range(_max_attempts):
-                        _to = 180 if step == "dashboard" else REGEN_STEP_TIMEOUT
-                        try:
-                            r = subprocess.run(
-                                argv,
-                                capture_output=True, text=True, timeout=_to,
-                                creationflags=_NO_WINDOW,
-                                # A human pressed Regenerate and is waiting: mark it
-                                # INTERACTIVE so the child is not killed by the 20s
-                                # hook budget (Bug B). The daemon's own per-attempt
-                                # timeout is the real, saner cap here.
-                                env={{**os.environ, "TOKEN_OPTIMIZER_INTERACTIVE": "1"}},
-                            )
-                            _timeout_exc = None
-                            break
-                        except subprocess.TimeoutExpired as _te:
-                            _timeout_exc = _te
-                            _log_regen("MANUAL regen %s timed out after %d seconds (attempt %d/%d)" % (step, _to, _attempt + 1, _max_attempts))
-                    if _timeout_exc is not None:
-                        _log_regen("MANUAL regen error: %s" % _timeout_exc)
-                        self._json_response(500, {{"ok": False, "step": step, "msg": "regeneration timed out: " + str(_timeout_exc)}})
-                        return
-                    if r.returncode != 0:
-                        msg = (r.stderr or r.stdout or "").strip()[:300] or ("%s exited %d" % (step, r.returncode))
-                        _log_regen("MANUAL regen failed at %s: %s" % (step, msg))
-                        self._json_response(500, {{"ok": False, "step": step, "msg": msg}})
-                        return
-            except OSError as e:
-                _log_regen("MANUAL regen error: %s" % e)
-                self._json_response(500, {{"ok": False, "msg": "regeneration failed: " + str(e)}})
-                return
-            finally:
-                # Must clear on EVERY exit path, including the mid-loop failure
-                # returns above; a stuck flag would refuse regeneration forever.
+                threading.Thread(target=run_regen, daemon=True).start()
+            except Exception:
                 with _STATE_LOCK:
                     _regen_inflight = False
-            try:
-                generated = os.path.getmtime(DASHBOARD)
-            except OSError:
-                generated = 0
-            _log_regen("MANUAL regen OK via %s" % target)
-            self._json_response(200, {{"ok": True, "generated_at": generated, "measure_py": target}})
+                    _regen_job.update(state="failed", progress="Could not start the update. Please try again.")
+            self._json_response(202, {{"ok": True, "job_id": job_id}})
             return
         self.send_error(403, "Forbidden")
 

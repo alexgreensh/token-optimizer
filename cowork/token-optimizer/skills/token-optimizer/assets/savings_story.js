@@ -125,11 +125,6 @@ function savingsStoryHtml(data) {
   var orr = s.output_reread || {};
   var mr = s.model_routing || {};
   var days = Number(s.period_days) || 30;
-  // Pools whose ledger is still being built show "Measuring", never a number:
-  // per-item setup cleanup (trim ledger), output re-reads, and the routing line
-  // with its measured alternative.
-  var measuringNames = [];
-
   var out = '';
 
   // ---- 1. Hero: three huge numbers. The breakdown lives only in the folds. ----
@@ -140,7 +135,6 @@ function savingsStoryHtml(data) {
   var B = savingsStoryBands(data);
   var trimLedger = B.trimLedger, trims = B.trims, measured = B.measured, estimated = B.estimated;
   var mUsd = B.mUsd, eUsd = B.eUsd, totalUsd = B.totalUsd, totalTok = B.totalTok;
-  measuringNames = B.measuringNames;
   var routing30 = has(mr.realized_cost_usd) ? num(mr.realized_cost_usd) : num(as.routing_usd);
   if (!(routing30 > 0)) routing30 = 0;
   var bigTotal = totalUsd + routing30;
@@ -202,8 +196,8 @@ function savingsStoryHtml(data) {
       (num((as.estimates_usd || {}).handover_rerun) > 0 ? '<p>Continuity handovers, ' + usd(as.estimates_usd.handover_rerun) + ' (estimated): sessions resumed from a saved checkpoint re-read fewer stale files than sessions that started cold, and that gap is counted here.</p>' : '') +
       (totalTok > 0 ? '<p>The ' + tok(totalTok) + ' tokens kept out of context are measured and estimated' + (num(th.reload_avoided_tokens) > 0 ? ': ' + tok(th.reload_avoided_tokens) + ' of them are estimated reloads avoided' : '') + '.</p>' : '') +
       '<p>Measured rows come from the ledger: each removal, the cache rate the next call would have paid, and every later turn that would have re-read it, up to the session&rsquo;s next compaction.</p>' +
+      (s.token_type_breakdown && Object.keys(s.token_type_breakdown).length ? '<p>Token types cover only ledger events with recorded turn classes. Repeat reads are modeled as cache reads except for detected cache rebuilds; write totals include detected rebuilds and initial removals recorded at a write rate. Unclassified tokens are excluded.</p>' : '') +
       savingsPerSessionHtml(ps, overhead) +
-      (measuringNames.length ? '<p>Still measuring, not in the total yet: ' + measuringNames.join(' and ') + '.</p>' : '') +
       (incomplete ? '<p>Some older history has no exact price, so this total understates.</p>' : '') +
       coverage +
       (carry.available && num(carry.carry_cost_usd) > 0 ? '<p>Diagnostic, not counted' + ': the older target-session proxy suggested ' +

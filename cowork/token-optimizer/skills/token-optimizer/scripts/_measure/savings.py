@@ -1,17 +1,14 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream
+from . import _compat, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split
 
 def _counted_event_utc(ts):
-    """Savings-event timestamps are naive LOCAL time (datetime.now()); transcript
-    timestamps are UTC. Convert local-naive -> UTC-naive (DST-correct for the
-    event's own date via the system tz database). Never raises."""
+    """Convert local event timestamps to UTC, respecting local DST."""
+    import os, time
+    from . import timestamp_cache
     _measure_facade = _compat.facade()
-    try:
-        dt = _measure_facade.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-        return dt.astimezone(_measure_facade.timezone.utc).replace(tzinfo=None)
-    except (ValueError, TypeError, OSError):
-        return None
+    return timestamp_cache.parse(str(ts), _measure_facade.datetime, _measure_facade.timezone.utc,
+                                 os.environ.get('TZ'), time.tzname)
 
 
 def _counted_walk_transcript(path, collect_markers=None):
@@ -971,7 +968,7 @@ def _counted_session_cache_mix(conn, session_uuid, tier_data, memo, rate_key=Non
     return mix
 
 
-def _counted_rollup_rows(rows, conn=None):
+def _counted_rollup_rows(rows, conn=None, mix_memo=None):
     """Only per-row verified prices are eligible; retain all stored token evidence.
 
     A stored row without a current per-turn price keeps its signed repeat-read
@@ -989,7 +986,7 @@ def _counted_rollup_rows(rows, conn=None):
                refresh_incomplete_events=0, reread_session_mix_priced_tokens=0,
                session_mix_priced_events=0)
     tier_data = _measure_facade.PRICING_TIERS.get(_measure_facade._load_pricing_tier(), _measure_facade.PRICING_TIERS["anthropic"])
-    mix_memo = {}
+    if mix_memo is None: mix_memo = {}
     for row in rows:
         out["events"] += 1
         tokens, rereads = int(row["tokens"] or 0), int(row["reread_tokens"] or 0)
@@ -1118,7 +1115,8 @@ def _counted_cumulative_summary(days=None, now=None):
                 coverage["unmeasured_removed_debit_tokens"] = sum(-n for n in amounts if n < 0)
                 return _measure_facade._counted_coverage_totals(coverage)
 
-            totals = add_missing(_measure_facade._counted_rollup_rows(rows, conn),
+            mix_memo = {}
+            totals = add_missing(_measure_facade._counted_rollup_rows(rows, conn, mix_memo),
                                  [n for values in missing_by_month.values() for n in values])
             # Rows stored under an older pricing version that the collect pass
             # has not yet tried to re-score. Their price in the subtotal is
@@ -1142,7 +1140,7 @@ def _counted_cumulative_summary(days=None, now=None):
             by_month = {}
             for row in rows:
                 by_month.setdefault(row["event_month"], []).append(row)
-            monthly_coverage = {m: add_missing(_measure_facade._counted_rollup_rows(by_month.get(m, []), conn),
+            monthly_coverage = {m: add_missing(_measure_facade._counted_rollup_rows(by_month.get(m, []), conn, mix_memo),
                                                missing_by_month.get(m, []))
                                 for m in sorted(by_month.keys() | missing_by_month.keys(),
                                                 key=lambda month: month or "")}
@@ -1161,7 +1159,7 @@ def _counted_cumulative_summary(days=None, now=None):
         return {
             **totals,
             "available": True,
-            "attribution": "removal_time",
+            "attribution": "removal_time", "token_type_breakdown": token_type_split.from_rows(rows, _measure_facade._COUNTED_PRICING_VERSION),
             "period_start": start.isoformat() if start else None,
             "period_end": end.isoformat(),
             "window_start": (first_month + "-01") if first_month else None,
@@ -1234,6 +1232,7 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
         savings_data["counted_period"] = _measure_facade._counted_cumulative_summary(days=days)
     except Exception:
         savings_data["counted_period"] = {"available": False}
+    savings_data["token_type_breakdown"] = (savings_data["counted_period"] or {}).get("token_type_breakdown", {})
     _compat.facade()._headline.attach(savings_data, days)
     _measure_facade._apply_counted_oneshot_pricing(savings_data, savings_data["counted_period"])
     savings_data["action_savings"] = _measure_facade._action_savings_components(
@@ -2235,7 +2234,7 @@ def _runway_saved_tokens(conn, cutoff, include_estimated=None):
     return saved
 
 
-def runway_snapshot(days=None, now=None):
+def runway_snapshot(days=None, now=None, token_headline=None):
     """Subscription runway: how much of your rate-limit window Token Optimizer
     hands back, and what the same windows would read without it.
 
@@ -2279,15 +2278,7 @@ def runway_snapshot(days=None, now=None):
     _measure_facade = _compat.facade()
     try:
         meters = _measure_facade._keepwarm_read_meters(now=now)
-        # The live meter feeds ONLY the per-window bars. The headline throughput
-        # multiplier and the weekly savings come from the savings ledger, not the
-        # meter, so an UNAVAILABLE meter (missing/contentless rate-limits file)
-        # must NOT vanish the whole card. It drops to empty windows (the renderer
-        # shows a "meter refreshing" note), exactly like a stale meter. Bug A: the
-        # old `if not available: return None` killed the entire card -- multiplier
-        # and savings included -- the moment the meter file was gone, which is the
-        # "section disappeared and never came back" report. The window loop below
-        # already skips a None percentage, so an unavailable meter yields [].
+        # Missing meters leave the ledger-backed headline visible.
         meter_available = bool(meters.get("available"))
         meter_stale = bool(meters.get("stale")) or not meter_available
 
@@ -2310,9 +2301,11 @@ def runway_snapshot(days=None, now=None):
         if consumed <= 0 and not weekly_full:
             return None
         try:
-            token_source = _measure_facade._get_merged_savings(days=days)
-            token_source["counted_period"] = _measure_facade._counted_cumulative_summary(days=days)
-            token_parts = _compat.facade()._headline.token_headline(token_source)
+            if token_headline is None:
+                token_source = _measure_facade._get_merged_savings(days=days)
+                token_source["counted_period"] = _measure_facade._counted_cumulative_summary(days=days)
+                token_headline = _compat.facade()._headline.token_headline(token_source)
+            token_parts = token_headline
         except Exception:
             token_parts = _compat.facade()._headline.token_headline({})
         context_saved = token_parts["total_tokens"]
@@ -6351,7 +6344,7 @@ def _get_merged_savings(days=None, since=None):
         "retrieval_serve": retrieval_serve,
         "resume_lean": savings.get("resume_lean_estimated") or {},
         "checkpoint_restore": savings.get("checkpoint_restore_estimated") or {},
-    }, model_routing=model_routing)
+    }, model_routing=model_routing) if not savings_story.skip_comparison() else None
     stale_reads_reclaimable = _measure_facade._estimate_stale_reads_reclaimable(days=days)
     try:
         import lean_resume_carry
@@ -6484,7 +6477,7 @@ def _savings_since_install():
             return None
         days = (_measure_facade.datetime.now() - _measure_facade.datetime.fromisoformat(d)).days + 1
         days = max(1, min(days, 3650))
-        full = _measure_facade._get_merged_savings(days=days)
+        full = savings_story.since_install_summary(_measure_facade._get_merged_savings, days)
         try:
             from . import session_effect
             full["session_effect"] = session_effect.summary(days)

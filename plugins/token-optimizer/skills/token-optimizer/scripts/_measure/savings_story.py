@@ -1,4 +1,20 @@
 """Shared savings story totals."""
+from contextvars import ContextVar
+
+_SKIP_COMPARISON = ContextVar('skip_since_install_comparison', default=False)
+
+
+def since_install_summary(builder, days):
+    """Skip an expensive comparison that the since-install card never reads."""
+    token = _SKIP_COMPARISON.set(True)
+    try:
+        return builder(days=days)
+    finally:
+        _SKIP_COMPARISON.reset(token)
+
+
+def skip_comparison():
+    return _SKIP_COMPARISON.get()
 
 def _number(value):
     try:

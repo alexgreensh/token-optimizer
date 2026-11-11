@@ -74,7 +74,7 @@ def _project(record):
         'toolUseResult', 'snapshot', 'fileHistorySnapshot', 'data')}
 
 
-def records(filepath, seconds=None):
+def records(filepath, seconds=None, raw=False):
     """Advance a durable offset and return a cursor over the indexed prefix.
 
     Appends validate the old boundary, so an mtime change does not restart a
@@ -140,7 +140,7 @@ def records(filepath, seconds=None):
         def iterate():
             try:
                 for (value,) in conn.execute('SELECT data FROM records WHERE path=? ORDER BY offset', (key,)):
-                    yield json.loads(value)
+                    yield value if raw else json.loads(value)
             finally:
                 conn.close()
         return iterate(), info
@@ -204,6 +204,21 @@ def _raw_lines(handle):
 
 def binary_lines(path):
     """Keep byte-filtering consumers streaming as well."""
+    if Path(path).stat().st_size <= LARGE_BYTES:
+        return _raw_binary_lines(open(path, 'rb'))
+    from codex_session import is_codex_session_path
+    if not is_codex_session_path(path):
+        def indexed():
+            try:
+                values, _ = records(path, raw=True)
+            except sqlite3.Error as exc:
+                raise OSError('transcript index unavailable') from exc
+            try:
+                for value in values:
+                    yield (value + '\n').encode('utf-8')
+            finally:
+                values.close()
+        return indexed()
     context = open_transcript(path)
 
     def iterate():
@@ -211,6 +226,24 @@ def binary_lines(path):
             for line in lines:
                 yield line.encode('utf-8')
     return iterate()
+
+
+def _raw_binary_lines(handle):
+    with handle:
+        while True:
+            line = handle.readline(LINE_BYTES + 1)
+            if not line:
+                return
+            if len(line) > LINE_BYTES:
+                while line and not line.endswith(b'\n'):
+                    line = handle.readline(65536)
+                continue
+            if not line.isascii():
+                try:
+                    line.decode('utf-8')
+                except UnicodeDecodeError:
+                    line = line.decode('utf-8', errors='replace').encode('utf-8')
+            yield line
 
 
 def tail_lines(path, count):

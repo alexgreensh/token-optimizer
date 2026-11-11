@@ -91,7 +91,7 @@ def test_generated_daemon_has_state_lock():
     )
     # The regen-inflight guard must take the lock for the check+set so two
     # concurrent clicks cannot both pass the overlap check.
-    m = re.search(r"if clean == \"api/regenerate\":.*?(?=\n        if clean ==|\n        self\.send_error\(403)",
+    m = re.search(r'if clean in \("api/regenerate", "api/regenerate/status"\):.*?(?=\n        self\.send_error\(403)',
                   src, re.S)
     assert m, "api/regenerate handler not found in generated daemon"
     regen_block = m.group(0)
@@ -100,23 +100,16 @@ def test_generated_daemon_has_state_lock():
         "api/regenerate does not take _STATE_LOCK around the _regen_inflight "
         "check+set; overlapping regens could race past the guard"
     )
-    # The lock must NOT be held across subprocess.run(), or it re-introduces a
-    # single-threaded block for every other guarded request.
-    run_block = re.search(r"for step in \(\"collect\", \"dashboard\"\):.*?subprocess\.run\(",
-                          regen_block, re.S)
-    assert run_block, "regen subprocess.run loop not found"
-    # The with-block that sets _regen_inflight = True must close BEFORE the
-    # subprocess.run loop starts.
-    set_true = regen_block.index("_regen_inflight = True")
-    run_start = regen_block.index(run_block.group(0))
-    assert set_true < run_start
-    # And there must be no `with _STATE_LOCK` line between set_true and run_start
-    # that would wrap the subprocess call.
-    between = regen_block[set_true:run_start]
-    assert "with _STATE_LOCK" not in between, (
-        "_STATE_LOCK appears to be held across subprocess.run(); that would "
-        "re-introduce the single-threaded block the fix is meant to remove"
-    )
+    # Progress updates take the lock briefly, but subprocess.run must not be
+    # nested in a lock block.
+    import ast
+    tree = ast.parse(src)
+    worker = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'run_regen')
+    calls = [n for n in ast.walk(worker) if isinstance(n, ast.Call) and ast.unparse(n.func) == 'subprocess.run']
+    assert calls
+    for block in (n for n in ast.walk(worker) if isinstance(n, ast.With)):
+        if any(ast.unparse(item.context_expr) == '_STATE_LOCK' for item in block.items):
+            assert not any(call in ast.walk(block) for call in calls)
 
 
 def test_health_and_identity_routes_do_no_work():
@@ -647,7 +640,20 @@ def test_background_and_manual_regen_cannot_overlap(live_daemon):
     except urllib.error.HTTPError as e:
         code2 = e.code
         body2 = e.read()
-    assert code2 == 200, (
+    assert code2 == 202, (
         "manual regen after the background refresh finished did not succeed "
         "(got %s, body=%r) -- _regen_inflight may be stuck True" % (code2, body2[:200])
     )
+    import json
+    job_id = json.loads(body2)['job_id']
+    deadline = time.monotonic() + 15
+    state = None
+    while time.monotonic() < deadline:
+        req3 = urllib.request.Request(base + '/api/regenerate/status', data=json.dumps({'job_id': job_id}).encode(),
+            headers={'Origin': base, 'X-TO-Token': token, 'Content-Type': 'application/json'}, method='POST')
+        with urllib.request.urlopen(req3, timeout=3) as response:
+            state = json.load(response)['state']
+        if state != 'running':
+            break
+        time.sleep(.1)
+    assert state == 'done'

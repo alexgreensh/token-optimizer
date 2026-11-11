@@ -313,7 +313,7 @@ def test_trends_does_not_invent_unused_skill_context_cost():
     source = TEMPLATE.read_text()
     assert 'Each still loads ~100 tokens' not in source
     assert 'neverUsed.length * 100' not in source
-    assert 'Context impact: Measuring' in source
+    assert 'Context impact: Measuring' not in source
     assert 'Deduplicated Fresh Input + Output' in source
     assert 'Deduplicated usage; the raw token classes below use a different basis.' in source
 
@@ -602,10 +602,10 @@ def test_trends_cache_card_falls_back_without_cache_health():
     assert big == '77' and label == 'Main-work cache hit rate'
 
 
-def test_unfinished_pools_say_measuring_with_no_number():
+def test_unfinished_pools_are_omitted():
     out = story({'savings': base()})
     assert '<h2 class="st-h">Setup cleanup' not in out and 'Measuring' not in _visible(out)
-    assert 'Still measuring, not in the total yet: setup cleanup and shorter answers' in hero(out)
+    assert 'measuring' not in _visible(out).lower()
 
 
 def test_subdollar_amounts_read_naturally():

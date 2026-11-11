@@ -151,6 +151,27 @@ def test_regen_contract_mirrored_to_plugin_tree():
     assert a == b, "dashboard.html drifted between the two install trees"
 
 
+def test_job_status_is_polled_until_done():
+    html = (ASSETS / 'dashboard.html').read_text(encoding='utf-8')
+    start = html.index('  function waitForRegen(')
+    helper = html[start:html.index('  window.__TOKEN_LOAD_HISTORY', start)]
+    script = '''
+let calls = 0;
+const message = {textContent: ''};
+const window = {__TOKEN_API_POST: async (path, body) => {
+  if (path !== '/api/regenerate/status' || body.job_id !== 'job') throw Error('bad status request');
+  calls++;
+  return {json: async () => calls === 1 ? {state:'running',progress:'Collecting usage data.'} : {state:'done',progress:'Dashboard updated.'}};
+}};
+function setTimeout(fn) { fn(); }
+''' + helper + '''
+waitForRegen({ok:true,job_id:'job'}, message).then(() => {
+  if (calls !== 2 || message.textContent !== 'Dashboard updated.') process.exit(1);
+});
+'''
+    subprocess.run(['node', '-e', script], check=True, timeout=10)
+
+
 @pytest.mark.parametrize("scenario,posts,fetches,reloads", [
     ("success", 1, 0, 1),
     ("empty", 1, 1, 1),
@@ -165,7 +186,10 @@ def test_regenerate_click_behavior(scenario, posts, fetches, reloads):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node required for browser-handler execution")
-    handler = _regen_body((ASSETS / "dashboard.html").read_text(encoding="utf-8"))
+    html = (ASSETS / "dashboard.html").read_text(encoding="utf-8")
+    handler = _regen_body(html)
+    helper_start = html.index('  function waitForRegen(')
+    helper = html[helper_start:html.index('  window.__TOKEN_LOAD_HISTORY', helper_start)]
     setup = r'''
 const scenario = process.argv[2];
 const counts = {posts: 0, fetches: 0, reloads: 0};
@@ -174,7 +198,7 @@ const msg = {textContent: ''};
 const error = {hidden: true, textContent: ''};
 const document = {getElementById: id => ({'to-regen-btn': btn, 'to-regen-msg': msg, 'to-regen-error': error}[id])};
 const location = {reload: () => counts.reloads++};
-const window = {__TOKEN_API_TOKEN: scenario === 'empty' ? '' : 'initial'};
+const window = {__TOKEN_API_TOKEN: scenario === 'empty' ? '' : 'initial', location: {protocol: 'http:'}};
 function _fetchToken() { counts.fetches++; window.__TOKEN_API_TOKEN = 'fresh'; return Promise.resolve(); }
 window.__TOKEN_API_POST = async function(path) {
   if (path !== '/api/regenerate') throw Error('wrong endpoint');
@@ -189,10 +213,10 @@ window.__TOKEN_REGENERATE();
 window.__TOKEN_REGENERATE(); // A second click while pending must do nothing.
 setImmediate(() => process.stdout.write(JSON.stringify({counts, btn, error})));
 '''
-    result = subprocess.run([node, "-", scenario], input=setup + handler + check,
+    result = subprocess.run([node, "-", scenario], input=setup + helper + handler + check,
                             capture_output=True, text=True, check=True, timeout=30)
     state = json.loads(result.stdout)
-    assert state["counts"] == {"posts": posts, "fetches": fetches, "reloads": reloads}
+    assert state["counts"] == {"posts": posts, "fetches": fetches, "reloads": reloads}, state
     if not reloads:
         assert state["btn"] == {"disabled": False, "textContent": "Regenerate savings"}
         assert state["error"]["hidden"] is False

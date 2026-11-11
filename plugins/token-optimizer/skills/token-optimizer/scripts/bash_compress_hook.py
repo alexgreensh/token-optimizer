@@ -797,6 +797,9 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
         compressed = _build_compress(command, cleaned_stdout)
         if not compressed or compressed == cleaned_stdout:
             return None
+        from post_run_classify import echo_boundary_preserved
+        if not echo_boundary_preserved(command, cleaned_stdout, compressed):
+            return None
 
         # Check that compression actually helped by >= 10%
         from token_estimate import estimate_tokens as _est

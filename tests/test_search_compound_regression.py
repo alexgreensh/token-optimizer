@@ -52,3 +52,39 @@ def test_compound_pytest_preserves_error_between_runs(tmp_path):
     raw = run + 'ERROR failure\n' * 100 + 'BOUNDARY\n' + run
     visible = run_hook(tmp_path, 'pytest -v tests && echo BOUNDARY && python3 -m pytest -v', raw)
     assert visible == raw
+
+
+@pytest.mark.parametrize('command', [
+    'jest && ls -la',
+    'cargo test && ls -la',
+    'go test ./... && du -sh src/*',
+    'npm test && ls -la',
+    'yarn test && ls -la',
+    'eslint . && ls -la',
+    'gcc -c main.c && ls -la',
+], ids=['jest', 'cargo', 'go', 'npm', 'yarn', 'eslint', 'gcc'])
+def test_compound_renderer_preserves_other_producer(tmp_path, command):
+    raw = (''.join(f'tests/example_{i}.test.js PASSED\n' for i in range(150))
+           + 'Tests: 150 passed\n' + ''.join(f'listing_{i}\n' for i in range(100)))
+    assert run_hook(tmp_path, command, raw) == raw
+
+
+def test_cd_then_npm_test_still_compresses(tmp_path):
+    raw = (''.join(f'tests/example_{i}.test.js PASSED\n' for i in range(150))
+           + 'Tests: 150 passed\n')
+    visible = run_hook(tmp_path, 'cd p && npm test', raw)
+    assert len(visible) < len(raw)
+    assert '150 passed' in visible
+
+
+def test_single_search_with_echo_boundary_compresses_and_keeps_boundary(tmp_path):
+    raw = search_output() + 'BOUNDARY\n'
+    visible = run_hook(tmp_path, 'grep -rn lookup_handler . && echo BOUNDARY', raw)
+    assert len(visible) < len(raw)
+    assert 'BOUNDARY' in visible.splitlines()
+
+
+def test_echo_boundary_is_never_dropped(tmp_path):
+    raw = search_output() + ''.join(f'extra output {i}\n' for i in range(30)) + 'BOUNDARY\n'
+    visible = run_hook(tmp_path, 'grep -rn lookup_handler . && echo BOUNDARY', raw)
+    assert 'BOUNDARY' in visible.splitlines()

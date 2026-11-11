@@ -6901,7 +6901,7 @@ _V5_COMPRESSION_LABELS = {
 _NON_SAVINGS_COMPRESSION_FEATURES = frozenset({
     "fresh_session_nudge", "cohort_demoted", "first_read_edit_followup",
     "cache_drop_warning", "agent_result_skeleton", "unknown", "loop_detection",
-    "context_advisory_shadow", "context_size_advisory",
+    "context_advisory_shadow", "context_size_advisory", "post_run_classify_shadow",
 })
 
 # Unified label dict used by the savings-report renderer. Legacy entries

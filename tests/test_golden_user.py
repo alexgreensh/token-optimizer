@@ -13,10 +13,15 @@ The user:
     one of them runs on Fable 5.1 and has a 50k-token tool output archived
     after its 3rd call; one is stored twice (worktree copy).
 
-Flat-rate cost per call (the pool's constant ruler, $5/$25/$0.50 per MTok):
-  before = (1k*5 + 2k*25 + 200k*0.5) / 1e6 = $0.155
-  after  = (1k*5 + 2k*25 + 100k*0.5) / 1e6 = $0.105
-  -> transformation over 40 calls = (0.155 - 0.105) * 40 = $2.00
+Cost per call on the user's own price card (one card for both periods, built
+from what this period's calls paid per token class: 3 Opus 4.8 sessions at
+$5/$25/$0.50 and 1 Fable 5.1 session at $10/$50/$0.25 per MTok):
+  input  = (3*1k*5 + 1k*10) / 4k        = $6.25 per MTok
+  output = (3*2k*25 + 2k*50) / 8k       = $31.25 per MTok
+  read   = (3*100k*0.5 + 100k*0.25) / 400k = $0.4375 per MTok
+  before = (1k*6.25 + 2k*31.25 + 200k*0.4375) / 1e6 = $0.15625
+  after  = (1k*6.25 + 2k*31.25 + 100k*0.4375) / 1e6 = $0.1125
+  -> transformation over 40 calls = (0.15625 - 0.1125) * 40 = $1.75
 Re-reads: the archived 50k tokens stay out of calls 5..10 (6 calls) at the
 Fable 5.1 cache-read rate: 6 * 50k * $0.25/MTok = $0.075.
 """
@@ -34,8 +39,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from test_cost_accuracy_200 import _assistant, _load, _write  # noqa: E402
 
 CALLS = 10
-BEFORE_PER_CALL = 0.155
-AFTER_PER_CALL = 0.105
+BEFORE_PER_CALL = 0.15625
+AFTER_PER_CALL = 0.1125
 POST_SESSIONS = 4
 REREAD_USD = 6 * 50_000 * 0.25 / 1e6
 

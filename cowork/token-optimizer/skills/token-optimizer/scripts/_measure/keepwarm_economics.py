@@ -1,5 +1,7 @@
 """Conservative return estimates from this installation's session history."""
 from bisect import bisect_right
+import hashlib
+import json
 
 
 class GapHistory:
@@ -132,3 +134,20 @@ def claim_outcome(outcomes, firing_time):
             outcomes.pop(index)
             return True
     return False
+
+
+def attempt_key(record):
+    try:
+        session, armed = str(record['session_id']), float(record['ts'])
+        attempts = record.get('pings_fired') or []
+        if not session or armed <= 0 or not isinstance(attempts, list):
+            return None
+        raw = json.dumps([session, armed, len(attempts)], separators=(',', ':')).encode()
+        return hashlib.sha256(raw).hexdigest()
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def already_attempted(rows, key):
+    return not key or any(row.get('status') == 'firing' and row.get('attempt_key') == key
+                          for row in rows)

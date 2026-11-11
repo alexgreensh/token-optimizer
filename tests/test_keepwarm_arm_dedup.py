@@ -493,3 +493,63 @@ def test_spend_ledger_counts_each_attempt_including_unresolved(m):
     assert result['pings'] == 2
     assert result['spend_usd'] == 0.10
     assert result['net_usd'] == -0.10
+
+
+def test_repeated_fire_uses_one_ledger_attempt(m, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    mod, _ = m
+    transcript = _write_transcript(tmp_path, 7200)
+    now = time.time()
+    record = {'session_id': 'abc123', 'ts': now - 3400, 'model': 'claude-sonnet-4-5',
+              'transcript_path': str(transcript), 'prefix_proxy': 200000, 'pings_fired': []}
+    ledger, calls = [], []
+    monkeypatch.setattr(mod, '_keepwarm_acquire_ping_lock', lambda *a, **k: 'held')
+    monkeypatch.setattr(mod, '_keepwarm_release_ping_lock', lambda lock: None)
+    monkeypatch.setattr(mod, 'classify_keepwarm_record', lambda *a, **k: 'still_paused')
+    monkeypatch.setattr(mod, '_keepwarm_extract_cwd', lambda path: str(tmp_path))
+    monkeypatch.setattr(mod, '_keepwarm_load_ledger_rows', lambda: list(ledger))
+    monkeypatch.setattr(mod, '_keepwarm_ledger_append', lambda row: ledger.append(row) or True)
+    monkeypatch.setattr(mod, '_keepwarm_read_meters', lambda: {'available': False})
+    def runner(*args):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout='{}', stderr='')
+    assert mod._keepwarm_fire_ping(record, now=now, runner=runner)['fired']
+    assert mod._keepwarm_fire_ping(record, now=now, runner=runner)['reason'] == 'attempt-already-booked'
+    assert len(calls) == 1
+
+
+def test_two_processes_cannot_ping_same_session_at_once(m, monkeypatch, tmp_path):
+    import multiprocessing
+    from types import SimpleNamespace
+    mod, _ = m
+    transcript = _write_transcript(tmp_path, 7200)
+    now = time.time()
+    record = {'session_id': 'abc123', 'ts': now - 3400, 'model': 'claude-sonnet-4-5',
+              'transcript_path': str(transcript), 'prefix_proxy': 200000, 'pings_fired': []}
+    monkeypatch.setattr(mod, 'classify_keepwarm_record', lambda *a, **k: 'still_paused')
+    monkeypatch.setattr(mod, '_keepwarm_extract_cwd', lambda path: str(tmp_path))
+    monkeypatch.setattr(mod, '_keepwarm_read_meters', lambda: {'available': False})
+    ctx = multiprocessing.get_context('fork')
+    entered, release = ctx.Event(), ctx.Event()
+    results = ctx.Queue()
+    def runner(*args):
+        entered.set()
+        if not release.wait(10):
+            raise RuntimeError('test did not release runner')
+        return SimpleNamespace(returncode=0, stdout='{}', stderr='')
+    def worker():
+        results.put(mod._keepwarm_fire_ping(record, now=now, runner=runner))
+    first, second = ctx.Process(target=worker), ctx.Process(target=worker)
+    first.start()
+    try:
+        assert entered.wait(10)
+        second.start()
+        second.join(10)
+        assert second.exitcode == 0
+    finally:
+        release.set()
+        first.join(10)
+    assert first.exitcode == 0
+    outcomes = [results.get(timeout=2), results.get(timeout=2)]
+    assert sum(bool(item['fired']) for item in outcomes) == 1
+    assert {item['reason'] for item in outcomes} == {'ok', 'locked'}

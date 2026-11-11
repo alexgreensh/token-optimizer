@@ -2421,9 +2421,12 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
         result["reason"] = "locked"
         return result
     try:
-        # Recheck liveness and the transcript after acquiring the session lock.
         if _measure_facade.classify_keepwarm_record(record, now=now) != "still_paused":
             result["reason"] = "session-changed-or-ended"
+            return result
+        attempt_key = keepwarm_economics.attempt_key(record)
+        if keepwarm_economics.already_attempted(_measure_facade._keepwarm_load_ledger_rows(), attempt_key):
+            result["reason"] = "attempt-already-booked"
             return result
         tp = _measure_facade.Path(transcript_path)
         try:
@@ -2453,10 +2456,7 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
         parsed = {"cost_usd": 0.0, "cache_read": 0, "cache_write": 0}
         duration = 0.0
 
-        # Resolve the claude binary to an absolute path at FIRE time (LIVE BUG).
-        # Unresolvable -> book a distinct 'claude-not-found' error
-        # outcome (the firing row is already pre-logged) so the launchd empty-PATH
-        # case is diagnosable rather than a generic spawn error.
+        # Resolve at fire time because launchd has a minimal PATH.
         if runner is None:
             claude_bin = _measure_facade._keepwarm_resolve_claude_bin()
             if claude_bin is None:
@@ -2507,10 +2507,9 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
         if _measure_facade.classify_keepwarm_record(record, now=_measure_facade.time.time()) != "still_paused":
             result["reason"] = "session-changed-or-ended"
             return result
-        # 4. Pre-log spend BEFORE firing (a crash can't hide spend).
         if not _measure_facade._keepwarm_ledger_append({
             "session_id": str(sid), "ts": float(now), "status": "firing",
-            "phase": record.get("_phase", "probe"), "model": model,
+            "phase": record.get("_phase", "probe"), "model": model, "attempt_key": attempt_key,
             "prefix_proxy": prefix, "est_cost_usd": est_cost,
         }):
             result["reason"] = "ledger-unavailable"
@@ -2556,7 +2555,7 @@ def _keepwarm_fire_ping(record, now=None, runner=None):
         outcome = {
             "session_id": str(sid),
             "ts": float(_measure_facade.time.time()),
-            "status": status,
+            "status": status, "attempt_key": attempt_key,
             "phase": record.get("_phase", "probe"),
             "model": model, "prefix_proxy": prefix,
             "cost_usd": float(parsed.get("cost_usd", 0.0) or 0.0),

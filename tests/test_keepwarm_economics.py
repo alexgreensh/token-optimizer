@@ -87,3 +87,14 @@ def test_headline_includes_cost_of_pings_with_no_return():
     result = headline_pool(Facade, 'window-start')
     assert result['cost_saved_usd'] == -0.08
     assert result['events'] == 3
+
+
+def test_attempt_key_is_stable_for_same_pause_and_sequence():
+    from _measure.keepwarm_economics import attempt_key, already_attempted
+    record = {'session_id': 'abc', 'ts': 1000, 'pings_fired': []}
+    key = attempt_key(record)
+    assert key == attempt_key(dict(record))
+    assert already_attempted([{'status': 'firing', 'attempt_key': key}], key)
+    assert not already_attempted([{'status': 'ok', 'attempt_key': key}], key)
+    record['pings_fired'] = [1234]
+    assert attempt_key(record) != key

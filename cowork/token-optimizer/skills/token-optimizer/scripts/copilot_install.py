@@ -48,6 +48,7 @@ _PAYLOAD_MODULES = (
     "copilot_vscode.py",
     "bash_hook.py",
     "bash_compress.py",
+    "post_run_classify.py",
     "preserved_reinject.py",
     "bash_search_results.py",
     # Dependency-free whitelist gate shared by bash_hook + bash_compress.

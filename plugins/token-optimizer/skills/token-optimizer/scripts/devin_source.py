@@ -9,7 +9,7 @@ import stat
 import sys
 
 PAYLOAD = ('devin_compress.py', 'devin_state.py', 'devin_doctor.py', 'devin_verify.py', 'devin_source.py',
-           'bash_compress.py', 'preserved_reinject.py', 'bash_search_results.py', 'bash_whitelist.py', 'credential_patterns.py',
+           'bash_compress.py', 'post_run_classify.py', 'preserved_reinject.py', 'bash_search_results.py', 'bash_whitelist.py', 'credential_patterns.py',
            'credential_url_patterns.py',
            'token_estimate.py', 'command_filters.py', 'runtime_env.py', 'py_trust.py', 'plugin_env.py', 'refetch_fingerprint.py',
            '_tomli.py', 'devin_hooks.py')

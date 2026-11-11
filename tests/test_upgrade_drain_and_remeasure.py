@@ -226,11 +226,11 @@ def test_dashboard_card_labels_subtotal_in_progress(measure, monkeypatch):
     monkeypatch.setattr(measure, "_counted_cumulative_summary",
                         lambda **kw: _counted(remeasuring=True, remeasuring_sessions=12))
     card = render(measure._dashboard_savings_data()).split("savings-history")[1]
-    assert "Re-measuring (12 sessions left)" in card
-    assert "so far" in card
+    # The page shows the value so far, never a "measuring" placeholder.
+    assert "Re-measuring" not in card and "so far" in card
     monkeypatch.setattr(measure, "_counted_cumulative_summary", lambda **kw: _counted())
     card = render(measure._dashboard_savings_data()).split("savings-history")[1]
-    assert "Re-measuring" not in card and "so far" not in card
+    assert "so far" not in card
 
 
 def test_routing_pending_counts_stale_or_unbuilt_rows_with_transcripts(tmp_path, monkeypatch):
@@ -287,7 +287,7 @@ def test_dashboard_says_routing_is_remeasuring(measure, monkeypatch):
     patch_savings(measure, monkeypatch)
     monkeypatch.setattr(measure, "_get_merged_savings", lambda **kw: _pending_snapshot())
     hero = render(measure._dashboard_savings_data()).split("savings-actions")[1].split("savings-history")[0]
-    assert "Model routing: re-measuring (5 sessions left)" in hero
+    assert "re-measuring" not in hero.lower()
 
 
 # ---- media archives -----------------------------------------------------------

@@ -1122,7 +1122,7 @@ def test_dashboard_escapes_inserted_strings():
 
 def test_dashboard_missing_record_line_and_copy_pattern():
     src = DASHBOARD.read_text(encoding="utf-8")
-    assert "Measuring in the background, check back after your next session" in src
+    assert "Measuring in the background" not in src
     assert "data-usage-rec-cmd" in src
     assert "copyHookCmd" in src
 

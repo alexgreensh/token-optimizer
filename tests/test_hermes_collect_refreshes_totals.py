@@ -119,3 +119,23 @@ def test_stale_collect_does_not_overwrite_final_rollup(env, monkeypatch):
     measure._collect_hermes_sessions(quiet=True)
     rows, _ = _stored(db)
     assert rows == [(55_000, 7_000, 20, 10)]
+
+
+def test_concurrent_newer_hermes_snapshot_is_not_overwritten(env):
+    db, _state = env
+    assert measure._collect_hermes_sessions(quiet=True) == 1
+    conn = sqlite3.connect(str(db))
+    parsed = measure.hermes_session.normalize_session(
+        _row(message_count=10, api_call_count=5, input_tokens=20_000, output_tokens=2_000))
+    class RacingConnection:
+        def __getattr__(self, name): return getattr(conn, name)
+        def execute(self, sql, *args):
+            result = conn.execute(sql, *args)
+            if sql.startswith("SELECT message_count, input_tokens"):
+                old = result.fetchone()
+                conn.execute("UPDATE session_log SET message_count=20,input_tokens=55000,output_tokens=7000,api_calls=10 WHERE jsonl_path='hermes:sess-grow'")
+                return type("OldRow", (), {"fetchone": lambda self: old})()
+            return result
+    assert not measure._hermes_refresh_session_totals(RacingConnection(), "hermes:sess-grow", parsed)
+    assert conn.execute("SELECT input_tokens,output_tokens,message_count,api_calls FROM session_log").fetchone() == (55_000, 7_000, 20, 10)
+    conn.close()

@@ -6,6 +6,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from . import upgrade_drain_control
 
 _MARK = re.compile(r'Cold-resume lean \(session ([0-9a-fA-F]{8})(?=[, )])')
 
@@ -86,6 +87,7 @@ def collect(conn, to_utc, max_files=8, deadline_seconds=None):
             r = conn.execute('INSERT OR IGNORE INTO lean_receiver_candidates VALUES (?,?,?,?,?)', item)
             out['matches'] += max(0, r.rowcount)
         conn.execute('INSERT OR IGNORE INTO lean_receiver_scans VALUES (?,?,?,?)', (*proof, event_generation))
+        upgrade_drain_control.commit_drain_session(conn)
     conn.execute('INSERT OR REPLACE INTO lean_receiver_state VALUES (1, ?, ?)', (int(out['pending'] == 0), generation))
     conn.commit()
     return out

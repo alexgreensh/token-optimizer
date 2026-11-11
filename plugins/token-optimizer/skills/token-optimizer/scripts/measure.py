@@ -4006,7 +4006,7 @@ _COLLECT_DRAIN_BUDGETS = {
            "counted_seconds": _COUNTED_PASS_DEADLINE_SECONDS},
     "inline": {"count_capped": False, "parse_seconds": 15.0, "commit_batch": 20,
                "daily_seconds": 15.0, "counted_sessions": 10**9, "counted_seconds": 30.0},
-    "full": {"count_capped": False, "parse_seconds": None, "commit_batch": 20,
+    "full": {"count_capped": False, "parse_seconds": None, "commit_batch": 1,
              "daily_seconds": 3600.0, "counted_sessions": 10**9, "counted_seconds": None},
 }
 _UPGRADE_DRAIN_META = "upgrade_drain_done"

@@ -31,6 +31,7 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from _measure import holdout_fallback
 
 ENV = "TOKEN_OPTIMIZER_HOLDOUT"
 OFF, CONTROL, TREATMENT = "off", "control", "treatment"
@@ -89,6 +90,7 @@ def arm(session_id, snapshot_dir=None, env=None) -> str:
     if uuid is None:
         return decided
     conn = None
+    directory = None
     try:
         if snapshot_dir is None:
             from plugin_env import resolve_snapshot_dir
@@ -100,13 +102,27 @@ def arm(session_id, snapshot_dir=None, env=None) -> str:
         conn.executescript(_SCHEMA)
         row = conn.execute("SELECT arm FROM holdout_sessions WHERE session_uuid = ?", (uuid,)).fetchone()
         if row and row[0] in (CONTROL, TREATMENT):
+            holdout_fallback.sweep(directory, conn)
             return row[0]
+        pending = holdout_fallback.claim(directory, uuid, decided, s)
+        if pending:
+            decided, s, assigned_at = pending
+        else:
+            assigned_at = datetime.now().isoformat()
         conn.execute("INSERT OR IGNORE INTO holdout_sessions (session_uuid, arm, share, assigned_at) "
-                     "VALUES (?, ?, ?, ?)", (uuid, decided, s, datetime.now().isoformat()))
+                     "VALUES (?, ?, ?, ?)", (uuid, decided, s, assigned_at))
         conn.commit()
         row = conn.execute("SELECT arm FROM holdout_sessions WHERE session_uuid = ?", (uuid,)).fetchone()
+        holdout_fallback.sweep(directory, conn)
         return row[0] if row and row[0] in (CONTROL, TREATMENT) else decided
     except Exception:
+        if directory is not None:
+            try:
+                pending = holdout_fallback.claim(directory, uuid, decided, s)
+                if pending:
+                    return pending[0]
+            except (OSError, ValueError):
+                pass
         return decided
     finally:
         if conn is not None:

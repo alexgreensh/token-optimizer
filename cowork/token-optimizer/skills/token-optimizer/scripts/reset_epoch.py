@@ -26,15 +26,15 @@ def bump_reset_epoch(conn) -> None:
 
 
 def snapshot_reset_epoch(store: Any) -> Any:
-    """Epoch to hand to guarded writes, or None (legacy unconditional write).
+    """Epoch to hand to guarded writes, or an invalid sentinel on failure.
 
     Call AFTER any compaction scan that may itself reset the session. Never
-    raises: a store that cannot report an epoch degrades to the legacy write.
+    raises: a store that cannot report an epoch must not resurrect stale state.
     """
     try:
         return store.get_reset_epoch()
     except Exception:
-        return None
+        return "unavailable"
 
 
 def _reset_replacement_state(entry: dict[str, Any]) -> None:

@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, transcript_stream, quality_continuity, quality_checkpoint
+from . import _compat, transcript_stream, quality_continuity, quality_checkpoint, lease_candidate_cleanup
 
 
 def _int_env(key: str, default: int) -> int:
@@ -3937,7 +3937,7 @@ def maybe_sweep_stale_leases(directory=None):
         if not _measure_facade._qlease_sweep_due():
             return 0
         target = _measure_facade.Path(directory) if directory is not None else _measure_facade.QUALITY_CACHE_DIR
-        removed = _measure_facade._sweep_stale_leases(target)
+        removed = _measure_facade._sweep_stale_leases(target) + lease_candidate_cleanup.sweep(_measure_facade.SNAPSHOT_DIR)
         # Stamp AFTER a successful run so a mid-sweep crash retries next session.
         try:
             _measure_facade._QLEASE_SWEEP_MARKER.parent.mkdir(parents=True, exist_ok=True)

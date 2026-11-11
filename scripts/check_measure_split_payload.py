@@ -13,7 +13,8 @@ from measure_split import REPO, DOMAINS
 SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS) + ('dashboard_history.py', 'weekly_activity.py', 'headline.py', 'structural_ledger.py', 'structural_archives.py', 'structural_listing.py', 'structural_report.py', 'structural_seed.py', 'structural_value.py', 'counted_position.py', 'counted_pricing_v5.py', 'transcript_backfill.py', 'counted_subagents.py', 'lean_resume_threshold.py', 'output_reread.py', 'session_effect.py', 'rework_metrics.py', 'fixture_context.py', 'counted_orphans.py', 'counted_cap.py', 'archive_void_evidence.py', 'cost_per_message_trend.py', 'lean_resume_receivers.py', 'routing_period.py', 'session_best.py', 'savings_story.py', 'transcript_product.py', 'periphery_exposure.py', 'structure_funnel.py', 'setup_attachment_counter.py', 'first_read_outcomes.py', 'setup_budget_monitor.py', 'setup_connector_ledger.py', 'first_call_context.py', 'timestamp_cache.py', 'token_type_split.py', 'evidence_parallel.py', 'ttl_period.py', 'first_read_revive.py', 'mcp_archive_tripwire.py', 'compaction_survival.py', 'archive_void_codex.py', 'compression_fixture_void.py', 'feature_health.py', 'archive_health.py', 'coverage_report.py', 'file_refetch.py', 'holdout_report.py', 'structural_dedupe.py', 'setup_step.py')
 
 
-SOURCES += ('transcript_stream.py', 'quality_continuity.py', 'quality_checkpoint.py', 'codex_quality.py', 'checkpoint_direction.py', 'checkpoint_retention.py')
+SOURCES += ('transcript_stream.py', 'quality_continuity.py', 'quality_checkpoint.py', 'codex_quality.py', 'checkpoint_direction.py', 'checkpoint_retention.py', 'lease_candidate_cleanup.py', 'session_store_spool.py', 'upgrade_drain_control.py', 'compression_scan_checkpoint.py')
+SOURCES += ('status_bar_lock.py', 'session_flush_lock.py', 'context_reset_marker.py', 'holdout_fallback.py', 'dashboard_heal_claim.py')
 
 
 def verify(payload, canonical=REPO):

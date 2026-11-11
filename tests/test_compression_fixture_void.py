@@ -7,7 +7,12 @@ are never changed; the counted view leaves the row out.
 """
 import importlib
 import json
+import os
+import select
+import signal
+import sqlite3
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -127,3 +132,55 @@ def test_rows_with_a_model_or_session_are_never_candidates(m, model, sid):
     conn = mod._init_trends_db(); _row(conn, model=model, sid=sid); conn.close()
     assert _collect(mod, projects)["candidates"] == 0
     assert _counts(mod) == (1, 1)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="kill -9 fixture requires POSIX")
+def test_killed_fixture_scan_resumes_with_same_verdict(m, tmp_path, monkeypatch):
+    from _measure import compression_fixture_void as cfv, counted_subagents as sub
+
+    mod, projects = m
+    _transcript(projects, WHEN - timedelta(hours=2), WHEN + timedelta(hours=2), bash=(CMD.replace("git", "foo"), WHEN), name="first")
+    _transcript(projects, WHEN - timedelta(hours=2), WHEN + timedelta(hours=2), bash=(CMD.replace("git", "foo"), WHEN), name="second")
+    conn = mod._init_trends_db()
+    _row(conn)
+    baseline = tmp_path / "fixture-baseline.db"
+    with sqlite3.connect(str(baseline)) as copy:
+        conn.backup(copy)
+    conn.close()
+    monkeypatch.setenv("TOKEN_OPTIMIZER_UPGRADE_DRAIN", "1")
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        original = sub.index_results
+        calls = [0]
+        def pause_second(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] == 2:
+                os.write(write_fd, b"ready")
+                time.sleep(60)
+            return original(*args, **kwargs)
+        sub.index_results = pause_second
+        with sqlite3.connect(str(mod.TRENDS_DB)) as child:
+            cfv.collect(child, _utc, projects)
+        os._exit(0)
+    os.close(write_fd)
+    try:
+        assert select.select([read_fd], [], [], 10)[0]
+        assert os.read(read_fd, 5) == b"ready"
+    finally:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        os.close(read_fd)
+    with sqlite3.connect(str(mod.TRENDS_DB)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM compression_fixture_scan_progress").fetchone()[0] == 1
+        cached = Path(conn.execute("SELECT path FROM compression_fixture_scan_progress").fetchone()[0])
+        before = cached.stat()
+        _transcript(projects, WHEN - timedelta(hours=2), WHEN + timedelta(hours=2), bash=(CMD, WHEN), name=cached.stem)
+        assert (cached.stat().st_size, cached.stat().st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+        cfv.collect(conn, _utc, projects)
+        actual = conn.execute("SELECT event_id,verdict FROM compression_fixture_verdicts").fetchall()
+    with sqlite3.connect(str(baseline)) as conn:
+        cfv.collect(conn, _utc, projects)
+        expected = conn.execute("SELECT event_id,verdict FROM compression_fixture_verdicts").fetchall()
+    assert actual == expected == [(1, "located")]

@@ -295,7 +295,10 @@ def _cursor(conn):
         value = json.loads(row[0]) if row and row[0] else {}
     except ValueError:
         value = {}
-    return value if isinstance(value, dict) else {}
+    value = value if isinstance(value, dict) else {}
+    from . import upgrade_drain_control
+    value.update(upgrade_drain_control.transcript_progress(conn))
+    return value
 
 
 from . import fixture_context, transcript_stream
@@ -375,6 +378,8 @@ def run(conn, m, since_date, max_files=None, deadline_seconds=None, report=None)
                 entry.update(rows=len(ce_rows) + len(se_rows), written=written, skipped=skipped)
             if not transcript_stream.needs_resume(path):
                 cursor[uuid] = stamp
+                from . import upgrade_drain_control
+                upgrade_drain_control.commit_transcript(conn, uuid, stamp)
             if report is not None:
                 report[uuid] = entry
         conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) VALUES (?, ?)",

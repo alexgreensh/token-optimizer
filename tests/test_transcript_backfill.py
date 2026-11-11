@@ -4,8 +4,12 @@ own pointer markers. Synthetic fixtures only.
 """
 import hashlib
 import json
+import os
+import select
+import signal
 import sqlite3
 import sys
+import time
 from datetime import timedelta
 
 import pytest
@@ -201,6 +205,51 @@ def test_backfill_writes_measured_rows_once_and_never_touches_existing(m, tmp_pa
     assert detail.startswith("replaced mcp__docs__fetch (12,000 chars -> ")
     card = m._counted_exact_card("claude-opus-5-5", m.PRICING_TIERS[m._load_pricing_tier()])
     assert cost == pytest.approx(saved * card["input"] / 1e6)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="kill -9 fixture requires POSIX")
+def test_killed_backfill_keeps_completed_session_and_resumes(m, tmp_path, monkeypatch):
+    dbp = _db(m, tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "CLAUDE_DIR", tmp_path / "claude")
+    for sid in (CLOUD, "c10d0000-1111-2222-3333-444455556667"):
+        path, _ = _session(tmp_path, sid)
+        _register(dbp, sid, path)
+    with sqlite3.connect(str(dbp)) as source:
+        tb.ensure_schema(source)
+        source.commit()
+        with sqlite3.connect(str(tmp_path / "baseline.db")) as dest:
+            source.backup(dest)
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        original = tb.scan_transcript
+        count = [0]
+        def pause_second(path):
+            count[0] += 1
+            if count[0] == 2:
+                os.write(write_fd, b"ready")
+                time.sleep(60)
+            return original(path)
+        tb.scan_transcript = pause_second
+        with sqlite3.connect(str(dbp)) as conn:
+            tb.run(conn, m, "2000-01-01")
+        os._exit(0)
+    os.close(write_fd)
+    try:
+        assert select.select([read_fd], [], [], 10)[0]
+        assert os.read(read_fd, 5) == b"ready"
+    finally:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        os.close(read_fd)
+    ce, se = _rows(dbp)
+    assert len(ce) == len(se) == 1
+    with sqlite3.connect(str(dbp)) as conn:
+        tb.run(conn, m, "2000-01-01")
+    with sqlite3.connect(str(tmp_path / "baseline.db")) as conn:
+        tb.run(conn, m, "2000-01-01")
+    assert tuple(sorted(rows) for rows in _rows(dbp)) == tuple(sorted(rows) for rows in _rows(tmp_path / "baseline.db"))
 
 
 def test_unique_guard_rejects_a_duplicate_key(m, tmp_path, monkeypatch):

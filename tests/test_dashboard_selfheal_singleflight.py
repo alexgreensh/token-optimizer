@@ -98,6 +98,39 @@ def test_rebuild_lock_released_when_child_crashes(measure):
         assert acquired
 
 
+def test_two_stale_marker_reclaimers_cannot_both_win(measure, monkeypatch):
+    marker = measure.SNAPSHOT_DIR / measure._DASHBOARD_HEAL_LOCK_NAME
+    marker.write_text('old')
+    old = time.time() - measure._DASHBOARD_HEAL_LOCK_STALE_SECONDS - 10
+    os.utime(marker, (old, old))
+    original = measure.os.unlink
+    nested = []
+
+    def race(path):
+        if str(path) == str(marker) and not nested:
+            nested.append(False)
+            nested[0] = measure._dashboard_heal_spawn_due()
+        return original(path)
+
+    monkeypatch.setattr(measure.os, 'unlink', race)
+    assert measure._dashboard_heal_spawn_due()
+    assert not any(nested)
+
+
+def test_eight_stale_marker_reclaimers_have_one_winner(measure):
+    marker = measure.SNAPSHOT_DIR / measure._DASHBOARD_HEAL_LOCK_NAME
+    marker.write_text('old')
+    old = time.time() - measure._DASHBOARD_HEAL_LOCK_STALE_SECONDS - 10
+    os.utime(marker, (old, old))
+    code = "import measure; print(measure._dashboard_heal_spawn_due())"
+    children = [subprocess.Popen([sys.executable, '-c', code], env=_child_env(measure),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                for _ in range(8)]
+    results = [child.communicate(timeout=15) for child in children]
+    assert all(child.returncode == 0 for child in children), results
+    assert [out.strip() for out, _ in results].count('True') == 1
+
+
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="requires no-follow open")
 def test_symlinked_lock_and_backoff_files_are_rejected(measure, tmp_path):
     target = tmp_path / "sentinel"

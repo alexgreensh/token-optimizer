@@ -14,8 +14,7 @@ PRIMARY KEY, legacy rows backfilled by a one-time ``rebuild``). A bounded
 
 Configuration:
   - WAL mode for concurrent read/write from separate hook processes
-  - busy_timeout=50ms: fail-fast under write contention (shadow mode
-    accepts dropped writes rather than stalling the hook process)
+  - busy_timeout=50ms: bound database waits; tracking events can be queued
   - synchronous=NORMAL (WAL-safe relaxation for performance)
   - 50MB cap per session DB
   - PreToolUse hooks: READ-ONLY queries only
@@ -28,9 +27,11 @@ import hashlib
 import json
 import re
 import sqlite3
+import sys
 import time
 import uuid
 import session_store_guard
+from _measure import session_store_spool
 from pathlib import Path
 from typing import Any, Optional
 
@@ -224,25 +225,23 @@ class SessionStore(ResetEpochMixin):
         self._store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         timeout_s = max(0.05, self._busy_timeout_ms / 1000.0)
         self._conn = session_store_guard.connect(self, timeout_s)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute(f"PRAGMA busy_timeout={int(self._busy_timeout_ms)}")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        # Defense-in-depth privacy (the parent dir is already 0700): the DB and
-        # its WAL/SHM sidecars hold cached tool output, so restrict them to the
-        # owner (0600). sqlite creates them honoring umask (commonly 0644), so
-        # tighten explicitly. Best-effort; never break a connect on chmod.
-        import os as _os
-        for _p in (
-            self.db_path,
-            self.db_path.with_suffix(".db-wal"),
-            self.db_path.with_suffix(".db-shm"),
-        ):
-            try:
-                _os.chmod(_p, 0o600)
-            except OSError:
-                pass
-        self._conn.row_factory = sqlite3.Row
-        self._init_schema()
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute(f"PRAGMA busy_timeout={int(self._busy_timeout_ms)}")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            # The DB and its sidecars contain private cached output.
+            import os as _os
+            for _p in (self.db_path, self.db_path.with_suffix(".db-wal"),
+                       self.db_path.with_suffix(".db-shm")):
+                try:
+                    _os.chmod(_p, 0o600)
+                except OSError:
+                    pass
+            self._conn.row_factory = sqlite3.Row
+            self._init_schema()
+        except BaseException:
+            self.close()
+            raise
         return self._conn
 
     def _init_schema(self) -> None:
@@ -648,32 +647,14 @@ class SessionStore(ResetEpochMixin):
         output_text: Optional[str] = None,
         truncated: Optional[int] = None,
     ) -> None:
-        if self._is_over_size_cap():
-            return
         index_text, index_truncated = _bound_tool_output_index(output_text)
-        conn = self._connect()
-        conn.execute(
-            """INSERT OR IGNORE INTO tool_outputs
-               (tool_use_id, tool_name, tool_type, command_or_path,
-                output_hash, output_chars, output_tokens_est,
-                compressed_preview, timestamp,
-                source_file_path, language, archived_from, output_text,
-                truncated, index_truncated)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
+        session_store_spool.enqueue(self, {"kind": "tool_output", "values": (
                 tool_use_id, tool_name, tool_type, command_or_path,
                 output_hash, output_chars, output_tokens_est,
                 compressed_preview, time.time(),
                 source_file_path, language, archived_from, index_text,
                 truncated, index_truncated,
-            ),
-        )
-        # fix-1: the external-content FTS mirror is maintained by the AFTER
-        # INSERT trigger, which fires only when the INSERT OR IGNORE above
-        # actually writes a new row. No manual FTS write here -- that was the
-        # source of duplicate FTS rows on re-insert of the same tool_use_id.
-        conn.commit()
+            )})
 
     # ----- tool_outputs search (U6: FTS5 with LIKE fallback) -----
 
@@ -845,7 +826,7 @@ class SessionStore(ResetEpochMixin):
     def record_file_edit(self, file_path: str) -> None:
         """Keep edit evidence without persisting credential-shaped path text."""
         fingerprint = hashlib.sha256(file_path.encode("utf-8")).hexdigest()
-        self.set_meta("checkpoint_edit:" + fingerprint, "1")
+        session_store_spool.enqueue(self, {"kind": "file_edit", "fingerprint": fingerprint})
 
     def was_file_edited(self, file_path: str) -> bool:
         fingerprint = hashlib.sha256(file_path.encode("utf-8")).hexdigest()
@@ -860,16 +841,7 @@ class SessionStore(ResetEpochMixin):
         summary: str,
         output_chars: int,
     ) -> None:
-        if self._is_over_size_cap():
-            return
-        conn = self._connect()
-        conn.execute(
-            """INSERT INTO context_intel_events
-               (tool_name, tool_use_id, summary, output_chars, timestamp)
-               SELECT ?, ?, ?, ?, ? WHERE ? = '' OR NOT EXISTS (SELECT 1 FROM context_intel_events WHERE tool_use_id = ?)""",
-            (tool_name, tool_use_id, summary, output_chars, time.time(), tool_use_id, tool_use_id),
-        )
-        conn.commit()
+        session_store_spool.enqueue_intel(self, tool_name, tool_use_id, summary, output_chars)
 
     def get_intel_events(self, limit: int = 20) -> list[dict[str, Any]]:
         conn = self._connect()
@@ -941,15 +913,9 @@ class SessionStore(ResetEpochMixin):
             return
         # Defensive cap, independent of the call site (which slices to ~5).
         paths = paths[:25]
-        conn = self._connect()
-        now = time.time()
-        conn.executemany(
-            """INSERT INTO hint_serves (file_path, served_at, credited)
-               VALUES (?, ?, 0)
-               ON CONFLICT(file_path) DO NOTHING""",
-            [(p, now) for p in paths],
-        )
-        conn.commit()
+        epoch = session_store_spool.hint_epoch(self)
+        session_store_spool.enqueue(self, {"kind": "hint_serves", "paths": paths, "timestamp": time.time(),
+                                           "reset_epoch": epoch})
 
     # Credit a follow only within this window of the serve; later reads of the
     # same file are more likely coincidence (keeps the credit conservative).
@@ -1021,10 +987,11 @@ def mark_context_reset(session_id: str, snapshot_dir: Optional[Path] = None) -> 
         marker = _context_reset_marker(session_id, snapshot_dir)
         if marker is None:
             return
-        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        marker.write_text(repr(time.time()), encoding="utf-8")
-    except OSError:
-        pass
+        from _measure import context_reset_marker
+        if not context_reset_marker.publish(marker, time.time()):
+            print("[Session Store] Context reset marker not updated: lock busy", file=sys.stderr)
+    except OSError as exc:
+        print("[Session Store] Context reset marker not updated: " + str(exc), file=sys.stderr)
 
 
 def context_reset_at(session_id: str, snapshot_dir: Optional[Path] = None) -> float:

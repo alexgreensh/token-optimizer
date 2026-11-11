@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, dashboard_history
+from . import _compat, dashboard_history, session_store_spool
 
 def _settings_lock(user_initiated=None):
     """Bounded portable lease for settings.json writes.
@@ -25,37 +25,12 @@ def _settings_lock(user_initiated=None):
         yield acquired
 
 def _acquire_session_end_flush_lock(max_age_seconds=None):
-    """Return a lock directory path, or None if another worker is active."""
-    _measure_facade = _compat.facade()
-    lock_dir = _measure_facade.SNAPSHOT_DIR / ".session-end-flush.lock"
-    try:
-        _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        lock_dir.mkdir(mode=0o700)
-        return lock_dir
-    except FileExistsError:
-        try:
-            age = _measure_facade.time.time() - lock_dir.stat().st_mtime
-            if age > max_age_seconds:
-                lock_dir.rmdir()
-                try:
-                    lock_dir.mkdir(mode=0o700)
-                except FileExistsError:
-                    return None
-                return lock_dir
-        except OSError:
-            pass
-        return None
-    except OSError:
-        return None
+    from . import session_flush_lock
+    return session_flush_lock.acquire(_compat.facade(), max_age_seconds)
 
 def _release_session_end_flush_lock(lock_dir):
-    _measure_facade = _compat.facade()
-    if not lock_dir:
-        return
-    try:
-        lock_dir.rmdir()
-    except OSError:
-        pass
+    from . import session_flush_lock
+    session_flush_lock.release(lock_dir)
 
 
 def _session_refresh_due(min_interval_seconds=None):
@@ -607,21 +582,17 @@ def _dispatch_collect(args):
         _measure_facade._install_hook_budget(20) if (_measure_facade._running_under_hook() and not rebuild) else None
     )
     try:
-        _measure_facade.collect_sessions(days=days, quiet=quiet, rebuild=rebuild)
+        session_store_spool.drain_collect(_measure_facade.SNAPSHOT_DIR); _measure_facade.collect_sessions(days=days, quiet=quiet, rebuild=rebuild)
     except _measure_facade._HookTimeout:
         pass
+    except _measure_facade.sqlite3.OperationalError as exc:
+        if "locked" not in str(exc).lower() and "busy" not in str(exc).lower(): raise
+        try: _measure_facade._log_spawn_failure("collect deferred after SQLite contention")
+        except Exception: pass
     finally:
         _measure_facade._clear_hook_budget(deadline)
 
-    # Existing-script-install self-heal. An old script
-    # install has the collect&&dashboard fossil in settings.json and NO
-    # ensure-health SessionStart hook, so run_ensure_health never reaches it.
-    # The fossil's OWN hook-path run reconciles settings.json here, removing
-    # the fossil going forward. Runs AFTER the flush and its 20s budget are
-    # cleared, so it never delays the flush itself; the self-heal carries its
-    # OWN short deadline (see the helper) so a stalled settings write can't
-    # hold the hook pipe open. Throttled to 24h, fail-open. Gated on the hook
-    # path so an interactive terminal `collect` never triggers it.
+    # Repair legacy hook installs after the bounded collect finishes.
     if _measure_facade._running_under_hook():
         try:
             _measure_facade._maybe_self_heal_sessionend_fossils_on_hook()
@@ -818,71 +789,8 @@ def _dashboard_selfheal_build_lock():
 
 
 def _dashboard_heal_spawn_due():
-    """Return True iff THIS caller should spawn a dashboard heal.
-
-    Bug (thundering herd): on a version bump every concurrent
-    SessionStart's ensure-health tick sees the stale sidecar and each spawns a
-    DETACHED, unbounded, FORCED ~9s rebuild -- N sessions => N simultaneous
-    builds all racing os.replace on the same dashboard.html (the very lock
-    contention the api/regenerate retry was calibrated around). This collapses
-    that to ONE: the first caller atomically claims ``dashboard.heal.lock``
-    (O_CREAT|O_EXCL, the same pidfile shape as ``_keepwarm_tick_singleton`` and
-    ``_daemon_install_lock``) and spawns; concurrent callers within the staleness
-    window see the fresh marker and skip. The marker is deliberately NOT unlinked
-    on the happy path -- it must OUTLIVE this call to suppress the herd, and it is
-    reclaimed by the next caller once it ages past the window.
-
-    The child holds a separate OS lock for the full rebuild. Check it here so
-    even an expired marker cannot launch another child while one is working.
-    Fail-OPEN on filesystem errors; the child lock still prevents duplicate work.
-    """
-    _measure_facade = _compat.facade()
-    if _measure_facade._dashboard_selfheal_inflight():
-        return False
-    marker = _measure_facade.SNAPSHOT_DIR / _measure_facade._DASHBOARD_HEAL_LOCK_NAME
-    try:
-        _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return True
-    fd = None
-    try:
-        fd = _measure_facade.os.open(str(marker), _measure_facade.os.O_CREAT | _measure_facade.os.O_EXCL | _measure_facade.os.O_WRONLY, 0o600)
-    except FileExistsError:
-        # A recent spawn already claimed the marker. Reclaim ONLY if it is stale;
-        # a fresh marker means a heal is already in flight, so no-op.
-        try:
-            age = _measure_facade.time.time() - marker.stat().st_mtime
-        except OSError:
-            return True  # unreadable mtime: don't suppress the heal
-        if age <= _measure_facade._DASHBOARD_HEAL_LOCK_STALE_SECONDS:
-            return False
-        # Known bounded residual (same unlink+O_EXCL shape as
-        # _keepwarm_tick_singleton): the fresh-claim path above is race-free, but
-        # if TWO ticks both observe the SAME stale marker and both pass the age
-        # check before either unlinks, both can reclaim and spawn -- at most 2
-        # rebuilds, only at the 60s staleness edge with concurrent sessions. That
-        # is consistent with the fail-open contract (an extra rebuild is harmless;
-        # the detached child is itself idempotent via os.replace + the version
-        # guard), so it is accepted rather than serialised with a heavier lock.
-        try:
-            _measure_facade.os.unlink(str(marker))
-            fd = _measure_facade.os.open(str(marker), _measure_facade.os.O_CREAT | _measure_facade.os.O_EXCL | _measure_facade.os.O_WRONLY, 0o600)
-        except FileExistsError:
-            return False  # lost the reclaim race to another session -- it heals
-        except OSError:
-            return True
-    except OSError:
-        return True
-    try:
-        _measure_facade.os.write(fd, str(_measure_facade.os.getpid()).encode("ascii"))
-    except OSError:
-        pass
-    finally:
-        try:
-            _measure_facade.os.close(fd)
-        except OSError:
-            pass
-    return True
+    from . import dashboard_heal_claim
+    return dashboard_heal_claim.claim(_compat.facade())
 
 
 def _is_plugin_installed():

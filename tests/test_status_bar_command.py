@@ -467,15 +467,15 @@ def test_racing_takeover_of_a_stale_lock_starts_one_child(sb, monkeypatch):
         st = real_stat(self, *a, **kw)
         if not raced["done"] and self == lock:
             raced["done"] = True
-            # Caller B runs to completion between A's staleness check and A's takeover.
-            assert sb._status_bar_start_refresh(SID_A) is True
+            # Caller B cannot enter while A holds the transition guard.
+            assert sb._status_bar_start_refresh(SID_A) is False
         return st
 
     monkeypatch.setattr(pathlib.Path, "stat", racing_stat)
-    assert sb._status_bar_start_refresh(SID_A) is False
+    assert sb._status_bar_start_refresh(SID_A) is True
     monkeypatch.setattr(pathlib.Path, "stat", real_stat)
     assert len(spawns) == 1
-    assert lock.read_text(encoding="ascii") == spawns[0]["env"][sb._STATUS_BAR_LOCK_TOKEN_ENV]
+    assert lock.read_text(encoding="ascii").split()[0] == spawns[0]["env"][sb._STATUS_BAR_LOCK_TOKEN_ENV]
     assert not list(lock.parent.glob(lock.name + ".*.stale"))
 
 
@@ -486,7 +486,7 @@ def test_child_gets_the_lock_token_in_its_environment(sb, monkeypatch):
     argv, kw = spawns[0]
     token = kw["env"]["TO_STATUS_BAR_LOCK_TOKEN"]
     assert len(token) == 32
-    assert sb._status_bar_lock_path(SID_A).read_text(encoding="ascii") == token
+    assert sb._status_bar_lock_path(SID_A).read_text(encoding="ascii").split()[0] == token
     assert not any("TOKEN" in a for a in argv), "the token travels by env, not the CLI"
 
 
@@ -746,7 +746,7 @@ def test_a_zero_headline_over_real_savings_is_reported_busy(sb, monkeypatch):
     assert sb._status_bar_savings_or_reason(SID_A) == (None, "savings database busy")
 
 
-def test_put_back_without_hard_links_never_replaces_a_newer_lock(sb, monkeypatch):
+def test_wrong_owner_release_does_not_move_existing_lock(sb, monkeypatch):
     sid = "aaaaaaaa-1111-2222-3333-666666666666"
     lock = sb._status_bar_lock_path(sid)
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -759,7 +759,7 @@ def test_put_back_without_hard_links_never_replaces_a_newer_lock(sb, monkeypatch
 
     monkeypatch.setattr(sb.os, "link", no_links)
     assert sb._status_bar_release_lock(sid, "my-token") is False
-    assert lock.read_text(encoding="ascii") == "newer-owner"
+    assert lock.read_text(encoding="ascii") == "old-owner"
     assert not list(lock.parent.glob(f"{lock.name}.*.release"))
 
 

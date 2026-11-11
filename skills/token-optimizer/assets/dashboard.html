@@ -4739,12 +4739,10 @@ var DB = (function() {
       (Number(routingRealizedMo) > 0
         ? '<p class="plain-line"><strong>Model routing:</strong> ~' + money(periodValue(routingRealizedMo)) + esc(per) +
           ' ' + esc(routingAssumption) + (currOpus ? ' (now ' + currOpus + '% Opus)' : '') + '. Not in this total.</p>' : '') +
+      (mr.evidence === 'pending' ? '<p class="plain-line">Model routing: re-measuring (' + Number(mr.pending_sessions || 0).toLocaleString() + ' sessions left)</p>' : '') +
       (actionPricingIncomplete
         ? '<p class="plain-line">Some older history has no exact price, so this is a priced subtotal.</p>'
         : (!cp.available ? '<p class="plain-line">Repeat reads are not available here. Logged actions are still counted.</p>' : '')) +
-      // Usage without a token-class split (Cursor totals, model-daily-only
-      // history, legacy rows) sits outside both routing arms. Say so instead of
-      // letting an empty or partial routing figure read as complete coverage.
       (Number(mr.unsplit_tokens) > 0
         ? '<p class="plain-line">' + Number(mr.unsplit_tokens).toLocaleString() +
           ' tokens without a token-class split are left out of model routing.</p>' : '') +

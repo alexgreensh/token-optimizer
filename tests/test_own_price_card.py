@@ -288,8 +288,8 @@ def test_card_does_not_say_without_token_optimizer_when_it_ran_in_the_baseline(t
     prov = bp.transformation(Facade(tmp_path), BASELINE, PINNED)
     html = _render("savingsTransformationHtml(data)", _card(prov))
     assert "Without Token Optimizer" not in html
-    assert ("At the cost per request of your earliest tracked month (2026-01-06 to 2026-02-05), "
-            "this period would cost you this much more.") in html
+    assert "at what each request cost you in your earliest tracked month (Jan 6 to Feb 5)" in html
+    assert "before you installed" not in html
     assert "At your earliest month&#39;s cost per request: $600.00 a month" in html
 
 
@@ -298,7 +298,8 @@ def test_card_keeps_without_token_optimizer_for_a_true_before(tmp_path):
     prov = bp.transformation(Facade(tmp_path), BASELINE, PINNED)
     assert "claim" not in prov and "versus" not in prov
     html = _render("savingsTransformationHtml(data)", _card(prov))
-    assert "Without Token Optimizer, working the way you work now would cost you this much more" in html
+    assert "at what each request cost you before you installed (Jan 6 to Feb 5)" in html
+    assert "Without Token Optimizer: $600.00 a month" in html
 
 
 def test_per_session_method_names_sessions_not_requests(tmp_path):
@@ -312,10 +313,16 @@ def _limits(prov):
     return _render("savingsLimitsHtml(data)", data)
 
 
-def test_limits_card_follows_the_same_wording(tmp_path):
+def test_limits_card_says_when_token_optimizer_ran_in_the_baseline(tmp_path):
+    """The approved card always labels the bar "Without Token Optimizer". When the tool
+    already ran in the baseline month, the basis and the fold must say so, and that the
+    real gap is larger: the shown figure may undersell, never oversell."""
     _snapshot(tmp_path, "2026-01-05")
     html = _limits(bp.transformation(Facade(tmp_path), BASELINE, PINNED))
-    assert "without Token Optimizer" not in html and "without-Token-Optimizer" not in html
-    assert "75%</span> at your earliest month&#39;s cost per request" in html
+    assert "Compared with your earliest tracked month (Jan 6 to Feb 5)." in html
+    assert "before you installed" not in html
+    assert "already running in that month, so the full gap is larger than shown" in html
     _snapshot(tmp_path, "2026-02-05")
-    assert "75%</span> without Token Optimizer" in _limits(bp.transformation(Facade(tmp_path), BASELINE, PINNED))
+    html = _limits(bp.transformation(Facade(tmp_path), BASELINE, PINNED))
+    assert "before you installed (Jan 6 to Feb 5)" in html
+    assert "already running" not in html

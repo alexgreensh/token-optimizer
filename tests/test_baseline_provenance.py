@@ -312,7 +312,7 @@ def test_card_does_not_say_before_you_installed_for_a_post_install_baseline(tmp_
     html = _render("savingsTransformationHtml(data)",
                    _card(bp.transformation(Facade(tmp_path), BASELINE, PINNED)))
     assert "before you installed" not in html
-    assert "your earliest tracked month (2026-01-06 to 2026-02-05)" in html
+    assert "your earliest tracked month (Jan 6 to Feb 5)" in html
     above, fold = html.split("How this is calculated")
     assert "already running" in fold and "understates" in fold
     assert "already running" not in above  # the lead is true; the caveat lives in the fold
@@ -323,9 +323,9 @@ def test_card_keeps_the_claim_for_a_true_before_and_for_old_payloads(tmp_path):
     _snapshot(tmp_path, "2026-02-05")
     html = _render("savingsTransformationHtml(data)",
                    _card(bp.transformation(Facade(tmp_path), BASELINE, PINNED)))
-    assert "from before you installed (2026-01-06 to 2026-02-05)" in html
+    assert "before you installed (Jan 6 to Feb 5)" in html
     old = _render("savingsTransformationHtml(data)", _card())
-    assert "compared with your own baseline from before you installed." in old
+    assert "at what each request cost you in your earliest tracked month." in old
 
 
 def test_routing_basis_uses_the_payload_sentence(tmp_path):

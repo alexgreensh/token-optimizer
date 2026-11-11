@@ -389,9 +389,9 @@ function savingsTransformationHtml(data) {
   var friendlyLead = leadSrc.replace(/(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})/g, function(m, a, b) {
     return f.day(a) + ' to ' + f.day(b);
   });
-  var desc = friendlyLead.replace(/^compared with /i, '').replace(/\.$/, '');
-  var lead = 'This month&rsquo;s work would have cost ' + usd(ba.monthly_savings_usd) + ' more at what each request cost you in ' +
-    esc(desc) + (share > 0 ? '. That is ' + share + '% saved.' : '.');
+  var desc = friendlyLead.replace(/^compared with /i, '').replace(/\.$/, '').replace(/^your own baseline from /i, '');
+  var lead = 'This month&rsquo;s work would have cost ' + usd(ba.monthly_savings_usd) + ' more at what each request cost you ' +
+    (/^before /i.test(desc) ? '' : 'in ') + esc(desc) + (share > 0 ? '. That is ' + share + '% saved.' : '.');
   // A work-normalized figure prices both periods at one fixed rate card, so its
   // "now" side is not the user's spend: name the card and show the exact-card cost.
   var wp = ba.session_weight_pool || {}, fr = wp.flat_rates || null;
@@ -504,6 +504,7 @@ function savingsLimitsHtml(data) {
   var methodLines = [];
   if (direct > 0) methodLines.push('Measured directly by Token Optimizer: about ' + (Math.round(direct * 10) / 10) + '% more work per token');
   methodLines.push('The rest comes from your setup, habits and model choices since your earliest tracked month');
+  if (prov.claim) methodLines.push('Token Optimizer was already running in that month, so the full gap is larger than shown');
   methodLines.push(provider + "'s own improvements in that time are not separated out");
   var method = '<ul>' + methodLines.map(function(l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>';
   return '<div class="card st-card st-limits-card">' +

@@ -2317,7 +2317,10 @@ def runway_snapshot(days=None, now=None, token_headline=None):
         routing_state = routing.get("state")
         routing_mult = routing.get("factor")
 
-        mult = context_mult * (routing_mult if routing_mult is not None else 1.0)
+        # A heavier model mix is the user's choice, not a cost Token Optimizer
+        # caused, so it never shrinks what TO hands back (or hides the card).
+        # The raw factor is still reported as routing_multiplier below.
+        mult = context_mult * max(1.0, routing_mult if routing_mult is not None else 1.0)
         # Hide immaterial changes unless weekly savings are available.
         if mult < 1.02 and not weekly_signal:
             return None

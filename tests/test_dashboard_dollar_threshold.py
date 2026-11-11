@@ -161,3 +161,23 @@ def test_routing_savings_scope_to_since(m, tmp_path, monkeypatch):
     monkeypatch.setattr(m, "_model_mix_shares", _spy_mix)
     m._compute_model_routing_savings(days=7, since="2026-08-27T20:00:00")
     assert calls["since"] == "2026-08-27T20:00:00", "since must reach the model mix"
+
+
+def test_heavier_model_mix_never_hides_or_shrinks_the_card(m, tmp_path, monkeypatch):
+    """A routing factor below 1 (the user chose heavier models) is not a cost
+    Token Optimizer caused: the card matches a neutral 1.0 mix, and the raw
+    factor is still reported."""
+    _temp_trends(m, tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
+    monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=30.0, routing_usd=0.0))
+    # Context savings alone are 2.4% (1.024x), the case seen on a real install.
+    monkeypatch.setattr(m._headline, "input_traffic", lambda *a, **k: {"tokens": 1_000_000, "basis": "dated", "complete": True})
+    headline = m._headline.token_headline({})
+    headline["total_tokens"] = 24_000
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.0})
+    neutral = m.runway_snapshot(days=30, token_headline=dict(headline))
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 0.834})
+    heavier = m.runway_snapshot(days=30, token_headline=dict(headline))
+    assert neutral is not None and heavier is not None
+    assert heavier["multiplier"] == neutral["multiplier"]
+    assert heavier["routing_multiplier"] == 0.834

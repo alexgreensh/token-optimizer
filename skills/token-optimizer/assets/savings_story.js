@@ -315,12 +315,32 @@ function savingsRoutingBasis(data) {
   };
 }
 
+// No baseline yet: one line saying how far along it is, so the missing
+// before-and-after card is explained. Nothing for any other state.
+function savingsBaselineProgressHtml(ba) {
+  var f = savingsStoryFmt(), num = f.num, has = f.has, count = f.count;
+  var b = ba && ba.reason === 'insufficient_history' ? ba.baseline_building : null;
+  if (!b || typeof b !== 'object' || b.ready === true || !has(b.sessions_in_window) || !(num(b.sessions_needed) > 0)) return '';
+  var got = Math.max(0, num(b.sessions_in_window)), need = num(b.sessions_needed), left = Math.max(0, num(b.days_left));
+  var span = num(b.early_window_days) > 0 ? num(b.early_window_days) : 30;
+  var line;
+  if (left > 0) {
+    line = 'Building your baseline: ' + count(Math.min(got, need)) + ' of ' + count(need) + ' sessions, ' + count(left) + ' day' + (left === 1 ? '' : 's') + ' left. ' +
+      'Your before-and-after comparison appears here when it is ready.';
+  } else if (got < need) {
+    line = 'Your first ' + count(span) + ' days on record had ' + count(got) + ' session' + (got === 1 ? '' : 's') + '. A stable baseline needs ' + count(need) + ', so the before-and-after comparison is not shown. Everything above is still counted.';
+  } else {
+    return '';
+  }
+  return '<div class="card st-card st-baseline-progress"><h2 class="st-h">Your transformation</h2><p class="st-lead">' + line + '</p></div>';
+}
+
 // Transformation: what this month would cost without Token Optimizer, against
 // the user's own baseline from before install. Hidden unless the payload says ok.
 function savingsTransformationHtml(data) {
   var f = savingsStoryFmt(), num = f.num, has = f.has, usd = f.usd;
   var ba = ((data && data.savings) || {}).before_after || {};
-  if (ba.transformation_state !== 'ok' || !(num(ba.monthly_savings_usd) > 0)) return '';
+  if (ba.transformation_state !== 'ok' || !(num(ba.monthly_savings_usd) > 0)) return savingsBaselineProgressHtml(ba);
   var share = has(ba.transformation_pct) && num(ba.transformation_pct) > 0 ? Math.round(num(ba.transformation_pct) * 100) : 0;
   // Where the "before" came from. Older payloads carry no provenance and keep the fixed sentence.
   var prov = ba.baseline_provenance || {};

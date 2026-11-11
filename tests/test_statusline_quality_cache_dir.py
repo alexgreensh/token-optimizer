@@ -49,7 +49,7 @@ def _run(home: Path, extra_env=None):
     if extra_env:
         env.update(extra_env)
     p = subprocess.run(["node", str(SL)], input=payload, env=env,
-                       capture_output=True, text=True, timeout=60)
+                       capture_output=True, text=True, encoding="utf-8", timeout=60)
     # strip ANSI
     return re.sub(r"\x1b\[[0-9;]*m", "", p.stdout)
 

@@ -743,7 +743,7 @@ def test_transformation_card_is_big_with_caption_share_and_fold():
     s['before_after'] = ok_transformation()
     out = story({'savings': s})
     card = out.split('class="card st-card st-transform"')[1].split('</details></div>')[0]
-    assert 'st-mega st-mega--usd st-mega--card">$3,366 a month</span>' in card
+    assert 'st-mega st-mega--usd st-mega--card">$3,366<span class="st-mega__per"> a month</span></span>' in card
     assert ('Without Token Optimizer, working the way you work now would cost you this much more, '
             'compared with your own baseline from before you installed.') in card
     assert '<p class="st-lead">That is 14% of what this work would have cost.</p>' in card

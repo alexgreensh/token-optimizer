@@ -323,7 +323,7 @@ function savingsTransformationHtml(data) {
     (ba.breakdown_caveat ? '<p>' + esc(ba.breakdown_caveat) + '</p>' : '');
   return '<div class="card st-card st-transform">' +
     '<h2 class="st-h">Your transformation</h2>' +
-    '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(ba.monthly_savings_usd) + ' a month</span>' +
+    '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(ba.monthly_savings_usd) + '<span class="st-mega__per"> a month</span></span>' +
       '<span class="st-mega__unit">Without Token Optimizer, working the way you work now would cost you this much more, compared with your own baseline from before you installed.</span></p>' +
     (share > 0 ? '<p class="st-lead">That is ' + share + '% of what this work would have cost.</p>' : '') +
     f.fold('How this is calculated', method) +

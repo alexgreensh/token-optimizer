@@ -27,7 +27,7 @@ def first_listing_chars(path):
     """Characters of the first initial skill_listing attachment, or None."""
     try:
         with open(path, "rb") as fh:
-            for i, line in enumerate(chain.from_iterable(chunk.splitlines(keepends=True) for chunk in fh)):
+            for i, line in enumerate(chain.from_iterable(chunk.splitlines(keepends=True) if b'\r' in chunk else (chunk,) for chunk in fh)):
                 if i > MAX_LINES:
                     return None
                 if b'"skill_listing"' not in line:

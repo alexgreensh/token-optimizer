@@ -14,10 +14,8 @@ def feature_settings():
 
 
 def toggle(facade, enabled):
-    result = facade.keepwarm_enable() if enabled else facade.keepwarm_disable()
-    state = facade._read_config_flag('v5_keepwarm', None)
-    return bool(result[0] and state is bool(enabled) and
-                facade.keepwarm_consent() == ('enabled' if enabled else 'declined'))
+    """The paused release does not expose an active setting."""
+    return False
 
 
 class GapHistory:

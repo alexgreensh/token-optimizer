@@ -9,7 +9,7 @@ def test_health_card_shows_pings_and_measured_meter_impact():
         'net_usd': 1.25, 'quota_value': {'measured': {'five_hour': {'median_pct': 0.012, 'n': 5}}}}}}
     code = asset.read_text() + '\nconsole.log(keepwarmHealthHtml(' + json.dumps(data) + '));'
     output = subprocess.run(['node', '-e', code], capture_output=True, text=True, check=True).stdout
-    assert 'Automatic pings are paused' in output
+    assert 'Keep-warm: paused while we prove it is safe and saves you money' in output
     assert '3 pings' in output and '$1.25' in output
     assert '0.012 percentage points per ping (5 samples)' in output
 
@@ -30,3 +30,10 @@ def test_unsupported_platform_explains_keepwarm_is_unavailable():
     code = asset.read_text() + '\nconsole.log(keepwarmHealthHtml(' + json.dumps(data) + '));'
     output = subprocess.run(['node', '-e', code], capture_output=True, text=True, check=True).stdout
     assert 'Keep-warm is unavailable on this platform' in output
+
+
+def test_manage_renders_paused_message_without_keepwarm_toggle():
+    html = (Path(__file__).resolve().parents[1] / 'skills/token-optimizer/assets/dashboard.html').read_text()
+    assert "if (fname === 'keepwarm')" in html
+    assert 'Keep-warm: paused while we prove it is safe and saves you money</div>' in html
+    assert "return; }" in html[html.index("if (fname === 'keepwarm')"):html.index("if (fname === 'keepwarm')") + 250]

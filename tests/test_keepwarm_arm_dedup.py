@@ -364,7 +364,7 @@ def test_compacted_or_ended_session_cannot_be_pinged(m, tmp_path):
     record = mod.load_keepwarm_records()[0]
     transcript.write_text('shortened')
     assert mod.classify_keepwarm_record(record) == 'resumed'
-    assert mod._keepwarm_fire_ping(record, runner=lambda *a, **kw: None)['reason'] == 'session-changed-or-ended'
+    assert mod._keepwarm_fire_ping(record, runner=lambda *a, **kw: None)['reason'] == 'live-resume-unverified'
     keepwarm_safety.mark_ended(mod.SNAPSHOT_DIR, record['session_id'])
     assert mod.classify_keepwarm_record(record) == 'gone'
 
@@ -515,64 +515,19 @@ def test_spend_ledger_counts_each_attempt_including_unresolved(m):
     assert result['net_usd'] == -0.10
 
 
-def test_repeated_fire_uses_one_ledger_attempt(m, monkeypatch, tmp_path):
-    from types import SimpleNamespace
+def test_paused_fire_never_invokes_injected_runner(m):
     mod, _ = m
-    transcript = _write_transcript(tmp_path, 7200)
-    now = time.time()
-    record = {'session_id': 'abc123', 'ts': now - 3400, 'model': 'claude-sonnet-4-5',
-              'transcript_path': str(transcript), 'prefix_proxy': 200000, 'pings_fired': []}
-    ledger, calls = [], []
-    monkeypatch.setattr(mod, '_keepwarm_acquire_ping_lock', lambda *a, **k: 'held')
-    monkeypatch.setattr(mod, '_keepwarm_release_ping_lock', lambda lock: None)
-    monkeypatch.setattr(mod, 'classify_keepwarm_record', lambda *a, **k: 'still_paused')
-    monkeypatch.setattr(mod, '_keepwarm_extract_cwd', lambda path: str(tmp_path))
-    monkeypatch.setattr(mod, '_keepwarm_load_ledger_rows', lambda: list(ledger))
-    monkeypatch.setattr(mod, '_keepwarm_ledger_append', lambda row: ledger.append(row) or True)
-    monkeypatch.setattr(mod, '_keepwarm_read_meters', lambda: {'available': False})
-    def runner(*args):
-        calls.append(args)
-        return SimpleNamespace(returncode=0, stdout='{}', stderr='')
-    assert mod._keepwarm_fire_ping(record, now=now, runner=runner)['fired']
-    assert mod._keepwarm_fire_ping(record, now=now, runner=runner)['reason'] == 'attempt-already-booked'
-    assert len(calls) == 1
+    calls = []
+    for _ in range(2):
+        result = mod._keepwarm_fire_ping({'session_id': 'synthetic'}, runner=lambda *a, **kw: calls.append(a))
+        assert not result['fired'] and result['reason'] == 'live-resume-unverified'
+    assert not calls
 
 
-def test_two_processes_cannot_ping_same_session_at_once(m, monkeypatch, tmp_path):
-    import multiprocessing
-    from types import SimpleNamespace
-    mod, _ = m
-    transcript = _write_transcript(tmp_path, 7200)
-    now = time.time()
-    record = {'session_id': 'abc123', 'ts': now - 3400, 'model': 'claude-sonnet-4-5',
-              'transcript_path': str(transcript), 'prefix_proxy': 200000, 'pings_fired': []}
-    monkeypatch.setattr(mod, 'classify_keepwarm_record', lambda *a, **k: 'still_paused')
-    monkeypatch.setattr(mod, '_keepwarm_extract_cwd', lambda path: str(tmp_path))
-    monkeypatch.setattr(mod, '_keepwarm_read_meters', lambda: {'available': False})
-    ctx = multiprocessing.get_context('fork')
-    entered, release = ctx.Event(), ctx.Event()
-    results = ctx.Queue()
-    def runner(*args):
-        entered.set()
-        if not release.wait(10):
-            raise RuntimeError('test did not release runner')
-        return SimpleNamespace(returncode=0, stdout='{}', stderr='')
-    def worker():
-        results.put(mod._keepwarm_fire_ping(record, now=now, runner=runner))
-    first, second = ctx.Process(target=worker), ctx.Process(target=worker)
-    first.start()
-    try:
-        assert entered.wait(10)
-        second.start()
-        second.join(10)
-        assert second.exitcode == 0
-    finally:
-        release.set()
-        first.join(10)
-    assert first.exitcode == 0
-    outcomes = [results.get(timeout=2), results.get(timeout=2)]
-    assert sum(bool(item['fired']) for item in outcomes) == 1
-    assert {item['reason'] for item in outcomes} == {'ok', 'locked'}
+def test_guarded_fork_is_disconnected_from_hooks_and_scheduler():
+    scripts = REPO / 'skills' / 'token-optimizer' / 'scripts'
+    references = [p for p in scripts.rglob('*.py') if p.name != 'keepwarm_fork.py' and 'run_guarded' in p.read_text()]
+    assert references == []
 
 
 def test_linux_scheduler_dispatches_only_after_gate(m, monkeypatch):
@@ -616,13 +571,10 @@ def test_keepwarm_environment_kill_switch_stops_gate_and_ping(m):
 
 
 @pytest.mark.parametrize('enabled', [True, False])
-def test_dashboard_toggle_persists_keepwarm_preference(m, monkeypatch, enabled):
+def test_dashboard_cannot_toggle_while_safety_paused(m, enabled):
     mod, _ = m
-    monkeypatch.setattr(mod, '_keepwarm_enable_install_scheduler', lambda: 'paused')
-    monkeypatch.setattr(mod, 'keepwarm_tripwire_repromote', lambda: None)
-    assert mod._set_v5_feature('keepwarm', enabled)
-    assert mod._read_config_flag('v5_keepwarm', None) is enabled
-    assert mod.keepwarm_consent() == ('enabled' if enabled else 'declined')
+    assert not mod._set_v5_feature('keepwarm', enabled)
+    assert mod._read_config_flag('v5_keepwarm', None) is None
 
 
 def test_keepwarm_legacy_opt_out_stays_off(m, monkeypatch):

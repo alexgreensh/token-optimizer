@@ -3901,9 +3901,9 @@ def _get_v5_feature_status():
             "how": feat["how"],
             "risk": feat["risk"],
             "risk_level": feat.get("risk_level", "none"),
-            "recommended": recommended,
-            "enabled": enabled,
-            "source": source,
+            "recommended": recommended if name != "keepwarm" else False,
+            "enabled": enabled if name != "keepwarm" else False,
+            "source": source if name != "keepwarm" else "paused",
             "env_var": feat["env_var"],
             "config_key": feat["config_key"],
         }

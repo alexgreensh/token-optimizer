@@ -1116,14 +1116,8 @@ def keepwarm_mark_asked():
 
 
 def keepwarm_enable(env=None, claude_json_path=None, settings_path=None, limits_lab=None):
-    """Re-enable keep-warm and reset the tripwire after an explicit opt-out."""
-    _measure_facade = _compat.facade()
-    _measure_facade._keepwarm_set_consent("enabled")
-    try:
-        _measure_facade.keepwarm_tripwire_repromote()
-    except Exception:
-        pass
-    return True, "Keep-warm enabled. " + _measure_facade._keepwarm_enable_install_scheduler()
+    """Keep user preferences untouched until the release safety pause is lifted."""
+    return False, "Keep-warm: paused while we prove it is safe and saves you money"
 
 
 def _keepwarm_enable_install_scheduler():
@@ -2349,252 +2343,8 @@ def _keepwarm_parse_ping_json(stdout):
 
 
 def _keepwarm_fire_ping(record, now=None, runner=None):
-    """Fire ONE keep-warm ping for an armed record. The only side-effectful path.
-
-    Sequence (hook-safety invariants, anti-recursion + crash-can't-hide-spend):
-      1. Per-session pidfile lock (excludes across tick invocations). Held for
-         the whole fire so two racing ticks can never double-fire one session.
-      2. Idle re-check: the transcript mtime must be unchanged for the last
-         IDLE_RECHECK seconds, else the session may be live -> skip
-         ('recently-active'); NEVER ping a live turn.
-      3. Resolve the model (skip if missing) and the ORIGINAL cwd from the
-         transcript (skip if absent / gone -- never guess).
-      4. Pre-log a 'firing' spend row to the ledger BEFORE the subprocess, so a
-         crash mid-ping cannot hide that we spent.
-      5. Run the CLI ping with TOKEN_OPTIMIZER_KEEPWARM_PING=1 in the child
-         env (defense in depth: the child's own Stop hook self-suppresses) and
-         cwd = the session's project dir, 180s timeout, NO in-call retry.
-      6. Append an outcome row (status ok|error|timeout, cost, tokens, duration).
-
-    Returns a result dict {fired: bool, status, reason, ...}. Never raises.
-    `runner` is injectable for tests (a fake claude shim); defaults to
-    subprocess.run so production needs no shim.
-    """
-    _measure_facade = _compat.facade()
-    if now is None:
-        now = _measure_facade.time.time()
-    result = {"fired": False, "status": "skip", "reason": "", "session_id": None}
-    sid = record.get("session_id")
-    result["session_id"] = sid
-    transcript_path = record.get("transcript_path")
-    model = record.get("model")
-
-    # LLM-PING KILL (2026-06-12): this is the ONE place keep-warm spins up an LLM
-    # (`claude -p`) and spends tokens. It ships OFF -- the watcher above this
-    # already did all its token-free measuring; we simply never fire the model.
-    # No subprocess, no lock, no ledger spend. Re-enable only via the explicit
-    # escape-hatch env var (internal dogfood).
-    if _measure_facade._keepwarm_llm_ping_disabled():
-        result["reason"] = "llm-ping-disabled"
-        return result
-    # Resuming a running CLI session can inject a prompt into that session.
-    # Do not launch a real ping until a separate cache-preserving path is proven.
-    if runner is None:
-        result["reason"] = "live-resume-unverified"
-        return result
-
-    if not sid or not transcript_path:
-        result["reason"] = "missing-session"
-        return result
-    if not model:
-        result["reason"] = "missing-model"
-        return result
-    # Charset gate BEFORE any subprocess arg construction (security M1). session_id
-    # comes from hook stdin, model verbatim from the transcript; a leading-dash or
-    # metacharacter value is rejected (booked skip/invalid-field, logged) rather
-    # than handed to the claude CLI.
-    if not _measure_facade._keepwarm_valid_arg(str(sid)):
-        result["reason"] = "invalid-session-id"
-        _measure_facade._keepwarm_scheduler_log_append({
-            "ts": float(_measure_facade.time.time()), "event": "ping_skip",
-            "reason": "invalid-session-id"})
-        return result
-    if not _measure_facade._keepwarm_valid_arg(str(model)):
-        result["reason"] = "invalid-model"
-        _measure_facade._keepwarm_scheduler_log_append({
-            "ts": float(_measure_facade.time.time()), "event": "ping_skip",
-            "reason": "invalid-model", "session_id": str(sid)})
-        return result
-
-    lock_path = _measure_facade._keepwarm_acquire_ping_lock(sid, now=now)
-    if lock_path is None:
-        result["reason"] = "locked"
-        return result
-    try:
-        if _measure_facade.classify_keepwarm_record(record, now=now) != "still_paused":
-            result["reason"] = "session-changed-or-ended"
-            return result
-        attempt_key = keepwarm_economics.attempt_key(record)
-        if keepwarm_economics.already_attempted(_measure_facade._keepwarm_load_ledger_rows(), attempt_key):
-            result["reason"] = "attempt-already-booked"
-            return result
-        tp = _measure_facade.Path(transcript_path)
-        try:
-            mtime = tp.stat().st_mtime
-        except OSError:
-            result["reason"] = "transcript-gone"
-            return result
-        if (now - mtime) < _measure_facade._KEEPWARM_IDLE_RECHECK_SECONDS:
-            result["reason"] = "recently-active"
-            return result
-
-        cwd = _measure_facade._keepwarm_extract_cwd(tp)
-        if not cwd:
-            result["reason"] = "no-cwd"
-            return result
-
-        prefix = 0
-        try:
-            prefix = int(record.get("prefix_proxy", 0) or 0)
-        except (TypeError, ValueError):
-            prefix = 0
-        est_cost = _measure_facade._keepwarm_ping_cost_est(prefix, model)
-
-        status = "ok"
-        reason = "ok"
-        rc = None
-        parsed = {"cost_usd": 0.0, "cache_read": 0, "cache_write": 0}
-        duration = 0.0
-
-        # Resolve at fire time because launchd has a minimal PATH.
-        if runner is None:
-            claude_bin = _measure_facade._keepwarm_resolve_claude_bin()
-            if claude_bin is None:
-                outcome = {
-                    "session_id": str(sid), "ts": float(_measure_facade.time.time()),
-                    "status": "skip", "phase": record.get("_phase", "probe"),
-                    "model": model, "cost_usd": 0.0, "cache_read": 0,
-                    "cache_write": 0, "duration_s": 0.0,
-                    "reason": "claude-not-found",
-                }
-                _measure_facade._keepwarm_ledger_append(outcome)
-                result["status"] = "error"
-                result["reason"] = "claude-not-found"
-                return result
-        else:
-            claude_bin = "claude"  # injected runner ignores argv[0] resolution
-
-        cmd = _measure_facade._keepwarm_build_ping_cmd(sid, model, claude_bin=claude_bin)
-        # Allowlisted child env: only the variables the ping genuinely
-        # needs. Inheriting the full os.environ leaked unrelated secrets/config
-        # into the claude child; here we pass PATH/HOME/TMPDIR/locale, the
-        # anti-recursion marker, and the API credentials IF present -- nothing else.
-        child_env = {_measure_facade._KEEPWARM_PING_ENV: "1"}
-        for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL",
-                    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
-            val = _measure_facade.os.environ.get(key)
-            if val is not None:
-                child_env[key] = val
-        # Ensure the resolved binary's dir is on PATH (belt+suspenders for launchd).
-        try:
-            bin_dir = _measure_facade.os.path.dirname(claude_bin)
-            if bin_dir:
-                existing = child_env.get("PATH", "")
-                if bin_dir not in existing.split(_measure_facade.os.pathsep):
-                    child_env["PATH"] = (
-                        bin_dir + (_measure_facade.os.pathsep + existing if existing else ""))
-        except Exception:
-            pass
-
-        if runner is None:
-            def runner(cmd, cwd, env, timeout):  # noqa: A001 - injectable default
-                _measure_facade = _compat.facade()
-                return _measure_facade.subprocess.run(
-                    cmd, cwd=cwd, env=env, timeout=timeout,
-                    capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", creationflags=_measure_facade._NO_WINDOW)
-
-        if _measure_facade.classify_keepwarm_record(record, now=_measure_facade.time.time()) != "still_paused":
-            result["reason"] = "session-changed-or-ended"
-            return result
-        if not _measure_facade._keepwarm_ledger_append({
-            "session_id": str(sid), "ts": float(now), "status": "firing",
-            "phase": record.get("_phase", "probe"), "model": model, "attempt_key": attempt_key,
-            "prefix_proxy": prefix, "est_cost_usd": est_cost,
-        }):
-            result["reason"] = "ledger-unavailable"
-            return result
-
-        # Real monotonic start (NOT the injected logical `now`) so duration_s is
-        # sane even on backfill/replay paths that pass a synthetic now (lang M1).
-        # Snapshot the 5h/7d quota meters immediately before firing so the
-        # subscription quota-value model can measure the per-ping meter cost
-        # (fail-open; absent meters -> no sample appended below).
-        try:
-            meters_before = _measure_facade._keepwarm_read_meters()
-        except Exception:
-            meters_before = {"available": False}
-        wall_start = _measure_facade.time.monotonic()
-        result["fired"] = True  # Count attempts, including timeouts and errors.
-        try:
-            proc = runner(cmd, cwd, child_env, _measure_facade._KEEPWARM_PING_TIMEOUT_SECONDS)
-            duration = max(0.0, _measure_facade.time.monotonic() - wall_start)
-            rc = getattr(proc, "returncode", 1)
-            stdout = getattr(proc, "stdout", "") or ""
-            if rc == 0:
-                parsed = _measure_facade._keepwarm_parse_ping_json(stdout)
-                status = "ok"
-                reason = "ok"
-            else:
-                status = "error"
-                # Persist a bounded, path/secret-scrubbed stderr tail so a field
-                # user can see WHY every ping fails (auth/budget/cwd/resume).
-                stderr = getattr(proc, "stderr", "") or ""
-                reason = _measure_facade._keepwarm_scrub_error_reason(stderr, rc)
-        except _measure_facade.subprocess.TimeoutExpired:
-            duration = max(0.0, _measure_facade.time.monotonic() - wall_start)
-            status = "timeout"
-            reason = "timeout"
-        except Exception as exc:  # any spawn failure -> booked error, no raise
-            duration = max(0.0, _measure_facade.time.monotonic() - wall_start)
-            status = "error"
-            reason = "exc-%s" % type(exc).__name__
-
-        # 6. Outcome row (always written, even on error/timeout). Carries the
-        # error reason + returncode so 100%-error runs are diagnosable.
-        outcome = {
-            "session_id": str(sid),
-            "ts": float(_measure_facade.time.time()),
-            "status": status, "attempt_key": attempt_key,
-            "phase": record.get("_phase", "probe"),
-            "model": model, "prefix_proxy": prefix,
-            "cost_usd": float(parsed.get("cost_usd", 0.0) or 0.0),
-            "cache_read": int(parsed.get("cache_read", 0) or 0),
-            "cache_write": int(parsed.get("cache_write", 0) or 0),
-            "duration_s": round(duration, 3),
-        }
-        if status != "ok":
-            outcome["reason"] = reason
-            if rc is not None:
-                outcome["rc"] = int(rc)
-        _measure_facade._keepwarm_ledger_append(outcome)
-
-        # Subscription quota-value measurement (read-only): record the before/after
-        # 5h/7d meter around this fire so keepwarm_quota_value_summary can estimate
-        # the real per-ping meter cost over time. Only when a meter was readable on
-        # at least one side -- a test/headless run with no statusline writes none.
-        try:
-            meters_after = _measure_facade._keepwarm_read_meters()
-            if meters_before.get("available") or meters_after.get("available"):
-                _measure_facade._keepwarm_meter_sample_append({
-                    "session_id": str(sid), "ts": float(_measure_facade.time.time()),
-                    "phase": record.get("_phase", "probe"), "model": model,
-                    "prefix_proxy": prefix, "status": status,
-                    "fh_before": meters_before.get("five_hour_pct"),
-                    "fh_after": meters_after.get("five_hour_pct"),
-                    "sd_before": meters_before.get("seven_day_pct"),
-                    "sd_after": meters_after.get("seven_day_pct"),
-                    "dur_s": round(duration, 3),
-                })
-        except Exception:
-            pass
-        result["status"] = status
-        result["reason"] = reason
-        result["cost_usd"] = float(parsed.get("cost_usd", 0.0) or 0.0)
-        result["cache_read"] = int(parsed.get("cache_read", 0) or 0)
-        return result
-    finally:
-        _measure_facade._keepwarm_release_ping_lock(lock_path)
+    """Keep all ping execution paths disabled until the safety proof is complete."""
+    return {"fired": False, "status": "skip", "reason": "live-resume-unverified", "session_id": record.get("session_id")}
 
 
 def _keepwarm_emit_tick_observability(now, allowed, reason, armed, fired,
@@ -4684,8 +4434,8 @@ def keepwarm_cache_health_block(days=None, now=None):
                      "Keep-warm is available for Claude Code only."),
         }
     if rep is None:
-        return {"state": "status-unavailable", "runtime": runtime,
-                "note": "Keep-warm status unavailable."}
+        return {"state": "paused", "runtime": runtime,
+                "note": "Keep-warm: paused while we prove it is safe and saves you money"}
 
     tw_mode = rep["tripwire_mode"]
     if tw_mode == "off":
@@ -4698,7 +4448,7 @@ def keepwarm_cache_health_block(days=None, now=None):
         state = "off-subscription"
 
     block = {
-        "state": state, "gate_reason": rep["gate_reason"], "pings_7d": rep["window_7d"]["pings"],
+        "state": "paused", "note": "Keep-warm: paused while we prove it is safe and saves you money", "gate_reason": rep["gate_reason"], "pings_7d": rep["window_7d"]["pings"],
         "mode": rep["mode"],
         "billing": rep["billing"],
         "consent": rep["consent"],

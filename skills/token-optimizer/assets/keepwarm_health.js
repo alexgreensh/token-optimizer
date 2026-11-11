@@ -19,8 +19,8 @@ function keepwarmHealthHtml(data) {
     'tripwire-off': 'the safety tripwire stopped it.'
   };
   return '<div class="card wide"><div class="card-header"><span>Keep-warm</span></div>' +
-    '<p>Automatic pings are paused ' + (paused[kw.gate_reason] ?
-      'because ' + paused[kw.gate_reason] : 'while the session-safe refresh method is verified.') + '</p>' +
+    '<p>Keep-warm: paused while we prove it is safe and saves you money</p>' +
+    (paused[kw.gate_reason] ? '<p>Also paused because ' + paused[kw.gate_reason] + '</p>' : '') +
     '<p>' + Number(kw.pings_7d || 0) + ' pings in the last 7 days.</p>' +
     '<p>' + Number(kw.pings_30d || 0) + ' pings in the last 30 days.</p>' +
     '<p>Estimated net value: $' + Number(kw.net_usd || 0).toFixed(2) + ' at API rates.</p>' +

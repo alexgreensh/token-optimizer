@@ -5982,7 +5982,7 @@ var DB = (function() {
       var onCount = 0;
       var offRecommended = 0;
       v5Names.forEach(function(n) {
-        if (v5Features[n].enabled) onCount++;
+        if (n === 'keepwarm') return; if (v5Features[n].enabled) onCount++;
         else if (v5Features[n].recommended) offRecommended++;
       });
 
@@ -5995,7 +5995,7 @@ var DB = (function() {
         '<div class="card-header" style="padding:18px var(--s-3);">' +
           '<span style="font-size:22px;font-weight:700;">' + v5Title + '</span>' +
           '<span class="label" style="font-size:14px;background:' + headerColor + ';color:var(--c-bg);padding:6px 12px;border-radius:4px;font-weight:700;">' +
-          onCount + '/' + v5Names.length + ' ON' +
+          onCount + '/' + v5Names.filter(function(n) { return n !== 'keepwarm'; }).length + ' ON' +
           '</span>' +
         '</div>' +
         '<p style="font-size:17px;color:var(--c-text-main);padding:0 var(--s-3) var(--s-2);line-height:1.6;">' +
@@ -6004,7 +6004,7 @@ var DB = (function() {
         '</p>';
 
       v5Names.forEach(function(fname) {
-        var f = v5Features[fname];
+        var f = v5Features[fname]; if (fname === 'keepwarm') { html += '<div class="hook-row" style="padding:20px var(--s-3);border-top:1px solid var(--c-border);">Keep-warm: paused while we prove it is safe and saves you money</div>'; return; }
         var unavailable = !!f.unavailable || f.source === 'codex api gap';
         var managedByHooks = !!f.managed_by_hooks || (isCodex && (f.source === 'codex hook' || f.source === 'codex opt-in' || f.source === 'codex hook-managed'));
         var riskBg = 'var(--c-badge-savings)';

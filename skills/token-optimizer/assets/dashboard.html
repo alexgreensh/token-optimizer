@@ -1773,6 +1773,10 @@ input:checked + .slider:before {
 .st-morerow .fold__body { max-width: none; }
 .st-health { margin-top: var(--s-3); }
 .st-gap { margin-top: var(--s-4); }
+.st-limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--s-3) var(--s-5); margin-top: var(--s-3); }
+.st-limit__name { font: 600 17px/1.3 var(--font-sans); color: var(--c-text-main); }
+.st-limit__alt { font: 500 19px/1.4 var(--font-sans); color: var(--c-text-main); margin-top: var(--s-2); }
+.st-limit__num { font: 500 28px/1 var(--font-mono); color: var(--c-warning-2); font-variant-numeric: tabular-nums; }
 @media (max-width: 900px) {
   .st-grid, .st-bands, .st-mega__row--hero, .st-table__body, .st-cols { grid-template-columns: 1fr; }
   .st-grid > :last-child:nth-child(odd) { grid-column: auto; }
@@ -3668,6 +3672,8 @@ var DB = (function() {
       '<div class="last-updated">Last updated: ' + esc(ts) + '</div>';
 
     html += tokensSavedCardHtml(data.savings || {}) + runwayCardHtml();
+    // Context before the first message is not a saving: it lives here, not on Savings.
+    if (typeof firstCallContextHtml === 'function') html += firstCallContextHtml((t || {}).first_call_context);
 
     if (!t) {
       var collectNote = isCodex
@@ -4295,6 +4301,11 @@ var DB = (function() {
           '</div>' +
         '</div>';
       }).join('');
+      // With the story module inlined, windows render as "X% used / would be Y%
+      // without" (live, else the last stored reading); the older per-window cards
+      // remain only for a template without it.
+      var rwLimitsHtml = '';
+      if (typeof savingsLimitWindows === 'function') { rwLimitsHtml = savingsLimitWindows(rw); rwCards = ''; }
       // Savings remain available when the quota meter has no weekly reading.
       var standaloneWeek = rw.weekly_full_value;
       if (standaloneWeek && Number(standaloneWeek.saved_usd) >= 15 &&
@@ -4391,20 +4402,8 @@ var DB = (function() {
       var rwTokenFloorMethod = (rwTokenFloorPct !== null)
         ? 'Estimated savings on ' + fn(rwSpentTokens) + ' input and output tokens, including cache reads and writes; repeat reads assume the same trajectory until compaction.'
         : '';
-      // Tier chip reflects the USD spine's measured-vs-estimated boundary:
-      // context $ is metered, routing $ is an estimated counterfactual.
-      // When routing savings contribute, the dollar figure is estimated; when
-      // only context $ contributes, it is measured. None -> no chip change.
-      var usdTierChip = (rw.saved_usd_tier === 'measured') ? 'METERED $'
-        : (rw.saved_usd_tier === 'estimated') ? 'ESTIMATED $' : 'ESTIMATED';
       html += '<div class="card" style="margin-bottom:18px;border-color:rgba(0,240,255,.28);box-shadow:0 4px 20px rgba(0,0,0,.3),0 0 40px rgba(0,240,255,.05);">' +
-        // Header row: the label and the tier chip sit on ONE line. Left as bare
-        // siblings the chip inherits the label's block layout and stretches to the
-        // full card width, which reads as a broken banner.
-        '<div style="display:flex;align-items:center;gap:var(--s-2);flex-wrap:wrap;">' +
-          '<span class="label">Your plan goes further</span>' +
-          '<span style="font-size:12px;letter-spacing:.12em;color:var(--c-text-dim);border:1px solid var(--c-border);border-radius:20px;padding:3px 12px;white-space:nowrap;">' + usdTierChip + '</span>' +
-        '</div>' +
+        '<h2 class="st-h">Your limits go further</h2>' +
         // No glow on this headline. `.metric-large` carries a text-shadow built
         // from --c-border-strong, which is a light veil on dark but resolves to a
         // DARK halo in light mode, so the words read as smudged rather than lit.
@@ -4421,9 +4420,8 @@ var DB = (function() {
         // Per-window bars when the meter is fresh enough; otherwise a note so the
         // card degrades instead of vanishing (the multiplier + savings above still
         // stand without the live meter).
-        (rwCards
-          ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:var(--s-3);">' + rwCards + '</div>'
-          : '<div style="padding:var(--s-3);border:1px dashed var(--c-border);border-radius:8px;color:var(--c-text-dim);font-size:15px;line-height:1.5;text-wrap:pretty;">Your live 5-hour and weekly limit view refreshes while you are actively working. It reappears here on your next session.</div>') +
+        rwLimitsHtml +
+        (rwCards ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:var(--s-3);">' + rwCards + '</div>' : '') +
         // Freshness of the WINDOW reading itself (not the dashboard build). The
         // meter only refreshes while Claude Code is actively running, so a
         // dashboard opened later shows the last real reading -- label it with its
@@ -4475,7 +4473,6 @@ var DB = (function() {
             '<div id="to-regen-error" hidden style="margin-top:10px;padding:10px 14px;font-size:15px;font-weight:500;color:var(--c-waste);background:rgba(255,95,95,.08);border:1px solid rgba(255,95,95,.35);border-radius:8px;line-height:1.5;text-wrap:pretty;"></div></div>';
         })() +
         '<div style="margin-top:var(--s-4);padding-top:var(--s-3);border-top:1px solid var(--c-border);font-size:15px;color:var(--c-text-main);line-height:1.6;text-wrap:pretty;">' +
-          'Your window usage is measured. The savings comparison is an estimate.' +
           // Technical method lives in a fold. rw.proxy is the single source of the
           // measured-vs-estimated boundary AND the ledger detail; we add only the
           // one fact proxy can't carry -- the headline figure is its own unit, not
@@ -4710,7 +4707,7 @@ var DB = (function() {
       '</div>' +
       '<div class="last-updated">Updated ' + esc(ts) + ' &middot; refreshes after every session</div>';
 
-    html += story || runwayCardHtml(); if (typeof firstCallContextHtml === 'function') html += firstCallContextHtml((data.trends || {}).first_call_context);
+    html += story || runwayCardHtml();
     var storyHead = html; html = '';
 
     // ---- Tokens Saved card: the full card (hero + spent-vs-saved + model-

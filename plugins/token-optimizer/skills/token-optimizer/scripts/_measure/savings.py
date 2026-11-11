@@ -2508,9 +2508,8 @@ def runway_snapshot(days=None, now=None):
         # `if not windows: return None` then dropped the ENTIRE card -- yet the
         # throughput multiplier (extra_work_pct) and the weekly savings do NOT
         # depend on the live meter; they come from the 30d/7d savings ledger. Keep
-        # the card alive with empty windows so the headline + savings still show;
-        # the renderer omits the per-window bars and shows a "meter refreshing"
-        # note. Populate the weekly $ spine directly since the 7d window that
+        # the card alive with empty windows (last_known_windows carries the stored
+        # reading). Populate the weekly $ spine directly since the 7d window that
         # normally fills _overage_cache[...] may have been dropped above.
         #
         # Compute the aligned weekly cache key (same logic as _window_overage_usd)
@@ -2579,7 +2578,7 @@ def runway_snapshot(days=None, now=None):
             "tokens_consumed_basis_complete": bool(traffic and traffic["complete"]),
             "tokens_saved": int(saved),
             "context_tokens_saved": int(context_saved), "token_headline": token_parts,
-            "windows": windows,
+            "windows": windows, "last_known_windows": savings_story.last_known_windows(meters, mult, windows),
             # USD spine: metered context $ + estimated routing $ over the WEEKLY
             # (7d) ledger -- the same span the weekly card shows. Exposed at the top
             # level so the surface and tests can assert the no-double-count invariant

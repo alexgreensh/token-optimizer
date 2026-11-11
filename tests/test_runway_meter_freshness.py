@@ -146,6 +146,29 @@ def test_card_survives_when_reading_older_than_all_windows(m, tmp_path, monkeypa
     assert r is not None, "stale-meter card must not vanish; the multiplier + savings survive"
     assert r.get("windows") == [], "both windows drop once the reading is older than the 7d span"
     assert isinstance(r.get("extra_work_pct"), (int, float)), "headline multiplier must survive"
+    # The Savings page shows the last stored reading instead of a placeholder.
+    known = {w["key"]: w for w in r["last_known_windows"]}
+    assert set(known) == {"five_hour", "seven_day"}
+    assert known["seven_day"]["used_pct"] == 80.0
+    assert known["seven_day"]["without_used_pct"] == round(min(100.0, 80.0 * r["multiplier"]), 1)
+
+
+def test_last_known_windows_empty_while_a_live_window_exists(m, tmp_path, monkeypatch):
+    _temp_trends(m, tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "_keepwarm_read_meters", lambda **k: {
+        "available": True, "stale": True, "five_hour_pct": 95.0,
+        "seven_day_pct": 25.0, "age_s": 26 * 3600, "ts": time.time() - 26 * 3600})
+    assert m.runway_snapshot(days=30)["last_known_windows"] == []
+
+
+def test_last_known_windows_helper_is_pure_and_fail_open():
+    from _measure import savings_story
+    meters = {"five_hour_pct": None, "seven_day_pct": 99.9}
+    out = savings_story.last_known_windows(meters, 1.03, [])
+    assert [w["key"] for w in out] == ["seven_day"] and out[0]["without_used_pct"] == 100.0 and out[0]["would_be_capped"]
+    assert savings_story.last_known_windows(meters, 1.03, [{"key": "five_hour"}]) == []
+    assert savings_story.last_known_windows({}, 1.03, []) == []
+    assert savings_story.last_known_windows(None, "junk", []) == []
 
 
 def test_period_days_exposed_for_the_multiplier_scope(m, tmp_path, monkeypatch):

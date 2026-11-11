@@ -1,13 +1,12 @@
-// Savings story (U9): the Savings tab, top to bottom.
-//   1. Hero band: three huge numbers (30-day total, measured since install
-//      with its estimate line, tokens kept out of context), then the 30-day
-//      measured/estimated split and its folds.
-//   2. Still on the table: computable opportunities per period, warm accent,
+// Savings story (U9): the Savings tab, top to bottom. Savings are big and
+// confident; the measured / estimated breakdown lives only in the folds.
+//   1. Hero band: three huge numbers (30-day total with routing included,
+//      saved since install with routing included, tokens kept out of context).
+//   2. Transformation (when the payload says ok) and "Your limits go further".
+//   3. Still on the table: computable opportunities per period, warm accent,
 //      each with one action. Never part of a savings total.
-//   3. One grid: compounding, model routing (its own estimated card, never
-//      added to any total), setup cleanup. Cost per message only when it fell
-//      at least 10%.
-//   4. One coverage line, then the caller's row of folds.
+//   4. The re-read card, cost per message only when it fell at least 10%, then
+//      the caller's row of folds.
 // healthNotesHtml() renders the parts that moved to the Health tab.
 //
 // Inlined into dashboard.html at generation by scripts/dashboard_assets.py.
@@ -133,7 +132,8 @@ function savingsStoryHtml(data) {
 
   var out = '';
 
-  // ---- 1. Hero: one total, one bar, one sentence ----
+  // ---- 1. Hero: three huge numbers. The breakdown lives only in the folds. ----
+  // Measured and estimated savings, plus the routing estimate, are one number.
   // Setup cleanup recorded by the trim ledger sits inside logged_usd (the
   // structural pool always has), so it is its own row, taken out of
   // "Context removed" once.
@@ -141,20 +141,16 @@ function savingsStoryHtml(data) {
   var trimLedger = B.trimLedger, trims = B.trims, measured = B.measured, estimated = B.estimated;
   var mUsd = B.mUsd, eUsd = B.eUsd, totalUsd = B.totalUsd, totalTok = B.totalTok;
   measuringNames = B.measuringNames;
+  var routing30 = has(mr.realized_cost_usd) ? num(mr.realized_cost_usd) : num(as.routing_usd);
+  if (!(routing30 > 0)) routing30 = 0;
+  var bigTotal = totalUsd + routing30;
   function sum(rows, k) { return rows.reduce(function(a, r) { return a + num(r[k]); }, 0); }
   if (measured.length || estimated.length) {
-    var mPct = totalUsd > 0 ? Math.max(0, Math.min(100, mUsd / totalUsd * 100)) : 0;
     function cents(rows) { return rows.reduce(function(n, r) { return n + Math.round(num(r.usd) * 100); }, 0); }
-    function moneyCents(n) { return (n < 0 ? '-$' : '$') + (Math.abs(n) / 100).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
-    function top(rows) {
-      return '<ul class="st-rows">' + rows.map(function(r) {
-        return '<li><span>' + esc(r.label) + '</span><span class="st-v">' + usd(r.usd) + '</span></li>';
-      }).join('') + '</ul>';
-    }
     function table(title, rows) {
       if (!rows.length) return '';
-      return '<p><strong>' + title + ', ' + moneyCents(cents(rows)) + '</strong></p><ul>' + rows.map(function(r) {
-        return '<li>' + esc(r.label) + ': ' + moneyCents(Math.round(num(r.usd) * 100)) + (num(r.tok) > 0 ? ', ' + tok(r.tok) + ' tokens' : '') +
+      return '<p><strong>' + title + ', ' + savingsCents(cents(rows) / 100) + '</strong></p><ul>' + rows.map(function(r) {
+        return '<li>' + esc(r.label) + ': ' + savingsCents(r.usd) + (num(r.tok) > 0 ? ', ' + tok(r.tok) + ' tokens' : '') +
           (r.why ? '. ' + esc(r.why) : '') + '</li>';
       }).join('') + '</ul>';
     }
@@ -166,101 +162,86 @@ function savingsStoryHtml(data) {
     var bashNet = Object.keys(s.by_category || {}).reduce(function(n, k) {
       return n + ((/^bash_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
     }, 0);
-    var method = (archive ? '<p>Tool archive, net of re-expands: ' + usd(archive.cost_saved_usd) + ' once, before repeat-reads.</p>' : '') +
+    var basis = savingsRoutingBasis(data);
+    var routingRow = routing30 > 0 ? '<p><strong>Estimated, model routing, ' + savingsCents(routing30) + '</strong></p><ul><li>Model routing: ' + savingsCents(routing30) + '. ' +
+      esc(basis.lead) + ' Your current work priced at that mix, against what it actually cost.</li></ul>' : '';
+    var allCents = cents(measured) + cents(estimated) + Math.round(routing30 * 100);
+    var missing = num(cov.ran_no_ledger_sessions);
+    var coverage = num(cov.sessions) > 0 && num(cov.ran_sessions) > 0
+      ? '<p>Token Optimizer ran in ' + count(cov.ran_sessions) + ' of your ' + count(cov.sessions) + ' sessions.' +
+        (missing > 0 ? ' ' + count(missing) + ' of them ' + (missing === 1 ? 'is' : 'are') + ' not in the ledger yet, so the total understates.' : '') + '</p>' : '';
+    var setupDetail = '';
+    if (trimLedger) {
+      var valuedTrims = trims.filter(function(t) { return t.tier !== 'unattributed' && (num(t.cost_saved_usd) > 0 || num(t.projected_30d_usd) > 0); })
+        .sort(function(a, b) { return num(b.projected_30d_usd) - num(a.projected_30d_usd); });
+      var setupRows = setupCleanupGroups(sd).map(function(g) {
+        return '<li><span>' + esc(g.label) + '<span class="st-sub">' + esc(g.sub) + '</span></span><span class="st-v">' + savingsCents(g.usd) + '</span></li>';
+      }).join('');
+      var opts = sd.attested_options || [];
+      var formula = valuedTrims.map(function(t) {
+        return '<li>' + esc(t.label || t.item || 'Setup cleanup') + ': ' + count(num(t.tokens_per_call) * (t.step_measured ? num(t.step_share) : 1)) + ' tokens per call &times; ' + count(t.requests) +
+          (t.step_measured ? ' calls; priced on main-thread calls since the trim, at each call&rsquo;s cache-read rate' : ' calls since') + (num(t.projected_30d_usd) > 0 ? '. Estimated next 30 days at the recent rate: ' + (num(t.projected_30d_usd) < 1 ? '' : 'about ') + usd(t.projected_30d_usd) + '.' : '.') + '</li>';
+      }).join('');
+      if (setupRows) {
+        setupDetail = '<p><strong>Setup cleanup, item by item</strong></p><ul class="st-rows">' + setupRows + '</ul>' +
+          '<p>Trimming setup reduces repeated context on calls that load it. These amounts are already in the total.</p><ul>' + formula + '</ul>' +
+          (opts.length ? '<p>Your figure can be one of these sizes, priced the same way:</p><ul>' + opts.map(function(o) {
+            return '<li>' + count(o.tokens_per_call) + ' tokens per call: estimated ' + usd(o.projected_30d_usd) + ' per 30 days at the recent rate' + (o.chosen ? ' (shown)' : '') + '</li>';
+          }).join('') + '</ul>' : '');
+      }
+    }
+    var method = '<p><strong>Last ' + days + ' days, ' + savingsCents(allCents / 100) + '</strong>: measured ' + savingsCents(cents(measured) / 100) +
+        ', estimated ' + savingsCents(cents(estimated) / 100) + (routing30 > 0 ? ', routing ' + savingsCents(routing30) : '') + '.</p>' +
+      table('Measured, counted event by event', measured) +
+      table('Estimated, sized by a documented method', estimated) +
+      routingRow +
+      setupDetail +
+      (archive ? '<p>Tool archive, net of re-expands: ' + usd(archive.cost_saved_usd) + ' once, before repeat-reads.</p>' : '') +
       (bashExpand ? '<p>Bash compression, net of re-expands: ' + usd(bashNet) + ' once, before repeat-reads.</p>' : '') +
       (num((as.estimates_usd || {}).expand_overhead) ? '<p>Estimated expand-command overhead: ' + usd(as.estimates_usd.expand_overhead) + '.</p>' : '') +
       (num((as.estimates_usd || {}).handover_rerun) > 0 ? '<p>Continuity handovers, ' + usd(as.estimates_usd.handover_rerun) + ' (estimated): sessions resumed from a saved checkpoint re-read fewer stale files than sessions that started cold, and that gap is counted here.</p>' : '') +
       (totalTok > 0 ? '<p>The ' + tok(totalTok) + ' tokens kept out of context are measured and estimated' + (num(th.reload_avoided_tokens) > 0 ? ': ' + tok(th.reload_avoided_tokens) + ' of them are estimated reloads avoided' : '') + '.</p>' : '') +
-      table('Measured, counted event by event', measured) +
-      table('Estimated, sized by a documented method', estimated) +
       '<p>Measured rows come from the ledger: each removal, the cache rate the next call would have paid, and every later turn that would have re-read it, up to the session&rsquo;s next compaction.</p>' +
       savingsPerSessionHtml(ps, overhead) +
       (measuringNames.length ? '<p>Still measuring, not in the total yet: ' + measuringNames.join(' and ') + '.</p>' : '') +
       (incomplete ? '<p>Some older history has no exact price, so this total understates.</p>' : '') +
+      coverage +
       (carry.available && num(carry.carry_cost_usd) > 0 ? '<p>Diagnostic, not counted' + ': the older target-session proxy suggested ' +
         tok(carry.carry_tokens) + ' tokens, about ' + usd(carry.carry_cost_usd) + '. That proxy stays out of totals; receiver-linked estimates are counted separately.</p>' : '') +
-      '<p>Valued at API rates. On a subscription this is room inside your limits; nothing is refunded. Model routing and opportunity are never part of this total.</p>';
+      '<p>Valued at API rates. On a subscription this is room inside your limits; nothing is refunded. Opportunity is never part of this total.</p>';
     var SIh = savingsSinceInstall(data);
-    var sinceEst = SIh ? num(((s.since_install || {}).all_in || {}).estimated_usd) : 0;
-    var sinceMeas = SIh ? SIh.total - sinceEst : 0;
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">What Token Optimizer saved</h2>' +
       '<div class="st-mega__row st-mega__row--hero">' +
-        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(totalUsd) + '</span><span class="st-mega__unit">saved in the last ' + days + ' days</span></div>' +
-        (SIh && sinceMeas > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(sinceMeas) + '</span><span class="st-mega__unit">measured since ' + (SIh.date ? esc(SIh.date) : 'you installed') + '</span>' +
-          (sinceEst > 0 ? '<span class="st-mega__note">+ ' + usd(sinceEst) + ' estimated</span>' : '') + '</div>' : '') +
+        '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(bigTotal) + '</span><span class="st-mega__unit">saved in the last ' + days + ' days</span></div>' +
+        (SIh && SIh.all > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--usd">' + usd(SIh.all) + '</span><span class="st-mega__unit">saved since you installed</span></div>' : '') +
         (totalTok > 0 ? '<div class="st-mega__item"><span class="st-mega st-mega--tok">' + tok(totalTok) + '</span><span class="st-mega__unit">tokens kept out of context in ' + days + ' days</span></div>' : '') +
       '</div>' +
-      savingsPerSessionHeadline(ps) +
-      (totalUsd > 0 ? '<p class="st-bar__title">The last ' + days + ' days, measured and estimated</p>' : '') +
-      (totalUsd > 0 ? '<div class="st-bar" role="img" aria-label="Measured ' + usd(mUsd) + ', estimated ' + usd(eUsd) + '">' +
-        '<span class="st-bar__m" style="width:' + mPct.toFixed(1) + '%"></span>' +
-        '<span class="st-bar__e" style="width:' + (100 - mPct).toFixed(1) + '%"></span></div>' : '') +
-      '<div class="st-bands">' +
-        (measured.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-m" aria-hidden="true"></span>Measured <span class="st-v">' + usd(mUsd) + '</span></p>' + top(measured) + '</div>' : '') +
-        (estimated.length ? '<div class="st-band"><p class="st-legend"><span class="st-sw st-e" aria-hidden="true"></span>Estimated <span class="st-v">' + usd(eUsd) + '</span></p>' + top(estimated) + '</div>' : '') +
-      '</div>' +
-      '<p class="st-sub">Whole-dollar rows are rounded individually; exact amounts are in the breakdown.</p>' +
-      f.fold('How this total is built', method) +
-      (SIh && SIh.total > 0 ? f.fold('How since-install is valued', savingsSinceInstallBody(data, SIh)) : '') +
+      f.fold('How this is calculated', method) +
+      (SIh && SIh.all > 0 ? f.fold('How since-install is calculated', savingsSinceInstallBody(data, SIh)) : '') +
       '</div>';
   }
 
-  // ---- 1b. Still on the table: opportunity, never part of a savings total ----
+  // ---- 1b. Transformation and limits: both big, both with their method in a fold ----
+  out += savingsTransformationHtml(data);
+  out += savingsLimitsHtml(data);
+
+  // ---- 1c. Still on the table: opportunity, never part of a savings total ----
   out += savingsOnTableHtml(data);
 
-  // ---- 2. One 2x2 block ----
+  // ---- 2. The re-read card ----
   var cards = [];
   var removedOnce = num(cp.removed_tokens), rereads = num(cp.reread_tokens);
   if (removedOnce > 0 && rereads > 0) {
     var carryN = rereads / removedOnce;
     cards.push('<div class="card st-card">' +
-      '<h2 class="st-h">' + (as.reread_available !== false && has(as.reread_usd) && num(as.reread_usd) > 0 && totalUsd > 0 ? usd(as.reread_usd) + ' of your ' + usd(totalUsd) + ' came from re-reads avoided' : 'Removed once, saved on every later turn') + '</h2>' +
+      '<h2 class="st-h">' + (as.reread_available !== false && has(as.reread_usd) && num(as.reread_usd) > 0 && bigTotal > 0 ? usd(as.reread_usd) + ' of your ' + usd(bigTotal) + ' came from re-reads avoided' : 'Removed once, saved on every later turn') + '</h2>' +
       '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + Math.round(carryN) + '&times;</span><span class="st-mega__unit">re-reads avoided per token removed</span></p>' +
       '<p class="st-lead"><strong>' + tok(removedOnce) + ' priced tokens removed</strong> became <strong>' + tok(rereads) + ' tokens not sent</strong> on later reads' + (has(cp.reread_usd) ? ', worth ' + usd(cp.reread_usd) + ' at API rates' : '') + '.</p>' +
       '</div>');
   }
-  if (!trimLedger) {
-    cards.push('<div class="card st-card">' +
-      '<h2 class="st-h">Setup cleanup <span class="st-tag">Measuring</span></h2>' +
-      '<p class="st-lead">Each cleanup is being recorded with the date it happened and the tokens it removes from every call. It joins the total once that record exists.</p>' +
-      '</div>');
-  } else {
-    var valuedTrims = trims.filter(function(t) { return t.tier !== 'unattributed' && (num(t.cost_saved_usd) > 0 || num(t.projected_30d_usd) > 0); })
-      .sort(function(a, b) { return num(b.projected_30d_usd) - num(a.projected_30d_usd); });
-    var rows = setupCleanupGroups(sd).map(function(g) {
-      return '<li><span>' + esc(g.label) + '<span class="st-sub">' + esc(g.sub) + '</span></span>' +
-        '<span class="st-v">' + usd(g.usd) + '</span></li>';
-    }).join('');
-    var opts = sd.attested_options || [];
-    var formula = valuedTrims.map(function(t) {
-      return '<li>' + esc(t.label || t.item || 'Setup cleanup') + ': ' + count(num(t.tokens_per_call) * (t.step_measured ? num(t.step_share) : 1)) + ' tokens per call &times; ' + count(t.requests) +
-        (t.step_measured ? ' calls; priced on main-thread calls since the trim, at each call&rsquo;s cache-read rate' : ' calls since') + (num(t.projected_30d_usd) > 0 ? '. Estimated next 30 days at the recent rate: ' + (num(t.projected_30d_usd) < 1 ? '' : 'about ') + usd(t.projected_30d_usd) + '.' : '.') + '</li>';
-    }).join('');
-    cards.push('<div class="card st-card">' +
-      '<h2 class="st-h">Setup cleanup' + '</h2>' +
-      (rows
-        ? '<p class="st-lead">Trimming setup reduces repeated context on calls that load it. These amounts are already in the total.</p><ul class="st-rows st-rows--card">' + rows + '</ul>' +
-          f.fold('How each one is priced', '<ul>' + formula + '</ul>' + (opts.length ? '<p>Your figure can be one of these sizes, priced the same way:</p><ul>' + opts.map(function(o) {
-            return '<li>' + count(o.tokens_per_call) + ' tokens per call: estimated ' + usd(o.projected_30d_usd) + ' per 30 days at the recent rate' + (o.chosen ? ' (shown)' : '') + '</li>';
-          }).join('') + '</ul>' : ''))
-        : '<p class="st-lead">No setup cleanup recorded yet. When an audit archives or rewrites part of your setup, it appears here with its value.</p>') +
-      '</div>');
-  }
-  // Model routing gets its own card, before setup cleanup (setup is always
-  // pushed last, so with three cards the list spans the full row).
-  var routeCard = savingsRoutingCardHtml(data);
-  if (routeCard) cards.splice(Math.max(0, cards.length - 1), 0, routeCard);
   if (cards.length) out += '<div class="st-grid">' + cards.join('') + '</div>';
   out += savingsCostTrendHtml(s.cost_per_message_trend);
-
-
-  // ---- 3. Coverage: one line ----
-  if (num(cov.sessions) > 0 && num(cov.ran_sessions) > 0) {
-    var missing = num(cov.ran_no_ledger_sessions);
-    out += '<p class="st-cov">Token Optimizer ran in ' + count(cov.ran_sessions) + ' of your ' + count(cov.sessions) + ' sessions.' +
-      (missing > 0 ? ' ' + count(missing) + ' of them ' + (missing === 1 ? 'is' : 'are') + ' not in the ledger yet, so the total understates.' : '') + '</p>';
-  }
 
   return out ? '<section class="st" aria-label="What Token Optimizer saved">' + out + '</section>' : '';
 }
@@ -274,22 +255,34 @@ function savingsMonthRange(period, joiner) {
   return m(period.start) + (sameYear ? '' : ' ' + period.start.slice(0, 4)) + (joiner || ' to ') + m(period.end) + (sameYear ? '' : ' ' + period.end.slice(0, 4));
 }
 
-// Hero fold: how the since-install figures are valued. Routing has its own card.
+// Exact dollars and cents, for the folds.
+function savingsCents(v) {
+  v = savingsStoryFmt().num(v);
+  return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Since-install fold: the measured / estimated / routing split and its baseline.
 function savingsSinceInstallBody(data, SI) {
   var f = savingsStoryFmt(), num = f.num, has = f.has, usd = f.usd, pct = f.pct, esc_ = esc;
   var s = (data && data.savings) || {};
+  var ai = ((s.since_install || {}).all_in) || {};
+  var mr = s.model_routing || {};
   var fleet = (s.session_effect || {}).fleet || {};
   var ledgerShare = has(fleet.cost_share_net) ? num(fleet.cost_share_net) : (has(fleet.cost_share) ? num(fleet.cost_share) : null);
-  var windows = ((data.runway || {}).windows || []).filter(function(w) { return w && isFinite(Number(w.headroom_pct)); });
-  var names = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
-  var routed = SI.routing > 0;
-  return '<p>Measured and separately estimated savings are summed since ' + (SI.date ? esc_(SI.date) : 'install') +
-    '. Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is an estimate of room, not a refund.</p>' +
-    (SI.excluded ? '<p>Excluded since install: ' + (routed ? '' : 'routing' + (has(SI.excluded.routing) ? ' ' + usd(SI.excluded.routing) : '') + ', ') + 'unverified lean-resume proxy ' + (has(SI.excluded.lean_resumes) ? usd(SI.excluded.lean_resumes) : 'not priced') + ', and verbosity ' + (has(SI.excluded.verbosity) ? usd(SI.excluded.verbosity) : 'not priced') + '.</p>' : '<p>Unverified lean-resume and verbosity estimates are excluded.</p>') +
-    (routed ? '<p>Model routing has its own card and is never added here.</p>' : '') +
-    (windows.length ? '<p>Right now: ' + windows.map(function(w) {
-      return esc_(names[w.key] || ((w.label || 'Window') + ' limit')) + ' ' + num(w.headroom_pct) + '% left';
-    }).join(', ') + ' (share of each limit window).</p>' : '') +
+  var basis = savingsRoutingBasis(data);
+  var period = savingsMonthRange(ai.routing_majority_period, ' to ');
+  var since = SI.date ? esc_(SI.date) : 'install';
+  var split = '<p><strong>Since ' + since + ', ' + savingsCents(SI.all) + '</strong></p><ul>' +
+    (SI.measured > 0 ? '<li>Measured: ' + savingsCents(SI.measured) + '. Context removed, cheaper cache writes and re-reads avoided, counted event by event.</li>' : '') +
+    (SI.estimated > 0 ? '<li>Estimated: ' + savingsCents(SI.estimated) + '. Setup cleanup from archives, handovers and other documented estimates.</li>' : '') +
+    (SI.routing > 0 ? '<li>Model routing, estimated: ' + savingsCents(SI.routing) + '. ' + esc_(basis.lead) + (period ? ' Most of it from ' + esc_(period) + '.' : '') + '</li>' : '') +
+    '</ul>';
+  var alt = SI.routing > 0 && basis.kind === 'stated' && has(ai.routing_measured_baseline_opus_share) && has(ai.routing_measured_baseline_realized_cost_usd)
+    ? '<p>Using the measured starting mix (' + (num(ai.routing_measured_baseline_opus_share) * 100).toFixed(2) + '% Opus), the routing estimate is ' + usd(ai.routing_measured_baseline_realized_cost_usd) + '.</p>' : '';
+  return split +
+    '<p>Providers do not publish how they weight models and cache reads inside a limit; API price is the closest public stand-in, so this is room inside your limits, not a refund.</p>' +
+    alt +
+    (SI.excluded ? '<p>Excluded since install: unverified lean-resume proxy ' + (has(SI.excluded.lean_resumes) ? usd(SI.excluded.lean_resumes) : 'not priced') + ', and verbosity ' + (has(SI.excluded.verbosity) ? usd(SI.excluded.verbosity) : 'not priced') + '.</p>' : '<p>Unverified lean-resume and verbosity estimates are excluded.</p>') +
     (ledgerShare != null ? '<p>Counted ledger alone, as a share of the API-rate cost of the sessions where Token Optimizer ran: ' + pct(ledgerShare) + '.</p>' : '');
 }
 
@@ -316,29 +309,74 @@ function savingsRoutingBasis(data) {
   };
 }
 
-// Model routing, its own card: the since-install estimate against the stated
-// or install-time baseline. Never added to any other total.
-function savingsRoutingCardHtml(data) {
+// Transformation: what this month would cost without Token Optimizer, against
+// the user's own baseline from before install. Hidden unless the payload says ok.
+function savingsTransformationHtml(data) {
   var f = savingsStoryFmt(), num = f.num, has = f.has, usd = f.usd;
-  var s = (data && data.savings) || {};
-  var ai = ((s.since_install || {}).all_in) || {};
-  var mr = s.model_routing || {};
-  var routing = num((ai.components_usd || {}).routing_estimated);
-  if (!(routing > 0)) return '';
-  var basis = savingsRoutingBasis(data);
-  var period = savingsMonthRange(ai.routing_majority_period, ' to ');
-  var days = Number(s.period_days) || 30;
-  var body = (basis.kind === 'measured'
-      ? '<p>Your current work priced at the model mix Token Optimizer recorded when you installed' + (basis.pct ? ' (' + basis.pct + ' Opus)' : '') + ', against what it actually cost.'
-      : '<p>Your current work priced at the ' + (basis.pct ? basis.pct + ' ' : '') + 'Opus share you gave Token Optimizer, against what it actually cost.') +
-      ' It is an estimate, so it is never added to any savings total.</p>' +
-    (basis.kind === 'stated' && has(ai.routing_measured_baseline_opus_share) && has(ai.routing_measured_baseline_realized_cost_usd) ? '<p>Using the measured starting mix (' + (num(ai.routing_measured_baseline_opus_share) * 100).toFixed(2) + '% Opus), the routing estimate is ' + usd(ai.routing_measured_baseline_realized_cost_usd) + '.</p>' : '') +
-    (num(mr.realized_cost_usd) > 0 ? '<p>Last ' + days + ' days: ' + usd(mr.realized_cost_usd) + ' of it.</p>' : '');
-  return '<div class="card st-card st-card--route">' +
-    '<h2 class="st-h">Model routing <span class="st-tag">Estimated</span></h2>' +
-    '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--route st-mega--card">' + usd(routing) + '</span><span class="st-mega__unit">saved by routing since you installed</span></p>' +
-    '<p class="st-lead">' + esc(basis.lead) + (period ? ' Most of it from ' + esc(period) + '.' : '') + '</p>' +
-    f.fold('How this is estimated', body) +
+  var ba = ((data && data.savings) || {}).before_after || {};
+  if (ba.transformation_state !== 'ok' || !(num(ba.monthly_savings_usd) > 0)) return '';
+  var share = has(ba.transformation_pct) && num(ba.transformation_pct) > 0 ? Math.round(num(ba.transformation_pct) * 100) : 0;
+  var method = '<ul><li>Without Token Optimizer: ' + savingsCents(ba.counterfactual_monthly_usd) + ' a month</li>' +
+    '<li>What you actually spent: ' + savingsCents(ba.actual_monthly_usd) + ' a month</li>' +
+    '<li>Difference: ' + savingsCents(ba.monthly_savings_usd) + ' a month</li></ul>' +
+    (ba.before_mix_label ? '<p>Baseline mix before you installed: ' + esc(ba.before_mix_label) + '. Now: ' + esc(ba.after_mix_label || 'your current mix') + '.</p>' : '') +
+    (ba.breakdown_caveat ? '<p>' + esc(ba.breakdown_caveat) + '</p>' : '');
+  return '<div class="card st-card st-transform">' +
+    '<h2 class="st-h">Your transformation</h2>' +
+    '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--usd st-mega--card">' + usd(ba.monthly_savings_usd) + ' a month</span>' +
+      '<span class="st-mega__unit">Without Token Optimizer, working the way you work now would cost you this much more, compared with your own baseline from before you installed.</span></p>' +
+    (share > 0 ? '<p class="st-lead">That is ' + share + '% of what this work would have cost.</p>' : '') +
+    f.fold('How this is calculated', method) +
+    '</div>';
+}
+
+// Limits with and without Token Optimizer: per window, the used share and what
+// it would be without. Live windows first, then the last stored meter reading;
+// with neither, the window grid is left out.
+function savingsLimitWindows(rw) {
+  var f = savingsStoryFmt(), num = f.num;
+  var names = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
+  function ok(w) {
+    if (!w || !isFinite(Number(w.used_pct))) return false;
+    return isFinite(Number(w.without_used_pct)) || isFinite(Number(w.without_headroom_pct));
+  }
+  var live = (Array.isArray(rw.windows) ? rw.windows : []).filter(ok), rows = live, stored = false;
+  if (!rows.length) { rows = (Array.isArray(rw.last_known_windows) ? rw.last_known_windows : []).filter(ok); stored = rows.length > 0; }
+  if (!rows.length) return '';
+  var html = '<div class="st-limits">' + rows.map(function(w) {
+    var used = Math.round(num(w.used_pct));
+    var without = isFinite(Number(w.without_used_pct)) ? num(w.without_used_pct) : 100 - num(w.without_headroom_pct);
+    return '<div class="st-limit"><p class="st-limit__name">' + esc(names[w.key] || ((w.label || 'Window') + ' limit')) + '</p>' +
+      '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + used + '%</span><span class="st-mega__unit">used</span></p>' +
+      '<p class="st-limit__alt">' + (w.would_be_capped
+        ? 'would already be at the limit without Token Optimizer'
+        : 'would be <span class="st-limit__num">' + Math.round(without) + '%</span> without Token Optimizer') + '</p></div>';
+  }).join('') + '</div>';
+  var ts = Number(rw.meter_ts);
+  if (stored && isFinite(ts) && ts > 0) {
+    var when = new Date(ts * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    html += '<p class="st-sub">Last reading, ' + esc(when) + '.</p>';
+  }
+  return html;
+}
+
+function savingsLimitsHtml(data) {
+  var f = savingsStoryFmt(), num = f.num;
+  var rw = (data && data.runway) || null;
+  if (!rw || typeof rw !== 'object') return '';
+  var extra = num(rw.extra_work_pct) > 0 ? Math.round(num(rw.extra_work_pct) * 10) / 10 : 0;
+  var windows = savingsLimitWindows(rw);
+  if (!extra && !windows) return '';
+  var ctx = num(rw.context_multiplier), route = rw.routing_multiplier == null ? 0 : num(rw.routing_multiplier);
+  var method = (rw.proxy ? '<p>' + esc(rw.proxy) + '</p>' : '') +
+    '<p>' + (ctx ? 'Lighter context: &times;' + ctx + '. ' : '') + (route ? 'Model mix: &times;' + route + '. ' : '') +
+    (extra ? 'Together that is about ' + extra + '% more work per token.' : '') + '</p>' +
+    (windows ? '<p>The without-Token-Optimizer figure is your used share multiplied by that factor, capped at 100%.</p>' : '');
+  return '<div class="card st-card st-limits-card">' +
+    '<h2 class="st-h">Your limits go further</h2>' +
+    (extra ? '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">&asymp;' + extra + '%</span><span class="st-mega__unit">more work per token</span></p>' : '') +
+    windows +
+    f.fold('How this is calculated', method) +
     '</div>';
 }
 
@@ -401,15 +439,6 @@ function savingsCostTrendHtml(raw) {
     '<polyline fill="none" stroke="currentColor" stroke-width="3" points="' + points + '"></polyline>' + ticks + '</svg></div>';
 }
 
-// Per-session shares for the hero fold: each named with its base (that
-// session's own context), split by where the session ran. Never above the fold.
-function savingsPerSessionHeadline(ps) {
-  var f = savingsStoryFmt(), has = f.has, bp = (ps || {}).by_place || {}, local = bp.local || {}, cloud = bp.cloud || {}, lines = [];
-  if (f.num(local.sessions) > 0 && has(local.net_median)) lines.push('On this computer: typical ' + f.pct(local.net_median) + (has(local.net_p75) ? ', top quarter ' + f.pct(local.net_p75) + '+' : '') + (local.best && has(local.best.net_max) ? ', best ' + f.pct(local.best.net_max) : ''));
-  if (f.num(cloud.sessions) > 0 && has(cloud.net_median)) lines.push('Cloud: typical ' + f.pct(cloud.net_median));
-  return lines.length ? '<p class="st-lead">Per session, share of its own context not sent. ' + lines.join('; ') + '.</p>' : '';
-}
-
 function savingsPerSessionHtml(ps, overhead) {
   var f = savingsStoryFmt(), num = f.num, has = f.has;
   ps = ps || {};
@@ -430,9 +459,10 @@ function savingsPerSessionHtml(ps, overhead) {
     (bp.local && bp.local.best && bp.local.best.filtered ? '<p>Best local session is selected among sessions with at least 20 turns because the unfiltered best was small.</p>' : '');
 }
 
-// Since-install total from the same components as the hero, routing excluded.
+// Since-install total: every component plus the routing estimate. `all` is the
+// big number; measured, estimated and routing are its split.
 function savingsSinceInstall(data) {
-  var f = savingsStoryFmt(), num = f.num;
+  var f = savingsStoryFmt(), num = f.num, has = f.has;
   var si = ((data && data.savings) || {}).since_install || {};
   var ai = si.all_in || {};
   var c = ai.components_usd || {};
@@ -441,7 +471,13 @@ function savingsSinceInstall(data) {
     .filter(function(p) { return num(p[1]) !== 0; });
   if (!parts.length) return null;
   var date = si.install_date ? new Date(si.install_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-  return { parts: parts, total: parts.reduce(function(a, p) { return a + num(p[1]); }, 0), routing: num(c.routing_estimated), days: num(si.days), date: date, excluded: si.excluded_usd || null };
+  var base = parts.reduce(function(a, p) { return a + num(p[1]); }, 0);
+  var routing = has(ai.routing_usd) ? num(ai.routing_usd) : num(c.routing_estimated) + num(c.routing_measured);
+  if (!(routing > 0)) routing = 0;
+  var all = has(ai.total_usd) ? num(ai.total_usd) : base + routing;
+  var estimated = num(ai.estimated_usd);
+  return { parts: parts, total: base, all: all, routing: routing, estimated: estimated, measured: all - estimated - routing,
+           days: num(si.days), date: date, excluded: si.excluded_usd || null };
 }
 
 // "Where your sessions ran" fold body, for the caller's row of folds.
@@ -511,6 +547,9 @@ function savingsLedgerHtml(data) {
   var s = data.savings || {};
   var B = savingsStoryBands(data);
   var days = Number(s.period_days) || 30;
+  var mr = s.model_routing || {};
+  var routing30 = f.has(mr.realized_cost_usd) ? num(mr.realized_cost_usd) : num((s.action_savings || {}).routing_usd);
+  if (!(routing30 > 0)) routing30 = 0;
   function cents(v) {
     v = num(v);
     return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -522,13 +561,14 @@ function savingsLedgerHtml(data) {
   var out = '<h3 class="ts-section-label">Last ' + days + ' days, to the cent</h3><ul class="st-rows">' +
     B.measured.map(function(r) { return row(r.label + ' (measured)', r.usd, r.tok); }).join('') +
     B.estimated.map(function(r) { return row(r.label + ' (estimated)', r.usd, r.tok); }).join('') +
-    '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(B.totalUsd) + '</strong></span></li></ul>';
+    (routing30 > 0 ? row('Model routing (estimated)', routing30, 0) : '') +
+    '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(B.totalUsd + routing30) + '</strong></span></li></ul>';
   var SI = savingsSinceInstall(data);
   if (SI) {
     out += '<h3 class="ts-section-label st-gap">Since you installed' + (SI.date ? ' on ' + esc(SI.date) : '') + ' (' + f.count(SI.days) + ' days)</h3><ul class="st-rows">' +
       SI.parts.map(function(p) { return row(p[0], p[1], 0); }).join('') +
-      '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(SI.total) + '</strong></span></li></ul>' +
-      (SI.routing ? '<ul class="st-rows">' + row(savingsRoutingBasis(data).ledger, SI.routing, 0) + '</ul>' : '');
+      (SI.routing ? row(savingsRoutingBasis(data).ledger, SI.routing, 0) : '') +
+      '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(SI.all) + '</strong></span></li></ul>';
   }
   var cp = s.counted_period || {};
   if (cp.pricing_note) out += '<p>' + esc(cp.pricing_note) + '</p>';

@@ -73,3 +73,25 @@ def routing_baseline_kind(routing, runtime):
     if source in ("snapshot", "history"):
         return "measured_at_install"
     return None
+
+
+def last_known_windows(meters, mult, live):
+    """The stored meter reading per window, kept when every live window was dropped
+    for age, so the Savings page still shows the last known used share and what it
+    would have been without Token Optimizer. [] while live windows exist or the
+    meter never held a value. Pure; never raises."""
+    if live:
+        return []
+    try:
+        mult = float(mult)
+        out = []
+        for key, field, label in (("five_hour", "five_hour_pct", "5h"), ("seven_day", "seven_day_pct", "7d")):
+            used = (meters or {}).get(field)
+            if not isinstance(used, (int, float)) or used != used:
+                continue
+            without = min(100.0, used * mult)
+            out.append({"key": key, "label": label, "used_pct": round(used, 1),
+                        "without_used_pct": round(without, 1), "would_be_capped": without >= 99.5})
+        return out
+    except (TypeError, ValueError):
+        return []

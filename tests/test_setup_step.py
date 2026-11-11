@@ -259,3 +259,18 @@ def test_payload_wiring_is_fail_open_and_copies_the_cached_result():
     assert 'setup_step.collect(' in src and '{**result["first_call_context"], "setup_steps"' in src
     block = src[src.index('setup_step.collect('):]
     assert 'except Exception:' in block[:600]
+
+
+def test_a_step_larger_than_the_trim_is_capped_at_the_trim_size():
+    # The first call dropped 15K, but the dated trim only removed 800 tokens per call:
+    # credit stops at what the trim itself removed; the observed drop stays visible.
+    rows, trim = series(60_000, 45_000)
+    r = setup_step.measure_step(rows, trim, rate_fn=rate, cap_tokens=800)
+    assert r['status'] == 'measured' and r['drop_tokens'] == 800
+    assert abs(r['observed_drop_tokens'] - 15_000) <= 300
+    assert r['tokens_saved'] == 800 * r['calls_since']
+    assert abs(r['usd'] - round(800 * r['calls_since'] * RATE, 4)) < 1e-6
+    steps = setup_step.measure_all(rows, [{'ts_epoch': trim, 'tokens': 500}, {'ts_epoch': trim, 'tokens': 300}], rate)
+    assert steps[0]['drop_tokens'] == 800 and steps[0]['estimated_tokens'] == 800
+    small = setup_step.measure_step(rows, trim, rate_fn=rate, cap_tokens=50_000)
+    assert small['drop_tokens'] == small['observed_drop_tokens']

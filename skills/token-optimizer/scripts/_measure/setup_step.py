@@ -52,7 +52,8 @@ def prefix_of(obs):
     return max(0, int(total) - int(first_user))
 
 
-def measure_step(sessions, trim_epoch, closed_epoch=None, other_trim_epochs=(), rate_fn=None, window=WINDOW):
+def measure_step(sessions, trim_epoch, closed_epoch=None, other_trim_epochs=(), rate_fn=None, window=WINDOW,
+                 cap_tokens=None):
     """One trim's step. ``sessions``: dicts with ts_epoch, total, components, api_calls, model.
 
     Returns a dict with ``status`` in measured | no_step | pending | overlap |
@@ -86,7 +87,9 @@ def measure_step(sessions, trim_epoch, closed_epoch=None, other_trim_epochs=(), 
     visible = drop > 0 and drop >= MIN_RELATIVE * b_med and (drop >= MIN_Z * se if se > 0 else True)
     if not visible:
         return {**base, "status": "no_step", "reason": "no step visible in the first-call prefix"}
-    drop_tokens = int(round(drop))
+    observed_drop = int(round(drop))
+    # A step can never be credited above what the trim itself removed per call.
+    drop_tokens = min(observed_drop, int(cap_tokens)) if cap_tokens else observed_drop
     calls, usd, unpriced = 0, 0.0, 0
     for s in after_all:
         if closed_epoch is not None and s["ts_epoch"] >= closed_epoch:
@@ -107,7 +110,7 @@ def measure_step(sessions, trim_epoch, closed_epoch=None, other_trim_epochs=(), 
             usd += drop_tokens * n * rate
     return {**base, "status": "measured", "tier": "measured", "reason": "", "drop_tokens": drop_tokens,
             "calls_since": calls, "tokens_saved": drop_tokens * calls, "usd": round(usd, 4),
-            "unpriced_calls": unpriced}
+            "unpriced_calls": unpriced, "observed_drop_tokens": observed_drop}
 
 
 def measure_all(sessions, trims, rate_fn=None, window=WINDOW):
@@ -118,10 +121,11 @@ def measure_all(sessions, trims, rate_fn=None, window=WINDOW):
         group = [t for t in trims if t.get("ts_epoch") == epoch]
         closes = [t["closed_epoch"] for t in group if t.get("closed_epoch") is not None]
         closed = min(closes) if len(closes) == len(group) else None
-        result = measure_step(sessions, epoch, closed, [e for e in epochs if e != epoch], rate_fn, window)
+        size = sum(int(t.get("tokens") or 0) for t in group)
+        result = measure_step(sessions, epoch, closed, [e for e in epochs if e != epoch], rate_fn, window, size)
         result["trim_epoch"] = epoch
         result["trims"] = len(group)
-        result["estimated_tokens"] = sum(int(t.get("tokens") or 0) for t in group)
+        result["estimated_tokens"] = size
         out.append(result)
     return out
 
@@ -151,6 +155,21 @@ def observe_step(rows, estimate):
     message = last.get("message") or {}
     model = message.get("model") if isinstance(message.get("model"), str) else None
     return {**obs, "ts": last.get("timestamp"), "model": model}
+
+
+_MEMO = {}
+
+
+def measured_epochs(db_path, data_dir, claude_dir=None):
+    """Trim epochs with a visible (measured) first-call step. One scan per process and DB state."""
+    try:
+        key = (str(db_path), str(data_dir), str(claude_dir), Path(db_path).stat().st_mtime_ns)
+    except OSError:
+        return set()
+    if key not in _MEMO:
+        found = collect(db_path, data_dir, claude_dir)
+        _MEMO[key] = {s["trim_epoch"] for s in found.get("steps", []) if s.get("status") == "measured"}
+    return _MEMO[key]
 
 
 def collect(db_path, data_dir, claude_dir=None, card_fn=None):

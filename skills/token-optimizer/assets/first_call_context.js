@@ -29,7 +29,7 @@ function firstCallContextHtml(result) {
       var day = new Date(Number(s.trim_epoch) * 1000).toISOString().slice(0, 10);
       var line;
       if (s.status === 'measured') {
-        line = 'first call context fell from ' + n(s.before_median) + ' to ' + n(s.after_median) + ' tokens, a step of ' + n(s.drop_tokens) +
+        line = 'first call context fell from ' + n(s.before_median) + ' to ' + n(s.after_median) + ' tokens' + (s.observed_drop_tokens > s.drop_tokens ? '; credited ' + n(s.drop_tokens) + ' per call, the trim\'s own size,' : ', a step of ' + n(s.drop_tokens)) +
           ' carried by ' + n(s.calls_since) + ' calls since' + (s.usd > 0 ? ', about $' + Number(s.usd).toFixed(2) + ' at cache-read prices (measured)' : '') + '.';
       } else if (s.status === 'no_step') {
         line = 'no step down is visible in the first call context, so nothing is credited here and any earlier estimate stands.';

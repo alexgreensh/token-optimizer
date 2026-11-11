@@ -53,6 +53,12 @@ PAYLOAD = {
     "workspace": {"current_dir": str(REPO)},
     "session_id": "abc123",
     "context_window": {"used_percentage": 42},
+    # Rate limits keep logical row 2 non-empty (limits are its most reliable
+    # segments) so the wrap assertions exercise two rows as before.
+    "rate_limits": {
+        "five_hour": {"used_percentage": 34, "resets_at": 2000000000},
+        "seven_day": {"used_percentage": 87},
+    },
 }
 
 
@@ -103,16 +109,16 @@ SLIM = {"TOKEN_OPTIMIZER_STATUS_BAR_SIZE": "slim"}
 
 def test_slim_is_one_line_with_the_important_fields():
     """TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim collapses the status line to row 1:
-    model, project, context bar and ContextQ, on a single line."""
+    model, project, context bar and Quality, on a single line."""
     out = _run(PAYLOAD, extra_env=SLIM)
     assert "\n" not in out, f"expected one line, got: {out!r}"
     plain = _ANSI.sub("", out)
     assert "Opus 4.8" in plain
     assert "42%" in plain
-    assert "ContextQ:" in plain
+    assert "Quality" in plain
     # Row-2-only fields stay off the slim line.
-    assert "Eff:" not in plain
-    assert "Compacts:" not in plain
+    assert "week " not in plain
+    assert "5 hours" not in plain
 
 
 def test_slim_stays_one_line_when_narrow():

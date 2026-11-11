@@ -1193,6 +1193,8 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
                         "by_category": {}}
     savings_data.pop("mcp_cap_estimated", None)
     if source_failed:
+        # Keep the bare fail-open shape: callers compare it verbatim to decide
+        # whether the savings source produced a real payload.
         return savings_data
     try:
         from . import cost_per_message_trend
@@ -1221,6 +1223,11 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
     _measure_facade._apply_counted_oneshot_pricing(savings_data, savings_data["counted_period"])
     savings_data["action_savings"] = _measure_facade._action_savings_components(
         savings_data, savings_data["counted_period"])
+    try:
+        from . import savings_headline
+        savings_data["savings_headline"] = savings_headline.build(savings_data)
+    except Exception:
+        savings_data["savings_headline"] = None
     if include_billing_mode:
         try:
             savings_data["billing_mode"] = _measure_facade.keepwarm_billing_mode()

@@ -3705,6 +3705,7 @@ def _status_bar_savings_or_reason(session_id, _retried=None):
                       "usd": float(b.get("usd", 0.0))})
     headline = _measure_facade._get_merged_savings(days=_measure_facade._STATUS_BAR_DAYS)
     from . import headline as headline_module
+    from . import savings_headline as savings_headline_module
     counted = _measure_facade._counted_cumulative_summary(days=_measure_facade._STATUS_BAR_DAYS) if has_counted else {"available": False}
     headline["counted_period"] = counted
     headline["token_headline"] = headline_module.token_headline(headline)
@@ -3722,6 +3723,8 @@ def _status_bar_savings_or_reason(session_id, _retried=None):
         # The dashboard's headline (measured + estimated); the measured floor beside it.
         "total_30d_tokens": shown,
         "total_30d_measured_tokens": measured,
+        # The shared headline the band, status line and dashboard hero quote.
+        "savings_headline": savings_headline_module.build(headline),
         "computed_at": _measure_facade.time.time(),
     }, None
 

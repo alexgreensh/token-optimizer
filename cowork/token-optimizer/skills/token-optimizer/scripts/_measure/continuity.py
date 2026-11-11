@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, transcript_stream
+from . import _compat, transcript_stream, checkpoint_direction
 
 
 def _iter_tail_lines(filepath, tail_lines, chunk_size=None):
@@ -76,15 +76,7 @@ def _tool_call_target(name, inp):
 
 
 def _first_task_user_message(filepath):
-    """(text, source_id) of the FIRST real user task message, scanned from the
-    transcript head.
-
-    The tail window used for state extraction loses the objective on long
-    sessions, and the objective is definitionally the first user message — so
-    it gets its own bounded head pass (<=400 lines / <=8MB, early exit). The
-    caller redacts the returned text like every other ingested string.
-    Returns (None, None) when absent or unreadable. Never raises.
-    """
+    """Return the first user task and its source ID."""
     _measure_facade = _compat.facade()
     try:
         total = 0
@@ -317,16 +309,9 @@ def _extract_session_state(filepath, tail_lines=None):
                     error_context.append((recent_errors[-1][:200], assistant_text[:200].strip()))
                     recent_errors = []
 
-    # Objective head-scan: the FIRST user message, which the tail window can
-    # lose on long sessions. Redacted like every other ingested string.
-    _obj_text, _obj_id = _measure_facade._first_task_user_message(filepath)
-    objective = None
-    if _obj_text:
-        objective = {
-            "text": _ingest_redact(_obj_text),
-            "source": {"kind": "user_message",
-                       "id": str(_obj_id) if _obj_id else None},
-        }
+    objective, direction, constraints = checkpoint_direction.scan(
+        filepath, _measure_facade._task_user_text, _ingest_redact,
+        _measure_facade.checkpoint_state, _measure_facade.codex_session.MAX_JSONL_LINE_CHARS)
 
     task_state = _measure_facade.checkpoint_state.build_task_state(
         user_texts=user_texts,
@@ -337,6 +322,9 @@ def _extract_session_state(filepath, tail_lines=None):
         changed_files=[(p, a) for p, a, _r in active_files if a == "modified"],
         objective=objective,
     )
+
+    task_state["current_direction"] = direction
+    task_state["user_constraints"] = constraints
 
     return {
         "active_files": active_files[-_measure_facade._CHECKPOINT_MAX_FILES:],
@@ -594,12 +582,14 @@ def _checkpoint_sections(state, quality_summary=None, archive_entries=None):
         ts_task = {}
     sections = []
 
-    # --- hard: the continuation-critical fields, always retained ---
+    direction = ts_task.get("current_direction") or []
+    if direction:
+        sections.append(_measure_facade._checkpoint_section(
+            "Current direction", ["## Current direction"] + ["- " + item["text"] for item in direction], "hard", None))
     obj = ts_task.get("objective") or {}
     if isinstance(obj, dict) and obj.get("text"):
         sections.append(_measure_facade._checkpoint_section(
-            "Objective", ["## Objective", str(obj["text"])], "hard",
-            _measure_facade.checkpoint_state.OBJECTIVE_MAX_CHARS + len("## Objective\n")))
+            "Session began", ["## Session began", "Session began with: " + str(obj["text"])[:200]], "optional", None, 999))
     constraints = ts_task.get("user_constraints") or []
     con_lines = ["## User Constraints"] + [
         f"- {c.get('text', '')}" for c in constraints
@@ -621,7 +611,7 @@ def _checkpoint_sections(state, quality_summary=None, archive_entries=None):
             "hard", 700))
 
     # --- keep: structured state, shrunk only under real pressure ---
-    if state["current_step"]["last_user"]:
+    if state["current_step"]["last_user"] and not direction:
         sections.append(_measure_facade._checkpoint_section(
             "Active Task",
             ["## Active Task", state["current_step"]["last_user"]],

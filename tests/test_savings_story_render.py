@@ -804,7 +804,8 @@ def test_limits_card_headline_bars_basis_and_method():
     # 23560.08 / 20194.49 = 1.1667 -> 17% more work fits.
     assert 'st-limits__mega"><span class="st-mega st-mega--usd st-mega--card">17%</span>' in card
     assert 'more work fits in your weekly limit' in card
-    assert 'Without Token Optimizer' in card and 'With Token Optimizer' in card
+    assert 'At your earliest month’s cost per' in card and 'With Token Optimizer' in card
+    assert 'Without Token Optimizer' not in card
     # Weekly window wins: used 78%, without = 78 * 1.1667 = 91%.
     assert '<span class="st-limitbar__val">91%</span>' in card
     assert '<span class="st-limitbar__val">78% used this week</span>' in card

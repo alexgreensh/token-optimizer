@@ -314,7 +314,7 @@ def _limits(prov):
 
 
 def test_limits_card_says_when_token_optimizer_ran_in_the_baseline(tmp_path):
-    """The approved card always labels the bar "Without Token Optimizer". When the tool
+    """The bar is labelled with what it measures (the earliest month's cost per unit). When the tool
     already ran in the baseline month, the basis and the fold must say so, and that the
     real gap is larger: the shown figure may undersell, never oversell."""
     _snapshot(tmp_path, "2026-01-05")
@@ -322,7 +322,9 @@ def test_limits_card_says_when_token_optimizer_ran_in_the_baseline(tmp_path):
     assert "Compared with your earliest tracked month (Jan 6 to Feb 5)." in html
     assert "before you installed" not in html
     assert "already running in that month, so the full gap is larger than shown" in html
+    assert "Without Token Optimizer" not in html and "At your earliest month’s cost per" in html
     _snapshot(tmp_path, "2026-02-05")
     html = _limits(bp.transformation(Facade(tmp_path), BASELINE, PINNED))
     assert "before you installed (Jan 6 to Feb 5)" in html
+    assert "At your cost per request before you installed" in html
     assert "already running" not in html

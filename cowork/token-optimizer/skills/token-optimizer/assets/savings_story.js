@@ -483,8 +483,12 @@ function savingsLimitsHtml(data) {
   var withoutTxt = rawWithout >= 100
     ? 'about ' + Math.round(rawWithout) + '%: right at your limit'
     : Math.round(rawWithout) + '%';
+  // The bar names the user's own baseline: before install when that history exists, else the earliest tracked month.
+  var unitName = (ba.session_weight_pool || {}).work_unit || 'request';
+  var preInstall = /before you installed/i.test(String((ba.baseline_provenance || {}).lead || ''));
+  var barLabel = preInstall ? 'At your cost per ' + unitName + ' before you installed' : 'At your earliest month\u2019s cost per ' + unitName;
   var bars = win
-    ? '<div class="st-limitbar"><div class="st-limitbar__label"><span>Without Token Optimizer</span>' +
+    ? '<div class="st-limitbar"><div class="st-limitbar__label"><span>' + esc(barLabel) + '</span>' +
         '<span class="st-limitbar__val">' + esc(withoutTxt) + '</span></div>' +
         '<div class="st-limitbar__track"><span class="st-limitbar__fill st-limitbar__fill--ghost" style="width:' + Math.min(100, Math.round(rawWithout)) + '%"></span></div></div>' +
       '<div class="st-limitbar"><div class="st-limitbar__label"><span>With Token Optimizer</span>' +

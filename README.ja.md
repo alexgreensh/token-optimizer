@@ -59,12 +59,13 @@ Token Optimizerは、AIコーディングアシスタントが無駄にするト
   <a href="https://alexgreensh.github.io/token-optimizer/platforms/opencode/"><img src="skills/token-optimizer/assets/platforms/opencode.svg" width="96" alt="OpenCode"></a>
   <a href="https://alexgreensh.github.io/token-optimizer/platforms/openclaw/"><img src="skills/token-optimizer/assets/platforms/openclaw.svg" width="96" alt="OpenClaw"></a>
   <a href="https://alexgreensh.github.io/token-optimizer/platforms/hermes/"><img src="skills/token-optimizer/assets/platforms/hermes.svg" width="96" alt="Hermes"></a>
-  <picture><source media="(max-width: 767px)" srcset="skills/token-optimizer/assets/platforms/row-break-none.svg"><img src="skills/token-optimizer/assets/platforms/row-break.svg" alt=""></picture>
   <a href="https://alexgreensh.github.io/token-optimizer/platforms/copilot/"><img src="skills/token-optimizer/assets/platforms/copilot.svg" width="96" alt="GitHub Copilot"></a>
+  <picture><source media="(max-width: 767px)" srcset="skills/token-optimizer/assets/platforms/row-break-none.svg"><img src="skills/token-optimizer/assets/platforms/row-break.svg" alt=""></picture>
   <a href="https://alexgreensh.github.io/token-optimizer/platforms/pi/"><img src="skills/token-optimizer/assets/platforms/pi.svg" width="96" alt="Pi Coding Agent"></a>
   <a href="https://alexgreensh.github.io/token-optimizer/platforms/cursor/"><img src="skills/token-optimizer/assets/platforms/cursor.svg" width="96" alt="Cursor"></a>
   <a href="https://alexgreensh.github.io/token-optimizer/platforms/antigravity/"><img src="skills/token-optimizer/assets/platforms/antigravity.svg" width="96" alt="Google Antigravity (beta)"></a>
   <a href="https://alexgreensh.github.io/token-optimizer/platforms/grok/"><img src="skills/token-optimizer/assets/platforms/grok.svg" width="96" alt="Grok Build (beta)"></a>
+  <a href="https://alexgreensh.github.io/token-optimizer/platforms/devin/"><img src="skills/token-optimizer/assets/platforms/devin.svg" width="96" alt="Devin (beta)"></a>
 </p>
 
 Devinがロードマップの次です。

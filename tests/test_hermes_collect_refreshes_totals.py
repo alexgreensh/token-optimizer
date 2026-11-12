@@ -26,7 +26,9 @@ sys.path.insert(0, str(SCRIPTS))
 import hermes_state  # noqa: E402
 import measure  # noqa: E402
 
-NOW = time.time()
+# Keep the fake session (started 10 min before NOW) on one UTC day: right after
+# midnight it would start yesterday and today's totals would read zero.
+NOW = max(time.time(), time.time() // 86400 * 86400 + 900)
 
 
 def _row(**over):

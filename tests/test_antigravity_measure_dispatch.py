@@ -89,7 +89,7 @@ def _session(conv_id="abc123", surface="antigravity", *, model="gemini-3.5-flash
              fresh=1000, output=500, cache_read=2000, credits=0, killed=False,
              not_fully_idle=False, title="Fix the parser", workspace="/home/u/proj",
              start=None):
-    start = start if start is not None else time.time() - 600
+    start = start if start is not None else max(time.time(), time.time() // 86400 * 86400 + 900) - 600  # stay on one UTC day
     return {
         "conversation_id": conv_id,
         "surface": surface,

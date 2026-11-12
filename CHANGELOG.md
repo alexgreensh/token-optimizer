@@ -5,8 +5,8 @@
 - See what you saved without opening anything: the Claude Code band and the status line show your savings, and one click opens the Savings page.
 - Only numbers worth showing: this week's savings from $20, otherwise the last 30 days from $60 with the tokens kept out of context, otherwise nothing.
 - A limits card that answers one question: how much more work fits in your weekly limit, with and without Token Optimizer, and how it was worked out.
-- Hover any number for what it means and what to do next. Fix buttons take you straight to the setting.
-- Linux and Windows fixes: the status bar no longer stalls on large histories with older SQLite, and an upgrade no longer leaves later collects in catch-up mode.
+- Hover the headline numbers and the band's marks for what they mean and what to do next. Fix buttons on "Still on the table" open the fix.
+- Linux and Windows fixes: the status bar no longer stalls on large histories with older SQLite, the first refresh after an upgrade no longer leaves later ones stuck catching up, and busy moments no longer drop a /clear or compaction marker.
 - Also: a calmer dashboard with duplicate cards, debug lines and generic advice removed; unused keep-warm proxy code removed; test fixtures no longer look like secrets to scanners.
 
 ## [5.13.70] - 2026-11-11

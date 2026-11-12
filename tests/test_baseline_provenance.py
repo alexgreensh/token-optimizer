@@ -295,7 +295,7 @@ def _render(expr, data):
            "const fn = n => String(Math.round(Number(n) || 0));\n")
     script = esc + STORY.read_text() + "\nconst data = JSON.parse(process.argv[2]);\nprocess.stdout.write(" + expr + ");"
     return subprocess.run([node, "-", json.dumps(data)], input=script,
-                          capture_output=True, text=True, check=True).stdout
+                          capture_output=True, text=True, encoding="utf-8", check=True).stdout
 
 
 def _card(provenance=None):

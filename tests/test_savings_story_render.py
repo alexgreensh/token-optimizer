@@ -34,7 +34,7 @@ def _node(script, payload):
     if not node:
         pytest.skip('Node required to execute the dashboard renderer')
     r = subprocess.run([node, '-', json.dumps(payload)], input=script,
-                       capture_output=True, text=True, check=True)
+                       capture_output=True, text=True, encoding="utf-8", check=True)
     return r.stdout
 
 

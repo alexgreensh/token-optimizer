@@ -69,7 +69,7 @@ function firstCallContextHtml(result) {
     '</div></details>';
   return '<div class="card wide st-card"><h2 class="st-h">Context before your first message</h2>' +
     '<p class="st-mega__item st-mega__item--card"><span class="st-mega st-mega--tok st-mega--card">' + k(latest.median) + '</span>' +
-    '<span class="st-mega__unit">tokens before Claude answers your first message, per session' + (change ? '</span><span class="st-mega__note">' + change : '') + '</span></p>' +
+    '<span class="st-mega__unit">tokens before Claude answers your first message, per session' + (change ? '</span><span class="st-mega__note' + (delta > 0 ? ' st-mega__note--worse' : '') + '">' + change : '') + '</span></p>' +
     '<p class="st-lead">Median of the first API call each month, your first message and hooks included. Dots show the median; bars show p25 to p75; triangles mark recorded trims.</p>' +
     '<div style="overflow-x:auto">' + svg + '</div>' + fold + '</div>';
 }

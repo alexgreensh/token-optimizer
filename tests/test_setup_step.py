@@ -296,6 +296,11 @@ def test_first_call_card_leads_with_the_latest_median_and_change_since_the_first
     var fold = h.slice(h.indexOf('<details'));
     if (fold.indexOf('Skills listing') < 0 || fold.indexOf('Skills listing') > fold.indexOf('Agents')) throw new Error('components sorted by size in fold');
     if (hero.indexOf('Skills listing') >= 0) throw new Error('components belong in the fold');
+    // More context before the first message is worse: a rise never renders in the savings green.
+    if (hero.indexOf('st-mega__note st-mega__note--worse') < 0) throw new Error('a rise must use the worse colour');
+    var down = firstCallContextHtml({months: [months[1], {month: '2026-12', median: 60000, p25: 50000, p75: 70000, n: 9, components: {}}], trim_dates: []});
+    var dh = down.slice(0, down.indexOf('<svg'));
+    if (dh.indexOf('-22K since November') < 0 || dh.indexOf('--worse') >= 0) throw new Error('a drop keeps the good colour');
     """
     path = tmp_path / 'fc2.js'
     path.write_text(script, encoding='utf-8')

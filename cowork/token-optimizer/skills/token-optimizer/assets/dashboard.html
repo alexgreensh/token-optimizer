@@ -1731,10 +1731,13 @@ html { -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; 
 .st-mega__item { position: relative; }
 .st-tip { font: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: help; color: inherit; text-decoration: underline dotted var(--c-text-dim); text-decoration-thickness: 2px; text-underline-offset: 8px; }
 .st-tip:focus-visible { outline: 2px solid var(--c-accent-cyan); outline-offset: 4px; border-radius: 4px; }
-.st-tipcard { position: absolute; left: 0; bottom: calc(100% + 10px); z-index: 60; display: block; width: max-content; max-width: min(340px, 86vw); padding: 12px 14px; background: var(--c-elev-2, #1b1e26); border: 1px solid var(--c-border-strong); border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.45); opacity: 0; visibility: hidden; transform: translateY(4px); transition: opacity .15s ease, transform .15s ease, visibility .15s; pointer-events: none; text-align: left; }
+.st-tipcard { position: absolute; left: 0; top: calc(100% + 10px); z-index: 60; display: block; width: max-content; max-width: min(360px, calc(100vw - 32px)); padding: 14px 16px; background: var(--c-surface-hover); border: 0; border-radius: 12px; box-shadow: 0 0 0 1px var(--c-border-strong), 0 12px 32px rgba(0,0,0,.5); opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity .15s ease, transform .15s ease, visibility .15s; pointer-events: none; text-align: left; }
+[data-theme="light"] .st-tipcard { background: var(--c-surface); box-shadow: 0 0 0 1px rgba(0,0,0,.12), 0 12px 28px rgba(14,22,34,.18); }
+.st-mega__item:last-child .st-tipcard { left: auto; right: 0; }
+.st .card:hover, .st .card:focus-within, .st .card:has(.st-tip--open) { position: relative; z-index: 20; }
 .st-tipcard__t { display: block; font: 600 15px/1.4 var(--font-sans); color: var(--c-text-main); margin-bottom: 6px; }
 .st-tipcard__l { display: block; font: 400 14px/1.5 var(--font-sans); color: var(--c-text-main); margin-top: 4px; }
-.st-tipcard__note { color: var(--c-text-dim); }
+.st-tipcard__note { color: var(--c-text-main); margin-top: 8px; }
 .st-mega__item:hover .st-tipcard, .st-tip:focus + .st-tipcard, .st-tipcard:hover, .st-tipcard:focus-within, .st-tip--open + .st-tipcard { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
 .st-flash { animation: st-flash 1.6s ease-out; }
 @keyframes st-flash { 0% { box-shadow: 0 0 0 3px var(--c-accent-cyan); } 100% { box-shadow: 0 0 0 0 transparent; } }

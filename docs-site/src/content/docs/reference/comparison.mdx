@@ -27,7 +27,7 @@ Headroom, RTK, and JFrog Boost all compress bash and command output. Its share o
 
 | Compression surface | Token Optimizer | Headroom | RTK | Boost |
 |---|---|---|---|---|
-| **Bash / command output** (git, test runners, lint, build, listings, logs) | 🟢 113 commands across 25 pattern families, credential-safe, user-extensible via TOML; 564 → 115 tokens on a pytest run | 🟢 SmartCrusher, CodeCompressor, Kompress-v2, image compression | 🟢 100+ command filters | 🟢 Command-aware filters, user-extensible via TOML |
+| **Bash / command output** (git, test runners, lint, build, listings, logs) | 🟢 89 built-in commands across 25 pattern families, credential-safe, user-extensible via TOML; 564 → 115 tokens on a pytest run | 🟢 SmartCrusher, CodeCompressor, Kompress-v2, image compression | 🟢 100+ command filters | 🟢 Command-aware filters, user-extensible via TOML |
 | **Search / grep output** | 🟢 Web, grep, and search results condensed to top hits plus a count; 500 lines → 20 | 🔴 | 🔴 | — |
 | **Tabular and JSON output** (jq, yq, csvtool, mlr, CSV, YAML, TOML) | 🟢 Value-preserving columnar compression | 🟢 SmartCrusher | 🔴 | — |
 | **File re-reads, delta mode** (changed files read again this session) | 🟢 Serves only the unified diff; 2,000-token re-read → ~50 tokens | 🔴 | 🔴 | — |
@@ -44,10 +44,10 @@ The table covers the six tools most often compared to Token Optimizer. Status: �
 
 | Feature | Token Optimizer | Headroom | RTK | Boost | context-mode | `/context` |
 |---|---|---|---|---|---|---|
-| Tool output compression | 🟢 113 commands across 25 pattern families, credential-safe, toggleable, user-extensible via TOML | 🟢 SmartCrusher, CodeCompressor, Kompress-v2, image compression | 🟢 100+ command filters | 🟢 Command-aware filters | 🟢 Sandbox + summary | 🔴 |
+| Tool output compression | 🟢 89 built-in commands across 25 pattern families, credential-safe, toggleable, user-extensible via TOML | 🟢 SmartCrusher, CodeCompressor, Kompress-v2, image compression | 🟢 100+ command filters | 🟢 Command-aware filters | 🟢 Sandbox + summary | 🔴 |
 | No command rewriting required | 🟢 Hook-wired on Bash, Read, Agent, and MCP; fires automatically | 🟢 Transparent proxy | 🟢 Hook-based rewrite | 🟢 `boost init` wires supported agents; terminal use can be prefixed | 🟡 Automatic on hook-capable platforms | N/A Native command |
 | Full original recoverable after compression | 🟡 Capped credential-redacted archive retrievable while retained; no universal byte-exact recovery | 🟢 Reversible retrieval | 🟡 Full output saved on command failure | 🟢 Vendor documents command-output recovery | — | N/A Does not compress |
-| Register a custom command filter | 🟢 Custom TOML filters (`command-filters.toml`, additive + exclude, compose with the 111 built-ins, safety-gated, fail-open) | — | 🟢 Custom TOML filters | 🟢 TOML filters for your own CLIs | — | N/A |
+| Register a custom command filter | 🟢 Custom TOML filters (`command-filters.toml`, additive + exclude, compose with the 89 built-ins, safety-gated, fail-open) | — | 🟢 Custom TOML filters | 🟢 TOML filters for your own CLIs | — | N/A |
 | User-tunable configuration | 🟢 Supported controls with adapter-specific defaults; archive exemptions and `.contextignore`; internal markers are not user settings | 🟢 Documented configuration | 🟢 `config.toml` and environment controls | 🟢 Filter TOML | 🟢 Documented configuration | N/A |
 | Re-read file skeletons | 🟢 Repeat reads use bounded maps; first-read retarget keeps the target full and maps related files. Reference graph and PageRank; tree-sitter opt-in adds grammars | 🔴 | 🔴 | — | 🔴 | 🔴 |
 | Tabular/JSON compression | 🟢 Value-preserving columnar | 🟢 SmartCrusher | 🔴 | — | 🟡 Generic summary | 🔴 |

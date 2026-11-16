@@ -73,7 +73,7 @@ Compression applies only to recognized safe commands. If you need the complete, 
 
 ## Custom filters (TOML)
 
-The 89 built-in commands cover most verbose CLI output, but you can extend the allowlist with your own read-only commands, and exclude commands you never want compressed, without touching the code. Point Token Optimizer at a TOML file:
+The built-in allowlist has 89 entries: 45 single command names and 44 two-word entries. Some overlap, so this is not a count of distinct commands. The compressor registers 25 output handlers, including a raw passthrough. You can add or exclude commands through a TOML file:
 
 - Default location: `<runtime-home>/token-optimizer/command-filters.toml`
 - Override the path with `TOKEN_OPTIMIZER_COMMAND_FILTERS`
@@ -92,7 +92,7 @@ commands = ["git status", "ls -la"]
 
 Your filters **compose with** the built-ins rather than replacing them. Built-in detection always runs first, so an `add` entry only extends the set, never overrides a built-in handler for the same command.
 
-The safety model is immutable and enforced in the hook and dispatch code, so user config cannot widen it. The loader rejects an `add` entry that names a shell interpreter (`bash`, `python`, `node`, ...), a privilege-escalation wrapper (`sudo`, `su`, `doas`), a destructive write subcommand (`rm`, `chmod`, `dd`, ...), or any command containing shell metacharacters (`;`, `|`, `$`, ...). A malformed file fails open: filters are skipped and the built-ins keep working.
+Custom additions are checked when loaded and again when matched. The guard rejects known destructive commands, dangerous wildcard matches, shell substitutions and redirects. Its lists are bounded, so it is not a general shell-safety proof. A malformed file skips custom filters; built-ins keep working.
 
 ## Defaults and thresholds
 

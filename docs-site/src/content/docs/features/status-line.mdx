@@ -19,7 +19,7 @@ Claude | med | my-project | (main) | ████████░░ 78% | Qualit
 Saved $53/30d · 1.2M kept out ↗ | Drag:context fill | compacted 1× | 2h14m | 5 hours 61% ↺2:14p | week 34%
 ```
 
-The savings headline is the same one number the desktop band and the dashboard Savings page show, so no surface quotes a different figure: this week's savings once they pass $20, otherwise the last 30 days from $60 with the tokens kept out of context, otherwise a tokens-only figure once a million tokens have been kept out, and nothing at all below those floors. It is read from the status-bar cache that `measure.py status-bar` writes, so the status line never spawns Python to get it, and in terminals with hyperlink support it is a clickable link to the dashboard's Savings page. The usage-limit fragments (the 5-hour window with its reset time, and the week) appear on Pro/Max accounts once the first API response of the session reports them, colored by pressure.
+The savings headline uses the shared savings calculation: the last 30 days from $60 with tokens kept out of context when positive, otherwise a tokens-only figure from one million tokens, and nothing below those floors. The display also supports a $20 weekly floor, but the current calculation does not supply a weekly figure. It is read from the status-bar cache that `measure.py status-bar` writes, so the status line never spawns Python to get it, and in terminals with hyperlink support it is a clickable link to the dashboard's Savings page. The usage-limit fragments (the 5-hour window with its reset time, and the week) appear on Pro/Max accounts once the first API response of the session reports them, colored by pressure.
 
 When the terminal reports its width (Claude Code v2.1.153+), each row's segments reflow onto as many physical lines as the width allows instead of being clipped. `TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim` collapses the whole thing to a single line: the first row, with the savings headline appended.
 
@@ -111,7 +111,7 @@ Automatically. The fill bar updates on every status-line render. The quality gra
 | Fill color bands | under 50 green, under 70 yellow, under 80 orange, 80+ red | On the used percentage |
 | Quality grades | S 90+, A 80+, B 70+, C 55+, D 40+, F below | Same score as quality scoring |
 | Staleness mark | `~` after 5 minutes | Cache older than the guard window |
-| Savings headline floors | $20 this week, else $60 over 30 days, else 1M tokens | Below every floor the headline shows nothing |
+| Savings headline floors | $60 over 30 days, else 1M tokens | The $20 weekly floor is implemented but has no weekly input yet |
 | Narrow terminals | Reflow to fit | When the host exports `COLUMNS`; `TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim` forces one line |
 | Quality-cache refresh | ~2-minute throttle | On UserPromptSubmit and PostToolUse |
 | Auto-install | on (plugin) | When `statusLine` slot is empty |

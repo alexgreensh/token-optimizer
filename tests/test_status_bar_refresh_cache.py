@@ -37,7 +37,8 @@ def test_failed_refresh_backs_off_before_retrying(sb, monkeypatch):
 
 def test_failed_refresh_backoff_grows_and_is_capped(sb):
     from _measure import status_bar_refresh
-    for n, seconds in [(1, 60), (2, 120), (10, 3600)]:
+    # Doubles from 1 min, capped at 10 min so recovery after a busy spell is quick.
+    for n, seconds in [(1, 60), (2, 120), (4, 480), (5, 600), (7, 600), (10, 600)]:
         assert status_bar_refresh.retry_delay(n) == seconds
     sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
     sb._status_bar_write_cache(SID_A, None, 'failed')

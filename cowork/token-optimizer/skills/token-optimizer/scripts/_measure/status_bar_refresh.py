@@ -22,7 +22,7 @@ def atomic_write(facade, path, data):
 
 
 def retry_delay(failures):
-    return min(3600, 60 * 2 ** min(max(0, int(failures) - 1), 6))
+    return min(600, 60 * 2 ** min(max(0, int(failures) - 1), 6))
 
 
 def write_cache(facade, session_id, savings, reason):

@@ -503,9 +503,12 @@ def test_readonly_show_refuses_changed_file_and_does_not_log(sandbox, monkeypatc
     assert not led._trends_db().exists()
 
 
+# "?" is not a legal file-name character on Windows; "#" and "%" still exercise URI escaping there.
+_ESCAPE_DIR = "proj #%" if os.name == "nt" else "proj?#%"
+
 def test_immutable_fallback_and_escaped_path(sandbox, monkeypatch):
     import codemap_index as ci
-    proj = _project(sandbox / "proj?#%")
+    proj = _project(sandbox / _ESCAPE_DIR)
     idx = ci.CodeIndex.open(proj)
     idx.sync(30)
     idx.close()
@@ -526,7 +529,7 @@ def test_immutable_fallback_and_escaped_path(sandbox, monkeypatch):
 def test_hint_real_warm_and_hook_output(sandbox, monkeypatch):
     import codemap_index as ci
     import codemap_hint as hint
-    proj = _project(sandbox / "proj?#%")
+    proj = _project(sandbox / _ESCAPE_DIR)
     monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP_HINT", "1")
     payload = {"cwd": str(proj), "session_id": SESSION, "agent_id": "child", "agent_type": "Explore"}
     assert not hint.session_text({"session_id": SESSION})
@@ -588,6 +591,7 @@ def test_background_warm_builds_index(sandbox, monkeypatch):
     assert not hint.session_text({'cwd': str(empty), 'session_id': SESSION})
 
 
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="legacy index cleanup is POSIX-only: it needs no-follow, dir_fd file operations")
 def test_old_index_cleanup_is_bounded_and_safe(sandbox, monkeypatch):
     import codemap_hint as hint
 
@@ -640,6 +644,7 @@ def test_old_index_cleanup_is_bounded_and_safe(sandbox, monkeypatch):
     assert sum(path.exists() for path in (extra1, extra2)) == 1
 
 
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="legacy index cleanup is POSIX-only: it needs no-follow, dir_fd file operations")
 def test_sessionstart_cleanup_daily_and_engine_gate(sandbox, monkeypatch):
     import importlib.util
     import codemap_index as ci

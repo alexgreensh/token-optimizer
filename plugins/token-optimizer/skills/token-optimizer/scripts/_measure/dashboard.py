@@ -4191,12 +4191,22 @@ def status_bar_payload(session_id, transcript=None, sync=None):
         out["savings_reason"] = cached.get("reason") if out["savings"] is None else None
         out["savings_age_s"] = round(age, 1)
         out["savings_refresh_failed"] = bool(cached.get("refresh_failed", cached.get("stale")))
-        stale = bool(cached.get("stale")) or age > _measure_facade._STATUS_BAR_CACHE_MAX_AGE_S or not _measure_facade.Path(_measure_facade.TRENDS_DB).exists()
+        db_exists = _measure_facade.Path(_measure_facade.TRENDS_DB).exists()
+        # The cached "no savings" reason only means the database was missing at
+        # that refresh; decide on the database as it is now, or it sticks forever.
+        no_db_cached = cached.get("reason") == "no savings recorded yet"
+        stale = bool(cached.get("stale")) or age > _measure_facade._STATUS_BAR_CACHE_MAX_AGE_S or not db_exists
         if out["savings"] is None:
-            out["savings_state"] = "unavailable" if cached.get("reason") == "no savings recorded yet" else "loading"
+            out["savings_state"] = "unavailable" if no_db_cached and not db_exists else "loading"
+            if no_db_cached and db_exists:
+                out["savings_reason"] = "computing savings"
         else:
             out["savings_state"] = "stale" if stale else "fresh"
-        if stale and cached.get("reason") != "no savings recorded yet" and _measure_facade.time.time() - float(cached.get("last_attempt", 0)) >= status_bar_refresh.retry_delay(cached.get("failures", 0)):
+        if no_db_cached:
+            start = db_exists
+        else:
+            start = stale and _measure_facade.time.time() - float(cached.get("last_attempt", 0)) >= status_bar_refresh.retry_delay(cached.get("failures", 0))
+        if start:
             out["refresh_started"] = _measure_facade._status_bar_start_refresh(sid)
     except Exception:
         from . import status_bar_refresh

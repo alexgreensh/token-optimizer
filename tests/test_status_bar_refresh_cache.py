@@ -188,3 +188,27 @@ def test_pricing_snapshot_reads_configuration_once_per_compute(sb, monkeypatch):
     assert len(reads) == 1
     sb._load_pricing_tier()
     assert len(reads) == 2
+
+
+def test_no_database_reason_recovers_once_the_database_exists(sb, monkeypatch):
+    spawns = []
+    monkeypatch.setattr(sb, "spawn_detached", lambda argv, **kw: spawns.append(argv) or object())
+    assert not os.path.exists(sb.TRENDS_DB)
+    first = sb.status_bar_payload(SID_A, sync=True)
+    assert first["savings_reason"] == "no savings recorded yet"
+    # Still no database: honest reason, no refresh.
+    out = sb.status_bar_payload(SID_A)
+    assert (out["savings_state"], out["savings_reason"], out["refresh_started"]) == ("unavailable", "no savings recorded yet", False)
+    assert spawns == []
+    # Savings start being recorded: the very next poll refreshes, for any session.
+    _three_day_fixture(sb)
+    for sid, started in ((SID_A, True), (SID_B, False)):
+        out = sb.status_bar_payload(sid)
+        assert out["savings_state"] == "loading"
+        assert out["savings_reason"] == "computing savings"
+        # One shared refresh: the second session sees it already running.
+        assert out["refresh_started"] is started
+    assert len(spawns) == 1
+    # The refresh it starts replaces the cached reason with real numbers.
+    done = sb.status_bar_payload(SID_A, sync=True)
+    assert done["savings_state"] == "fresh" and done["savings"]["session_tokens"] == 6500

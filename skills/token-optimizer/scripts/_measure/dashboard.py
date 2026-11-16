@@ -3730,52 +3730,13 @@ def _status_bar_savings_or_reason(session_id, _retried=None):
 
 
 def _status_bar_write_cache(session_id, savings, reason):
-    _measure_facade = _compat.facade()
-    d = _measure_facade._status_bar_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    path = _measure_facade._status_bar_cache_path(session_id)
-    stale, failed = False, savings is None
-    if savings is None:
-        prior = _measure_facade._status_bar_read_cache(session_id)
-        if prior is not None and prior.get("savings") is not None:
-            savings, stale = prior["savings"], True
-            reason = None
-    tmp = path.with_name(f".{path.name}.{_measure_facade.os.urandom(16).hex()}.tmp")
-    tmp.write_text(_measure_facade.json.dumps({
-        "schema": _measure_facade._STATUS_BAR_SCHEMA,
-        "computed_at": prior["computed_at"] if stale else _measure_facade.time.time(),
-        "savings": savings,
-        "reason": "still counting savings, retrying" if savings is None else None, "stale": stale,
-        "last_attempt": _measure_facade.time.time() if failed else 0,
-    }), encoding="utf-8")
-    _measure_facade.os.replace(tmp, path)
-    # Bound the directory: drop caches for sessions untouched for 30 days.
-    cutoff = _measure_facade.time.time() - _measure_facade._STATUS_BAR_CACHE_RETENTION_S
-    orphan_cutoff = _measure_facade.time.time() - 86400
-    try:
-        for f in d.iterdir():
-            try:
-                name = f.name
-                # Temp files and set-aside locks left by a crash go after a day.
-                orphan = name.endswith((".tmp", ".stale", ".release"))
-                if (orphan and f.stat().st_mtime < orphan_cutoff) or (
-                        name.endswith((".json", ".session")) and f.stat().st_mtime < cutoff):
-                    f.unlink()
-            except OSError:
-                pass
-    except OSError:
-        pass
+    from . import status_bar_refresh
+    return status_bar_refresh.write_cache(_compat.facade(), session_id, savings, reason)
 
 
 def _status_bar_read_cache(session_id):
-    _measure_facade = _compat.facade()
-    try:
-        data = _measure_facade.json.loads(_measure_facade._status_bar_cache_path(session_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or not isinstance(data.get("computed_at"), (int, float)):
-        return None
-    return data
+    from . import status_bar_refresh
+    return status_bar_refresh.read_cache(_compat.facade(), session_id)
 
 
 def _status_bar_start_refresh(session_id):
@@ -4155,6 +4116,7 @@ def status_bar_payload(session_id, transcript=None, sync=None):
         "savings": None,
         "savings_state": "unavailable",
         "savings_age_s": None,
+        "savings_refresh_failed": False,
         "savings_reason": None,
         "refresh_started": False,
         "last_request_epoch": None,
@@ -4228,12 +4190,13 @@ def status_bar_payload(session_id, transcript=None, sync=None):
         out["savings"] = status_bar_refresh.for_session(_measure_facade, sid, cached.get("savings"))
         out["savings_reason"] = cached.get("reason") if out["savings"] is None else None
         out["savings_age_s"] = round(age, 1)
+        out["savings_refresh_failed"] = bool(cached.get("refresh_failed", cached.get("stale")))
         stale = bool(cached.get("stale")) or age > _measure_facade._STATUS_BAR_CACHE_MAX_AGE_S or not _measure_facade.Path(_measure_facade.TRENDS_DB).exists()
         if out["savings"] is None:
-            out["savings_state"] = "loading"
+            out["savings_state"] = "unavailable" if cached.get("reason") == "no savings recorded yet" else "loading"
         else:
             out["savings_state"] = "stale" if stale else "fresh"
-        if stale and _measure_facade.time.time() - float(cached.get("last_attempt", 0)) >= 60:
+        if stale and cached.get("reason") != "no savings recorded yet" and _measure_facade.time.time() - float(cached.get("last_attempt", 0)) >= status_bar_refresh.retry_delay(cached.get("failures", 0)):
             out["refresh_started"] = _measure_facade._status_bar_start_refresh(sid)
     except Exception:
         from . import status_bar_refresh

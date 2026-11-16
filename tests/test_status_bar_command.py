@@ -402,6 +402,101 @@ def test_failed_refresh_backs_off_before_retrying(sb, monkeypatch):
     assert not spawns
 
 
+def test_failed_refresh_backoff_grows_and_is_capped(sb):
+    from _measure import status_bar_refresh
+    for n, seconds in [(1, 60), (2, 120), (10, 3600)]:
+        assert status_bar_refresh.retry_delay(n) == seconds
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    sb._status_bar_write_cache(SID_A, None, 'failed')
+    sb._status_bar_write_cache(SID_A, None, 'failed again')
+    cached = sb._status_bar_read_cache(SID_A)
+    assert cached['failures'] == 2
+    assert cached['savings']['session_tokens'] == 5
+
+
+def test_upgrade_uses_newest_legacy_savings_as_stale(sb, monkeypatch):
+    _three_day_fixture(sb)
+    monkeypatch.setattr(sb, 'spawn_detached', lambda *args, **kwargs: object())
+    result = sb.status_bar_payload(SID_A, sync=True)
+    global_path = sb._status_bar_cache_path(SID_A)
+    legacy = global_path.with_name(SID_A + '.json')
+    legacy.write_text(global_path.read_text())
+    older = json.loads(global_path.read_text())
+    older['computed_at'] -= 60
+    older['savings']['total_30d_tokens'] = 1
+    global_path.with_name(SID_B + '.json').write_text(json.dumps(older))
+    global_path.unlink()
+    out = sb.status_bar_payload(SID_B)
+    assert out['savings']['total_30d_tokens'] == result['savings']['total_30d_tokens']
+    assert out['savings_state'] == 'stale'
+    assert out['savings_refresh_failed'] is False
+
+
+def test_no_database_has_an_honest_reason_on_sync(sb):
+    out = sb.status_bar_payload(SID_A, sync=True)
+    assert out['savings'] is None
+    assert out['savings_reason'] == 'no savings recorded yet'
+
+
+def test_second_session_never_inherits_first_session_on_query_failure(sb, monkeypatch):
+    _three_day_fixture(sb)
+    sb.status_bar_payload(SID_A, sync=True)
+    monkeypatch.setattr(sb, '_open_trends_db_readonly', lambda: (_ for _ in ()).throw(OSError('busy')))
+    out = sb.status_bar_payload(SID_B)
+    assert out['savings']['session_tokens'] is None
+
+
+def test_foreground_poll_uses_saved_session_without_query(sb, monkeypatch):
+    from _measure import status_bar_refresh
+    _three_day_fixture(sb)
+    sb.status_bar_payload(SID_A, sync=True)
+    path = status_bar_refresh._session_path(sb, SID_A)
+    old = time.time() - 61
+    os.utime(path, (old, old))
+    calls = []
+    monkeypatch.setattr(sb, '_open_trends_db_readonly', lambda: calls.append(1))
+    out = sb.status_bar_payload(SID_A)
+    assert out['savings']['session_tokens'] == 6500
+    assert not calls
+
+
+def test_cache_replace_retries_and_removes_temp_file(sb, monkeypatch):
+    real = sb.os.replace
+    attempts = []
+    def flaky(source, dest):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise PermissionError('busy')
+        return real(source, dest)
+    monkeypatch.setattr(sb.os, 'replace', flaky)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 5
+    assert len(attempts) == 2
+    assert not list(sb._status_bar_dir().glob('*.tmp'))
+
+
+def test_cache_replace_failure_keeps_existing_number_and_cleans_temp(sb, monkeypatch):
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    monkeypatch.setattr(sb.os, 'replace', lambda *args: (_ for _ in ()).throw(PermissionError('busy')))
+    with pytest.raises(PermissionError):
+        sb._status_bar_write_cache(SID_A, {'session_tokens': 9}, None)
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 5
+    assert not list(sb._status_bar_dir().glob('*.tmp'))
+
+
+def test_locked_global_cache_keeps_new_result_in_pending_file(sb, monkeypatch):
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    real = sb.os.replace
+    def locked(source, dest):
+        if str(dest).endswith('global.json'):
+            raise PermissionError('busy')
+        return real(source, dest)
+    monkeypatch.setattr(sb.os, 'replace', locked)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 9}, None)
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 9
+    assert not list(sb._status_bar_dir().glob('*.tmp'))
+
+
 @pytest.mark.parametrize("failure", ["returned", "raised"])
 def test_failed_sync_keeps_last_good_as_stale(sb, monkeypatch, failure):
     _three_day_fixture(sb)

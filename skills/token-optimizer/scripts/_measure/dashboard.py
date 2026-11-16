@@ -3548,12 +3548,12 @@ def _status_bar_key(session_id):
 
 def _status_bar_cache_path(session_id):
     _measure_facade = _compat.facade()
-    return _measure_facade._status_bar_dir() / f"{_measure_facade._status_bar_key(session_id)}.json"
+    return _measure_facade._status_bar_dir() / "global.json"
 
 
 def _status_bar_lock_path(session_id):
     _measure_facade = _compat.facade()
-    return _measure_facade._status_bar_dir() / f"{_measure_facade._status_bar_key(session_id)}.refresh.lock"
+    return _measure_facade._status_bar_dir() / "global.refresh.lock"
 
 
 def _realized_savings_buckets(conn, cutoff, session_uuid=None, by_day=None):
@@ -3734,17 +3734,19 @@ def _status_bar_write_cache(session_id, savings, reason):
     d = _measure_facade._status_bar_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = _measure_facade._status_bar_cache_path(session_id)
+    stale, failed = False, savings is None
     if savings is None:
-        # A failed refresh keeps the last good figures (they read as stale), never null them.
         prior = _measure_facade._status_bar_read_cache(session_id)
         if prior is not None and prior.get("savings") is not None:
-            return
-    tmp = path.with_name(f".{path.name}.{_measure_facade.os.getpid()}.tmp")
+            savings, stale = prior["savings"], True
+            reason = None
+    tmp = path.with_name(f".{path.name}.{_measure_facade.os.urandom(16).hex()}.tmp")
     tmp.write_text(_measure_facade.json.dumps({
         "schema": _measure_facade._STATUS_BAR_SCHEMA,
-        "computed_at": _measure_facade.time.time(),
+        "computed_at": prior["computed_at"] if stale else _measure_facade.time.time(),
         "savings": savings,
-        "reason": reason,
+        "reason": "still counting savings, retrying" if savings is None else None, "stale": stale,
+        "last_attempt": _measure_facade.time.time() if failed else 0,
     }), encoding="utf-8")
     _measure_facade.os.replace(tmp, path)
     # Bound the directory: drop caches for sessions untouched for 30 days.
@@ -3757,7 +3759,7 @@ def _status_bar_write_cache(session_id, savings, reason):
                 # Temp files and set-aside locks left by a crash go after a day.
                 orphan = name.endswith((".tmp", ".stale", ".release"))
                 if (orphan and f.stat().st_mtime < orphan_cutoff) or (
-                        name.endswith(".json") and f.stat().st_mtime < cutoff):
+                        name.endswith((".json", ".session")) and f.stat().st_mtime < cutoff):
                     f.unlink()
             except OSError:
                 pass
@@ -4210,39 +4212,32 @@ def status_bar_payload(session_id, transcript=None, sync=None):
 
     try:
         if sync:
-            savings, reason = _measure_facade._status_bar_savings_or_reason(sid)
-            try:
-                _measure_facade._status_bar_write_cache(sid, savings, reason)
-            except OSError:
-                pass
-            out["savings"], out["savings_reason"] = savings, reason
-            out["savings_age_s"] = 0.0
-            out["savings_state"] = "fresh" if savings is not None else "unavailable"
-            return out
-        if not _measure_facade.Path(_measure_facade.TRENDS_DB).exists():
+            from . import status_bar_refresh
+            return status_bar_refresh.sync(_measure_facade, sid, out)
+        cached = _measure_facade._status_bar_read_cache(sid)
+        if cached is None and not _measure_facade.Path(_measure_facade.TRENDS_DB).exists():
             out["savings_reason"] = "no savings recorded yet"
             return out
-        cached = _measure_facade._status_bar_read_cache(sid)
         if cached is None:
             out["savings_state"] = "loading"
             out["savings_reason"] = "computing savings"
             out["refresh_started"] = _measure_facade._status_bar_start_refresh(sid)
             return out
         age = max(0.0, _measure_facade.time.time() - float(cached["computed_at"]))
-        out["savings"] = cached.get("savings")
+        from . import status_bar_refresh
+        out["savings"] = status_bar_refresh.for_session(_measure_facade, sid, cached.get("savings"))
         out["savings_reason"] = cached.get("reason") if out["savings"] is None else None
         out["savings_age_s"] = round(age, 1)
-        stale = age > _measure_facade._STATUS_BAR_CACHE_MAX_AGE_S
+        stale = bool(cached.get("stale")) or age > _measure_facade._STATUS_BAR_CACHE_MAX_AGE_S or not _measure_facade.Path(_measure_facade.TRENDS_DB).exists()
         if out["savings"] is None:
-            out["savings_state"] = "unavailable"
+            out["savings_state"] = "loading"
         else:
             out["savings_state"] = "stale" if stale else "fresh"
-        if stale:
+        if stale and _measure_facade.time.time() - float(cached.get("last_attempt", 0)) >= 60:
             out["refresh_started"] = _measure_facade._status_bar_start_refresh(sid)
     except Exception:
-        out["savings"] = None
-        out["savings_state"] = "unavailable"
-        out["savings_reason"] = "savings unavailable"
+        from . import status_bar_refresh
+        out = status_bar_refresh.failed_payload(_measure_facade, sid, out)
     return out
 
 
@@ -4285,7 +4280,7 @@ def _status_bar_cli(args):
         # Killed by its budget: leave a reason for the band and free the lock.
         _measure_facade = _compat.facade()
         try:
-            _measure_facade._status_bar_write_cache(sid, None, "savings took too long to compute")
+            _measure_facade._status_bar_write_cache(sid, None, "still counting savings, retrying")
         except OSError:
             pass
         _measure_facade._status_bar_release_lock(sid, token)
@@ -4295,8 +4290,8 @@ def _status_bar_cli(args):
     try:
         payload = _measure_facade.status_bar_payload(session, transcript=_opt("--transcript"), sync=sync)
     except Exception:
-        payload = {"schema": _measure_facade._STATUS_BAR_SCHEMA, "session_id": sid, "savings": None,
-                   "savings_state": "unavailable", "savings_reason": "savings unavailable"}
+        from . import status_bar_refresh
+        payload = status_bar_refresh.failed_payload(_measure_facade, sid, {"schema": _measure_facade._STATUS_BAR_SCHEMA, "session_id": sid})
     finally:
         if token:
             _measure_facade._status_bar_release_lock(sid, token)

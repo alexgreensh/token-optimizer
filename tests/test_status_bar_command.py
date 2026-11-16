@@ -382,6 +382,70 @@ def test_no_cache_starts_refresh_and_reports_loading(sb, monkeypatch):
     assert len(spawns) == 1
 
 
+def test_new_session_reuses_global_savings_and_counts_its_own_session(sb):
+    _three_day_fixture(sb)
+    a = sb.status_bar_payload(SID_A, sync=True)
+    b = sb.status_bar_payload(SID_B)
+    assert b['savings']['total_30d_tokens'] == a['savings']['total_30d_tokens']
+    assert b['savings']['session_tokens'] == 75000
+
+
+def test_failed_refresh_backs_off_before_retrying(sb, monkeypatch):
+    _three_day_fixture(sb)
+    sb.status_bar_payload(SID_A, sync=True)
+    sb._status_bar_write_cache(SID_A, None, 'failed')
+    spawns = []
+    monkeypatch.setattr(sb, 'spawn_detached', lambda *a, **k: spawns.append(a) or object())
+    out = sb.status_bar_payload(SID_B)
+    assert out['savings_state'] == 'stale'
+    assert out['refresh_started'] is False
+    assert not spawns
+
+
+@pytest.mark.parametrize("failure", ["returned", "raised"])
+def test_failed_sync_keeps_last_good_as_stale(sb, monkeypatch, failure):
+    _three_day_fixture(sb)
+    good = sb.status_bar_payload(SID_A, sync=True)["savings"]
+    def fail(_sid):
+        if failure == "raised":
+            raise RuntimeError("compute failed")
+        return None, "compute failed"
+    monkeypatch.setattr(sb, "_status_bar_savings_or_reason", fail)
+    result = sb.status_bar_payload(SID_A, sync=True)
+    assert result["savings"] == good
+    assert result["savings_state"] == "stale"
+    assert result["savings_reason"] is None
+    assert sb.status_bar_payload(SID_A)["savings_state"] == "stale"
+
+
+def test_timeout_keeps_last_good_as_stale(sb, monkeypatch):
+    _three_day_fixture(sb)
+    good = sb.status_bar_payload(SID_A, sync=True)["savings"]
+    token = sb._status_bar_acquire_lock(SID_A)
+    monkeypatch.setenv(sb._STATUS_BAR_LOCK_TOKEN_ENV, token)
+    monkeypatch.setattr(sb, "_install_hook_budget", lambda _seconds, on_timeout: on_timeout())
+    monkeypatch.setattr(sb, "status_bar_payload", lambda *a, **kw: {})
+    with pytest.raises(SystemExit):
+        sb._status_bar_cli(["--session", SID_A, "--sync", "--release-lock"])
+    cached = sb._status_bar_read_cache(SID_A)
+    assert cached["savings"] == good
+    assert cached["stale"] is True
+    assert cached["reason"] is None
+
+
+def test_cli_exception_keeps_last_good(sb, monkeypatch, capsys):
+    _three_day_fixture(sb)
+    good = sb.status_bar_payload(SID_A, sync=True)['savings']
+    def fail(*_args, **_kwargs):
+        raise RuntimeError('failed')
+    monkeypatch.setattr(sb, 'status_bar_payload', fail)
+    with pytest.raises(SystemExit):
+        sb._status_bar_cli(['--session', SID_A])
+    result = json.loads(capsys.readouterr().out)
+    assert result['savings'] == good
+    assert result['savings_state'] == 'stale'
+
+
 def test_full_compute_within_5s_on_50k_rows(sb):
     base = datetime.now() - timedelta(days=29)
     rows = []
@@ -702,9 +766,8 @@ def test_status_bar_json_never_carries_infinity_or_nan(sb):
 
 def test_long_session_ids_get_short_file_names(sb):
     long_id = "x" * 400
-    name = sb._status_bar_cache_path(long_id).name
-    assert len(name) < 120 and name.endswith(".json")
-    assert sb._status_bar_cache_path("short-id-1") .name == "short-id-1.json"
+    assert len(sb._status_bar_key(long_id)) < 120
+    assert sb._status_bar_cache_path(long_id) == sb._status_bar_cache_path("short-id-1")
 
 
 def test_release_never_deletes_another_owners_lock(sb):

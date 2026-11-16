@@ -16,12 +16,15 @@ class Cache:
         self.dirty = False
         self.pending = 0
         try:
-            data = json.loads(self.path.read_text(encoding='utf-8'))
             self.version = _version()
-            if data.get('version') == self.version and isinstance(data.get('entries'), dict):
+        except OSError:
+            self.version = None
+        try:
+            data = json.loads(self.path.read_text(encoding='utf-8'))
+            if self.version is not None and data.get('version') == self.version and isinstance(data.get('entries'), dict):
                 self.entries = data.get('entries', {})
         except (OSError, ValueError, TypeError, AttributeError):
-            self.version = None
+            pass
 
     def observe(self, path):
         path = Path(path)
@@ -48,11 +51,11 @@ class Cache:
             return None
 
     def save(self):
-        if not self.dirty:
+        if not self.dirty or self.version is None:
             return
         try:
             tmp = self.path.with_name('.%s.%s.tmp' % (self.path.name, uuid.uuid4().hex))
-            tmp.write_text(json.dumps({'version': _version(), 'entries': self.entries}), encoding='utf-8')
+            tmp.write_text(json.dumps({'version': self.version, 'entries': self.entries}), encoding='utf-8')
             os.replace(tmp, self.path)
             self.dirty = False
             self.pending = 0

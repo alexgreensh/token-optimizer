@@ -247,6 +247,20 @@ def test_observation_cache_invalidates_on_growth_mtime_and_deletion(tmp_path):
     assert cache.observe(transcript) is None
 
 
+def test_observation_cache_keeps_version_from_start_of_scan(tmp_path, monkeypatch):
+    from _measure import setup_observation_cache
+    transcript = tmp_path / 'session.jsonl'
+    _transcript(transcript, '2030-01-01T00:00:00Z', 100, 8)
+    old = time.time_ns() - 10_000_000_000
+    os.utime(transcript, ns=(old, old))
+    monkeypatch.setattr(setup_observation_cache, '_version', lambda: {'code': 1})
+    cache = setup_observation_cache.Cache(tmp_path)
+    assert cache.observe(transcript)['total'] == 100
+    monkeypatch.setattr(setup_observation_cache, '_version', lambda: {'code': 2})
+    cache.save()
+    assert setup_observation_cache.Cache(tmp_path).entries == {}
+
+
 # ---- card and wiring --------------------------------------------------------
 
 def test_card_words_each_status_plainly(tmp_path):

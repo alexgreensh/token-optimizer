@@ -558,3 +558,31 @@ def test_failure_stage_and_stats(sandbox, monkeypatch, capsys):
         assert conn.execute("SELECT stage, code FROM codemap_failures").fetchone() == ("lookup", "unknown")
     finally:
         conn.close()
+
+
+def test_background_warm_builds_index(sandbox, monkeypatch):
+    import codemap_index as ci
+    import codemap_hint as hint
+    proj = _project(sandbox / 'proj')
+    monkeypatch.setenv('TOKEN_OPTIMIZER_CODEMAP_HINT', '1')
+    assert hint.warm_index(proj)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        db = ci.index_path(proj)
+        try:
+            conn = sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True)
+            try:
+                row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
+            finally:
+                conn.close()
+            if row and row[0] == '1':
+                break
+        except sqlite3.Error:
+            pass
+        time.sleep(0.1)
+    else:
+        pytest.fail('background index did not complete')
+    assert hint.session_text({'cwd': str(proj), 'session_id': SESSION})
+    empty = sandbox / 'empty'
+    empty.mkdir()
+    assert not hint.session_text({'cwd': str(empty), 'session_id': SESSION})

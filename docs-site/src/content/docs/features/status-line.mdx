@@ -125,6 +125,18 @@ Buttons: **Clean up** compacts with Token Optimizer's guidance. **Start fresh** 
 
 The cache countdown prefers Claude Code's native `prompt_cache` object (v2.1.251+), bridged by the terminal status line: TTL, expiry, and warm/cold state describe the main conversation, not subagents. When that bridge is unavailable, it falls back to a transcript-based estimate: 1 hour on Claude plans or 5 minutes on the API. Native and estimated sources are distinguished; no countdown is shown without an anchor. Use the -/+ size control for a remembered one-line/full choice, or `TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim` for the initial desktop and terminal size. Hide the bar with `TOKEN_OPTIMIZER_STATUS_BAR=0`, or keep Clawd still with `TOKEN_OPTIMIZER_STATUS_BAR_ANIMATE=0`, in your settings `env`. Install steps and requirements are in [Claude desktop app](/install/claude-desktop/).
 
+### How the savings figure refreshes
+
+The 30-day savings figure is counted once for the whole machine, not once per session. Every open session reads the same cached result, and one background refresh at a time updates it. Only the "saved in this session" figure is looked up per session, and it is reused for five minutes.
+
+- **After 60 seconds the cached figure counts as stale,** so the next poll starts one background refresh. The refresh has 90 seconds to finish.
+- **The last good number stays on screen** while a refresh runs and when one fails. A failed refresh never replaces a number with an error. The unfolded row then adds "Last updated N min ago. Retrying." The note appears only after a refresh actually failed, not during the normal 60-second cycle.
+- **Failed refreshes back off.** The wait before the next try starts at one minute and doubles with each failure in a row, up to one hour. A success resets it.
+- **"Still counting savings" shows only before the first number exists.** A new session on a machine that already has a number shows it at once. If Token Optimizer has recorded nothing yet, the band says so instead of "still counting".
+- **After an upgrade,** the first refresh starts from the newest figure the old per-session caches held, marked stale, so the band does not start blank.
+- **If the plugin cannot be found, is too old, or Python is missing,** the band drops the number and says why. It does not keep an old figure behind a permanent problem.
+- **The green savings chip on the title row works again.** The band was looking for the headline in the wrong place in the data, so the chip never appeared. It shows only on a calm line (good tone, no button) and only when the headline has a number worth showing.
+
 ## Risk rating
 
 **Terminal status line: none.** It only displays, and installing it only writes the `statusLine` setting (and only when the slot is empty). A missing or stale cache shows `--` or a `~`-marked grade, never a wrong action.

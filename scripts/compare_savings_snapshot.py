@@ -89,6 +89,7 @@ def main():
         env.pop('CLAUDE_PROJECT_DIR', None)
         cwd = home / 'workdir'
         cwd.mkdir(exist_ok=True)
+        load_before = os.getloadavg()[0]
         start = time.perf_counter()
         proc = subprocess.run([sys.executable, str(code / 'skills/token-optimizer/scripts/measure.py'), 'status-bar', '--session', session, '--sync'],
                               cwd=cwd, env=env, text=True, capture_output=True, timeout=1800)
@@ -101,7 +102,7 @@ def main():
             raise RuntimeError(label + ': no savings: ' + str(payload.get('savings_reason')))
         savings.pop('computed_at', None)
         results[label] = json.dumps(savings, sort_keys=True, separators=(',', ':'), allow_nan=False)
-        print(label, '%.3fs' % elapsed, flush=True)
+        print(label, '%.3fs' % elapsed, 'load %.2f -> %.2f' % (load_before, os.getloadavg()[0]), flush=True)
     print('old sandwich:', results['old1'] == results['old2'])
     print('old warm equals old:', results['old_warm'] == results['old1'])
     print('new cold equals old:', results['new_cold'] == results['old1'])

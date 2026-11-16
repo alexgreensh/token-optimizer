@@ -16,6 +16,8 @@ export type StatusBar = {
   savingsHeadline: SavingsHeadline | null
   savingsState: SavingsState
   savingsAgeSeconds: number | null
+  savingsComputedAt: number | null
+  savingsRefreshFailed: boolean
   /** One short reason when savings is null. */
   savingsReason: string | null
   lastRequestEpoch: number | null
@@ -250,6 +252,8 @@ export function parseStatusBar(json: unknown): StatusBar | null {
     savingsHeadline: parseSavingsHeadline(toRecord(out.savings)?.savings_headline ?? out.savings_headline),
     savingsState: state,
     savingsAgeSeconds: num(out.savings_age_s),
+    savingsComputedAt: num(toRecord(out.savings)?.computed_at),
+    savingsRefreshFailed: out.savings_refresh_failed === true,
     savingsReason: text(out.savings_reason),
     lastRequestEpoch: lastRequest !== null && lastRequest > 0 ? lastRequest : null,
     cacheLifetime: lifetime,

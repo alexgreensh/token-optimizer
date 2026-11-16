@@ -6,6 +6,8 @@ import assert from 'node:assert/strict'
 
 import {
   NOT_FOUND,
+  NO_PYTHON,
+  OUTDATED,
   findTokenOptimizerRoot,
   STATUS_TIMEOUT_MS,
   gather,
@@ -279,8 +281,20 @@ test('an unavailable refresh keeps the last savings, marked stale', async () => 
   assert.equal(next.savingsState, 'stale')
   assert.equal(next.savingsReason, null)
   const missing = await gather(fakeIo(world()), first, { savings: true })
-  assert.deepEqual(missing.savings, first.savings)
-  assert.equal(missing.savingsState, 'stale')
+  assert.equal(missing.savings, null)
+  assert.equal(missing.savingsState, 'unavailable')
+  assert.equal(missing.savingsReason, NOT_FOUND)
+  const outdated = await gather({ ...io, run: async (argv, init) => argv.includes('status-bar') ? { exitCode: 2, stdout: 'usage' } : io.run(argv, init) }, first, { savings: true })
+  assert.equal(outdated.savings, null)
+  assert.equal(outdated.savingsReason, OUTDATED)
+  resetLauncher()
+  const noPython = await gather({ ...io, run: async (argv, init) => {
+    if (argv.includes('status-bar')) throw new Error('spawn ENOENT')
+    return io.run(argv, init)
+  } }, first, { savings: true })
+  assert.equal(noPython.savings, null)
+  assert.equal(noPython.savingsReason, NO_PYTHON)
+  resetLauncher()
 })
 
 test('a gather without the status command keeps savings and spawns nothing but git', async () => {

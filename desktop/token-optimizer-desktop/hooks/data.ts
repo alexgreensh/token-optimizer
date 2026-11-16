@@ -470,6 +470,8 @@ export async function gather(
     savingsHeadline: base?.savingsHeadline ?? null,
     savingsState: base?.savingsState ?? ('unavailable' as const),
     savingsAgeSeconds: base?.savingsAgeSeconds ?? null,
+    savingsComputedAt: base?.savingsComputedAt ?? null,
+    savingsRefreshFailed: base?.savingsRefreshFailed ?? false,
     savingsReason: base?.savingsReason ?? null,
     lastRequestEpoch: base?.lastRequestEpoch ?? null,
     cacheLifetime: base?.cacheLifetime ?? null,
@@ -481,11 +483,11 @@ export async function gather(
   const seen = { toolCallsSeen: base?.toolCallsSeen ?? 0, compactionsSeen: base?.compactionsSeen ?? 0 }
 
   const facts = notFound
-    ? { ...kept, savingsState: kept.savings ? 'stale' as const : 'unavailable' as const, savingsReason: kept.savings ? null : NOT_FOUND, checkpointEpoch: null }
+    ? { ...kept, savings: null, savingsHeadline: null, savingsState: 'unavailable' as const, savingsReason: NOT_FOUND, checkpointEpoch: null }
     : status === 'outdated'
-      ? { ...kept, savingsState: kept.savings ? 'stale' as const : 'unavailable' as const, savingsReason: kept.savings ? null : OUTDATED }
+      ? { ...kept, savings: null, savingsHeadline: null, savingsState: 'unavailable' as const, savingsReason: OUTDATED }
     : status === 'nopython'
-      ? { ...kept, savingsState: kept.savings ? 'stale' as const : 'unavailable' as const, savingsReason: kept.savings ? null : NO_PYTHON }
+      ? { ...kept, savings: null, savingsHeadline: null, savingsState: 'unavailable' as const, savingsReason: NO_PYTHON }
     : status
       ? {
           // While savings load, the last known figures stay on show.
@@ -494,6 +496,8 @@ export async function gather(
           savingsHeadline: status.savingsHeadline ?? (!status.savings ? kept.savingsHeadline : null),
           savingsState: !status.savings && kept.savings && status.savingsState === 'unavailable' ? 'stale' as const : status.savingsState,
           savingsAgeSeconds: status.savingsAgeSeconds ?? kept.savingsAgeSeconds,
+          savingsComputedAt: status.savingsComputedAt ?? kept.savingsComputedAt,
+          savingsRefreshFailed: status.savingsRefreshFailed,
           savingsReason: status.savings || kept.savings ? null : status.savingsReason,
           lastRequestEpoch: status.lastRequestEpoch ?? kept.lastRequestEpoch,
           cacheLifetime: status.cacheLifetime ?? kept.cacheLifetime,
@@ -574,6 +578,8 @@ export function mergeStored(
           savingsHeadline: current.savingsHeadline ?? null,
           savingsState: current.savingsState,
           savingsAgeSeconds: current.savingsAgeSeconds ?? null,
+          savingsComputedAt: current.savingsComputedAt ?? null,
+          savingsRefreshFailed: current.savingsRefreshFailed ?? false,
           savingsReason: current.savingsReason,
           earlierCheckpoint: current.earlierCheckpoint,
           cacheLifetime: current.cacheLifetime ?? fresh.cacheLifetime,

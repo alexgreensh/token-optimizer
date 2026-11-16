@@ -145,7 +145,13 @@ c = measure._init_trends_db()
 c.execute("INSERT INTO savings_events (timestamp,event_type,tokens_saved,cost_saved_usd,session_id,session_uuid) VALUES (?,?,?,?,?,?)", (datetime.datetime.now().isoformat(), 'tool_archive', 3000000, 12.0, 'session-123', 'session-123'))
 c.commit(); c.close()
 print(json.dumps(measure.status_bar_payload('session-123', sync=True)))`
-  const result = spawnSync('python3', ['-c', code, scripts], { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), TOKEN_OPTIMIZER_SNAPSHOT_DIR: join(home, 'data'), PYTHONDONTWRITEBYTECODE: '1' } })
+  const launchers = process.platform === 'win32' ? [['py', '-3'], ['python'], ['python3']] : [['python3'], ['python']]
+  const options = { encoding: 'utf8' as const, env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), TOKEN_OPTIMIZER_SNAPSHOT_DIR: join(home, 'data'), PYTHONDONTWRITEBYTECODE: '1' } }
+  let result = spawnSync(launchers[0][0], [...launchers[0].slice(1), '-c', code, scripts], options)
+  for (const [exe, ...prefix] of launchers.slice(1)) {
+    if (!result.error) break
+    result = spawnSync(exe, [...prefix, '-c', code, scripts], options)
+  }
   assert.equal(result.status, 0, result.stderr)
   const raw = JSON.parse(result.stdout)
   assert.ok(raw.savings.savings_headline.display)
@@ -162,6 +168,8 @@ test('status bar: savings, clock anchor, lifetime and checkpoint come through', 
   assert.equal(s.savings?.daily[29], 2900)
   assert.equal(s.savingsState, 'fresh')
   assert.equal(s.savingsAgeSeconds, 5)
+  assert.equal(s.savingsComputedAt, NOW - 5)
+  assert.equal(s.savingsRefreshFailed, false)
   assert.equal(s.savingsReason, null)
   assert.equal(s.lastRequestEpoch, 1_790_985_772.132)
   assert.equal(s.cacheLifetime, '1h')
@@ -226,10 +234,11 @@ test('status bar: loading has no savings, keeps the reason, and the transcript f
 })
 
 test('status bar: stale savings retain their numbers', () => {
-  const s = parseStatusBar({ ...STATUS, savings_state: 'stale', savings_reason: null })
+  const s = parseStatusBar({ ...STATUS, savings_state: 'stale', savings_reason: null, savings_refresh_failed: true })
   assert.equal(s?.savingsState, 'stale')
   assert.deepEqual(s?.savings, parseStatusBar(STATUS)?.savings)
   assert.equal(s?.savingsReason, null)
+  assert.equal(s?.savingsRefreshFailed, true)
 })
 
 test('status bar: unknown state and lifetime values read as unavailable and unmeasured', () => {

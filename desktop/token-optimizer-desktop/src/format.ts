@@ -7,6 +7,12 @@ export type FormatOptions = { timeZone?: string; locale?: string; hourCycle?: 'h
 const MINUTE = 60_000
 const DAY_MIN = 24 * 60
 
+export function savingsRetryNote(failed: boolean, computedAt: number | null, nowMs: number): string | null {
+  if (!failed || computedAt === null) return null
+  const minutes = Math.floor(Math.max(0, nowMs / 1000 - computedAt) / 60)
+  return `Last updated ${minutes} min ago. Retrying.`
+}
+
 /** Seconds as m:ss, clamped to 0:00..60:00 (the longest cache lifetime is an hour). */
 export function clock(sec: number): string {
   const s = Math.min(3600, Math.max(0, Math.floor(Number.isFinite(sec) ? sec : 0)))

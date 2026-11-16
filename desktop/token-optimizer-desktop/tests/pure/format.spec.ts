@@ -1,8 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { clock, tokens, relative, ago, duration, renewal, renewalPhrase, gradeOf } from '../../src/format.ts'
+import { clock, tokens, relative, ago, duration, renewal, renewalPhrase, gradeOf, savingsRetryNote } from '../../src/format.ts'
 import { NOW, TZ } from './fixtures.ts'
+
+test('retry notice appears only after a failure and its age advances', () => {
+  assert.equal(savingsRetryNote(false, 1000, 1120000), null)
+  assert.equal(savingsRetryNote(true, 1000, 1060000), 'Last updated 1 min ago. Retrying.')
+  assert.equal(savingsRetryNote(true, 1000, 1120000), 'Last updated 2 min ago. Retrying.')
+})
 
 test('clock renders m:ss, clamps below zero and caps at 60:00', () => {
   assert.equal(clock(0), '0:00')

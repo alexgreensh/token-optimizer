@@ -1,6 +1,6 @@
 # Changelog
 
-## [5.13.72] - Unreleased
+## [5.13.72] - 2026-11-16
 
 - Your savings number stays on screen: the 30-day figure is counted once for all sessions, new sessions show it at once, and a slow or failed refresh keeps the last good number instead of an error.
 - Savings refresh up to 87% faster: the band skips a scan it never showed, so a refresh takes about 14 s of CPU instead of over 100 s, with the same numbers.

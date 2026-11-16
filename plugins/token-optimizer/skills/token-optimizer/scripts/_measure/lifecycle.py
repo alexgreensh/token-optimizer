@@ -3462,7 +3462,7 @@ def _read_config_flag(key, default=None):
     committed opt-outs. The user's own value always wins."""
     _measure_facade = _compat.facade()
     from . import config_cache
-    cfg = config_cache.read(_measure_facade.CONFIG_PATH, _measure_facade.json)
+    cfg = {key: config_cache.current_tier()} if key == "pricing_tier" and config_cache.current_tier() is not None else config_cache.read(_measure_facade.CONFIG_PATH, _measure_facade.json)
     if key in cfg:
         return cfg[key]
     try:

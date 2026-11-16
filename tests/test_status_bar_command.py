@@ -446,6 +446,22 @@ def test_cli_exception_keeps_last_good(sb, monkeypatch, capsys):
     assert result['savings_state'] == 'stale'
 
 
+def test_pricing_snapshot_reads_configuration_once_per_compute(sb, monkeypatch):
+    from _measure import config_cache
+    sb._write_config_flag('pricing_tier', 'anthropic')
+    original = config_cache.read
+    reads = []
+    def counted(*args):
+        reads.append(1)
+        return original(*args)
+    monkeypatch.setattr(config_cache, 'read', counted)
+    with config_cache.pricing_snapshot(sb):
+        assert all(sb._load_pricing_tier() == 'anthropic' for _ in range(20))
+    assert len(reads) == 1
+    sb._load_pricing_tier()
+    assert len(reads) == 2
+
+
 def test_full_compute_within_5s_on_50k_rows(sb):
     base = datetime.now() - timedelta(days=29)
     rows = []

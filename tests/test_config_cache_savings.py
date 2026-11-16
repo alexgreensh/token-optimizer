@@ -22,3 +22,18 @@ def test_config_cache_tracks_edits_and_explicit_invalidation(tmp_path):
     assert config_cache.read(path, json)['tier'] == 'six'
     path.unlink()
     assert config_cache.read(path, json) == {}
+
+
+def test_pricing_snapshot_is_scoped_to_one_compute():
+    class Facade:
+        calls = 0
+        @classmethod
+        def _load_pricing_tier(cls):
+            cls.calls += 1
+            return 'anthropic'
+    assert config_cache.current_tier() is None
+    with config_cache.pricing_snapshot(Facade):
+        assert config_cache.current_tier() == 'anthropic'
+        assert config_cache.current_tier() == 'anthropic'
+    assert Facade.calls == 1
+    assert config_cache.current_tier() is None

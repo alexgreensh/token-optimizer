@@ -507,6 +507,11 @@ def _sub_compact_restore_new_session(hook_input: dict, sink: list) -> None:
     sink.append(buf.getvalue())
 
 
+def _sub_codemap_cleanup() -> None:
+    import codemap_hint  # noqa: PLC0415
+    codemap_hint.cleanup_old_indexes_daily()
+
+
 def _sub_codemap_hint(hook_input: dict) -> None:
     """Code map discovery hint (codemap_hint.py): plain text, so it lands in
     additionalContext via the envelope. Silent when the feature is off
@@ -650,6 +655,7 @@ def main() -> int:
         _capture("read_cache --clear-compacted", _sub_clear_compacted, hook_input)
     _capture("compact-restore --new-session-only", _sub_compact_restore_new_session,
              hook_input, _wrapped)
+    _capture("codemap cleanup", _sub_codemap_cleanup)
     _capture("codemap hint", _sub_codemap_hint, hook_input)
 
     # Emit the compact-restore payloads and ensure-health/quality-cache

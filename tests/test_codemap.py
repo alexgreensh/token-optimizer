@@ -598,7 +598,11 @@ def test_old_index_cleanup_is_bounded_and_safe(sandbox, monkeypatch):
     def old_index(number, sibling=True, stale=True):
         name = f'{number:016x}'
         old = directory / f'{name}.db'
-        old.write_text('index')
+        conn = sqlite3.connect(old)
+        conn.execute('CREATE TABLE meta (k TEXT, v TEXT)')
+        conn.execute("INSERT INTO meta VALUES ('schema', '2')")
+        conn.commit()
+        conn.close()
         if stale:
             os.utime(old, (stale_time, stale_time))
         if sibling:
@@ -611,7 +615,6 @@ def test_old_index_cleanup_is_bounded_and_safe(sandbox, monkeypatch):
         sidecar.write_text('sidecar')
         os.utime(sidecar, (stale_time, stale_time))
     recent = old_index(2, stale=False)
-    orphan = old_index(3, sibling=False)
     target = sandbox / 'outside.db'
     target.write_text('outside')
     os.utime(target, (stale_time, stale_time))
@@ -625,9 +628,62 @@ def test_old_index_cleanup_is_bounded_and_safe(sandbox, monkeypatch):
     assert not stale.exists()
     assert not Path(str(stale) + '-wal').exists()
     assert not Path(str(stale) + '-shm').exists()
-    assert recent.exists() and orphan.exists() and active.exists()
+    assert recent.exists() and active.exists()
     assert link.is_symlink() and target.read_text() == 'outside'
+    # Orphans are eligible without a new-name sibling.
+    orphan = old_index(3, sibling=False)
+    hint._clean_old_indexes(directory)
+    assert not orphan.exists()
     # The limit leaves an additional eligible index for the next run.
     extra1, extra2 = old_index(6), old_index(7)
     hint._clean_old_indexes(directory)
     assert sum(path.exists() for path in (extra1, extra2)) == 1
+
+
+def test_sessionstart_cleanup_daily_and_engine_gate(sandbox, monkeypatch):
+    import importlib.util
+    import codemap_index as ci
+    import codemap_hint as hint
+    spec = importlib.util.spec_from_file_location("sessionstart_cleanup_test", REPO / "hooks" / "sessionstart_runner.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    directory = ci.index_dir()
+    directory.mkdir()
+    calls = []
+    monkeypatch.setattr(hint, "_clean_old_indexes", lambda path: calls.append(path))
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP", "0")
+    runner._sub_codemap_cleanup()
+    assert not calls and not list(directory.iterdir())
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP", "1")
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP_HINT", "0")
+    runner._sub_codemap_cleanup()
+    runner._sub_codemap_cleanup()
+    assert calls == [directory]
+    marker = directory / ".legacy-cleanup-timestamp"
+    old = time.time() - 90000
+    os.utime(marker, (old, old))
+    runner._sub_codemap_cleanup()
+    assert calls == [directory, directory]
+
+
+def test_cleanup_skips_other_schema_and_symlink_marker(sandbox, monkeypatch):
+    import codemap_hint as hint
+    import codemap_index as ci
+    directory = ci.index_dir()
+    directory.mkdir()
+    db = directory / "0000000000000001.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE meta (k TEXT, v TEXT)")
+    conn.execute("INSERT INTO meta VALUES ('schema', '3')")
+    conn.commit()
+    conn.close()
+    old = time.time() - 8 * 86400
+    os.utime(db, (old, old))
+    hint._clean_old_indexes(directory)
+    assert db.exists()
+    target = sandbox / "marker-target"
+    target.write_text("untouched")
+    (directory / ".legacy-cleanup-timestamp").symlink_to(target)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP", "1")
+    hint.cleanup_old_indexes_daily()
+    assert target.read_text() == "untouched"

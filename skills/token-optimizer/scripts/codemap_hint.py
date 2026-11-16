@@ -29,6 +29,7 @@ PROBE_MAX_S = 0.25
 LOCK_FRESH_S = 300.0
 OLD_INDEX_AGE_S = 7 * 86400
 OLD_INDEX_CLEANUP_LIMIT = 10
+OLD_INDEX_CLEANUP_INTERVAL_S = 86400
 # Subagents that never explore code: no hint for them.
 SKIP_AGENT_TYPES = frozenset({"statusline-setup", "claude-code-guide", "web-fetch"})
 
@@ -114,6 +115,7 @@ def hint_text(root: Path) -> str:
 def _clean_old_indexes(directory: Path) -> None:
     """Remove a few inactive legacy indexes, without following symlinks."""
     import re
+    import sqlite3
     import stat
 
     # Directory-relative operations keep every unlink inside the opened folder.
@@ -134,9 +136,7 @@ def _clean_old_indexes(directory: Path) -> None:
                     continue
                 try:
                     old = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
-                    sibling = os.stat(entry.name[:-3] + "-bounded-v1.db", dir_fd=fd,
-                                      follow_symlinks=False)
-                    if not stat.S_ISREG(old.st_mode) or old.st_mtime > cutoff or not stat.S_ISREG(sibling.st_mode):
+                    if not stat.S_ISREG(old.st_mode) or old.st_mtime > cutoff:
                         continue
                     sidecars = []
                     for suffix in ("-wal", "-shm"):
@@ -149,6 +149,23 @@ def _clean_old_indexes(directory: Path) -> None:
                             break
                         sidecars.append(name)
                     else:
+                        # Inspect the database through a no-follow descriptor; an
+                        # immutable read cannot create or modify SQLite sidecars.
+                        source_fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                        try:
+                            current = os.fstat(source_fd)
+                            if (current.st_ino, current.st_dev, current.st_mtime_ns, current.st_size) != (
+                                    old.st_ino, old.st_dev, old.st_mtime_ns, old.st_size):
+                                continue
+                            conn = sqlite3.connect(f"file:/dev/fd/{source_fd}?mode=ro&immutable=1", uri=True)
+                            try:
+                                version = conn.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
+                            finally:
+                                conn.close()
+                            if not version or version[0] != "2":
+                                continue
+                        finally:
+                            os.close(source_fd)
                         os.unlink(entry.name, dir_fd=fd)
                         removed += 1
                         for name in sidecars:
@@ -156,12 +173,47 @@ def _clean_old_indexes(directory: Path) -> None:
                                 os.unlink(name, dir_fd=fd)
                             except OSError:
                                 pass
-                except OSError:
+                except (OSError, sqlite3.Error):
                     continue
     except OSError:
         pass
     finally:
         os.close(fd)
+
+
+def cleanup_old_indexes_daily() -> None:
+    """Run the legacy cleanup at most once a day when the engine is enabled."""
+    try:
+        import codemap_index as ci
+        import fcntl
+        import stat
+        if not ci.codemap_enabled() or not hasattr(os, "O_NOFOLLOW"):
+            return
+        directory = ci.index_dir()
+        fd = os.open(directory, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0))
+        try:
+            name = ".legacy-cleanup-timestamp"
+            try:
+                marker = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                 0o600, dir_fd=fd)
+                first = True
+            except FileExistsError:
+                marker = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+                first = False
+            try:
+                if not stat.S_ISREG(os.fstat(marker).st_mode):
+                    return
+                fcntl.flock(marker, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if not first and time.time() - os.fstat(marker).st_mtime < OLD_INDEX_CLEANUP_INTERVAL_S:
+                    return
+                os.utime(marker, None)
+                _clean_old_indexes(directory)
+            finally:
+                os.close(marker)
+        finally:
+            os.close(fd)
+    except (ImportError, OSError):
+        pass
 
 
 def session_text(hook_input: dict) -> str:
@@ -191,7 +243,6 @@ def session_text(hook_input: dict) -> str:
         if agent_id:
             sid += ":" + agent_id
         import hashlib
-        _clean_old_indexes(db.parent)
         for old in db.parent.glob("hint-*"):
             try:
                 if time.time() - old.stat().st_mtime > 7 * 86400:

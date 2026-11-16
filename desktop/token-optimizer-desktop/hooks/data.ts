@@ -469,6 +469,9 @@ export async function gather(
     savings: base?.savings ?? null,
     savingsHeadline: base?.savingsHeadline ?? null,
     savingsState: base?.savingsState ?? ('unavailable' as const),
+    savingsAgeSeconds: base?.savingsAgeSeconds ?? null,
+    savingsComputedAt: base?.savingsComputedAt ?? null,
+    savingsRefreshFailed: base?.savingsRefreshFailed ?? false,
     savingsReason: base?.savingsReason ?? null,
     lastRequestEpoch: base?.lastRequestEpoch ?? null,
     cacheLifetime: base?.cacheLifetime ?? null,
@@ -488,11 +491,14 @@ export async function gather(
     : status
       ? {
           // While savings load, the last known figures stay on show.
-          savings: status.savings ?? (status.savingsState === 'loading' ? kept.savings : null),
+          savings: status.savings ?? kept.savings,
           // The pill's figure follows savings: last-known only while a refresh loads.
-          savingsHeadline: status.savingsHeadline ?? (status.savingsState === 'loading' ? kept.savingsHeadline : null),
-          savingsState: status.savingsState,
-          savingsReason: status.savings ? null : status.savingsReason,
+          savingsHeadline: status.savingsHeadline ?? (!status.savings ? kept.savingsHeadline : null),
+          savingsState: !status.savings && kept.savings && status.savingsState === 'unavailable' ? 'stale' as const : status.savingsState,
+          savingsAgeSeconds: status.savingsAgeSeconds ?? kept.savingsAgeSeconds,
+          savingsComputedAt: status.savingsComputedAt ?? kept.savingsComputedAt,
+          savingsRefreshFailed: status.savingsRefreshFailed,
+          savingsReason: status.savings || kept.savings ? null : status.savingsReason,
           lastRequestEpoch: status.lastRequestEpoch ?? kept.lastRequestEpoch,
           cacheLifetime: status.cacheLifetime ?? kept.cacheLifetime,
           // An answer with no window means the user has none now: a kept one must not linger.
@@ -571,6 +577,9 @@ export function mergeStored(
           savings: current.savings,
           savingsHeadline: current.savingsHeadline ?? null,
           savingsState: current.savingsState,
+          savingsAgeSeconds: current.savingsAgeSeconds ?? null,
+          savingsComputedAt: current.savingsComputedAt ?? null,
+          savingsRefreshFailed: current.savingsRefreshFailed ?? false,
           savingsReason: current.savingsReason,
           earlierCheckpoint: current.earlierCheckpoint,
           cacheLifetime: current.cacheLifetime ?? fresh.cacheLifetime,

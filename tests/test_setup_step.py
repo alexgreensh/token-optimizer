@@ -1,8 +1,10 @@
 """W5: setup savings measured as a step in the first-call series. Synthetic transcripts only."""
 import json
+import os
 import shutil
 import sqlite3
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -218,6 +220,116 @@ def test_observer_stops_at_the_first_call_and_keeps_time_and_model():
     assert obs['total'] == 25 and obs['ts'] == '2030-01-01T00:00:00Z' and obs['model'] == 'm9'
     assert setup_step.prefix_of(obs) == 20
     assert setup_step.observe_step(iter([{'type': 'assistant', 'message': {'usage': {}}}]), len) is None
+
+
+def test_observation_cache_invalidates_on_growth_mtime_and_deletion(tmp_path):
+    from _measure import setup_observation_cache
+    transcript = tmp_path / 'session.jsonl'
+    _transcript(transcript, '2030-01-01T00:00:00Z', 100, 8)
+    old_ns = time.time_ns() - 10_000_000_000
+    os.utime(transcript, ns=(old_ns, old_ns))
+    cache = setup_observation_cache.Cache(tmp_path)
+    first = cache.observe(transcript)
+    assert first['total'] == 100
+    cache.save()
+    initial = transcript.stat()
+    _transcript(transcript, '2030-01-01T00:00:00Z', 2000, 8)
+    os.utime(transcript, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+    cache = setup_observation_cache.Cache(tmp_path)
+    assert cache.observe(transcript)['total'] == 2000
+    cache.save()
+    previous = transcript.stat()
+    _transcript(transcript, '2030-01-01T00:00:00Z', 3000, 8)
+    os.utime(transcript, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000))
+    cache = setup_observation_cache.Cache(tmp_path)
+    assert cache.observe(transcript)['total'] == 3000
+    transcript.unlink()
+    assert cache.observe(transcript) is None
+
+
+def test_observation_cache_keeps_version_from_start_of_scan(tmp_path, monkeypatch):
+    from _measure import setup_observation_cache
+    transcript = tmp_path / 'session.jsonl'
+    _transcript(transcript, '2030-01-01T00:00:00Z', 100, 8)
+    old = time.time_ns() - 10_000_000_000
+    os.utime(transcript, ns=(old, old))
+    monkeypatch.setattr(setup_observation_cache, '_version', lambda: {'code': 1})
+    cache = setup_observation_cache.Cache(tmp_path)
+    assert cache.observe(transcript)['total'] == 100
+    monkeypatch.setattr(setup_observation_cache, '_version', lambda: {'code': 2})
+    cache.save()
+    assert setup_observation_cache.Cache(tmp_path).entries == {}
+
+
+def test_recent_and_changing_transcripts_are_not_cached(tmp_path, monkeypatch):
+    from _measure import setup_observation_cache
+    path = tmp_path / 'session.jsonl'
+    _transcript(path, '2030-01-01T00:00:00Z', 100, 8)
+    cache = setup_observation_cache.Cache(tmp_path)
+    assert cache.observe(path)['total'] == 100
+    assert not cache.entries
+    old = time.time_ns() - 10_000_000_000
+    os.utime(path, ns=(old, old))
+    original = setup_step.observe_step
+    def changing(rows, estimate):
+        result = original(rows, estimate)
+        with path.open('a') as stream:
+            stream.write('\n')
+        return result
+    monkeypatch.setattr(setup_step, 'observe_step', changing)
+    assert cache.observe(path)['total'] == 100
+    assert not cache.entries
+
+
+def test_corrupt_observation_is_recomputed(tmp_path):
+    from _measure import setup_observation_cache
+    path = tmp_path / 'session.jsonl'
+    _transcript(path, '2030-01-01T00:00:00Z', 100, 8)
+    old = time.time_ns() - 10_000_000_000; os.utime(path, ns=(old, old))
+    cache = setup_observation_cache.Cache(tmp_path)
+    assert cache.observe(path)['total'] == 100
+    cache.save()
+    raw = json.loads(cache.path.read_text())
+    next(iter(raw['entries'].values()))['observation'] = 'broken'
+    cache.path.write_text(json.dumps(raw))
+    assert setup_observation_cache.Cache(tmp_path).observe(path)['total'] == 100
+
+
+def test_observation_cache_cleans_temp_after_replace_failure(tmp_path, monkeypatch):
+    from _measure import setup_observation_cache
+    path = tmp_path / 'session.jsonl'
+    _transcript(path, '2030-01-01T00:00:00Z', 100, 8)
+    old = time.time_ns() - 10_000_000_000; os.utime(path, ns=(old, old))
+    cache = setup_observation_cache.Cache(tmp_path)
+    cache.observe(path)
+    monkeypatch.setattr(setup_observation_cache.os, 'replace', lambda *args: (_ for _ in ()).throw(PermissionError('busy')))
+    cache.save()
+    assert not list(tmp_path.glob('*.tmp'))
+    assert cache.dirty
+
+
+def test_collect_is_identical_without_cold_and_warm_cache(tmp_path, monkeypatch):
+    from _measure import setup_observation_cache
+    data = tmp_path / 'data'; data.mkdir()
+    db = data / 'trends.db'
+    conn = sqlite3.connect(db)
+    conn.execute('CREATE TABLE session_log(jsonl_path TEXT, api_calls INTEGER, is_sidechain INTEGER DEFAULT 0)')
+    trim_ts = (T0 + timedelta(hours=24, minutes=30)).isoformat()
+    L.record_trim(data, L.make_trim('skills', 'old-skill', 'global', 20_000, 5_000, trim_ts, 'audit_action', evidence='e'))
+    for i in range(50):
+        path = tmp_path / f'{i}.jsonl'
+        _transcript(path, (T0 + timedelta(hours=i)).isoformat(), (60_000 if i < 25 else 45_000) + 400, 400)
+        old = time.time_ns() - 10_000_000_000; os.utime(path, ns=(old, old))
+        conn.execute('INSERT INTO session_log VALUES (?,?,0)', (str(path), 20))
+    conn.execute('INSERT INTO session_log VALUES (?,?,0)', (str(tmp_path / '0.jsonl'), 21))
+    conn.execute('INSERT INTO session_log VALUES (?,?,0)', (str(tmp_path / 'deleted.jsonl'), 22))
+    conn.commit(); conn.close()
+    with monkeypatch.context() as patch:
+        patch.setattr(setup_observation_cache.Cache, 'save', lambda self: None)
+        baseline = setup_step.collect(db, data)
+    cold = setup_step.collect(db, data)
+    warm = setup_step.collect(db, data)
+    assert baseline == cold == warm
 
 
 # ---- card and wiring --------------------------------------------------------

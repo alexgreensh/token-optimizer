@@ -2,7 +2,10 @@
 // shapes. Pure: every input is passed in.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 import {
   parseQualityCache,
@@ -132,6 +135,29 @@ const STATUS = {
   last_checkpoint_epoch: 1_790_985_752,
 }
 
+test('status bar: parses the headline in a real Python savings payload', () => {
+  const home = mkdtempSync(join(tmpdir(), 'to-payload-'))
+  const scripts = resolve('..', '..', 'skills', 'token-optimizer', 'scripts')
+  const code = `import json, sys, datetime
+sys.path.insert(0, sys.argv[1])
+import measure
+c = measure._init_trends_db()
+c.execute("INSERT INTO savings_events (timestamp,event_type,tokens_saved,cost_saved_usd,session_id,session_uuid) VALUES (?,?,?,?,?,?)", (datetime.datetime.now().isoformat(), 'tool_archive', 3000000, 12.0, 'session-123', 'session-123'))
+c.commit(); c.close()
+print(json.dumps(measure.status_bar_payload('session-123', sync=True)))`
+  const launchers = process.platform === 'win32' ? [['py', '-3'], ['python'], ['python3']] : [['python3'], ['python']]
+  const options = { encoding: 'utf8' as const, env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), TOKEN_OPTIMIZER_SNAPSHOT_DIR: join(home, 'data'), PYTHONDONTWRITEBYTECODE: '1' } }
+  let result = spawnSync(launchers[0][0], [...launchers[0].slice(1), '-c', code, scripts], options)
+  for (const [exe, ...prefix] of launchers.slice(1)) {
+    if (!result.error) break
+    result = spawnSync(exe, [...prefix, '-c', code, scripts], options)
+  }
+  assert.equal(result.status, 0, result.stderr)
+  const raw = JSON.parse(result.stdout)
+  assert.ok(raw.savings.savings_headline.display)
+  assert.equal(parseStatusBar(raw)?.savingsHeadline?.display?.short, raw.savings.savings_headline.display.short)
+})
+
 test('status bar: savings, clock anchor, lifetime and checkpoint come through', () => {
   const s = parseStatusBar(JSON.stringify(STATUS))
   assert.ok(s)
@@ -141,6 +167,9 @@ test('status bar: savings, clock anchor, lifetime and checkpoint come through', 
   assert.equal(s.savings?.daily[0], 0)
   assert.equal(s.savings?.daily[29], 2900)
   assert.equal(s.savingsState, 'fresh')
+  assert.equal(s.savingsAgeSeconds, 5)
+  assert.equal(s.savingsComputedAt, NOW - 5)
+  assert.equal(s.savingsRefreshFailed, false)
   assert.equal(s.savingsReason, null)
   assert.equal(s.lastRequestEpoch, 1_790_985_772.132)
   assert.equal(s.cacheLifetime, '1h')
@@ -170,6 +199,7 @@ test('status bar: savings_headline comes through whole; absent reads as no pill'
   assert.equal(parseStatusBar(STATUS)?.savingsHeadline, null)
   assert.equal(parseStatusBar({ ...STATUS, savings_headline: 'yes' })?.savingsHeadline, null)
   assert.equal(parseStatusBar({ ...STATUS, savings_headline: 42 })?.savingsHeadline, null)
+  assert.deepEqual(parseStatusBar({ ...STATUS, savings: { ...STATUS.savings, savings_headline: headline } })?.savingsHeadline, s?.savingsHeadline)
 })
 
 test('status bar: a malformed savings_headline keeps what parses and drops what does not', () => {
@@ -201,6 +231,14 @@ test('status bar: loading has no savings, keeps the reason, and the transcript f
   assert.equal(s.savingsState, 'loading')
   assert.equal(s.savingsReason, 'computing savings')
   assert.equal(s.cacheLifetime, '1h')
+})
+
+test('status bar: stale savings retain their numbers', () => {
+  const s = parseStatusBar({ ...STATUS, savings_state: 'stale', savings_reason: null, savings_refresh_failed: true })
+  assert.equal(s?.savingsState, 'stale')
+  assert.deepEqual(s?.savings, parseStatusBar(STATUS)?.savings)
+  assert.equal(s?.savingsReason, null)
+  assert.equal(s?.savingsRefreshFailed, true)
 })
 
 test('status bar: unknown state and lifetime values read as unavailable and unmeasured', () => {

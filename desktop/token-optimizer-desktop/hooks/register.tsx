@@ -49,6 +49,7 @@ import {
 import { canKeepWarm, initialClock, reduceClock, view, type ClockEvent, type ClockState } from '../src/clock.ts'
 import { LIGHT, clawdSvg, type Gaze, type Palette } from '../src/clawd.ts'
 import type { Snapshot } from '../src/contracts.ts'
+import { savingsRetryNote } from '../src/format.ts'
 import { ICONS, ICON_ALT, iconSvg, type IconName } from '../src/icons.ts'
 import { QUALITY_FLOOR, moodOf, sentence, type ActionId, type Run } from '../src/ladder.ts'
 import { cards, marks, row, savingsPill, type Card, type Mark, type MarkTone, type SavingsPill } from '../src/marks.ts'
@@ -1038,6 +1039,8 @@ type Model = {
   tones: Tones
   sheetOpen: boolean
   savingsReason: string | null
+  savingsComputedAt: number | null
+  savingsRefreshFailed: boolean
   /** Keep warm can run now (the one guard): only then does the row offer it. */
   canWarm: boolean
   /** Clawd's pictures, bottom first: the previous pose stays beneath a new one while it fades in. */
@@ -1047,8 +1050,6 @@ type Model = {
 }
 
 type ClawdLayer = { key: string; source: string; alt: string }
-
-/** How long the previous pose stays beneath a new one: the fade plus the picture's own load. */
 const UNDERLAY_MS = 900
 let clawdTop: ClawdLayer | null = null
 let clawdUnder: (ClawdLayer & { until: number }) | null = null
@@ -1168,17 +1169,13 @@ function detailRow(D: Desktop, m: Model, on: Handlers) {
     ...(m.canWarm && snap.cache.state === 'warning' ? [{ id: 'warm' as const, label: 'Keep warm' }] : []),
   ].filter(a => a.id !== say.action?.id && !(a.id === 'clean' && say.action?.id === 'clean-first'))
 
-  // First load with no last-known figure draws nothing here, never "Measuring savings…"; the
-  // unavailable reasons stay. A ready figure is the chip's job, not a second savings line.
   const savingsNote =
-    detail.savings.state === 'unavailable' ? (
+    detail.savings.state === 'unavailable' || (snap.savingsLoading && !snap.savings) ? (
       <Box flexDirection="row" alignItems="center" columnGap={1}>
         {icon(D, 'saved', t.ink)}
-        <Text>{m.savingsReason ?? detail.savings.reason ?? 'Savings appear once Token Optimizer has measured some.'}</Text>
+        <Text>{m.savingsReason ?? (snap.savingsLoading ? 'Still counting savings. Retrying.' : detail.savings.reason) ?? 'Savings appear once Token Optimizer has measured some.'}</Text>
       </Box>
-    ) : (
-      ''
-    )
+    ) : savingsRetryNote(m.savingsRefreshFailed, m.savingsComputedAt, snap.now) ? <Text>{savingsRetryNote(m.savingsRefreshFailed, m.savingsComputedAt, snap.now)}</Text> : ''
 
   return (
     <Box key="row" flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
@@ -1643,6 +1640,8 @@ export const register: Register = on => {
       tones: tonesFor(palette),
       sheetOpen: s?.sheetOpen ?? false,
       savingsReason: s?.savingsReason ?? null,
+      savingsComputedAt: s?.savingsComputedAt ?? null,
+      savingsRefreshFailed: s?.savingsRefreshFailed ?? false,
       canWarm: canKeepWarm({ ...shownClock, working }, now),
       clawd,
       gazes:

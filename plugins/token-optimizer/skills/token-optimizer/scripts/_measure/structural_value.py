@@ -97,13 +97,15 @@ def _session_start(metrics_json, first_day):
     return None
 
 
-def load_sessions(conn):
+def load_sessions(conn, canonical=None):
     """owner_hash -> (project, start_epoch, foreign), one canonical row per real
     session: copies of a session (uuid, else first request) resolve to the most
     complete one, so scope comes from a single row (see structural_dedupe)."""
     out = {}
-    cloud = cloud_sessions(conn)
-    _, canon = dedupe.canonical_sessions(conn, lambda uuid, path: proven_foreign(uuid, path, cloud))
+    if canonical is None:
+        cloud = cloud_sessions(conn)
+        canonical = dedupe.canonical_sessions(conn, lambda uuid, path: proven_foreign(uuid, path, cloud))
+    _, canon = canonical
     for path, win in canon.items():
         value = (win["project"] or "", _session_start(win["metrics"], win["first_day"] or win["date"]),
                  win["foreign"])
@@ -128,7 +130,7 @@ def _price(card, s, cr, cc, cc_1h, cc_5m):
     return s, 0, s * float(card.get("cache_read", 0) or 0) / 1e6, 0.0, 0.0
 
 
-def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False):
+def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False, sessions=None):
     """Per-trim and per-day value over [start_day, end_day] (local days).
 
     projected=True values each still-open trim as if it held for the whole
@@ -136,7 +138,7 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False)
     inside the trim's life. Returns {"trims": {id: {...}}, "days": {...},
     "requests": n, "unmatched_requests": n, "unpriced_tokens": n}.
     """
-    sessions = load_sessions(conn)
+    sessions = load_sessions(conn) if sessions is None else sessions
     rows = load_requests(conn, start_day, end_day)
     per = {t["id"]: {"read_tokens": 0, "write_tokens": 0, "usd": 0.0, "read_usd": 0.0,
                      "write_1h_usd": 0.0, "write_5m_usd": 0.0, "requests": 0,
@@ -154,6 +156,7 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False)
         for t in live
     }
     scope_cache = {}
+    price_cache = {}
     for owner, day, model, calls, cr, cc, cc_1h, cc_5m, inp in rows:
         sess = sessions.get(owner)
         if sess is None:
@@ -161,6 +164,7 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False)
             continue
         project, start, foreign = sess
         card = card_fn(model, (cr or 0) + (cc or 0) + (inp or 0))
+        cache_read = float(card.get("cache_read", 0) or 0) if card is not None else None
         n = dedupe.request_weight(calls)
         if not n:
             continue  # duplicate share of a request another session copy already owns
@@ -183,21 +187,22 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False)
                 if card is None:
                     acc["unpriced_tokens"] += t["tokens"] * n
                     continue
-                r, w, ur, u1, u5 = _price(card, t["tokens"], cr or 0, cc or 0, cc_1h or 0, cc_5m or 0)
+                price_key = (t["tokens"], cache_read)
+                if price_key not in price_cache:
+                    price_cache[price_key] = _price(card, t["tokens"], cr or 0, cc or 0, cc_1h or 0, cc_5m or 0)
+                    assert not any(price_cache[price_key][i] for i in (1, 3, 4)), "structural pricing assumes no cache-write savings"
+                r, w, ur, u1, u5 = price_cache[price_key]
                 if not (r or w):
                     continue
                 usd = ur + u1 + u5
                 acc["read_tokens"] += r * n
-                acc["write_tokens"] += w * n
                 acc["usd"] += usd * n
-                acc["read_usd"] += ur * n
-                acc["write_1h_usd"] += u1 * n
-                acc["write_5m_usd"] += u5 * n
                 acc["requests"] += n
                 d = days.setdefault(day, {"tokens": 0, "usd": 0.0})
                 d["tokens"] += (r + w) * n
                 d["usd"] += usd * n
     for acc in per.values():
+        acc["read_usd"] = acc["usd"]
         for k in ("usd", "read_usd", "write_1h_usd", "write_5m_usd"):
             acc[k] = round(acc[k], 4)
     for d in days.values():

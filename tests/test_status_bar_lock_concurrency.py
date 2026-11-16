@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from test_status_bar_command import sb, SID_A
+from test_status_bar_command import sb, SID_A, SID_B
+
+
+def test_sessions_share_one_refresh_lock(sb):
+    token = sb._status_bar_acquire_lock(SID_A)
+    assert token
+    assert sb._status_bar_acquire_lock(SID_B) is None
+    assert sb._status_bar_release_lock(SID_A, token)
 
 
 def test_live_refresh_is_not_reclaimed_for_age(sb):

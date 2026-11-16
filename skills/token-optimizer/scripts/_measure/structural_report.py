@@ -17,10 +17,12 @@ from . import _compat, structural_ledger as ledger, structural_listing as listin
 NO_TRIMS = "no trims recorded yet"
 
 
-def _local_sessions(conn, home):
+def _local_sessions(conn, home, canonical=None):
     out = []
-    cloud = value.cloud_sessions(conn)
-    winners, _ = dedupe.canonical_sessions(conn, lambda uuid, path: value.proven_foreign(uuid, path, cloud))
+    if canonical is None:
+        cloud = value.cloud_sessions(conn)
+        canonical = dedupe.canonical_sessions(conn, lambda uuid, path: value.proven_foreign(uuid, path, cloud))
+    winners, _ = canonical
     for row in winners:
         if value.scope_matches("global", row["project"], home) and not row["foreign"]:
             out.append((value._session_start(row["metrics"], row["first_day"] or row["date"]), row["path"]))
@@ -80,7 +82,9 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
             return {**zero, "status": "no_data", "message": "no usage data yet"}
         home = str(home or f.HOME)
         try:
-            listing.apply_listing_check(trims, _local_sessions(conn, home), f.CHARS_PER_TOKEN, f.SNAPSHOT_DIR)
+            cloud = value.cloud_sessions(conn)
+            canonical = dedupe.canonical_sessions(conn, lambda uuid, path: value.proven_foreign(uuid, path, cloud))
+            listing.apply_listing_check(trims, _local_sessions(conn, home, canonical), f.CHARS_PER_TOKEN, f.SNAPSHOT_DIR)
             for t in trims:
                 if t.get("listing_check") == "pending" and t["tier"] == "measured":
                     t["tier"] = "estimated"  # not yet verified against what was sent
@@ -101,9 +105,10 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
             connector = setup_connector_ledger.measured_values(conn, trims, estimate_tokens, card, window_start, window_end)
             if not trims and not budget["calls"] and not connector["calls"]:
                 return {**zero, "budget_observed": budget, "connector_observed": connector}
-            real = value.value_trims(conn, trims, start, end, card, home)
+            sessions = value.load_sessions(conn, canonical)
+            real = value.value_trims(conn, trims, start, end, card, home, sessions=sessions)
             pstart, pend = value.window(projection_days, now)
-            proj = value.value_trims(conn, trims, pstart, pend, card, home, projected=True)
+            proj = value.value_trims(conn, trims, pstart, pend, card, home, projected=True, sessions=sessions)
             cover = value.call_coverage(conn, start)
         finally:
             conn.close()

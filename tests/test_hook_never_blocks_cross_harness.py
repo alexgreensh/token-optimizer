@@ -46,16 +46,15 @@ SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 # third-party plugin copies) that are NOT shipped Token Optimizer code. Scanning
 # them produces phantom failures on hooks.json files that belong to other
 # plugins (e.g. figma) or test harnesses, not our invariant.
-_EXCLUDE_DIRS = {"scratchpad", ".git", "node_modules", "__pycache__", ".pytest_cache"}
+_EXCLUDE_DIRS = {"scratchpad", ".test-work", ".git", "node_modules", "__pycache__", ".pytest_cache"}
 
 
 def _rglob_excluding(root: Path, pattern: str) -> list[Path]:
     """rglob that skips throwaway / non-shipped directories."""
     results = []
-    for p in root.rglob(pattern):
-        if any(part in _EXCLUDE_DIRS for part in p.parts):
-            continue
-        results.append(p)
+    for directory, names, files in os.walk(root):
+        names[:] = [name for name in names if name not in _EXCLUDE_DIRS]
+        results.extend(Path(directory).glob(pattern))
     return sorted(results)
 
 

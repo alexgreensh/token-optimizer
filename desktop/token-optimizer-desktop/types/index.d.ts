@@ -66,6 +66,9 @@ export type TokenOptimizerDesktopSession = {
   /** The shared savings headline; kept like savings, null on installs that predate it. */
   savingsHeadline?: TokenOptimizerDesktopSavingsHeadline
   savingsState: 'fresh' | 'stale' | 'loading' | 'unavailable'
+  savingsAgeSeconds?: number | null
+  savingsComputedAt?: number | null
+  savingsRefreshFailed?: boolean
   /** One short reason when savings is null. */
   savingsReason: string | null
   /** Last main-thread request, epoch seconds (the cache clock's anchor). */

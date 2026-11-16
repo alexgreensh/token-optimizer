@@ -234,3 +234,29 @@ def test_pending_files_are_removed_after_the_next_shared_write(sb, monkeypatch):
     sb._status_bar_write_cache(SID_A, {'session_tokens': 10}, None)
     assert [p.name for p in status_dir.glob('global-pending-*.json')] == ['global-pending-future.json']
     assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 99
+
+
+def test_one_transient_failure_shows_no_retry_note_but_two_in_a_row_do(sb, monkeypatch):
+    _three_day_fixture(sb)
+    monkeypatch.setattr(sb, "spawn_detached", lambda argv, **kw: object())
+    sb.status_bar_payload(SID_A, sync=True)
+    real = sb._status_bar_savings_or_reason
+    monkeypatch.setattr(sb, "_status_bar_savings_or_reason", lambda sid: (None, "savings database busy"))
+    once = sb.status_bar_payload(SID_A, sync=True)
+    assert (once["savings_state"], once["savings_refresh_failed"]) == ("stale", False)
+    assert sb.status_bar_payload(SID_B)["savings_refresh_failed"] is False
+    twice = sb.status_bar_payload(SID_A, sync=True)
+    assert (twice["savings_state"], twice["savings_refresh_failed"]) == ("stale", True)
+    assert sb.status_bar_payload(SID_B)["savings_refresh_failed"] is True
+    # Success clears it.
+    monkeypatch.setattr(sb, "_status_bar_savings_or_reason", real)
+    assert sb.status_bar_payload(SID_A, sync=True)["savings_refresh_failed"] is False
+    assert sb.status_bar_payload(SID_B)["savings_refresh_failed"] is False
+
+
+def test_first_ever_compute_failing_once_is_quiet(sb, monkeypatch):
+    _three_day_fixture(sb)
+    monkeypatch.setattr(sb, "_status_bar_savings_or_reason", lambda sid: (None, "savings database busy"))
+    once = sb.status_bar_payload(SID_A, sync=True)
+    assert (once["savings_state"], once["savings_refresh_failed"]) == ("loading", False)
+    assert sb.status_bar_payload(SID_A, sync=True)["savings_refresh_failed"] is True

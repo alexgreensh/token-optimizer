@@ -36,6 +36,9 @@ PENDING_MAX_PATHS = 400
 _PENDING_NAME = "pending.json"
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS codemap_failures (
+    id INTEGER PRIMARY KEY, ts_epoch REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS codemap_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
@@ -86,6 +89,16 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=3000")
     conn.executescript(_SCHEMA)
     return conn
+
+
+def log_failure() -> None:
+    """Count failed attempts independently of the savings ledger."""
+    conn = _connect()
+    try:
+        conn.execute("INSERT INTO codemap_failures (ts_epoch) VALUES (?)", (time.time(),))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _read_pending() -> Dict:

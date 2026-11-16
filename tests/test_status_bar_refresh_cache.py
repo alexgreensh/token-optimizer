@@ -212,3 +212,25 @@ def test_no_database_reason_recovers_once_the_database_exists(sb, monkeypatch):
     # The refresh it starts replaces the cached reason with real numbers.
     done = sb.status_bar_payload(SID_A, sync=True)
     assert done["savings_state"] == "fresh" and done["savings"]["session_tokens"] == 6500
+
+
+def test_pending_files_are_removed_after_the_next_shared_write(sb, monkeypatch):
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    real = sb.os.replace
+    def locked(source, dest):
+        if str(dest).endswith('global.json'):
+            raise PermissionError('busy')
+        return real(source, dest)
+    monkeypatch.setattr(sb.os, 'replace', locked)
+    monkeypatch.setattr(sb.time, 'sleep', lambda s: None)
+    for value in (6, 7, 8):
+        sb._status_bar_write_cache(SID_A, {'session_tokens': value}, None)
+    status_dir = sb._status_bar_dir()
+    assert len(list(status_dir.glob('global-pending-*.json'))) == 3
+    # A newer pending file (another writer, later clock) must survive.
+    newer = status_dir / 'global-pending-future.json'
+    newer.write_text(json.dumps({'computed_at': time.time() + 3600, 'savings': {'session_tokens': 99}}), encoding='utf-8')
+    monkeypatch.setattr(sb.os, 'replace', real)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 10}, None)
+    assert [p.name for p in status_dir.glob('global-pending-*.json')] == ['global-pending-future.json']
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 99

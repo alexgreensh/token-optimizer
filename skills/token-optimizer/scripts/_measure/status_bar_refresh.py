@@ -44,6 +44,11 @@ def write_cache(facade, session_id, savings, reason):
         atomic_write(facade, facade._status_bar_cache_path(session_id), data)
     except PermissionError:
         atomic_write(facade, directory / ('global-pending-' + facade.os.urandom(16).hex() + '.json'), data)
+    else:
+        try:
+            drop_older_pending(facade, directory, data['computed_at'])
+        except OSError:
+            pass
     cutoff = facade.time.time() - facade._STATUS_BAR_CACHE_RETENTION_S
     try:
         for path in directory.iterdir():
@@ -55,6 +60,22 @@ def write_cache(facade, session_id, savings, reason):
                 pass
     except OSError:
         pass
+
+
+def drop_older_pending(facade, directory, computed_at):
+    """Once global.json holds a result, pending files no newer than it are dead
+    weight that every poll would still parse; remove them."""
+    for path in directory.glob('global-pending-*.json'):
+        try:
+            data = facade.json.loads(path.read_text(encoding='utf-8'))
+            stamp = data.get('computed_at') if isinstance(data, dict) else None
+            if not isinstance(stamp, (int, float)) or stamp <= computed_at:
+                path.unlink()
+        except (OSError, ValueError):
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def read_cache(facade, session_id):

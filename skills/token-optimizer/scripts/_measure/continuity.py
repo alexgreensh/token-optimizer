@@ -3094,6 +3094,18 @@ def _continuity_prompt_hint(prompt_text=None, session_id=None, cwd=None, max_age
     _effective_full_threshold = (
         max(0.6, _measure_facade._RELEVANCE_FULL_THRESHOLD) if _ext_memory else _measure_facade._RELEVANCE_FULL_THRESHOLD
     )
+    # Once per session per (prior session, form): a hint already in context only
+    # re-adds tokens on every later prompt until compaction (#339). Keyed on the
+    # prior session id, not the rendered text or checkpoint path, because both
+    # change from prompt to prompt. The form is in the key so an earlier teaser
+    # never hides a later full block. The resume dedup tag means compaction and
+    # /clear re-arm it. Fails open with no session id.
+    _hint_form = "teaser" if score < _effective_full_threshold else "full"
+    if not (_hint_form == "teaser" and _ext_memory):
+        if _measure_facade._resume_block_already_injected(
+            f"hint:{_hint_form}:{top['session_id']}", session_id
+        ):
+            return ""
     if score < _effective_full_threshold:
         if _ext_memory:
             return ""

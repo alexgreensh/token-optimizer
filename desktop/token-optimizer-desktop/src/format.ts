@@ -7,10 +7,10 @@ export type FormatOptions = { timeZone?: string; locale?: string; hourCycle?: 'h
 const MINUTE = 60_000
 const DAY_MIN = 24 * 60
 
+/** The note after refreshes failed: "Last updated 3 days ago. Will try again later." Retries back off to an hour, so it promises no time. */
 export function savingsRetryNote(failed: boolean, computedAt: number | null, nowMs: number): string | null {
   if (!failed || computedAt === null) return null
-  const minutes = Math.floor(Math.max(0, nowMs / 1000 - computedAt) / 60)
-  return `Last updated ${minutes} min ago. Retrying.`
+  return `Last updated ${ago(computedAt * 1000, nowMs)}. Will try again later.`
 }
 
 /** Seconds as m:ss, clamped to 0:00..60:00 (the longest cache lifetime is an hour). */

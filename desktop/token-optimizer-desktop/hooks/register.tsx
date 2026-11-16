@@ -1173,7 +1173,7 @@ function detailRow(D: Desktop, m: Model, on: Handlers) {
     detail.savings.state === 'unavailable' || (snap.savingsLoading && !snap.savings) ? (
       <Box flexDirection="row" alignItems="center" columnGap={1}>
         {icon(D, 'saved', t.ink)}
-        <Text>{m.savingsReason ?? (snap.savingsLoading ? 'Still counting savings. Retrying.' : detail.savings.reason) ?? 'Savings appear once Token Optimizer has measured some.'}</Text>
+        <Text>{m.savingsReason ?? (snap.savingsLoading ? 'Still counting savings.' : detail.savings.reason) ?? 'Savings appear once Token Optimizer has measured some.'}</Text>
       </Box>
     ) : savingsRetryNote(m.savingsRefreshFailed, m.savingsComputedAt, snap.now) ? <Text>{savingsRetryNote(m.savingsRefreshFailed, m.savingsComputedAt, snap.now)}</Text> : ''
 

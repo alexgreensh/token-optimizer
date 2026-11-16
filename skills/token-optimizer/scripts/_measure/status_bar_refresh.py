@@ -35,7 +35,7 @@ def write_cache(facade, session_id, savings, reason):
     failures = min(10, int((prior or {}).get('failures', 0)) + 1) if failed else 0
     if stale:
         savings = prior['savings']
-    friendly = 'no savings recorded yet' if reason == 'no savings recorded yet' else 'still counting savings, retrying'
+    friendly = 'no savings recorded yet' if reason == 'no savings recorded yet' else 'still counting savings'
     data = {
         'schema': facade._STATUS_BAR_SCHEMA, 'computed_at': prior['computed_at'] if stale else facade.time.time(),
         'savings': savings, 'reason': friendly if savings is None else None, 'stale': stale,
@@ -185,7 +185,7 @@ def failed_payload(facade, session_id, out):
         except Exception:
             pass
     out.update(savings=savings, savings_state='stale' if savings is not None else 'loading',
-               savings_reason=None if savings is not None else 'still counting savings, retrying',
+               savings_reason=None if savings is not None else 'still counting savings',
                savings_refresh_failed=True)
     return out
 
@@ -213,6 +213,6 @@ def sync(facade, session_id, out):
     if savings is not None:
         _save_session(facade, session_id, {k: savings[k] for k in ('session_tokens', 'session_usd')})
     out.update(savings=savings, savings_state="fresh" if savings is not None else ("unavailable" if reason == "no savings recorded yet" else "loading"),
-               savings_reason=None if savings is not None else ("no savings recorded yet" if reason == "no savings recorded yet" else "still counting savings, retrying"),
+               savings_reason=None if savings is not None else ("no savings recorded yet" if reason == "no savings recorded yet" else "still counting savings"),
                savings_age_s=0.0, savings_refresh_failed=bool(savings is None and cached and cached.get('refresh_failed')))
     return out

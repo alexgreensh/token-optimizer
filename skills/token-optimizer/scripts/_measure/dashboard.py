@@ -4253,7 +4253,7 @@ def _status_bar_cli(args):
         # Killed by its budget: leave a reason for the band and free the lock.
         _measure_facade = _compat.facade()
         try:
-            _measure_facade._status_bar_write_cache(sid, None, "still counting savings, retrying")
+            _measure_facade._status_bar_write_cache(sid, None, "still counting savings")
         except OSError:
             pass
         _measure_facade._status_bar_release_lock(sid, token)

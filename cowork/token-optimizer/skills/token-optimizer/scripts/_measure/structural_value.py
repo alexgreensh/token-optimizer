@@ -97,13 +97,15 @@ def _session_start(metrics_json, first_day):
     return None
 
 
-def load_sessions(conn):
+def load_sessions(conn, canonical=None):
     """owner_hash -> (project, start_epoch, foreign), one canonical row per real
     session: copies of a session (uuid, else first request) resolve to the most
     complete one, so scope comes from a single row (see structural_dedupe)."""
     out = {}
-    cloud = cloud_sessions(conn)
-    _, canon = dedupe.canonical_sessions(conn, lambda uuid, path: proven_foreign(uuid, path, cloud))
+    if canonical is None:
+        cloud = cloud_sessions(conn)
+        canonical = dedupe.canonical_sessions(conn, lambda uuid, path: proven_foreign(uuid, path, cloud))
+    _, canon = canonical
     for path, win in canon.items():
         value = (win["project"] or "", _session_start(win["metrics"], win["first_day"] or win["date"]),
                  win["foreign"])

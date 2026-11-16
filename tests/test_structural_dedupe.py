@@ -60,6 +60,17 @@ def test_distinct_sessions_are_all_credited(m):
     assert _value(m, conn)["requests"] == 3
 
 
+def test_shared_session_snapshot_matches_independent_lookups(m):
+    from _measure import structural_dedupe as D, structural_report as R, structural_value as V
+    conn = _db(m)
+    _session(conn, m, 'a', LOCAL, _day())
+    conn.commit()
+    cloud = V.cloud_sessions(conn)
+    canonical = D.canonical_sessions(conn, lambda uuid, path: V.proven_foreign(uuid, path, cloud))
+    assert V.load_sessions(conn, canonical) == V.load_sessions(conn)
+    assert R._local_sessions(conn, HOME, canonical) == R._local_sessions(conn, HOME)
+
+
 def test_call_weight_zero_is_a_duplicate_and_null_is_legacy_one():
     from _measure import structural_dedupe as D
     assert D.request_weight(None) == 1 and D.request_weight(0) == 0 and D.request_weight(3) == 3

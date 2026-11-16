@@ -288,3 +288,23 @@ def test_failed_session_query_waits_before_retrying(sb, monkeypatch, had_values)
     os.utime(path, (stamp, stamp))
     sb.status_bar_payload(sid)
     assert len(calls) == 2
+
+
+def test_status_bar_refresh_never_runs_the_cache_waste_scan(sb, monkeypatch):
+    """The band never shows cache_drop, so its refresh must not pay for the
+    30-day transcript scan behind it; the dashboard and CLI still run it."""
+    _three_day_fixture(sb)
+    scans = []
+    def scan(days=None, fresh=None):
+        scans.append(days)
+        return {}
+    monkeypatch.setattr(sb, '_cache_ttl_waste_cached', scan)
+    monkeypatch.setattr(sb, '_get_cache_ttl_waste', lambda *a, **k: scans.append('raw') or {})
+    out = sb.status_bar_payload(SID_A, sync=True)
+    assert out['savings_state'] == 'fresh' and out['savings']['session_tokens'] == 6500
+    monkeypatch.setattr(sb, 'spawn_detached', lambda argv, **kw: object())
+    sb.status_bar_payload(SID_B)
+    assert scans == []
+    # Outside the refresh the scan still runs: the dashboard keeps its number.
+    sb._get_merged_savings(days=30)
+    assert scans == [30]

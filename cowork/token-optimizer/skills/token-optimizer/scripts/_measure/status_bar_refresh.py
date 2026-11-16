@@ -193,7 +193,7 @@ def failed_payload(facade, session_id, out):
 def sync(facade, session_id, out):
     try:
         from . import config_cache
-        with config_cache.pricing_snapshot(facade):
+        with config_cache.pricing_snapshot(facade), config_cache.skip_cache_scan():
             savings, reason = facade._status_bar_savings_or_reason(session_id)
     except Exception as exc:
         savings, reason = None, str(exc)

@@ -1,4 +1,6 @@
-"""Cache parsed local configuration, while leaving project fallback live."""
+"""Cache parsed local configuration, while leaving project fallback live.
+
+Also scopes what one status-bar refresh may skip (see skip_cache_scan)."""
 import copy
 import contextvars
 import threading
@@ -7,6 +9,7 @@ from contextlib import contextmanager
 _cache = {}
 _lock = threading.Lock()
 _tier = contextvars.ContextVar('status_bar_pricing_tier', default=None)
+_skip_scan = contextvars.ContextVar('status_bar_skip_cache_scan', default=False)
 
 
 def current_tier():
@@ -20,6 +23,24 @@ def pricing_snapshot(facade):
         yield
     finally:
         _tier.reset(token)
+
+
+def cache_scan_skipped():
+    return _skip_scan.get()
+
+
+@contextmanager
+def skip_cache_scan():
+    """Inside a status-bar refresh, skip the 30-day cache-waste transcript scan.
+
+    Its only output is the cache_drop opportunity block, which the status-bar
+    payload and savings_headline never read; the dashboard and CLI still scan.
+    """
+    token = _skip_scan.set(True)
+    try:
+        yield
+    finally:
+        _skip_scan.reset(token)
 
 
 def clear():

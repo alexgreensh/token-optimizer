@@ -1038,6 +1038,8 @@ type Model = {
   tones: Tones
   sheetOpen: boolean
   savingsReason: string | null
+  savingsAgeSeconds: number | null
+  savingsStale: boolean
   /** Keep warm can run now (the one guard): only then does the row offer it. */
   canWarm: boolean
   /** Clawd's pictures, bottom first: the previous pose stays beneath a new one while it fades in. */
@@ -1168,17 +1170,13 @@ function detailRow(D: Desktop, m: Model, on: Handlers) {
     ...(m.canWarm && snap.cache.state === 'warning' ? [{ id: 'warm' as const, label: 'Keep warm' }] : []),
   ].filter(a => a.id !== say.action?.id && !(a.id === 'clean' && say.action?.id === 'clean-first'))
 
-  // First load with no last-known figure draws nothing here, never "Measuring savings…"; the
-  // unavailable reasons stay. A ready figure is the chip's job, not a second savings line.
   const savingsNote =
-    detail.savings.state === 'unavailable' ? (
+    detail.savings.state === 'unavailable' || (snap.savingsLoading && !snap.savings) ? (
       <Box flexDirection="row" alignItems="center" columnGap={1}>
         {icon(D, 'saved', t.ink)}
-        <Text>{m.savingsReason ?? detail.savings.reason ?? 'Savings appear once Token Optimizer has measured some.'}</Text>
+        <Text>{m.savingsReason ?? (snap.savingsLoading ? 'Still counting savings. Retrying.' : detail.savings.reason) ?? 'Savings appear once Token Optimizer has measured some.'}</Text>
       </Box>
-    ) : (
-      ''
-    )
+    ) : m.savingsStale && m.savingsAgeSeconds != null ? <Text>Last updated {Math.floor(m.savingsAgeSeconds / 60)} minutes ago. Retrying.</Text> : ''
 
   return (
     <Box key="row" flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
@@ -1643,6 +1641,8 @@ export const register: Register = on => {
       tones: tonesFor(palette),
       sheetOpen: s?.sheetOpen ?? false,
       savingsReason: s?.savingsReason ?? null,
+      savingsAgeSeconds: s?.savingsAgeSeconds ?? null,
+      savingsStale: s?.savingsState === 'stale',
       canWarm: canKeepWarm({ ...shownClock, working }, now),
       clawd,
       gazes:

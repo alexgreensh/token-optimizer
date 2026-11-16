@@ -15,6 +15,7 @@ export type StatusBar = {
   /** The shared savings headline; null on installs that predate it. */
   savingsHeadline: SavingsHeadline | null
   savingsState: SavingsState
+  savingsAgeSeconds: number | null
   /** One short reason when savings is null. */
   savingsReason: string | null
   lastRequestEpoch: number | null
@@ -246,8 +247,9 @@ export function parseStatusBar(json: unknown): StatusBar | null {
 
   return {
     savings: parseSavings(out.savings),
-    savingsHeadline: parseSavingsHeadline(out.savings_headline),
+    savingsHeadline: parseSavingsHeadline(toRecord(out.savings)?.savings_headline ?? out.savings_headline),
     savingsState: state,
+    savingsAgeSeconds: num(out.savings_age_s),
     savingsReason: text(out.savings_reason),
     lastRequestEpoch: lastRequest !== null && lastRequest > 0 ? lastRequest : null,
     cacheLifetime: lifetime,

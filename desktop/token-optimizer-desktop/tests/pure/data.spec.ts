@@ -269,6 +269,17 @@ test('while savings load the last known figures stay, marked loading', async () 
   assert.equal(next.savingsState, 'loading')
 })
 
+test('an unavailable refresh keeps the last savings, marked stale', async () => {
+  const w = withTokenOptimizer(world())
+  const io = fakeIo(w)
+  const first = await gather(io, null, { savings: true })
+  const unavailable = { ...JSON.parse(STATUS), savings: null, savings_state: 'unavailable', savings_reason: 'failed' }
+  const next = await gather({ ...io, run: async (argv, init) => argv.includes('status-bar') ? { exitCode: 0, stdout: JSON.stringify(unavailable) } : io.run(argv, init) }, first, { savings: true })
+  assert.deepEqual(next.savings, first.savings)
+  assert.equal(next.savingsState, 'stale')
+  assert.equal(next.savingsReason, null)
+})
+
 test('a gather without the status command keeps savings and spawns nothing but git', async () => {
   const w = withTokenOptimizer(world())
   const io = fakeIo(w)

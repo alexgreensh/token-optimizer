@@ -235,10 +235,13 @@ def run(argv: Sequence[str]) -> Tuple[int, str]:
             covered = cmd_outline(idx, symbol, out)
         else:
             covered = cmd_deps(idx, symbol, out)
+        if idx.readonly and idx.stale:
+            out.lines.append("(read-only index may be stale; source files changed or the sweep was incomplete)")
         if not idx.complete:
             out.lines.append(f"(index still building: {idx.counts()['files']} files so far; rerun or Grep for anything missing)")
         text = out.text(" (narrow with --in <path> or Class.method)")
-        _log(idx, args.command, text, covered)
+        if not idx.stale:
+            _log(idx, args.command, text, covered)
         return 0, text
     finally:
         idx.close()
@@ -261,9 +264,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except SystemExit as exc:  # argparse usage errors
         return int(exc.code or 0)
     except Exception as exc:
-        why = type(exc).__name__
-        msg = str(exc).splitlines()[0][:120] if str(exc) else ""
-        print(FALLBACK.format(why=f"index unavailable ({why}{': ' + msg if msg else ''})"))
+        import sqlite3
+        cause = exc
+        while cause.__cause__ is not None:
+            cause = cause.__cause__
+        code = getattr(cause, "sqlite_errorname", "unavailable")
+        message = str(exc)
+        if not message.startswith("query failed at "):
+            message = f"query failed at lookup (SQLite {code})"
+        try:
+            import codemap_ledger as led
+            led.log_failure()
+        except Exception:
+            pass
+        print(FALLBACK.format(why=message[:160]))
         return 0
     if text:
         print(text)

@@ -36,7 +36,7 @@ SESSION = "22222222-2222-2222-2222-222222222222"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-_FLAG_VARS = ("TOKEN_OPTIMIZER_CODEMAP", "TOKEN_OPTIMIZER_CODEMAP_REREAD", "CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT")
+_FLAG_VARS = ("TOKEN_OPTIMIZER_CODEMAP", "TOKEN_OPTIMIZER_CODEMAP_REREAD", "TOKEN_OPTIMIZER_CODEMAP_HINT", "CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT")
 
 
 @pytest.fixture()
@@ -216,47 +216,68 @@ def _hint(payload, extra_env=None):
                           capture_output=True, text=True, timeout=30)
 
 
-def test_subagent_hint_on_by_default(sandbox):
-    proj = _project(sandbox / "proj")
-    out = _hint({"hook_event_name": "SubagentStart", "agent_type": "Explore", "cwd": str(proj)})
-    payload = json.loads(out.stdout)
-    hso = payload["hookSpecificOutput"]
-    assert hso["hookEventName"] == "SubagentStart"
-    assert "codemap.py" in hso["additionalContext"]
-    assert "find|show|callers" in hso["additionalContext"]
-    assert "—" not in hso["additionalContext"]  # no em-dashes in model/user-facing copy
-
-
-def test_hint_silent_when_off_or_no_code(sandbox):
-    proj = _project(sandbox / "proj")
-    off = _hint({"hook_event_name": "SubagentStart", "cwd": str(proj)}, {"TOKEN_OPTIMIZER_CODEMAP": "0"})
-    assert off.stdout.strip() == ""
-    docs = sandbox / "docs"
-    (docs / ".git").mkdir(parents=True)
-    (docs / "notes.md").write_text("# notes\n", encoding="utf-8")
-    none = _hint({"hook_event_name": "SubagentStart", "cwd": str(docs)})
-    assert none.stdout.strip() == ""
-    skip = _hint({"hook_event_name": "SubagentStart", "agent_type": "statusline-setup", "cwd": str(proj)})
-    assert skip.stdout.strip() == ""
-    no_cwd = _hint({"hook_event_name": "SubagentStart", "agent_type": "Explore"})
-    assert no_cwd.stdout.strip() == ""
-
-
-def test_session_text_and_background_warm(sandbox):
+def test_hint_default_off_and_opt_in_dedup(sandbox, monkeypatch):
     import codemap_hint
     import codemap_index as ci
     proj = _project(sandbox / "proj")
-    text = codemap_hint.session_text({"cwd": str(proj)})
-    assert text.startswith("[Token Optimizer] Code map available")
-    lock = ci.index_path(proj.resolve()).with_suffix(".building")
-    db = ci.index_path(proj.resolve())
-    deadline = time.time() + 30
-    while time.time() < deadline and (lock.exists() or not db.exists()):
-        time.sleep(0.2)
-    assert db.exists()
-    conn = sqlite3.connect(str(db))
+    payload = {"cwd": str(proj), "session_id": SESSION, "agent_type": "Explore"}
+    assert not codemap_hint.session_text(payload)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP_HINT", "1")
+    # An incomplete or pending build never advertises the map.
+    monkeypatch.setattr(codemap_hint, "warm_index", lambda root: False)
+    assert not codemap_hint.session_text(payload)
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    monkeypatch.setattr(codemap_hint, "warm_index", lambda root: True)
+    hint = codemap_hint.session_text(payload)
+    assert "codemap.py" in hint and "find main" in hint
+    assert not codemap_hint.subagent_payload(payload)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP", "0")
+    assert not codemap_hint.session_text({**payload, "session_id": "another"})
+
+
+def test_capped_index_is_incomplete(sandbox, monkeypatch):
+    import codemap_index as ci
+    proj = _project(sandbox / "proj")
+    monkeypatch.setattr(ci, "MAX_FILES", 2)
+    idx = ci.CodeIndex.open(proj)
     try:
-        assert conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()[0] == "1"
+        idx.sync(30)
+        assert not idx.complete
+        assert idx.conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()[0] == "0"
+    finally:
+        idx.close()
+
+
+def test_readonly_fallback_reports_stale(sandbox, monkeypatch):
+    import codemap_index as ci
+    import codemap
+    proj = _project(sandbox / "proj")
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    (proj / "pkg" / "core.py").write_text("def newer(): pass\n", encoding="utf-8")
+    def denied(*args, **kwargs):
+        raise ci.CodemapError("denied")
+    monkeypatch.setattr(ci.CodeIndex, "open", denied)
+    code, text = codemap.run(["find", "helper", "--root", str(proj)])
+    assert code == 0 and "helper" in text and "may be stale" in text
+
+
+def test_query_failure_count_is_not_savings(sandbox, monkeypatch, capsys):
+    import codemap
+    import codemap_index as ci
+    import codemap_ledger as led
+    def fail(*args, **kwargs):
+        raise ci.CodemapError("query failed at open/sync (SQLite SQLITE_CANTOPEN; data dir codemap)")
+    monkeypatch.setattr(ci, "open_synced", fail)
+    assert codemap.main(["find", "helper"]) == 0
+    assert "query failed at open/sync" in capsys.readouterr().out
+    conn = sqlite3.connect(str(led._trends_db()))
+    try:
+        assert conn.execute("SELECT count(*) FROM codemap_failures").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM codemap_events").fetchone()[0] == 0
     finally:
         conn.close()
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Discovery hint for the code map (SessionStart and SubagentStart).
 
-Tells the agent, in about 80 tokens, to ask the code map before grepping or
+Tells the agent, in roughly 80 tokens depending on installation paths, to use the code map before grepping or
 reading whole files for structural questions, and warms the index in a
 detached background process so the first lookup is fast. Silent (no output,
 no spawn) when the feature is off, when the cwd is the home directory or the
@@ -71,11 +71,12 @@ def warm_index(root: Path) -> bool:
             import sqlite3
             conn = sqlite3.connect(str(db), timeout=1.0)
             try:
-                row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
+                row = conn.execute("SELECT v FROM meta WHERE k='complete' AND "
+                                   "(SELECT v FROM meta WHERE k='schema')=?", (ci.SCHEMA_VERSION,)).fetchone()
             finally:
                 conn.close()
             if row and row[0] == "1":
-                return False  # each lookup syncs incrementally; nothing to warm
+                return True  # an existing complete index needs no warm-up
         if lock.exists() and time.time() - lock.stat().st_mtime < LOCK_FRESH_S:
             return False
         lock.parent.mkdir(parents=True, exist_ok=True)
@@ -96,24 +97,39 @@ def warm_index(root: Path) -> bool:
 def hint_text(root: Path) -> str:
     script = shlex.quote(str(Path(__file__).resolve().parent / "codemap.py"))
     py = shlex.quote(sys.executable or "python3")
-    return (
-        "[Token Optimizer] Code map available for this project (Python/JS/TS). For \"where is X "
-        "defined\", \"what calls Y\" or \"what does this file import\", run it BEFORE Grep, grep/rg in "
-        f"Bash, or reading whole files: `{py} {script} find|show|callers <symbol>` or `outline|deps <file>`. "
-        "`show` prints one definition with Edit-ready line numbers; answers are small and match the files on disk."
-    )
+    return f"[Token Optimizer] Code map: find a definition with `{py} {script} find main`."
 
 
 def session_text(hook_input: dict) -> str:
     """Plain hint text for SessionStart ('' when off or not a code project)."""
     try:
         import codemap_index as ci
-        if not ci.codemap_enabled():
+        if not ci.codemap_hint_enabled():
             return ""
         root = _project_root(str(hook_input.get("cwd") or ""))
         if root is None:
             return ""
-        warm_index(root)
+        if not warm_index(root):
+            return ""
+        import sqlite3
+        db = ci.index_path(root)
+        conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=1.0)
+        try:
+            row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
+        finally:
+            conn.close()
+        if not row or row[0] != "1":
+            return ""
+        sid = str(hook_input.get("session_id") or "")
+        if not sid:
+            return ""
+        import hashlib
+        marker = db.parent / ("hint-" + hashlib.sha256(sid.encode()).hexdigest())
+        try:
+            with marker.open("x", encoding="utf-8"):
+                pass
+        except FileExistsError:
+            return ""
         return hint_text(root)
     except Exception:
         return ""

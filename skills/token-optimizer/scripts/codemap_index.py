@@ -27,7 +27,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 import structure_map as sm
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 MAX_FILES = 6000
 MAX_PY_BYTES = sm.MAX_AST_BYTES
 MAX_JS_BYTES = sm.MAX_JS_TS_BYTES
@@ -103,6 +103,16 @@ def codemap_enabled() -> bool:
     try:
         from plugin_env import is_v5_flag_enabled
         return is_v5_flag_enabled("v5_codemap", "TOKEN_OPTIMIZER_CODEMAP", default=True)
+    except Exception:
+        return False
+
+
+def codemap_hint_enabled() -> bool:
+    if not codemap_enabled():
+        return False
+    try:
+        from plugin_env import is_v5_flag_enabled
+        return is_v5_flag_enabled("v5_codemap_hint", "TOKEN_OPTIMIZER_CODEMAP_HINT", default=False)
     except Exception:
         return False
 
@@ -365,6 +375,10 @@ def parse_file(path: Path, root: Path, source: Optional[str] = None) -> FileFact
 # Store
 # --------------------------------------------------------------------------- #
 
+class IncompleteSweep(Exception):
+    """The source sweep hit a bound."""
+
+
 def _iter_source_files(root: Path, deadline: float) -> Iterator[Path]:
     count = 0
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -376,7 +390,7 @@ def _iter_source_files(root: Path, deadline: float) -> Iterator[Path]:
                 continue
             count += 1
             if count > MAX_FILES or time.monotonic() > deadline:
-                return
+                raise IncompleteSweep()
             yield Path(dirpath) / fn
 
 
@@ -388,6 +402,8 @@ class CodeIndex:
         self.conn = conn
         self.db_path = db_path
         self.complete = False
+        self.readonly = False
+        self.stale = False
 
     @classmethod
     def open(cls, root: str | os.PathLike[str], db_path: Optional[Path] = None) -> "CodeIndex":
@@ -548,6 +564,9 @@ class CodeIndex:
                         break
             else:
                 timed_out = time.monotonic() > deadline
+        except IncompleteSweep:
+            timed_out = True
+        try:
             if not timed_out:
                 for rel in set(known) - seen:
                     self._drop(rel)
@@ -639,16 +658,68 @@ class CodeIndex:
 def open_synced(start: str | os.PathLike[str], budget_s: Optional[float] = None) -> CodeIndex:
     """Open (building lazily) and sync the index for the project containing ``start``."""
     root = find_project_root(start)
-    idx = CodeIndex.open(root)
+    idx = None
     try:
+        idx = CodeIndex.open(root)
         idx.sync(budget_s)
-    except CodemapError:
-        idx.close()
-        raise
-    except Exception as exc:  # parsing bugs must never escape to the agent
-        idx.close()
-        raise CodemapError(f"index sync failed: {exc}") from exc
-    return idx
+        return idx
+    except Exception as write_error:
+        if idx is not None:
+            idx.close()
+        db = index_path(root)
+        # Normal read-only mode can see WAL data when its sidecars are accessible.
+        # Immutable is a last resort for a snapshot whose WAL cannot be opened.
+        from urllib.parse import quote
+        uri = "file:" + quote(str(db), safe="/") + "?mode=ro"
+        conn = None
+        immutable = False
+        try:
+            try:
+                conn = sqlite3.connect(uri, uri=True, timeout=3.0)
+                conn.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
+            except sqlite3.Error:
+                try:
+                    conn.close()
+                except (AttributeError, UnboundLocalError):
+                    pass
+                conn = sqlite3.connect(uri + "&immutable=1", uri=True, timeout=3.0)
+                immutable = True
+            idx = CodeIndex(root, conn, db)
+            version = conn.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
+            if not version or version[0] != SCHEMA_VERSION:
+                raise CodemapError("read-only index schema mismatch")
+            row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
+            idx.complete = bool(row and row[0] == "1")
+            idx.readonly = True
+            idx.stale = immutable
+            known = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT path, mtime_ns, size FROM files")}
+            seen = set()
+            try:
+                for path in _iter_source_files(root, time.monotonic() + SWEEP_BUDGET_S):
+                    rel = _rel(root, path)
+                    if rel is None:
+                        continue
+                    seen.add(rel)
+                    try:
+                        st = path.stat()
+                        if known.get(rel) != (st.st_mtime_ns, st.st_size):
+                            idx.stale = True
+                    except OSError:
+                        idx.stale = True
+            except IncompleteSweep:
+                idx.stale = True
+            idx.stale = idx.stale or seen != set(known)
+            return idx
+        except Exception as read_error:
+            if idx is not None:
+                idx.close()
+            elif conn is not None:
+                conn.close()
+            cause = read_error if isinstance(read_error, sqlite3.Error) else write_error
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            code = getattr(cause, "sqlite_errorname", "unavailable")
+            raise CodemapError(f"query failed at open/sync (SQLite {code}; data dir {db.parent.name})") from read_error
 
 
 def symbols_in(text: str) -> Sequence[str]:

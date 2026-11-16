@@ -231,7 +231,7 @@ def test_hint_default_off_and_opt_in_dedup(sandbox, monkeypatch):
     idx.close()
     monkeypatch.setattr(codemap_hint, "warm_index", lambda root: True)
     hint = codemap_hint.session_text(payload)
-    assert "codemap.py" in hint and "find main" in hint
+    assert "codemap.py" in hint and "outline" in hint
     assert not codemap_hint.subagent_payload(payload)
     monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP", "0")
     assert not codemap_hint.session_text({**payload, "session_id": "another"})
@@ -249,15 +249,21 @@ def test_hint_config_and_environment_override(sandbox, monkeypatch):
     assert not ci.codemap_hint_enabled()
 
 
-def test_capped_index_is_incomplete(sandbox, monkeypatch):
+def test_capped_index_is_complete(sandbox, monkeypatch):
     import codemap_index as ci
     proj = _project(sandbox / "proj")
     monkeypatch.setattr(ci, "MAX_FILES", 2)
     idx = ci.CodeIndex.open(proj)
     try:
         idx.sync(30)
-        assert not idx.complete
-        assert idx.conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()[0] == "0"
+        assert idx.complete and idx.capped
+        assert idx.conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()[0] == "1"
+        first = idx.conn.execute("SELECT path FROM files ORDER BY path LIMIT 1").fetchone()[0]
+        (proj / first).unlink()
+        idx.capped = False
+        idx.sync(30)
+        assert not idx.file_row(first)
+        assert idx.counts()["files"] == 2
     finally:
         idx.close()
 
@@ -479,3 +485,76 @@ def test_codemap_lookup_is_estimated_tier():
     assert total_tokens == 1700
     assert "codemap_lookup" in measure._RUNWAY_ESTIMATED_EVENT_TYPES
     assert "codemap_outline" in measure._COUNTED_SE_EVENT_TYPES
+
+
+def test_readonly_show_refuses_changed_file_and_does_not_log(sandbox, monkeypatch):
+    import codemap_index as ci
+    import codemap
+    import codemap_ledger as led
+    proj = _project(sandbox / "proj")
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    (proj / "pkg" / "core.py").write_text("def newer(): pass\n")
+    monkeypatch.setattr(ci.CodeIndex, "open", lambda *a, **kw: (_ for _ in ()).throw(OSError("denied")))
+    _, text = codemap.run(["show", "helper", "--root", str(proj)])
+    assert "changed since indexed, use Read" in text
+    assert "Edit-ready" not in text
+    assert not led._trends_db().exists()
+
+
+def test_immutable_fallback_and_escaped_path(sandbox, monkeypatch):
+    import codemap_index as ci
+    proj = _project(sandbox / "proj?#%")
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    original = ci.sqlite3.connect
+    def connect(db, *args, **kwargs):
+        if isinstance(db, str) and "mode=ro" in db and "immutable=1" not in db:
+            raise sqlite3.OperationalError("sidecar denied")
+        return original(db, *args, **kwargs)
+    monkeypatch.setattr(ci.CodeIndex, "open", lambda *a, **kw: (_ for _ in ()).throw(OSError("denied")))
+    monkeypatch.setattr(ci.sqlite3, "connect", connect)
+    idx = ci.open_synced(proj)
+    try:
+        assert idx.readonly and idx.stale and idx.find_defs("helper")
+    finally:
+        idx.close()
+
+
+def test_hint_real_warm_and_hook_output(sandbox, monkeypatch):
+    import codemap_index as ci
+    import codemap_hint as hint
+    proj = _project(sandbox / "proj?#%")
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP_HINT", "1")
+    payload = {"cwd": str(proj), "session_id": SESSION, "agent_id": "child", "agent_type": "Explore"}
+    assert not hint.session_text({"session_id": SESSION})
+    assert not hint.subagent_payload({**payload, "agent_type": "web-fetch"})
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    assert hint.warm_index(proj)
+    result = _hint(payload)
+    assert result.returncode == 0
+    assert "outline" in json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert hint.session_text({**payload, "agent_id": "other"})
+
+
+def test_failure_stage_and_stats(sandbox, monkeypatch, capsys):
+    import codemap
+    import codemap_index as ci
+    import codemap_ledger as led
+    proj = _project(sandbox / "proj")
+    original = ci.open_synced
+    monkeypatch.setattr(ci, "open_synced", lambda *a, **kw: (_ for _ in ()).throw(ValueError("private")))
+    codemap.main(["find", "helper"])
+    assert "ValueError" in capsys.readouterr().out
+    monkeypatch.setattr(ci, "open_synced", original)
+    _, text = codemap.run(["stats", "--root", str(proj)])
+    assert "failures=1" in text
+    conn = sqlite3.connect(str(led._trends_db()))
+    try:
+        assert conn.execute("SELECT stage, code FROM codemap_failures").fetchone() == ("lookup", "unknown")
+    finally:
+        conn.close()

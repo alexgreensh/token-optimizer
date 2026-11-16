@@ -166,6 +166,7 @@ export default defineConfig({
             { label: "The dashboard", slug: "features/dashboard" },
             { label: "Managing skills and MCP", slug: "features/manage-tab" },
             { label: "Active compression", slug: "features/active-compression" },
+            { label: "Code map", slug: "features/code-map" },
             { label: "Read cache", slug: "features/read-cache" },
             { label: "Bash output compression", slug: "features/bash-compression" },
             { label: "Quality nudges and loop detection", slug: "features/quality-signals" },

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Discovery hint for the code map (SessionStart and SubagentStart).
 
-Tells the agent, in roughly 80 tokens depending on installation paths, to use the code map before grepping or
+Tells the agent, in approximately 75 to 81 estimated tokens depending on installation paths, to use the code map before grepping or
 reading whole files for structural questions, and warms the index in a
 detached background process so the first lookup is fast. Silent (no output,
 no spawn) when the feature is off, when the cwd is the home directory or the
@@ -97,7 +97,16 @@ def warm_index(root: Path) -> bool:
 def hint_text(root: Path) -> str:
     script = shlex.quote(str(Path(__file__).resolve().parent / "codemap.py"))
     py = shlex.quote(sys.executable or "python3")
-    return f"[Token Optimizer] Code map: find a definition with `{py} {script} find main`."
+    import codemap_index as ci
+    import sqlite3
+    conn = sqlite3.connect(ci.index_path(root).resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        row = conn.execute("SELECT path FROM files ORDER BY path LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return ""
+    return f"[Token Optimizer] Code map: inspect a file with `{py} {script} outline {shlex.quote(row[0])}`."
 
 
 def session_text(hook_input: dict) -> str:
@@ -113,7 +122,7 @@ def session_text(hook_input: dict) -> str:
             return ""
         import sqlite3
         db = ci.index_path(root)
-        conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=1.0)
+        conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0)
         try:
             row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
         finally:
@@ -123,7 +132,16 @@ def session_text(hook_input: dict) -> str:
         sid = str(hook_input.get("session_id") or "")
         if not sid:
             return ""
+        agent_id = str(hook_input.get("agent_id") or "")
+        if agent_id:
+            sid += ":" + agent_id
         import hashlib
+        for old in db.parent.glob("hint-*"):
+            try:
+                if time.time() - old.stat().st_mtime > 7 * 86400:
+                    old.unlink()
+            except OSError:
+                pass
         marker = db.parent / ("hint-" + hashlib.sha256(sid.encode()).hexdigest())
         try:
             with marker.open("x", encoding="utf-8"):

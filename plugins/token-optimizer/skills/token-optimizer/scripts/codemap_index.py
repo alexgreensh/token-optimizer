@@ -27,7 +27,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 import structure_map as sm
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "2"
 MAX_FILES = 6000
 MAX_PY_BYTES = sm.MAX_AST_BYTES
 MAX_JS_BYTES = sm.MAX_JS_TS_BYTES
@@ -158,7 +158,7 @@ def index_dir() -> Path:
 
 def index_path(root: Path) -> Path:
     digest = hashlib.sha256(str(root).encode("utf-8", "replace")).hexdigest()[:16]
-    return index_dir() / f"{digest}.db"
+    return index_dir() / f"{digest}-bounded-v1.db"
 
 
 # --------------------------------------------------------------------------- #
@@ -376,7 +376,11 @@ def parse_file(path: Path, root: Path, source: Optional[str] = None) -> FileFact
 # --------------------------------------------------------------------------- #
 
 class IncompleteSweep(Exception):
-    """The source sweep hit a bound."""
+    """The source sweep ran out of time."""
+
+
+class CappedSweep(Exception):
+    """The source sweep reached its file limit."""
 
 
 def _iter_source_files(root: Path, deadline: float) -> Iterator[Path]:
@@ -389,8 +393,10 @@ def _iter_source_files(root: Path, deadline: float) -> Iterator[Path]:
             if fn.endswith((".min.js", ".bundle.js", ".d.ts")):
                 continue
             count += 1
-            if count > MAX_FILES or time.monotonic() > deadline:
+            if time.monotonic() > deadline:
                 raise IncompleteSweep()
+            if count > MAX_FILES:
+                raise CappedSweep()
             yield Path(dirpath) / fn
 
 
@@ -402,6 +408,7 @@ class CodeIndex:
         self.conn = conn
         self.db_path = db_path
         self.complete = False
+        self.capped = False
         self.readonly = False
         self.stale = False
 
@@ -539,6 +546,7 @@ class CodeIndex:
         seen = set()
         stats = {"parsed": 0, "unchanged": 0, "removed": 0}
         timed_out = False
+        self.capped = False
         try:
             for p in _iter_source_files(self.root, deadline):
                 rel = _rel(self.root, p)
@@ -566,12 +574,16 @@ class CodeIndex:
                 timed_out = time.monotonic() > deadline
         except IncompleteSweep:
             timed_out = True
+        except CappedSweep:
+            self.capped = True
         try:
             if not timed_out:
                 for rel in set(known) - seen:
                     self._drop(rel)
                     stats["removed"] += 1
             self.complete = not timed_out
+            self.conn.execute("INSERT OR REPLACE INTO meta VALUES('capped', ?)",
+                              ("1" if self.capped and not timed_out else "0",))
             self.conn.execute("INSERT OR REPLACE INTO meta VALUES('complete', ?)",
                               ("1" if self.complete else "0",))
             self.conn.commit()
@@ -669,8 +681,7 @@ def open_synced(start: str | os.PathLike[str], budget_s: Optional[float] = None)
         db = index_path(root)
         # Normal read-only mode can see WAL data when its sidecars are accessible.
         # Immutable is a last resort for a snapshot whose WAL cannot be opened.
-        from urllib.parse import quote
-        uri = "file:" + quote(str(db), safe="/") + "?mode=ro"
+        uri = db.resolve().as_uri() + "?mode=ro"
         conn = None
         immutable = False
         try:
@@ -690,6 +701,8 @@ def open_synced(start: str | os.PathLike[str], budget_s: Optional[float] = None)
                 raise CodemapError("read-only index schema mismatch")
             row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
             idx.complete = bool(row and row[0] == "1")
+            capped = conn.execute("SELECT v FROM meta WHERE k='capped'").fetchone()
+            idx.capped = bool(capped and capped[0] == "1")
             idx.readonly = True
             idx.stale = immutable
             known = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT path, mtime_ns, size FROM files")}
@@ -706,6 +719,9 @@ def open_synced(start: str | os.PathLike[str], budget_s: Optional[float] = None)
                             idx.stale = True
                     except OSError:
                         idx.stale = True
+            except CappedSweep:
+                if not idx.capped:
+                    idx.stale = True
             except IncompleteSweep:
                 idx.stale = True
             idx.stale = idx.stale or seen != set(known)
@@ -715,6 +731,8 @@ def open_synced(start: str | os.PathLike[str], budget_s: Optional[float] = None)
                 idx.close()
             elif conn is not None:
                 conn.close()
+            if isinstance(read_error, CodemapError):
+                raise read_error
             cause = read_error if isinstance(read_error, sqlite3.Error) else write_error
             while cause.__cause__ is not None:
                 cause = cause.__cause__

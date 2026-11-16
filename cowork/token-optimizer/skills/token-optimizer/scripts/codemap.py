@@ -98,6 +98,16 @@ def cmd_show(idx, symbol: str, within: str, max_lines: int, out: _Out) -> List[s
     rows.sort(key=lambda r: (r[2] == "variable", r[1] != symbol))
     name, qual, kind, path, line, end, sig = rows[0]
     abs_path = idx.root / path
+    if idx.readonly:
+        row = idx.file_row(path)
+        try:
+            st = abs_path.stat()
+            if not row or (st.st_mtime_ns, st.st_size) != (row[1], row[2]):
+                out.add(f"{path} changed since indexed, use Read.")
+                return []
+        except OSError:
+            out.add(f"{path} changed since indexed, use Read.")
+            return []
     try:
         src = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -219,9 +229,11 @@ def run(argv: Sequence[str]) -> Tuple[int, str]:
             c = idx.counts()
             return 0, "" if args.quiet else f"codemap index: {c['files']} files, complete={idx.complete}"
         if args.command == "stats":
+            import codemap_ledger as led
             c = idx.counts()
+            failures = led.failure_count()
             return 0, (f"root {idx.root}\nfiles {c['files']} defs {c['defs']} imports {c['imports']} "
-                       f"call-edges {c['refs']} complete={idx.complete} db={idx.db_path.stat().st_size // 1024}KB")
+                       f"call-edges {c['refs']} complete={idx.complete} failures={failures} db={idx.db_path.stat().st_size // 1024}KB")
         out = _Out()
         max_lines = max(5, min(int(args.max_lines or MAX_SHOW_LINES), 400))
         symbol = args.arg.strip()
@@ -237,6 +249,8 @@ def run(argv: Sequence[str]) -> Tuple[int, str]:
             covered = cmd_deps(idx, symbol, out)
         if idx.readonly and idx.stale:
             out.lines.append("(read-only index may be stale; source files changed or the sweep was incomplete)")
+        if idx.capped:
+            out.lines.append(f"(index covers the first {ci.MAX_FILES:,} files)")
         if not idx.complete:
             out.lines.append(f"(index still building: {idx.counts()['files']} files so far; rerun or Grep for anything missing)")
         text = out.text(" (narrow with --in <path> or Class.method)")
@@ -264,17 +278,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except SystemExit as exc:  # argparse usage errors
         return int(exc.code or 0)
     except Exception as exc:
-        import sqlite3
         cause = exc
         while cause.__cause__ is not None:
             cause = cause.__cause__
-        code = getattr(cause, "sqlite_errorname", "unavailable")
+        code = getattr(cause, "sqlite_errorname", None) or str(getattr(cause, "sqlite_errorcode", "unknown"))
         message = str(exc)
         if not message.startswith("query failed at "):
-            message = f"query failed at lookup (SQLite {code})"
+            message = f"query failed at lookup ({type(cause).__name__}; code {code})"
         try:
             import codemap_ledger as led
-            led.log_failure()
+            stage = "open/sync" if "open/sync" in message else "lookup"
+            led.log_failure(stage, code)
         except Exception:
             pass
         print(FALLBACK.format(why=message[:160]))

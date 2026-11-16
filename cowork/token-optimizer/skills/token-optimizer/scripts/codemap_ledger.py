@@ -37,7 +37,7 @@ _PENDING_NAME = "pending.json"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS codemap_failures (
-    id INTEGER PRIMARY KEY, ts_epoch REAL NOT NULL
+    id INTEGER PRIMARY KEY, ts_epoch REAL NOT NULL, stage TEXT, code TEXT
 );
 CREATE TABLE IF NOT EXISTS codemap_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,17 +88,33 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(db), timeout=3.0)
     conn.execute("PRAGMA busy_timeout=3000")
     conn.executescript(_SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(codemap_failures)")}
+    for column in ("stage", "code"):
+        if column not in columns:
+            conn.execute(f"ALTER TABLE codemap_failures ADD COLUMN {column} TEXT")
     return conn
 
 
-def log_failure() -> None:
+def log_failure(stage: str = "lookup", code: str = "unknown") -> None:
     """Count failed attempts independently of the savings ledger."""
     conn = _connect()
     try:
-        conn.execute("INSERT INTO codemap_failures (ts_epoch) VALUES (?)", (time.time(),))
+        conn.execute("INSERT INTO codemap_failures (ts_epoch, stage, code) VALUES (?, ?, ?)",
+                     (time.time(), stage[:32], code[:64]))
         conn.commit()
     finally:
         conn.close()
+
+
+def failure_count() -> int:
+    try:
+        conn = _connect()
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM codemap_failures").fetchone()[0])
+        finally:
+            conn.close()
+    except Exception:
+        return 0
 
 
 def _read_pending() -> Dict:

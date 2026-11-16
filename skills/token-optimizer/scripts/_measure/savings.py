@@ -3321,11 +3321,11 @@ def _estimate_cache_drop_savings(days=None):
     OPPORTUNITY tier: rebuilds that already happened, avoidable by resuming
     inside the TTL. Never summed into the realized total.
     """
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import config_cache
     zero = {"drop_sessions": 0, "est_drops": 0, "prefix_tokens": 0, "rebuilt_tokens": 0,
             "ttl_seconds": None, "cost_saved_usd": 0.0, "evidence": "opportunity"}
     try:
-        health = _measure_facade._cache_ttl_waste_cached(days=days) or {}
+        health = {} if config_cache.cache_scan_skipped() else (_measure_facade._cache_ttl_waste_cached(days=days) or {})
         rebuild = health.get("rebuild") or {}
         events = int(rebuild.get("events", 0) or 0)
         tokens = int(rebuild.get("tokens", 0) or 0)

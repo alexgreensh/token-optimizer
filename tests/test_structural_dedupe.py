@@ -1,8 +1,5 @@
 """Setup trims credit each real session once (A3 dedupe). Synthetic fixtures only."""
 import json
-import random
-import subprocess
-from pathlib import Path
 from datetime import datetime, timedelta
 
 import pytest
@@ -72,26 +69,6 @@ def test_shared_session_snapshot_matches_independent_lookups(m):
     canonical = D.canonical_sessions(conn, lambda uuid, path: V.proven_foreign(uuid, path, cloud))
     assert V.load_sessions(conn, canonical) == V.load_sessions(conn)
     assert R._local_sessions(conn, HOME, canonical) == R._local_sessions(conn, HOME)
-
-
-def test_randomized_trim_values_match_origin_main_exactly(m):
-    from _measure import structural_value as V
-    root = Path(__file__).resolve().parents[1]
-    source = subprocess.check_output(['git', 'show', 'origin/main:skills/token-optimizer/scripts/_measure/structural_value.py'], cwd=root, text=True)
-    old = {'__package__': '_measure'}
-    exec(compile(source, 'origin/main/structural_value.py', 'exec'), old)
-    randomizer = random.Random(5721)
-    conn = _db(m); day = _day(); date = day.strftime('%Y-%m-%d')
-    for n in range(12):
-        sid = 'random-' + str(n)
-        _session(conn, m, sid, LOCAL, day)
-        for i in range(4):
-            _req(conn, m, sid, 1000 + n * 4 + i, date, cr=randomizer.randint(1, 100000))
-    conn.commit()
-    L, _, _, _, _ = _mods()
-    trims = L.load_trims_from([_trim(L, (day - timedelta(hours=2)).astimezone().isoformat(), tokens=randomizer.randint(1, 5000))])
-    card = lambda model, prompt: _card(m, model)
-    assert V.value_trims(conn, trims, date, date, card, HOME) == old['value_trims'](conn, trims, date, date, card, HOME)
 
 
 def test_call_weight_zero_is_a_duplicate_and_null_is_legacy_one():

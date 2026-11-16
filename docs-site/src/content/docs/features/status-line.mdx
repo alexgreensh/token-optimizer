@@ -130,8 +130,9 @@ The cache countdown prefers Claude Code's native `prompt_cache` object (v2.1.251
 The 30-day savings figure is counted once for the whole machine, not once per session. Every open session reads the same cached result, and one background refresh at a time updates it. Only the "saved in this session" figure is looked up per session, and it is reused for five minutes.
 
 - **After 60 seconds the cached figure counts as stale,** so the next poll starts one background refresh. The refresh has 90 seconds to finish.
-- **The last good number stays on screen** while a refresh runs and when one fails. A failed refresh never replaces a number with an error. The unfolded row then adds "Last updated N min ago. Retrying." The note appears only after a refresh actually failed, not during the normal 60-second cycle.
-- **Failed refreshes back off.** The wait before the next try starts at one minute and doubles with each failure in a row, up to one hour. A success resets it.
+- **The last good number stays on screen** while a refresh runs and when one fails. A failed refresh never replaces a number with an error. After two failed refreshes in a row, the unfolded row adds a note such as "Last updated 3h 5m ago. Will try again later." A single failed refresh, or the normal 60-second cycle, shows no note.
+- **Failed refreshes back off.** The wait before the next try starts at one minute and doubles with each failure in a row, up to ten minutes. A success resets it.
+- **The refresh skips work the band never shows.** The cache-waste scan behind the dashboard's cache report does not run during a status-bar refresh, so the band's number no longer depends on that scan finishing in time. The dashboard still runs it.
 - **"Still counting savings" shows only before the first number exists.** A new session on a machine that already has a number shows it at once. If Token Optimizer has recorded nothing yet, the band says so instead of "still counting".
 - **After an upgrade,** the first refresh starts from the newest figure the old per-session caches held, marked stale, so the band does not start blank.
 - **If the plugin cannot be found, is too old, or Python is missing,** the band drops the number and says why. It does not keep an old figure behind a permanent problem.

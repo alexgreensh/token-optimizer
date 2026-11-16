@@ -3,9 +3,9 @@
 ## [5.13.72] - Unreleased
 
 - Your savings number stays on screen: the 30-day figure is counted once for all sessions, new sessions show it at once, and a slow or failed refresh keeps the last good number instead of an error.
-- Failed refreshes back off from one minute up to an hour instead of retrying every minute, and the band says "Last updated N min ago. Retrying." only when a refresh really failed.
+- Savings refresh up to 87% faster: the band skips a scan it never showed, so a refresh takes about 14 s of CPU instead of over 100 s, with the same numbers.
+- Failed refreshes back off from one minute up to ten minutes instead of retrying every minute, and the band adds "Last updated ... Will try again later." only after two failures in a row.
 - The green savings chip in the Claude Code band now appears when there is a figure worth showing. It was hidden by a mismatch in where the band looked for it.
-- Counting savings repeats less work: first-call context and price lookups are remembered between refreshes.
 - Code map costs nothing by default: the session hint is opt-in (`TOKEN_OPTIMIZER_CODEMAP_HINT=1`, about 75 to 81 tokens), indexes cover up to 6,000 files, lookups fall back to a read-only index in sandboxes, and old indexes are cleaned up daily.
 - Also: docs corrected for savings, command counts, GPT-6 pricing and Cursor; status line and code map pages updated.
 

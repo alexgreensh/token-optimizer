@@ -27,10 +27,24 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" 
 sys.path.insert(0, str(SCRIPTS))
 
 
+_PURGED = ("cursor_thrash", "thrash_guard", "session_store", "delta_diff",
+           "archive_result", "runtime_env", "plugin_env", "cursor_hook_bridge", "cursor_state")
+
+
 def _purge():
-    for m in ("cursor_thrash", "thrash_guard", "session_store", "delta_diff",
-              "archive_result", "runtime_env", "plugin_env"):
+    for m in _PURGED:
         sys.modules.pop(m, None)
+
+
+@pytest.fixture(autouse=True)
+def _restore_modules():
+    # Put the original modules back afterwards: a later test that imported
+    # archive_result at module level would otherwise patch a different module
+    # object than the code under test uses.
+    saved = {name: sys.modules[name] for name in _PURGED if name in sys.modules}
+    yield
+    _purge()
+    sys.modules.update(saved)
 
 
 @pytest.fixture()

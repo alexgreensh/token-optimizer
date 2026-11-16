@@ -164,7 +164,21 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
             **cover,
         }
     except Exception as exc:  # never break the savings summary
+        _log_error(f, exc)
         return {**zero, "status": "error", "message": type(exc).__name__}
+
+
+def _log_error(f, exc):
+    """A failed report reads as zero structural savings; leave a durable line
+    so a tripped guard (e.g. the zero-write pricing check) is discoverable."""
+    try:
+        f.DAEMON_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        path = f.DAEMON_LOG_DIR / "structural-report.log"
+        f._cap_append_log(path)
+        with open(path, "a", encoding="utf-8") as out:
+            out.write("%s structural report failed: %s: %s\n" % (f.time.strftime("%Y-%m-%dT%H:%M:%S"), type(exc).__name__, str(exc)[:300]))
+    except Exception:
+        pass
 
 
 def price_synthetic(s, days, now=None, f=None, home=None, scope="global"):

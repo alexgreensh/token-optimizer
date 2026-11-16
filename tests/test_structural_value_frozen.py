@@ -175,3 +175,16 @@ def test_write_savings_fail_loudly_even_under_optimize(m, monkeypatch):
     start, end = _noon(8).strftime("%Y-%m-%d"), _noon(0).strftime("%Y-%m-%d")
     with pytest.raises(RuntimeError, match="cache-write"):
         V.value_trims(conn, trims, start, end, _card_fn(m), HOME, projected=True)
+
+
+def test_pricing_guard_is_logged_where_the_structural_report_catches_it(m, monkeypatch, tmp_path):
+    _, _, R, _, V = _mods()
+    conn, trims = _fixture(m, 11)
+    conn.close()
+    logs = tmp_path / 'logs'
+    monkeypatch.setattr(m, 'DAEMON_LOG_DIR', logs)
+    monkeypatch.setattr(V, "_price", lambda card, s, cr, cc, h1, m5: (s, 7, 0.1, 0.2, 0.0))
+    out = R.compute(days=30, f=m, home=HOME, trims=trims)
+    assert out["status"] == "error" and out["tokens_saved"] == 0
+    text = (logs / 'structural-report.log').read_text(encoding='utf-8')
+    assert 'RuntimeError' in text and 'cache-write savings' in text

@@ -11,6 +11,8 @@ The Cursor adapter is in beta. Hooks are observed at runtime rather than version
 
 Token Optimizer supports Cursor through an adapter that reads Cursor's own stored token fields, scores session quality, restores per-workspace continuity, compresses Bash output, intercepts redundant reads (shadow-first), and captures compact checkpoints for a bounded restore. It is honest about what Cursor does not hand a companion, such as a billing figure.
 
+Cursor also has coaching, rules audits and fleet analysis. Read blocking remains off by default and needs positive native evidence before it is armed. The synthetic doctor probe does not establish that Cursor delivered a hook in a real session.
+
 ## Supported surfaces
 
 Cursor IDE (Composer) and Cursor CLI (`agent`) share one adapter. They are one session population keyed by `conversation_id`.

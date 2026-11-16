@@ -1,6 +1,6 @@
 ---
 title: Codex
-description: "Codex: full quality scoring and Smart Compaction approximated through the Codex hook API, with GPT-5.x pricing and intelligence-level routing advice."
+description: "Codex: full quality scoring and Smart Compaction approximated through the Codex hook API, with GPT-5.x and GPT-6 pricing and intelligence-level routing advice."
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -67,7 +67,7 @@ TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py 
 | S/A/B/C/D/F grades | Yes |
 | Session continuity and checkpoints | Yes |
 | Dashboard (port 24843) and bookmarkable daemon | Yes |
-| Cost tracking (GPT-5.x pricing) | Yes |
+| Cost tracking (GPT-5.x and GPT-6 pricing) | Yes |
 | Fleet Auditor (cross-system, includes Codex sessions) | Yes |
 | Token Coach (adapted for `AGENTS.md`) | Yes |
 | Memory and config audit (`AGENTS.md` plus memories) | Yes |
@@ -120,6 +120,13 @@ Token Optimizer tracks these Codex model prices for cost figures.
 
 | Model | Input ($/1M) | Cached ($/1M) | Output ($/1M) |
 |---|---|---|---|
+| GPT-6 Rosalind | $15.00 | $1.50 | $75.00 |
+| GPT-6 Astra | $10.00 | $1.00 | $50.00 |
+| GPT-6 Astra Law | $10.00 | $1.00 | $50.00 |
+| GPT-6 Sol | $2.00 | $0.20 | $10.00 |
+| GPT-6 Luna | $0.10 | $0.01 | $0.50 |
+| GPT-6.1 Sol | $2.00 | $0.10 | $10.00 |
+| GPT-6.1 Terra | $1.00 | $0.05 | $5.00 |
 | GPT-5.6 Sol (promotion before 2026-11-21 UTC) | $4.00 | $0.40 | $20.00 |
 | GPT-5.6 Sol (standard from 2026-11-21 UTC) | $5.00 | $0.50 | $30.00 |
 | GPT-5.6 Terra | $2.00 | $0.20 | $12.00 |

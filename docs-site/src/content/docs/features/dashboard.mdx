@@ -11,6 +11,8 @@ The dashboard turns the audit and your session history into a browsable HTML pag
 
 The dashboard renders one self-contained HTML file with navigation for Overview, Savings, Quick Wins, Medium, Deep, Habits, Trends, Health, Coach, Hooks, and Manage. Open it in your browser or serve it over HTTP so you can refresh it as you work.
 
+The Savings page shows recent and since-install savings, tokens kept out of context, and a transformation comparison when a baseline is available. Hover the headline figures for their breakdown. The limits card estimates how much more work fits in your weekly limit against your own baseline and explains its method. Opportunity under “Still on the table” is separate from savings; its fix buttons open the relevant action. On a subscription, dollar values use API rates as an estimate of limit headroom, not a refund.
+
 After every session, the SessionEnd hook regenerates the dashboard data so the page is current the next time you open it. You do not have to rerun the audit by hand.
 
 The Coach view carries a "From your own usage" section: the daily usage-recommendations record (compact window and subagent cache lifetime), one card per recommendation with the measured numbers, the exact command, and a Wins row once you acted on an earlier recommendation and the measurement moved. It reads the same local record as `measure.py recommendations`. The page never scans for it, and the daily advice path never writes either setting. Separate explicit subagent-cache enable or its automation opt-in can set the TTL; compact-window advice does not write autoCompactWindow.

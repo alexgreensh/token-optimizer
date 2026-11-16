@@ -242,7 +242,7 @@ Most token tools compress command output. That covers 15-25% of your context. Th
 
 | Compression surface | Token Optimizer | Headroom | RTK | Boost |
 |---|---|---|---|---|
-| **Bash / command output** (git, tests, lint, build, logs) | 🟢 113 commands across 25 pattern families, credential-safe; 564 → 115 tokens on a pytest run | 🟢 SmartCrusher, CodeCompressor, Kompress-v2 | 🟢 100+ filters | 🟢 Command-aware filters |
+| **Bash / command output** (git, tests, lint, build, logs) | 🟢 89 built-in allowlist entries and 25 registered output handlers; 564 → 115 tokens on a pytest run | 🟢 SmartCrusher, CodeCompressor, Kompress-v2 | 🟢 100+ filters | 🟢 Command-aware filters |
 | **Search / grep output** | 🟢 Top hits plus a count; 500 lines → 20 | 🔴 | 🔴 | — |
 | **Tabular / JSON output** (jq, yq, csvtool, mlr) | 🟢 Value-preserving columnar | 🟢 SmartCrusher | 🔴 | — |
 | **File re-reads, delta mode** | 🟢 Diff only; 2,000-token re-read → ~50 | 🔴 | 🔴 | — |
@@ -291,7 +291,7 @@ These ten rows are the ones where Token Optimizer is the only 🟢 in the row: w
 | Zero telemetry | 🟢 Nothing leaves the machine | 🟡 `HEADROOM_TELEMETRY` opt-in, off by default | 🟡 Opt-in | 🔴 Collects commands invoked, command arguments, exit codes, duration, CI attributes, IP | 🟡 Varies | 🟢 |
 | Multi-platform | 🟢 Claude Code, VS Code, Codex, OpenClaw, OpenCode, Hermes, Copilot, Cursor, Antigravity; Cowork experimental (unverified on a live build) | 🟢 Claude Code, Cursor, Codex, Aider, Copilot | 🟢 15 integrations | 🟡 Cursor, Claude Code, Copilot, Codex CLI | 🟢 17 integrations | 🔴 Claude Code only |
 | Per-task model and effort advice | 🟢 `route` sizes the task before you spend | — | — | — | — | — |
-| Keep-Warm (cache TTL refresh) | 🟢 Opt-in ping before cache expiry, tripwire auto-off | 🔴 | 🔴 | — | 🔴 | 🔴 |
+| Keep-Warm (cache TTL refresh) | 🟡 Automatic pings paused; manual desktop refresh available | 🔴 | 🔴 | — | 🔴 | 🔴 |
 | End-to-end task-outcome benchmark | 🟡 Controlled A/B on 7 real tasks (output tokens) + measured real-session with/without savings; pass-rate study not yet run | — | — | 🟢 Vendor reports Terminal-Bench 2.0 with the same pass rate and ~12% lower cost | — | N/A |
 | Signed and checksum-verified install | 🟢 `CHECKSUMS.sha256` per release, verified at install, CI-enforced | — | — | 🔴 Installer verifies neither a checksum nor a signature | — | N/A |
 
@@ -376,8 +376,6 @@ Disable: `TOKEN_OPTIMIZER_READ_CACHE_MODE=shadow`
 
 ### First-Read Skeleton
 
-On the **first** read of a large **code** file (Python or TypeScript, 16KB–256KB) in a history-validated cohort, the Read returns a structural skeleton (signatures/imports) instead of the full file, with a one-line notice and the full content always one step away: `expand <key>`, a ranged Read (`offset`/`limit`), or a direct Edit. The original is archived before any substitution, fail-open — if archiving can't happen, the full file is served.
-
 As of v5.12, the target file is always served in full on the first read; savings come from periphery skeletons (one-hop relationships, PageRank-ordered) injected alongside the target, not from withholding the target itself. This eliminates the re-read flip-flop that demoted cohorts under the old tripwire.
 
 This applies to **code only**. Markdown and other prose are **not** skeletoned on first read (as of v5.11.27): a headings-only outline drops load-bearing prose, so docs always come back complete. A runtime tripwire auto-demotes a code cohort back to measure-only if its live edit-rate climbs.
@@ -413,24 +411,17 @@ my-lint = { command = "ruff check", handler = "lint" }
 commands = ["git status", "ls -la"]
 ```
 
-Safety is immutable: the loader rejects `add` entries that name a shell
-interpreter (`bash`, `python`, `node`, ...), a privilege-escalation wrapper
-(`sudo`, `su`, `doas`), a destructive write subcommand (`rm`, `chmod`, `dd`,
-...), or any command containing shell metacharacters (`;`, `|`, `$`, ...).
-Categorical exclusions (dangerous chars, git write subcommands, interpreters)
-are enforced in the hook and dispatch code and cannot be overridden by user
-config. Built-in detection always runs first, so a user `add` only extends
-the set, never replaces a built-in handler for the same command.
+Custom additions are checked when loaded and again when matched. The guard rejects known destructive commands, dangerous wildcard matches, shell substitutions and redirects. Its lists are bounded, so it is not a general shell-safety proof. Built-in detection runs first, so a user `add` extends the set rather than replacing a built-in handler.
 
 ### Search Result Compression
 
-When the AI runs grep, rg, or web searches that return long result lists, the output is condensed to the top hits plus a count. A 500-line grep result becomes 20 lines plus a summary.
+Long grep and rg results show up to three matches per file for the first 20 files, with omissions identified. If no verified archive is available, search output stays whole.
 
 Disable: `TOKEN_OPTIMIZER_BASH_COMPRESS=0` (search compression is part of bash compression; it has no separate switch)
 
 ### Lean-Output Nudges
 
-When context fills past 25%, a short nudge tells the model to reason deeply but keep visible output lean. Fill is the only condition — quality no longer gates it, so an ordinary healthy session gets the nudge too, not just a long degraded one. The saving is **estimated at 10-15%, not measured**: the counterfactual (what the model would have written without the nudge) cannot be observed, so Token Optimizer reports this in the estimated tier and never folds it into metered savings. Cache-safe: injected as `additionalContext`, never modifies the existing prefix.
+At 25–74% fill, a lean-output nudge also requires session efficiency below 75. At 75–89% fill, the stronger nudge uses fill alone. At 90% or above, no nudge is injected. Savings are estimated from later output when available, not measured against an observable counterfactual. The nudge is cache-safe: it does not modify the existing prefix.
 
 No on/off switch today (not a `v5` feature). Tune the trigger point with `TOKEN_OPTIMIZER_VERBOSITY_MIN_FILL` (default `25`).
 
@@ -578,7 +569,7 @@ python3 measure.py setup-smart-compact    # checkpoint + restore hooks
 
 Output tokens are the most expensive part of your session. They cost 5x more than input tokens on Opus and are billed per generation, not per cache read. A verbose response to a simple question burns dollars you never needed to spend.
 
-Token Optimizer handles this automatically with **lean-output nudges**. When your context fills past 25%, a short nudge tells the model to reason deeply but keep visible output lean. Fill is the only trigger; context quality is not a condition. The reduction is **estimated at 10-15% and is not counterfactually measured**, so it is reported in the estimated tier, separately from metered savings.
+Token Optimizer handles this with **lean-output nudges**. At 25–74% fill they also require session efficiency below 75; at 75–89% fill they use fill alone. At 90% or above no nudge is injected. Savings are estimated from later output when available.
 
 **How it works:**
 
@@ -699,7 +690,7 @@ Every insight is grounded in your actual numbers. "Your short sessions score 68 
 
 ### Keep-Warm
 
-Opt-in feature for API-billed sessions. Issues a tiny cache-read ping just before your prompt cache entry would expire, refreshing its TTL. Costs ~0.1x of the prefix versus the 1.25-2x re-write you'd pay on resume. Tripwire auto-off if pings stop paying for themselves. Automatic pings are paused for now; when they return they will use Claude Code's built-in session fork.
+The opt-in scheduler models cache refreshes for API-billed sessions. Automatic production pings are paused. The manual desktop button remains available separately.
 
 ```bash
 python3 measure.py keepwarm-enable          # opt in (API billing only)

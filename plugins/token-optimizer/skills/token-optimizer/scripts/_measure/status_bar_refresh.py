@@ -124,6 +124,10 @@ def seed_legacy(facade, session_id):
         return None
 
 
+_SESSION_REUSE_S = 300
+_SESSION_RETRY_S = 30
+
+
 def _session_path(facade, session_id):
     return facade._status_bar_dir() / ('session-' + facade._status_bar_key(session_id) + '.session')
 
@@ -142,7 +146,7 @@ def for_session(facade, session_id, savings):
         return None
     path = _session_path(facade, session_id)
     try:
-        if facade.time.time() - path.stat().st_mtime < 300:
+        if facade.time.time() - path.stat().st_mtime < _SESSION_REUSE_S:
             values = facade.json.loads(path.read_text(encoding='utf-8'))
             return {**savings, 'session_tokens': values['session_tokens'], 'session_usd': values['session_usd']}
     except (OSError, ValueError, TypeError, KeyError):
@@ -157,10 +161,18 @@ def for_session(facade, session_id, savings):
         _save_session(facade, session_id, values)
     except Exception:
         try:
-            values = facade.json.loads(_session_path(facade, session_id).read_text(encoding='utf-8'))
+            values = facade.json.loads(path.read_text(encoding='utf-8'))
             values = {'session_tokens': values['session_tokens'], 'session_usd': values['session_usd']}
         except (OSError, ValueError, TypeError, KeyError):
             values = {'session_tokens': None, 'session_usd': None}
+        # Keep what we have and wait _SESSION_RETRY_S before querying again, so
+        # a busy database does not cost every poll its full timeout.
+        _save_session(facade, session_id, values)
+        try:
+            stamp = facade.time.time() - _SESSION_REUSE_S + _SESSION_RETRY_S
+            facade.os.utime(path, (stamp, stamp))
+        except OSError:
+            pass
     return {**savings, **values}
 
 

@@ -260,3 +260,31 @@ def test_first_ever_compute_failing_once_is_quiet(sb, monkeypatch):
     once = sb.status_bar_payload(SID_A, sync=True)
     assert (once["savings_state"], once["savings_refresh_failed"]) == ("loading", False)
     assert sb.status_bar_payload(SID_A, sync=True)["savings_refresh_failed"] is True
+
+
+@pytest.mark.parametrize("had_values", [True, False])
+def test_failed_session_query_waits_before_retrying(sb, monkeypatch, had_values):
+    from _measure import status_bar_refresh
+    _three_day_fixture(sb)
+    sb.status_bar_payload(SID_A, sync=True)
+    path = status_bar_refresh._session_path(sb, SID_B if not had_values else SID_A)
+    sid = SID_A if had_values else SID_B
+    if had_values:
+        expired = time.time() - 301
+        os.utime(path, (expired, expired))
+    calls = []
+    def busy():
+        calls.append(1)
+        raise sb.sqlite3.OperationalError('database is locked')
+    monkeypatch.setattr(sb, '_open_trends_db_readonly', busy)
+    first = sb.status_bar_payload(sid)
+    expected = 6500 if had_values else None
+    assert first['savings']['session_tokens'] == expected
+    for _ in range(3):
+        assert sb.status_bar_payload(sid)['savings']['session_tokens'] == expected
+    assert len(calls) == 1
+    # After the short pause the query is tried again.
+    stamp = path.stat().st_mtime - 60
+    os.utime(path, (stamp, stamp))
+    sb.status_bar_payload(sid)
+    assert len(calls) == 2

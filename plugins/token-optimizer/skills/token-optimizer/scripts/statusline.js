@@ -193,18 +193,31 @@ function _statusBarSessionKey(sessionId) {
   return sid.slice(0, 64) + '-' + hash;
 }
 
+// Cache files that can hold the headline in one status-bar dir. measure.py
+// writes the shared 30-day figure to global.json (or global-pending-*.json when
+// global.json is locked). The per-session <key>.json is the pre-upgrade layout,
+// read only so the number shows before the first refresh after an upgrade.
+function _statusBarCacheFiles(dir, key) {
+  const files = [path.join(dir, 'global.json')];
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith('global-pending-') && name.endsWith('.json')) files.push(path.join(dir, name));
+    }
+  } catch (e) {}
+  if (key && key !== 'unknown' && key !== 'global') files.push(path.join(dir, key + '.json'));
+  return files;
+}
+
 // The freshest status-bar cache's savings_headline.display, or null.
-// Freshness is decided on computed_at across all candidate dirs BEFORE
+// Freshness is decided on computed_at across all candidate files BEFORE
 // reading display, so a newer "below threshold" cache correctly hides an
 // older number that no longer applies.
 function _statusBarHeadlineDisplay(sessionId) {
   try {
     const key = _statusBarSessionKey(sessionId);
-    if (!key || key === 'unknown') return null;
     let best = null, bestTs = -1;
     for (const dir of _statusBarDirs()) {
-      try {
-        const file = path.join(dir, key + '.json');
+      for (const file of _statusBarCacheFiles(dir, key)) try {
         const raw = fs.readFileSync(file, 'utf8');
         const data = JSON.parse(raw);
         if (!data || typeof data !== 'object') continue;

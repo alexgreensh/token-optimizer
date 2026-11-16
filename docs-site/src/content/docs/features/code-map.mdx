@@ -1,0 +1,10 @@
+---
+title: Code map
+description: Find definitions and dependencies in Python, JavaScript and TypeScript projects.
+---
+
+The code map indexes Python, JavaScript and TypeScript to answer structural questions. Run `python3 path/to/codemap.py find main` to find a definition. Other commands are `show`, `callers`, `outline` and `deps`.
+
+Lookups and re-read outlines are on by default. Set `TOKEN_OPTIMIZER_CODEMAP=0` to turn both off. The discovery hint is separate and off by default because it adds context cost each time it appears. Set `TOKEN_OPTIMIZER_CODEMAP_HINT=1` or `v5_codemap_hint` to `true` in `config.json` to opt in. The hint costs approximately 75 to 81 estimated tokens, depending on installation path. It appears at most once per session when a complete index is available.
+
+Warm-up no longer runs by default. The first manual lookup builds the index in the foreground and may need another lookup to finish. Indexing has time limits and covers at most the first 6,000 source files. An incomplete index warns that results may be missing. If the data directory cannot be written, a lookup can use a read-only snapshot and warns when it may be stale. If a lookup fails, use Grep or Read instead.

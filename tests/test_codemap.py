@@ -36,7 +36,7 @@ SESSION = "22222222-2222-2222-2222-222222222222"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-_FLAG_VARS = ("TOKEN_OPTIMIZER_CODEMAP", "TOKEN_OPTIMIZER_CODEMAP_REREAD", "CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT")
+_FLAG_VARS = ("TOKEN_OPTIMIZER_CODEMAP", "TOKEN_OPTIMIZER_CODEMAP_REREAD", "TOKEN_OPTIMIZER_CODEMAP_HINT", "CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT")
 
 
 @pytest.fixture()
@@ -216,47 +216,86 @@ def _hint(payload, extra_env=None):
                           capture_output=True, text=True, timeout=30)
 
 
-def test_subagent_hint_on_by_default(sandbox):
-    proj = _project(sandbox / "proj")
-    out = _hint({"hook_event_name": "SubagentStart", "agent_type": "Explore", "cwd": str(proj)})
-    payload = json.loads(out.stdout)
-    hso = payload["hookSpecificOutput"]
-    assert hso["hookEventName"] == "SubagentStart"
-    assert "codemap.py" in hso["additionalContext"]
-    assert "find|show|callers" in hso["additionalContext"]
-    assert "—" not in hso["additionalContext"]  # no em-dashes in model/user-facing copy
-
-
-def test_hint_silent_when_off_or_no_code(sandbox):
-    proj = _project(sandbox / "proj")
-    off = _hint({"hook_event_name": "SubagentStart", "cwd": str(proj)}, {"TOKEN_OPTIMIZER_CODEMAP": "0"})
-    assert off.stdout.strip() == ""
-    docs = sandbox / "docs"
-    (docs / ".git").mkdir(parents=True)
-    (docs / "notes.md").write_text("# notes\n", encoding="utf-8")
-    none = _hint({"hook_event_name": "SubagentStart", "cwd": str(docs)})
-    assert none.stdout.strip() == ""
-    skip = _hint({"hook_event_name": "SubagentStart", "agent_type": "statusline-setup", "cwd": str(proj)})
-    assert skip.stdout.strip() == ""
-    no_cwd = _hint({"hook_event_name": "SubagentStart", "agent_type": "Explore"})
-    assert no_cwd.stdout.strip() == ""
-
-
-def test_session_text_and_background_warm(sandbox):
+def test_hint_default_off_and_opt_in_dedup(sandbox, monkeypatch):
     import codemap_hint
     import codemap_index as ci
     proj = _project(sandbox / "proj")
-    text = codemap_hint.session_text({"cwd": str(proj)})
-    assert text.startswith("[Token Optimizer] Code map available")
-    lock = ci.index_path(proj.resolve()).with_suffix(".building")
-    db = ci.index_path(proj.resolve())
-    deadline = time.time() + 30
-    while time.time() < deadline and (lock.exists() or not db.exists()):
-        time.sleep(0.2)
-    assert db.exists()
-    conn = sqlite3.connect(str(db))
+    payload = {"cwd": str(proj), "session_id": SESSION, "agent_type": "Explore"}
+    assert not codemap_hint.session_text(payload)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP_HINT", "1")
+    # An incomplete or pending build never advertises the map.
+    monkeypatch.setattr(codemap_hint, "warm_index", lambda root: False)
+    assert not codemap_hint.session_text(payload)
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    monkeypatch.setattr(codemap_hint, "warm_index", lambda root: True)
+    hint = codemap_hint.session_text(payload)
+    assert "codemap.py" in hint and "outline" in hint
+    assert not codemap_hint.subagent_payload(payload)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP", "0")
+    assert not codemap_hint.session_text({**payload, "session_id": "another"})
+
+
+def test_hint_config_and_environment_override(sandbox, monkeypatch):
+    import codemap_index as ci
+    import plugin_env
+    config_dir = sandbox / "config"
+    config_dir.mkdir()
+    monkeypatch.setattr(plugin_env, "_USER_CONFIG_DIR", config_dir)
+    (config_dir / "config.json").write_text('{"v5_codemap_hint": true}', encoding="utf-8")
+    assert ci.codemap_hint_enabled()
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP_HINT", "0")
+    assert not ci.codemap_hint_enabled()
+
+
+def test_capped_index_is_complete(sandbox, monkeypatch):
+    import codemap_index as ci
+    proj = _project(sandbox / "proj")
+    monkeypatch.setattr(ci, "MAX_FILES", 2)
+    idx = ci.CodeIndex.open(proj)
     try:
-        assert conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()[0] == "1"
+        idx.sync(30)
+        assert idx.complete and idx.capped
+        assert idx.conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()[0] == "1"
+        first = idx.conn.execute("SELECT path FROM files ORDER BY path LIMIT 1").fetchone()[0]
+        (proj / first).unlink()
+        idx.capped = False
+        idx.sync(30)
+        assert not idx.file_row(first)
+        assert idx.counts()["files"] == 2
+    finally:
+        idx.close()
+
+
+def test_readonly_fallback_reports_stale(sandbox, monkeypatch):
+    import codemap_index as ci
+    import codemap
+    proj = _project(sandbox / "proj")
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    (proj / "pkg" / "core.py").write_text("def newer(): pass\n", encoding="utf-8")
+    def denied(*args, **kwargs):
+        raise ci.CodemapError("denied")
+    monkeypatch.setattr(ci.CodeIndex, "open", denied)
+    code, text = codemap.run(["find", "helper", "--root", str(proj)])
+    assert code == 0 and "helper" in text and "may be stale" in text
+
+
+def test_query_failure_count_is_not_savings(sandbox, monkeypatch, capsys):
+    import codemap
+    import codemap_index as ci
+    import codemap_ledger as led
+    def fail(*args, **kwargs):
+        raise ci.CodemapError("query failed at open/sync (SQLite SQLITE_CANTOPEN; data dir codemap)")
+    monkeypatch.setattr(ci, "open_synced", fail)
+    assert codemap.main(["find", "helper"]) == 0
+    assert "query failed at open/sync" in capsys.readouterr().out
+    conn = sqlite3.connect(str(led._trends_db()))
+    try:
+        assert conn.execute("SELECT count(*) FROM codemap_failures").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM codemap_events").fetchone()[0] == 0
     finally:
         conn.close()
 
@@ -446,3 +485,205 @@ def test_codemap_lookup_is_estimated_tier():
     assert total_tokens == 1700
     assert "codemap_lookup" in measure._RUNWAY_ESTIMATED_EVENT_TYPES
     assert "codemap_outline" in measure._COUNTED_SE_EVENT_TYPES
+
+
+def test_readonly_show_refuses_changed_file_and_does_not_log(sandbox, monkeypatch):
+    import codemap_index as ci
+    import codemap
+    import codemap_ledger as led
+    proj = _project(sandbox / "proj")
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    (proj / "pkg" / "core.py").write_text("def newer(): pass\n")
+    monkeypatch.setattr(ci.CodeIndex, "open", lambda *a, **kw: (_ for _ in ()).throw(OSError("denied")))
+    _, text = codemap.run(["show", "helper", "--root", str(proj)])
+    assert "changed since indexed, use Read" in text
+    assert "Edit-ready" not in text
+    assert not led._trends_db().exists()
+
+
+def test_immutable_fallback_and_escaped_path(sandbox, monkeypatch):
+    import codemap_index as ci
+    proj = _project(sandbox / "proj?#%")
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    original = ci.sqlite3.connect
+    def connect(db, *args, **kwargs):
+        if isinstance(db, str) and "mode=ro" in db and "immutable=1" not in db:
+            raise sqlite3.OperationalError("sidecar denied")
+        return original(db, *args, **kwargs)
+    monkeypatch.setattr(ci.CodeIndex, "open", lambda *a, **kw: (_ for _ in ()).throw(OSError("denied")))
+    monkeypatch.setattr(ci.sqlite3, "connect", connect)
+    idx = ci.open_synced(proj)
+    try:
+        assert idx.readonly and idx.stale and idx.find_defs("helper")
+    finally:
+        idx.close()
+
+
+def test_hint_real_warm_and_hook_output(sandbox, monkeypatch):
+    import codemap_index as ci
+    import codemap_hint as hint
+    proj = _project(sandbox / "proj?#%")
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP_HINT", "1")
+    payload = {"cwd": str(proj), "session_id": SESSION, "agent_id": "child", "agent_type": "Explore"}
+    assert not hint.session_text({"session_id": SESSION})
+    assert not hint.subagent_payload({**payload, "agent_type": "web-fetch"})
+    idx = ci.CodeIndex.open(proj)
+    idx.sync(30)
+    idx.close()
+    assert hint.warm_index(proj)
+    result = _hint(payload)
+    assert result.returncode == 0
+    assert "outline" in json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert hint.session_text({**payload, "agent_id": "other"})
+
+
+def test_failure_stage_and_stats(sandbox, monkeypatch, capsys):
+    import codemap
+    import codemap_index as ci
+    import codemap_ledger as led
+    proj = _project(sandbox / "proj")
+    original = ci.open_synced
+    monkeypatch.setattr(ci, "open_synced", lambda *a, **kw: (_ for _ in ()).throw(ValueError("private")))
+    codemap.main(["find", "helper"])
+    assert "ValueError" in capsys.readouterr().out
+    monkeypatch.setattr(ci, "open_synced", original)
+    _, text = codemap.run(["stats", "--root", str(proj)])
+    assert "failures=1" in text
+    conn = sqlite3.connect(str(led._trends_db()))
+    try:
+        assert conn.execute("SELECT stage, code FROM codemap_failures").fetchone() == ("lookup", "unknown")
+    finally:
+        conn.close()
+
+
+def test_background_warm_builds_index(sandbox, monkeypatch):
+    import codemap_index as ci
+    import codemap_hint as hint
+    proj = _project(sandbox / 'proj')
+    monkeypatch.setenv('TOKEN_OPTIMIZER_CODEMAP_HINT', '1')
+    assert hint.warm_index(proj)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        db = ci.index_path(proj)
+        try:
+            conn = sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True)
+            try:
+                row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
+            finally:
+                conn.close()
+            if row and row[0] == '1':
+                break
+        except sqlite3.Error:
+            pass
+        time.sleep(0.1)
+    else:
+        pytest.fail('background index did not complete')
+    assert hint.session_text({'cwd': str(proj), 'session_id': SESSION})
+    empty = sandbox / 'empty'
+    empty.mkdir()
+    assert not hint.session_text({'cwd': str(empty), 'session_id': SESSION})
+
+
+def test_old_index_cleanup_is_bounded_and_safe(sandbox, monkeypatch):
+    import codemap_hint as hint
+
+    directory = sandbox / 'codemap'
+    directory.mkdir()
+    stale_time = time.time() - 8 * 86400
+
+    def old_index(number, sibling=True, stale=True):
+        name = f'{number:016x}'
+        old = directory / f'{name}.db'
+        conn = sqlite3.connect(old)
+        conn.execute('CREATE TABLE meta (k TEXT, v TEXT)')
+        conn.execute("INSERT INTO meta VALUES ('schema', '2')")
+        conn.commit()
+        conn.close()
+        if stale:
+            os.utime(old, (stale_time, stale_time))
+        if sibling:
+            (directory / f'{name}-bounded-v1.db').write_text('new')
+        return old
+
+    stale = old_index(1)
+    for suffix in ('-wal', '-shm'):
+        sidecar = Path(str(stale) + suffix)
+        sidecar.write_text('sidecar')
+        os.utime(sidecar, (stale_time, stale_time))
+    recent = old_index(2, stale=False)
+    target = sandbox / 'outside.db'
+    target.write_text('outside')
+    os.utime(target, (stale_time, stale_time))
+    link = directory / '0000000000000004.db'
+    link.symlink_to(target)
+    (directory / '0000000000000004-bounded-v1.db').write_text('new')
+    active = old_index(5)
+    Path(str(active) + '-wal').write_text('recent WAL')
+    monkeypatch.setattr(hint, 'OLD_INDEX_CLEANUP_LIMIT', 1)
+    hint._clean_old_indexes(directory)
+    assert not stale.exists()
+    assert not Path(str(stale) + '-wal').exists()
+    assert not Path(str(stale) + '-shm').exists()
+    assert recent.exists() and active.exists()
+    assert link.is_symlink() and target.read_text() == 'outside'
+    # Orphans are eligible without a new-name sibling.
+    orphan = old_index(3, sibling=False)
+    hint._clean_old_indexes(directory)
+    assert not orphan.exists()
+    # The limit leaves an additional eligible index for the next run.
+    extra1, extra2 = old_index(6), old_index(7)
+    hint._clean_old_indexes(directory)
+    assert sum(path.exists() for path in (extra1, extra2)) == 1
+
+
+def test_sessionstart_cleanup_daily_and_engine_gate(sandbox, monkeypatch):
+    import importlib.util
+    import codemap_index as ci
+    import codemap_hint as hint
+    spec = importlib.util.spec_from_file_location("sessionstart_cleanup_test", REPO / "hooks" / "sessionstart_runner.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    directory = ci.index_dir()
+    directory.mkdir()
+    calls = []
+    monkeypatch.setattr(hint, "_clean_old_indexes", lambda path: calls.append(path))
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP", "0")
+    runner._sub_codemap_cleanup()
+    assert not calls and not list(directory.iterdir())
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP", "1")
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP_HINT", "0")
+    runner._sub_codemap_cleanup()
+    runner._sub_codemap_cleanup()
+    assert calls == [directory]
+    marker = directory / ".legacy-cleanup-timestamp"
+    old = time.time() - 90000
+    os.utime(marker, (old, old))
+    runner._sub_codemap_cleanup()
+    assert calls == [directory, directory]
+
+
+def test_cleanup_skips_other_schema_and_symlink_marker(sandbox, monkeypatch):
+    import codemap_hint as hint
+    import codemap_index as ci
+    directory = ci.index_dir()
+    directory.mkdir()
+    db = directory / "0000000000000001.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE meta (k TEXT, v TEXT)")
+    conn.execute("INSERT INTO meta VALUES ('schema', '3')")
+    conn.commit()
+    conn.close()
+    old = time.time() - 8 * 86400
+    os.utime(db, (old, old))
+    hint._clean_old_indexes(directory)
+    assert db.exists()
+    target = sandbox / "marker-target"
+    target.write_text("untouched")
+    (directory / ".legacy-cleanup-timestamp").symlink_to(target)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP", "1")
+    hint.cleanup_old_indexes_daily()
+    assert target.read_text() == "untouched"

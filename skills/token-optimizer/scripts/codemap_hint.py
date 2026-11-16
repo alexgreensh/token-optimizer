@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Discovery hint for the code map (SessionStart and SubagentStart).
 
-Tells the agent, in about 80 tokens, to ask the code map before grepping or
+Tells the agent, in approximately 75 to 81 estimated tokens depending on installation paths, to use the code map before grepping or
 reading whole files for structural questions, and warms the index in a
 detached background process so the first lookup is fast. Silent (no output,
 no spawn) when the feature is off, when the cwd is the home directory or the
@@ -27,6 +27,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 PROBE_MAX_ENTRIES = 400
 PROBE_MAX_S = 0.25
 LOCK_FRESH_S = 300.0
+OLD_INDEX_AGE_S = 7 * 86400
+OLD_INDEX_CLEANUP_LIMIT = 10
+OLD_INDEX_CLEANUP_INTERVAL_S = 86400
 # Subagents that never explore code: no hint for them.
 SKIP_AGENT_TYPES = frozenset({"statusline-setup", "claude-code-guide", "web-fetch"})
 
@@ -71,11 +74,12 @@ def warm_index(root: Path) -> bool:
             import sqlite3
             conn = sqlite3.connect(str(db), timeout=1.0)
             try:
-                row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
+                row = conn.execute("SELECT v FROM meta WHERE k='complete' AND "
+                                   "(SELECT v FROM meta WHERE k='schema')=?", (ci.SCHEMA_VERSION,)).fetchone()
             finally:
                 conn.close()
             if row and row[0] == "1":
-                return False  # each lookup syncs incrementally; nothing to warm
+                return True  # an existing complete index needs no warm-up
         if lock.exists() and time.time() - lock.stat().st_mtime < LOCK_FRESH_S:
             return False
         lock.parent.mkdir(parents=True, exist_ok=True)
@@ -96,24 +100,161 @@ def warm_index(root: Path) -> bool:
 def hint_text(root: Path) -> str:
     script = shlex.quote(str(Path(__file__).resolve().parent / "codemap.py"))
     py = shlex.quote(sys.executable or "python3")
-    return (
-        "[Token Optimizer] Code map available for this project (Python/JS/TS). For \"where is X "
-        "defined\", \"what calls Y\" or \"what does this file import\", run it BEFORE Grep, grep/rg in "
-        f"Bash, or reading whole files: `{py} {script} find|show|callers <symbol>` or `outline|deps <file>`. "
-        "`show` prints one definition with Edit-ready line numbers; answers are small and match the files on disk."
-    )
+    import codemap_index as ci
+    import sqlite3
+    conn = sqlite3.connect(ci.index_path(root).resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        row = conn.execute("SELECT path FROM files ORDER BY path LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return ""
+    return f"[Token Optimizer] Code map: inspect a file with `{py} {script} outline {shlex.quote(row[0])}`."
+
+
+def _clean_old_indexes(directory: Path) -> None:
+    """Remove a few inactive legacy indexes, without following symlinks."""
+    import re
+    import sqlite3
+    import stat
+
+    # Directory-relative operations keep every unlink inside the opened folder.
+    if not hasattr(os, "O_NOFOLLOW") or os.unlink not in os.supports_dir_fd:
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        cutoff = time.time() - OLD_INDEX_AGE_S
+        removed = 0
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if removed >= OLD_INDEX_CLEANUP_LIMIT:
+                    break
+                if not re.fullmatch(r"[0-9a-f]{16}\.db", entry.name):
+                    continue
+                try:
+                    old = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+                    if not stat.S_ISREG(old.st_mode) or old.st_mtime > cutoff:
+                        continue
+                    sidecars = []
+                    for suffix in ("-wal", "-shm"):
+                        name = entry.name + suffix
+                        try:
+                            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                        if not stat.S_ISREG(info.st_mode) or info.st_mtime > cutoff:
+                            break
+                        sidecars.append(name)
+                    else:
+                        # Inspect the database through a no-follow descriptor; an
+                        # immutable read cannot create or modify SQLite sidecars.
+                        source_fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                        try:
+                            current = os.fstat(source_fd)
+                            if (current.st_ino, current.st_dev, current.st_mtime_ns, current.st_size) != (
+                                    old.st_ino, old.st_dev, old.st_mtime_ns, old.st_size):
+                                continue
+                            conn = sqlite3.connect(f"file:/dev/fd/{source_fd}?mode=ro&immutable=1", uri=True)
+                            try:
+                                version = conn.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
+                            finally:
+                                conn.close()
+                            if not version or version[0] != "2":
+                                continue
+                        finally:
+                            os.close(source_fd)
+                        os.unlink(entry.name, dir_fd=fd)
+                        removed += 1
+                        for name in sidecars:
+                            try:
+                                os.unlink(name, dir_fd=fd)
+                            except OSError:
+                                pass
+                except (OSError, sqlite3.Error):
+                    continue
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def cleanup_old_indexes_daily() -> None:
+    """Run the legacy cleanup at most once a day when the engine is enabled."""
+    try:
+        import codemap_index as ci
+        import fcntl
+        import stat
+        if not ci.codemap_enabled() or not hasattr(os, "O_NOFOLLOW"):
+            return
+        directory = ci.index_dir()
+        fd = os.open(directory, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0))
+        try:
+            name = ".legacy-cleanup-timestamp"
+            try:
+                marker = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                 0o600, dir_fd=fd)
+                first = True
+            except FileExistsError:
+                marker = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+                first = False
+            try:
+                if not stat.S_ISREG(os.fstat(marker).st_mode):
+                    return
+                fcntl.flock(marker, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if not first and time.time() - os.fstat(marker).st_mtime < OLD_INDEX_CLEANUP_INTERVAL_S:
+                    return
+                os.utime(marker, None)
+                _clean_old_indexes(directory)
+            finally:
+                os.close(marker)
+        finally:
+            os.close(fd)
+    except (ImportError, OSError):
+        pass
 
 
 def session_text(hook_input: dict) -> str:
     """Plain hint text for SessionStart ('' when off or not a code project)."""
     try:
         import codemap_index as ci
-        if not ci.codemap_enabled():
+        if not ci.codemap_hint_enabled():
             return ""
         root = _project_root(str(hook_input.get("cwd") or ""))
         if root is None:
             return ""
-        warm_index(root)
+        if not warm_index(root):
+            return ""
+        import sqlite3
+        db = ci.index_path(root)
+        conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0)
+        try:
+            row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
+        finally:
+            conn.close()
+        if not row or row[0] != "1":
+            return ""
+        sid = str(hook_input.get("session_id") or "")
+        if not sid:
+            return ""
+        agent_id = str(hook_input.get("agent_id") or "")
+        if agent_id:
+            sid += ":" + agent_id
+        import hashlib
+        for old in db.parent.glob("hint-*"):
+            try:
+                if time.time() - old.stat().st_mtime > 7 * 86400:
+                    old.unlink()
+            except OSError:
+                pass
+        marker = db.parent / ("hint-" + hashlib.sha256(sid.encode()).hexdigest())
+        try:
+            with marker.open("x", encoding="utf-8"):
+                pass
+        except FileExistsError:
+            return ""
         return hint_text(root)
     except Exception:
         return ""

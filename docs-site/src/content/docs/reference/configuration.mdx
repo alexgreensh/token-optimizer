@@ -39,6 +39,9 @@ Each active compression feature has a `config.json` key and an environment overr
 
 | Variable | Default | Effect |
 |---|---|---|
+| `TOKEN_OPTIMIZER_CODEMAP` | enabled | Set to `0` to disable code-map lookups and re-read outlines |
+| `TOKEN_OPTIMIZER_CODEMAP_HINT` | off | Set to `1` to opt into the code-map discovery hint. The hint costs context on every session where it appears. Config key: `v5_codemap_hint`. |
+| `TOKEN_OPTIMIZER_CODEMAP_REREAD` | enabled | Set to `0` to disable code-map re-read outlines |
 | `TOKEN_OPTIMIZER_BASH_COMPRESS` | enabled | Set to `0` to disable Bash output compression for eligible read-only commands |
 | `TOKEN_OPTIMIZER_COMMAND_FILTERS` | `<runtime-home>/token-optimizer/command-filters.toml` | Path to a user TOML file that adds read-only commands to the compression allowlist and excludes commands you never want compressed; composes with the built-ins, safety-gated, fail-open |
 | `TOKEN_OPTIMIZER_READ_CACHE` | enabled | Set to `0` to disable the read cache entirely (no delta, no skeleton substitution) |

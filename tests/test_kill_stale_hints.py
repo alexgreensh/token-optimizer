@@ -60,6 +60,7 @@ def test_a_script_path_with_spaces_stays_one_shell_word(monkeypatch):
 def test_health_data_hands_the_dashboard_the_resolved_command(monkeypatch):
     measure = _load_measure()
     monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure, "_collect_posix_claude_sessions", lambda **kwargs: [])
     data = measure._collect_health_data()
     assert data["cli"] == measure._measure_cli()
 

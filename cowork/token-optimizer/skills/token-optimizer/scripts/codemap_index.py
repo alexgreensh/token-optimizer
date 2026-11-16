@@ -107,6 +107,16 @@ def codemap_enabled() -> bool:
         return False
 
 
+def codemap_hint_enabled() -> bool:
+    if not codemap_enabled():
+        return False
+    try:
+        from plugin_env import is_v5_flag_enabled
+        return is_v5_flag_enabled("v5_codemap_hint", "TOKEN_OPTIMIZER_CODEMAP_HINT", default=False)
+    except Exception:
+        return False
+
+
 def reread_outline_enabled() -> bool:
     if not codemap_enabled():
         return False
@@ -148,7 +158,7 @@ def index_dir() -> Path:
 
 def index_path(root: Path) -> Path:
     digest = hashlib.sha256(str(root).encode("utf-8", "replace")).hexdigest()[:16]
-    return index_dir() / f"{digest}.db"
+    return index_dir() / f"{digest}-bounded-v1.db"
 
 
 # --------------------------------------------------------------------------- #
@@ -365,6 +375,14 @@ def parse_file(path: Path, root: Path, source: Optional[str] = None) -> FileFact
 # Store
 # --------------------------------------------------------------------------- #
 
+class IncompleteSweep(Exception):
+    """The source sweep ran out of time."""
+
+
+class CappedSweep(Exception):
+    """The source sweep reached its file limit."""
+
+
 def _iter_source_files(root: Path, deadline: float) -> Iterator[Path]:
     count = 0
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -375,8 +393,10 @@ def _iter_source_files(root: Path, deadline: float) -> Iterator[Path]:
             if fn.endswith((".min.js", ".bundle.js", ".d.ts")):
                 continue
             count += 1
-            if count > MAX_FILES or time.monotonic() > deadline:
-                return
+            if time.monotonic() > deadline:
+                raise IncompleteSweep()
+            if count > MAX_FILES:
+                raise CappedSweep()
             yield Path(dirpath) / fn
 
 
@@ -388,6 +408,9 @@ class CodeIndex:
         self.conn = conn
         self.db_path = db_path
         self.complete = False
+        self.capped = False
+        self.readonly = False
+        self.stale = False
 
     @classmethod
     def open(cls, root: str | os.PathLike[str], db_path: Optional[Path] = None) -> "CodeIndex":
@@ -523,6 +546,7 @@ class CodeIndex:
         seen = set()
         stats = {"parsed": 0, "unchanged": 0, "removed": 0}
         timed_out = False
+        self.capped = False
         try:
             for p in _iter_source_files(self.root, deadline):
                 rel = _rel(self.root, p)
@@ -548,11 +572,18 @@ class CodeIndex:
                         break
             else:
                 timed_out = time.monotonic() > deadline
+        except IncompleteSweep:
+            timed_out = True
+        except CappedSweep:
+            self.capped = True
+        try:
             if not timed_out:
                 for rel in set(known) - seen:
                     self._drop(rel)
                     stats["removed"] += 1
             self.complete = not timed_out
+            self.conn.execute("INSERT OR REPLACE INTO meta VALUES('capped', ?)",
+                              ("1" if self.capped and not timed_out else "0",))
             self.conn.execute("INSERT OR REPLACE INTO meta VALUES('complete', ?)",
                               ("1" if self.complete else "0",))
             self.conn.commit()
@@ -639,16 +670,74 @@ class CodeIndex:
 def open_synced(start: str | os.PathLike[str], budget_s: Optional[float] = None) -> CodeIndex:
     """Open (building lazily) and sync the index for the project containing ``start``."""
     root = find_project_root(start)
-    idx = CodeIndex.open(root)
+    idx = None
     try:
+        idx = CodeIndex.open(root)
         idx.sync(budget_s)
-    except CodemapError:
-        idx.close()
-        raise
-    except Exception as exc:  # parsing bugs must never escape to the agent
-        idx.close()
-        raise CodemapError(f"index sync failed: {exc}") from exc
-    return idx
+        return idx
+    except Exception as write_error:
+        if idx is not None:
+            idx.close()
+        db = index_path(root)
+        # Normal read-only mode can see WAL data when its sidecars are accessible.
+        # Immutable is a last resort for a snapshot whose WAL cannot be opened.
+        uri = db.resolve().as_uri() + "?mode=ro"
+        conn = None
+        immutable = False
+        try:
+            try:
+                conn = sqlite3.connect(uri, uri=True, timeout=3.0)
+                conn.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
+            except sqlite3.Error:
+                try:
+                    conn.close()
+                except (AttributeError, UnboundLocalError):
+                    pass
+                conn = sqlite3.connect(uri + "&immutable=1", uri=True, timeout=3.0)
+                immutable = True
+            idx = CodeIndex(root, conn, db)
+            version = conn.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
+            if not version or version[0] != SCHEMA_VERSION:
+                raise CodemapError("read-only index schema mismatch")
+            row = conn.execute("SELECT v FROM meta WHERE k='complete'").fetchone()
+            idx.complete = bool(row and row[0] == "1")
+            capped = conn.execute("SELECT v FROM meta WHERE k='capped'").fetchone()
+            idx.capped = bool(capped and capped[0] == "1")
+            idx.readonly = True
+            idx.stale = immutable
+            known = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT path, mtime_ns, size FROM files")}
+            seen = set()
+            try:
+                for path in _iter_source_files(root, time.monotonic() + SWEEP_BUDGET_S):
+                    rel = _rel(root, path)
+                    if rel is None:
+                        continue
+                    seen.add(rel)
+                    try:
+                        st = path.stat()
+                        if known.get(rel) != (st.st_mtime_ns, st.st_size):
+                            idx.stale = True
+                    except OSError:
+                        idx.stale = True
+            except CappedSweep:
+                if not idx.capped:
+                    idx.stale = True
+            except IncompleteSweep:
+                idx.stale = True
+            idx.stale = idx.stale or seen != set(known)
+            return idx
+        except Exception as read_error:
+            if idx is not None:
+                idx.close()
+            elif conn is not None:
+                conn.close()
+            if isinstance(read_error, CodemapError):
+                raise read_error
+            cause = read_error if isinstance(read_error, sqlite3.Error) else write_error
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            code = getattr(cause, "sqlite_errorname", "unavailable")
+            raise CodemapError(f"query failed at open/sync (SQLite {code}; data dir {db.parent.name})") from read_error
 
 
 def symbols_in(text: str) -> Sequence[str]:

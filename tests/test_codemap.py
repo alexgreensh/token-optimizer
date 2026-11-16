@@ -586,3 +586,48 @@ def test_background_warm_builds_index(sandbox, monkeypatch):
     empty = sandbox / 'empty'
     empty.mkdir()
     assert not hint.session_text({'cwd': str(empty), 'session_id': SESSION})
+
+
+def test_old_index_cleanup_is_bounded_and_safe(sandbox, monkeypatch):
+    import codemap_hint as hint
+
+    directory = sandbox / 'codemap'
+    directory.mkdir()
+    stale_time = time.time() - 8 * 86400
+
+    def old_index(number, sibling=True, stale=True):
+        name = f'{number:016x}'
+        old = directory / f'{name}.db'
+        old.write_text('index')
+        if stale:
+            os.utime(old, (stale_time, stale_time))
+        if sibling:
+            (directory / f'{name}-bounded-v1.db').write_text('new')
+        return old
+
+    stale = old_index(1)
+    for suffix in ('-wal', '-shm'):
+        sidecar = Path(str(stale) + suffix)
+        sidecar.write_text('sidecar')
+        os.utime(sidecar, (stale_time, stale_time))
+    recent = old_index(2, stale=False)
+    orphan = old_index(3, sibling=False)
+    target = sandbox / 'outside.db'
+    target.write_text('outside')
+    os.utime(target, (stale_time, stale_time))
+    link = directory / '0000000000000004.db'
+    link.symlink_to(target)
+    (directory / '0000000000000004-bounded-v1.db').write_text('new')
+    active = old_index(5)
+    Path(str(active) + '-wal').write_text('recent WAL')
+    monkeypatch.setattr(hint, 'OLD_INDEX_CLEANUP_LIMIT', 1)
+    hint._clean_old_indexes(directory)
+    assert not stale.exists()
+    assert not Path(str(stale) + '-wal').exists()
+    assert not Path(str(stale) + '-shm').exists()
+    assert recent.exists() and orphan.exists() and active.exists()
+    assert link.is_symlink() and target.read_text() == 'outside'
+    # The limit leaves an additional eligible index for the next run.
+    extra1, extra2 = old_index(6), old_index(7)
+    hint._clean_old_indexes(directory)
+    assert sum(path.exists() for path in (extra1, extra2)) == 1

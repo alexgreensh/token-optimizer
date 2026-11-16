@@ -27,6 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 PROBE_MAX_ENTRIES = 400
 PROBE_MAX_S = 0.25
 LOCK_FRESH_S = 300.0
+OLD_INDEX_AGE_S = 7 * 86400
+OLD_INDEX_CLEANUP_LIMIT = 10
 # Subagents that never explore code: no hint for them.
 SKIP_AGENT_TYPES = frozenset({"statusline-setup", "claude-code-guide", "web-fetch"})
 
@@ -109,6 +111,59 @@ def hint_text(root: Path) -> str:
     return f"[Token Optimizer] Code map: inspect a file with `{py} {script} outline {shlex.quote(row[0])}`."
 
 
+def _clean_old_indexes(directory: Path) -> None:
+    """Remove a few inactive legacy indexes, without following symlinks."""
+    import re
+    import stat
+
+    # Directory-relative operations keep every unlink inside the opened folder.
+    if not hasattr(os, "O_NOFOLLOW") or os.unlink not in os.supports_dir_fd:
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        cutoff = time.time() - OLD_INDEX_AGE_S
+        removed = 0
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if removed >= OLD_INDEX_CLEANUP_LIMIT:
+                    break
+                if not re.fullmatch(r"[0-9a-f]{16}\.db", entry.name):
+                    continue
+                try:
+                    old = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+                    sibling = os.stat(entry.name[:-3] + "-bounded-v1.db", dir_fd=fd,
+                                      follow_symlinks=False)
+                    if not stat.S_ISREG(old.st_mode) or old.st_mtime > cutoff or not stat.S_ISREG(sibling.st_mode):
+                        continue
+                    sidecars = []
+                    for suffix in ("-wal", "-shm"):
+                        name = entry.name + suffix
+                        try:
+                            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                        if not stat.S_ISREG(info.st_mode) or info.st_mtime > cutoff:
+                            break
+                        sidecars.append(name)
+                    else:
+                        os.unlink(entry.name, dir_fd=fd)
+                        removed += 1
+                        for name in sidecars:
+                            try:
+                                os.unlink(name, dir_fd=fd)
+                            except OSError:
+                                pass
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def session_text(hook_input: dict) -> str:
     """Plain hint text for SessionStart ('' when off or not a code project)."""
     try:
@@ -136,6 +191,7 @@ def session_text(hook_input: dict) -> str:
         if agent_id:
             sid += ":" + agent_id
         import hashlib
+        _clean_old_indexes(db.parent)
         for old in db.parent.glob("hint-*"):
             try:
                 if time.time() - old.stat().st_mtime > 7 * 86400:

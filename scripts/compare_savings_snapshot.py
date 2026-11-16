@@ -4,6 +4,12 @@
 Usage: python3 scripts/compare_savings_snapshot.py SNAPSHOT_HOME DATA SESSION WORK
 DATA must be inside SNAPSHOT_HOME. WORK must be a new directory in this worktree.
 The caller records WORK/results.json in the report before removing WORK.
+
+Passes, all on one clone: new_empty (new code first, nothing computed on the
+clone yet), old1, old_warm, new_cold, new_warm, old2. cache_health.json (the
+cache-waste scan's 15-minute sidecar) is deleted before new_empty and new_cold,
+so neither new pass can borrow the scan from an old pass. Every dump must equal
+old1's.
 """
 import difflib
 import json
@@ -108,7 +114,10 @@ def main():
                  "s=setup_step.collect(m.TRENDS_DB,m.SNAPSHOT_DIR,m.CLAUDE_DIR,structural_value.card_resolver(m));"
                  "print(json.dumps({'structural':r,'setup':s},sort_keys=True,allow_nan=False))")
     results, timings = {}, {}
-    for label, code in [('old1', old), ('old_warm', old), ('new_cold', ROOT), ('new_warm', ROOT), ('old2', old)]:
+    passes = [('new_empty', ROOT), ('old1', old), ('old_warm', old), ('new_cold', ROOT), ('new_warm', ROOT), ('old2', old)]
+    for label, code in passes:
+        if label in ('new_empty', 'new_cold'):
+            (home / rel / 'cache_health.json').unlink(missing_ok=True)
         scripts = code / 'skills/token-optimizer/scripts'
         profile = work / (label + '.prof')
         argv = [sys.executable, '-m', 'cProfile', '-o', str(profile), str(scripts / 'measure.py'), 'status-bar', '--session', session, '--sync']
@@ -125,6 +134,10 @@ def main():
             raise RuntimeError(label + ': no savings: ' + str(payload.get('savings_reason')))
         savings.pop('computed_at', None)
         if label in ('old_warm', 'new_warm'):
+            # Age the new code's saved session figure past its 300 s reuse, so the
+            # plain call pays the session query a real poll pays every 5 minutes.
+            for saved in (home / rel / 'status-bar').glob('session-*.session'):
+                os.utime(saved, (time.time() - 400, time.time() - 400))
             plain_before = resource.getrusage(resource.RUSAGE_CHILDREN); plain_load = os.getloadavg()[0]; plain_start = time.perf_counter()
             plain = subprocess.run([sys.executable, str(scripts / 'measure.py'), 'status-bar', '--session', session],
                                    cwd=cwd, env=env, capture_output=True, text=True, timeout=TIMEOUT, check=True)
@@ -134,7 +147,7 @@ def main():
                 'load_before': plain_load, 'load_after': os.getloadavg()[0]}
             if json.loads(plain.stdout).get('refresh_started'):
                 lock = home / rel / 'status-bar' / (session + '.refresh.lock' if label == 'old_warm' else 'global.refresh.lock')
-                deadline = time.monotonic() + 150
+                deadline = time.monotonic() + TIMEOUT
                 while lock.exists() and time.monotonic() < deadline:
                     time.sleep(.25)
                 if lock.exists():
@@ -151,7 +164,7 @@ def main():
             print('structural tokens:', structural, 'measured steps:', steps, flush=True)
             if not structural or not steps:
                 raise SystemExit('Snapshot lacks non-zero structural and step evidence')
-    ok = all(compare(label, results['old1'], results[label]) for label in ('old_warm', 'new_cold', 'new_warm', 'old2'))
+    ok = all([compare(label, results['old1'], results[label]) for label in ('new_empty', 'old_warm', 'new_cold', 'new_warm', 'old2')])
     structural = results['old1']['structural'].get('tokens_saved', 0)
     steps = results['old1']['setup'].get('measured_trims', 0)
     print('structural tokens:', structural, 'measured steps:', steps, 'equal:', ok, flush=True)

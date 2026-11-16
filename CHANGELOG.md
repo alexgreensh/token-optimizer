@@ -1,5 +1,9 @@
 # Changelog
 
+## [5.13.73] - 2026-11-16
+
+- The prior-session hint arrives once per session instead of on most prompts. A session that stays on one topic no longer stacks copies of the same pointer in context; compaction or /clear re-arms it, and a different prior session or a stronger match still gets its hint. In the reporter's 20-prompt test, hint tokens dropped from 1,626 to 316 (#339, thanks @luysfernnando).
+
 ## [5.13.72] - 2026-11-16
 
 - Your savings number stays on screen: the 30-day figure is counted once for all sessions, new sessions show it at once, and a slow or failed refresh keeps the last good number instead of an error.

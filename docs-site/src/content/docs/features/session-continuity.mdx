@@ -1,6 +1,6 @@
 ---
 title: Session continuity and cold resume
-description: "Reopen a paused or forgotten session without paying to relearn it. Cold-Resume-Lean rebuilds a lean context block at zero LLM cost, and a topic-matched nudge fires on every prompt."
+description: "Reopen a paused or forgotten session without paying to relearn it. Cold-Resume-Lean rebuilds a lean context block at zero LLM cost, and a topic-matched nudge checks every prompt and appears once per session."
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
@@ -94,7 +94,7 @@ TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 python3 measure.py checkpoint-stats --day
 
 ## Default state
 
-The automatic hint is on. Prompt-continuity fires on every prompt through the UserPromptSubmit hook for plugin users, and the fresh-session nudge fires on eligible fresh starts.
+The automatic hint is on. Prompt-continuity checks every prompt through the UserPromptSubmit hook for plugin users, and adds a given prior session's hint (teaser or full) only once per session, so a session that stays on one topic does not stack copies. Compaction or /clear re-arms it, since the context no longer holds the earlier copy. The fresh-session nudge fires on eligible fresh starts.
 
 The manual reopener is on demand: `resume-lean`, `continue-last`, and `list-checkpoints` run only when you call them.
 

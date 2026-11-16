@@ -237,6 +237,18 @@ def test_hint_default_off_and_opt_in_dedup(sandbox, monkeypatch):
     assert not codemap_hint.session_text({**payload, "session_id": "another"})
 
 
+def test_hint_config_and_environment_override(sandbox, monkeypatch):
+    import codemap_index as ci
+    import plugin_env
+    config_dir = sandbox / "config"
+    config_dir.mkdir()
+    monkeypatch.setattr(plugin_env, "_USER_CONFIG_DIR", config_dir)
+    (config_dir / "config.json").write_text('{"v5_codemap_hint": true}', encoding="utf-8")
+    assert ci.codemap_hint_enabled()
+    monkeypatch.setenv("TOKEN_OPTIMIZER_CODEMAP_HINT", "0")
+    assert not ci.codemap_hint_enabled()
+
+
 def test_capped_index_is_incomplete(sandbox, monkeypatch):
     import codemap_index as ci
     proj = _project(sandbox / "proj")

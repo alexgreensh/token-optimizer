@@ -101,9 +101,10 @@ def compute(days=30, now=None, f=None, home=None, trims=None, projection_days=30
             connector = setup_connector_ledger.measured_values(conn, trims, estimate_tokens, card, window_start, window_end)
             if not trims and not budget["calls"] and not connector["calls"]:
                 return {**zero, "budget_observed": budget, "connector_observed": connector}
-            real = value.value_trims(conn, trims, start, end, card, home)
+            sessions = value.load_sessions(conn)
+            real = value.value_trims(conn, trims, start, end, card, home, sessions=sessions)
             pstart, pend = value.window(projection_days, now)
-            proj = value.value_trims(conn, trims, pstart, pend, card, home, projected=True)
+            proj = value.value_trims(conn, trims, pstart, pend, card, home, projected=True, sessions=sessions)
             cover = value.call_coverage(conn, start)
         finally:
             conn.close()

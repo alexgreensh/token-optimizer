@@ -3461,13 +3461,10 @@ def _read_config_flag(key, default=None):
     cloud session whose home is fresh every time still sees the team's
     committed opt-outs. The user's own value always wins."""
     _measure_facade = _compat.facade()
-    try:
-        if _measure_facade.CONFIG_PATH.exists():
-            cfg = _measure_facade.json.loads(_measure_facade.CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(cfg, dict) and key in cfg:
-                return cfg[key]
-    except (_measure_facade.json.JSONDecodeError, OSError):
-        pass
+    from . import config_cache
+    cfg = config_cache.read(_measure_facade.CONFIG_PATH, _measure_facade.json)
+    if key in cfg:
+        return cfg[key]
     try:
         value = _measure_facade.project_config_value(key)
         if value is not None:
@@ -3534,6 +3531,8 @@ def _write_config_flag(key, value):
                 _measure_facade.json.dump(cfg, f, indent=2)
                 f.write("\n")
             _measure_facade.os.replace(tmp_path, str(_measure_facade.CONFIG_PATH))
+            from . import config_cache
+            config_cache.clear()
             tmp_path = None
         except OSError:
             pass

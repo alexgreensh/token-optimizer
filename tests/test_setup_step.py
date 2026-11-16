@@ -1,8 +1,10 @@
 """W5: setup savings measured as a step in the first-call series. Synthetic transcripts only."""
 import json
+import os
 import shutil
 import sqlite3
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -218,6 +220,31 @@ def test_observer_stops_at_the_first_call_and_keeps_time_and_model():
     assert obs['total'] == 25 and obs['ts'] == '2030-01-01T00:00:00Z' and obs['model'] == 'm9'
     assert setup_step.prefix_of(obs) == 20
     assert setup_step.observe_step(iter([{'type': 'assistant', 'message': {'usage': {}}}]), len) is None
+
+
+def test_observation_cache_invalidates_on_growth_mtime_and_deletion(tmp_path):
+    from _measure import setup_observation_cache
+    transcript = tmp_path / 'session.jsonl'
+    _transcript(transcript, '2030-01-01T00:00:00Z', 100, 8)
+    old_ns = time.time_ns() - 10_000_000_000
+    os.utime(transcript, ns=(old_ns, old_ns))
+    cache = setup_observation_cache.Cache(tmp_path)
+    first = cache.observe(transcript)
+    assert first['total'] == 100
+    cache.save()
+    initial = transcript.stat()
+    _transcript(transcript, '2030-01-01T00:00:00Z', 2000, 8)
+    os.utime(transcript, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+    cache = setup_observation_cache.Cache(tmp_path)
+    assert cache.observe(transcript)['total'] == 2000
+    cache.save()
+    previous = transcript.stat()
+    _transcript(transcript, '2030-01-01T00:00:00Z', 3000, 8)
+    os.utime(transcript, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000))
+    cache = setup_observation_cache.Cache(tmp_path)
+    assert cache.observe(transcript)['total'] == 3000
+    transcript.unlink()
+    assert cache.observe(transcript) is None
 
 
 # ---- card and wiring --------------------------------------------------------

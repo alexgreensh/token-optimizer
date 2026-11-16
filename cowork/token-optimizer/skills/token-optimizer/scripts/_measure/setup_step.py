@@ -183,7 +183,7 @@ def measured_epochs(db_path, data_dir, claude_dir=None, card_fn=None):
 
 def collect(db_path, data_dir, claude_dir=None, card_fn=None, keep_carried=False):
     """Steps for every dated trim, from the user's own ledger and transcripts. Read-only."""
-    from . import first_call_context, structural_ledger as ledger
+    from . import setup_observation_cache, structural_ledger as ledger
     path = Path(db_path) if db_path else None
     if path is None or not path.is_file():
         return {"available": False, "why": "no ledger"}
@@ -201,15 +201,14 @@ def collect(db_path, data_dir, claude_dir=None, card_fn=None, keep_carried=False
         with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0) as conn:
             rows = conn.execute("SELECT DISTINCT jsonl_path, api_calls FROM session_log "
                                 "WHERE jsonl_path IS NOT NULL AND COALESCE(is_sidechain,0)=0").fetchall()
+        cache = setup_observation_cache.Cache(data_dir)
         for name, api_calls in rows:
-            try:
-                obs = observe_step(first_call_context.transcript(Path(name)), lambda v: round(len(v) / 4))
-            except (OSError, ValueError, TypeError):
-                continue
+            obs = cache.observe(name)
             epoch = ledger.to_epoch(obs.get("ts")) if obs else None
             if obs and epoch is not None:
                 sessions.append({"ts_epoch": epoch, "total": obs["total"], "components": obs["components"],
                                  "api_calls": api_calls, "model": obs.get("model")})
+        cache.save()
         rate_fn = None
         if card_fn is not None:
             def rate_fn(model):

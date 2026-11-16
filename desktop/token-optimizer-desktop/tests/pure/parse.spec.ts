@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 
 import {
   parseQualityCache,
@@ -145,13 +145,15 @@ c = measure._init_trends_db()
 c.execute("INSERT INTO savings_events (timestamp,event_type,tokens_saved,cost_saved_usd,session_id,session_uuid) VALUES (?,?,?,?,?,?)", (datetime.datetime.now().isoformat(), 'tool_archive', 3000000, 12.0, 'session-123', 'session-123'))
 c.commit(); c.close()
 print(json.dumps(measure.status_bar_payload('session-123', sync=True)))`
-  const launchers = process.platform === 'win32' ? [['py', '-3'], ['python'], ['python3']] : [['python3'], ['python']]
+  // Windows has no python3 by default; try the py launcher first there.
+  const launchers: Array<[string, ...string[]]> = process.platform === 'win32' ? [['py', '-3'], ['python'], ['python3']] : [['python3'], ['python']]
   const options = { encoding: 'utf8' as const, env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), TOKEN_OPTIMIZER_SNAPSHOT_DIR: join(home, 'data'), PYTHONDONTWRITEBYTECODE: '1' } }
-  let result = spawnSync(launchers[0][0], [...launchers[0].slice(1), '-c', code, scripts], options)
-  for (const [exe, ...prefix] of launchers.slice(1)) {
-    if (!result.error) break
+  let result: SpawnSyncReturns<string> | undefined
+  for (const [exe, ...prefix] of launchers) {
     result = spawnSync(exe, [...prefix, '-c', code, scripts], options)
+    if (!result.error) break
   }
+  assert.ok(result)
   assert.equal(result.status, 0, result.stderr)
   const raw = JSON.parse(result.stdout)
   assert.ok(raw.savings.savings_headline.display)

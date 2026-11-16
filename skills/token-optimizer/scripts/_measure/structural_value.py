@@ -190,6 +190,7 @@ def value_trims(conn, trims, start_day, end_day, card_fn, home, projected=False,
                 price_key = (t["tokens"], cache_read)
                 if price_key not in price_cache:
                     price_cache[price_key] = _price(card, t["tokens"], cr or 0, cc or 0, cc_1h or 0, cc_5m or 0)
+                    assert not any(price_cache[price_key][i] for i in (1, 3, 4)), "structural pricing assumes no cache-write savings"
                 r, w, ur, u1, u5 = price_cache[price_key]
                 if not (r or w):
                     continue

@@ -25,6 +25,12 @@ class Cache:
                 self.entries = data.get('entries', {})
         except (OSError, ValueError, TypeError, AttributeError):
             pass
+        try:
+            for tmp in self.path.parent.glob('.setup-observations-v1.json.*.tmp'):
+                if time.time() - tmp.stat().st_mtime > 86400:
+                    tmp.unlink()
+        except OSError:
+            pass
 
     def observe(self, path):
         path = Path(path)
@@ -33,7 +39,7 @@ class Cache:
             stat = path.stat()
             signature = [stat.st_size, stat.st_mtime_ns]
             entry = self.entries.get(key)
-            if isinstance(entry, dict) and entry.get('signature') == signature:
+            if isinstance(entry, dict) and 'observation' in entry and entry.get('signature') == signature and _valid(entry['observation']):
                 return entry.get('observation')
             observation = setup_step.observe_step(first_call_context.transcript(path), lambda v: round(len(v) / 4))
             after = path.stat()
@@ -53,19 +59,41 @@ class Cache:
     def save(self):
         if not self.dirty or self.version is None:
             return
+        tmp = self.path.with_name('.%s.%s.tmp' % (self.path.name, uuid.uuid4().hex))
         try:
-            tmp = self.path.with_name('.%s.%s.tmp' % (self.path.name, uuid.uuid4().hex))
             tmp.write_text(json.dumps({'version': self.version, 'entries': self.entries}), encoding='utf-8')
-            os.replace(tmp, self.path)
+            for attempt in range(3):
+                try:
+                    os.replace(tmp, self.path)
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(.02 * (attempt + 1))
             self.dirty = False
             self.pending = 0
         except OSError:
             pass
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _valid(observation):
+    if observation is None:
+        return True
+    return (isinstance(observation, dict) and isinstance(observation.get('month'), str)
+            and isinstance(observation.get('total'), int) and isinstance(observation.get('components'), dict)
+            and all(isinstance(k, str) and isinstance(v, int) for k, v in observation['components'].items())
+            and isinstance(observation.get('ts'), str)
+            and (observation.get('model') is None or isinstance(observation.get('model'), str)))
 
 
 def _version():
     files = [Path(first_call_context.__file__), Path(setup_step.__file__)]
-    stamps = [[p.stat().st_size, p.stat().st_mtime_ns] for p in files]
+    stamps = [hashlib.sha256(p.read_bytes()).hexdigest() for p in files]
     commands = sorted(first_call_context._optimizer_commands())
     digest = hashlib.sha256(json.dumps(commands).encode('utf-8')).hexdigest()
     return {'schema': 1, 'estimator': 'round(len/4)', 'commands': digest, 'code': stamps}

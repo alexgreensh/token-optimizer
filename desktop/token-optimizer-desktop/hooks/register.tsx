@@ -1050,7 +1050,6 @@ type Model = {
 
 type ClawdLayer = { key: string; source: string; alt: string }
 
-/** How long the previous pose stays beneath a new one: the fade plus the picture's own load. */
 const UNDERLAY_MS = 900
 let clawdTop: ClawdLayer | null = null
 let clawdUnder: (ClawdLayer & { until: number }) | null = null

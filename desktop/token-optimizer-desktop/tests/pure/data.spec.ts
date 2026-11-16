@@ -278,6 +278,9 @@ test('an unavailable refresh keeps the last savings, marked stale', async () => 
   assert.deepEqual(next.savings, first.savings)
   assert.equal(next.savingsState, 'stale')
   assert.equal(next.savingsReason, null)
+  const missing = await gather(fakeIo(world()), first, { savings: true })
+  assert.deepEqual(missing.savings, first.savings)
+  assert.equal(missing.savingsState, 'stale')
 })
 
 test('a gather without the status command keeps savings and spawns nothing but git', async () => {

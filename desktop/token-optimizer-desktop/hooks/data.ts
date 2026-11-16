@@ -481,11 +481,11 @@ export async function gather(
   const seen = { toolCallsSeen: base?.toolCallsSeen ?? 0, compactionsSeen: base?.compactionsSeen ?? 0 }
 
   const facts = notFound
-    ? { ...kept, savings: null, savingsHeadline: null, savingsState: 'unavailable' as const, savingsReason: NOT_FOUND, checkpointEpoch: null }
+    ? { ...kept, savingsState: kept.savings ? 'stale' as const : 'unavailable' as const, savingsReason: kept.savings ? null : NOT_FOUND, checkpointEpoch: null }
     : status === 'outdated'
-      ? { ...kept, savings: null, savingsHeadline: null, savingsState: 'unavailable' as const, savingsReason: OUTDATED }
+      ? { ...kept, savingsState: kept.savings ? 'stale' as const : 'unavailable' as const, savingsReason: kept.savings ? null : OUTDATED }
     : status === 'nopython'
-      ? { ...kept, savings: null, savingsHeadline: null, savingsState: 'unavailable' as const, savingsReason: NO_PYTHON }
+      ? { ...kept, savingsState: kept.savings ? 'stale' as const : 'unavailable' as const, savingsReason: kept.savings ? null : NO_PYTHON }
     : status
       ? {
           // While savings load, the last known figures stay on show.

@@ -1,9 +1,9 @@
 # Changelog
 
-## [5.13.74] - 2026-11-19
+## [5.13.74] - 2026-11-20
 
 - Savings and capacity are measured against your own 30 days before install, frozen on install day. Every headline number now counts since install.
-- Model-routing guidance is on from your first session, and routing savings count from the day it went on. Opt out with `TOKEN_OPTIMIZER_ROUTING=0`.
+- Model-routing guidance is on from your first session, and routing savings count your model-mix shift since install, against your own pre-install mix. Opt out of the guidance with `TOKEN_OPTIMIZER_ROUTING=0`.
 - Nudges you act on now count: compacting or starting fresh after a status-bar nudge books an estimated saving, priced per request, into the all-in total and the capacity cards.
 - The Claude Code mod's Keep warm button shows whenever the cache state can be computed, and every press is recorded. `measure.py mod-action --selftest` checks the path in one command.
 - Session health judges activity, not age: a busy orchestrator or outsourcerer delegate running for days is never flagged ZOMBIE, and `kill-stale` only ends sessions Claude Code confirms have been idle past the threshold.

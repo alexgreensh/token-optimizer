@@ -60,6 +60,9 @@ def test_routing_payload_exposes_assumption_and_token_volume(measure, monkeypatc
     )
     monkeypatch.setattr(measure, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     monkeypatch.setattr(measure, "_ROUTABLE_OPUS_FRACTION", 0.3)
+    # Realized routing is credited only once TO's routing guidance is on.
+    measure.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (measure.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
 
     r = measure._compute_model_routing_savings(days=30)
 

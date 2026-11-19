@@ -190,6 +190,9 @@ def test_cli_inject_routing_uninstall_end_to_end(tmp_path, monkeypatch):
     assert MARKER_OPEN in target.read_text(encoding="utf-8")
 
     from _measure import cli as cli_mod
+    # main() re-execs Python in UTF-8 mode on a non-UTF-8 locale (Windows
+    # cp1252 runners); inside pytest that replaces the test process itself.
+    monkeypatch.setattr(measure, "reexec_in_utf8_mode", lambda: None)
     monkeypatch.setattr(sys, "argv", ["measure.py", "inject-routing", "--uninstall"])
     cli_mod.main()
 

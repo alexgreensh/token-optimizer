@@ -4947,7 +4947,11 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         # Anthropic runtime; with none, the current mix. A frozen share is trusted as-is;
         # a non-Anthropic user is priced at their own measured mix, never fabricated Opus.
         anthropic = _measure_facade.detect_runtime() not in {"codex", "hermes", "copilot", "opencode", "cursor", "antigravity", "grok"}
-        before_shares = dict((baseline.get("model_shares") if anthropic else None) or after_shares)
+        # Older baseline files carry only opus_share (no model_shares); keep honoring it.
+        legacy_shares = ({"opus": frozen_opus, "sonnet": round(1.0 - frozen_opus, 4)}
+                         if frozen_opus > 0 else None)
+        before_shares = dict((baseline.get("model_shares") or legacy_shares if anthropic else None)
+                             or after_shares)
         baseline_opus_share = float(before_shares.get("opus", 0.0))
         # Baseline cache-hit pattern, defined over the FRESH+CACHE_READ POOL only (cache
         # write excluded). C1/C2: the counterfactual redistributes caching over the pool,

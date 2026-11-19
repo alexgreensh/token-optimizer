@@ -1,5 +1,10 @@
 # Changelog
 
+## [5.13.75] - 2026-11-20
+
+- Savings cards for long-time users keep their pre-install model mix: baselines saved before the per-model mix field existed are read correctly again, so routing savings no longer show as $0 for them.
+- Test suite runs clean on Windows again.
+
 ## [5.13.74] - 2026-11-20
 
 - Savings and capacity are measured against your own 30 days before install, frozen on install day. Every headline number now counts since install.

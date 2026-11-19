@@ -1231,7 +1231,7 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=None, unprice
     return deltas, repriced_tokens, unmeasured_tokens
 
 
-def _model_mix_shares(days=None, since=None):
+def _model_mix_shares(days=None, since=None, *, until=None):
     """Return {model: share_fraction} of total tokens over the window, + total.
 
     Reads model_daily (per-day per-model token totals). Shares sum to ~1.0.
@@ -1259,8 +1259,8 @@ def _model_mix_shares(days=None, since=None):
             out["activity_coverage"] = _measure_facade.activity_coverage(conn)
             rows = conn.execute(
                 "SELECT model, COALESCE(SUM(total_tokens),0) FROM model_daily "
-                "WHERE date >= ? GROUP BY model",
-                (cutoff,),
+                "WHERE date >= ? AND (? IS NULL OR date < ?) GROUP BY model",
+                (cutoff, until, until),
             ).fetchall()
         finally:
             conn.close()
@@ -1538,7 +1538,7 @@ def _add_routing_buckets(dst, parts):
     dst["cache_create_5m"] = dst.get("cache_create_5m", 0) + m5
 
 
-def _routing_pending_sessions(days=None, since=None):
+def _routing_pending_sessions(days=None, since=None, *, until=None):
     """Window sessions whose usage collect has not finished re-reading.
 
     A row counts when its transcript is still on disk and either its per-day
@@ -1563,7 +1563,8 @@ def _routing_pending_sessions(days=None, since=None):
                 if "last_activity_day" in columns else "NULLIF(date, '')")
             rows = conn.execute(
                 "SELECT jsonl_path, daily_usage_json, "
-                + ("usage_parser_version" if has_version else "NULL") + "," + last_activity +
+                + ("usage_parser_version" if has_version else "NULL") + "," + last_activity
+                + (",first_activity_day" if "first_activity_day" in columns else ",NULL") +
                 " FROM session_log WHERE jsonl_path LIKE '%.jsonl'",
                 ()).fetchall()
         finally:
@@ -1571,7 +1572,9 @@ def _routing_pending_sessions(days=None, since=None):
         projects = _measure_facade.os.path.normcase(_measure_facade.os.path.abspath(str(_measure_facade.CLAUDE_DIR / "projects"))) + _measure_facade.os.sep
         walked = not _measure_facade._use_codex_session_adapter()
         pending = 0
-        for path, du_raw, version, last_day in rows:
+        for path, du_raw, version, last_day, first_day in rows:
+            if until and first_day and str(first_day)[:10] >= until:
+                continue
             daily_missing = du_raw is None
             stale = (has_version and walked
                      and (version is None or int(version) < _measure_facade._USAGE_PARSER_VERSION)
@@ -1595,7 +1598,7 @@ def _routing_pending_sessions(days=None, since=None):
         return 0
 
 
-def _routing_usage_by_model(days=None, since=None):
+def _routing_usage_by_model(days=None, since=None, *, until=None):
     """Token usage per model id and token class over the window.
 
     Returns {model_id: {class: tokens}} (classes in _ROUTING_CLASSES). Source per
@@ -1632,13 +1635,13 @@ def _routing_usage_by_model(days=None, since=None):
                 undated_day = ""
                 for day, models in du.items():
                     day = undated_day if day == _measure_facade.UNDATED_USAGE_KEY else day
-                    if not isinstance(models, dict) or str(day) < cutoff:
+                    if not isinstance(models, dict) or str(day) < cutoff or (until and str(day) >= until):
                         continue
                     for model, parts in models.items():
                         if isinstance(parts, dict) and _measure_facade._normalize_model_name(model):
                             _measure_facade._add_routing_buckets(out.setdefault(model, {}), parts)
                 continue
-            if not first_day or first_day != last_day or first_day < cutoff:
+            if not first_day or first_day != last_day or first_day < cutoff or (until and first_day >= until):
                 continue
             totals = _measure_facade._safe_json_dict(amu_raw) or _measure_facade._safe_json_dict(mu_raw)
             mb = _measure_facade._safe_json_dict(mb_raw)
@@ -1758,7 +1761,7 @@ def set_pretool_baseline(args):
         print(f"  [Error] Could not write baseline: {e}")
 
 
-def _compute_model_routing_savings(days=None, since=None):
+def _compute_model_routing_savings(days=None, since=None, *, until=None):
     """Model-routing savings: realized (mix shift vs baseline) + potential (remaining Opus).
 
     REALIZED: compare current model mix against the install-era baseline (snapshot
@@ -1829,7 +1832,8 @@ def _compute_model_routing_savings(days=None, since=None):
         "baseline_source": None, "evidence": "unavailable",
     }
     try:
-        current = _measure_facade._model_mix_shares(days=days, since=since)
+        window_end = {"until": until} if until else {}
+        current = _measure_facade._model_mix_shares(days=days, since=since, **window_end)
         zero["activity_coverage"] = current.get("activity_coverage", {"complete": True, "undated_sessions": 0})
         cur_shares = current.get("shares", {})
         cur_total = int(current.get("total_tokens", 0) or 0)
@@ -1845,7 +1849,7 @@ def _compute_model_routing_savings(days=None, since=None):
         # parser, or per-day usage not yet rebuilt), their per-class usage is
         # incomplete and the figure would move pass to pass. Report the count
         # instead of a number.
-        pending = _measure_facade._routing_pending_sessions(days=days, since=since)
+        pending = _measure_facade._routing_pending_sessions(days=days, since=since, **window_end)
         if pending:
             return {**zero, "evidence": "pending", "pending_sessions": pending,
                     "baseline_source": baseline_source}
@@ -1853,7 +1857,7 @@ def _compute_model_routing_savings(days=None, since=None):
         # Rows of per-model, per-class usage. When the DB holds none (adapters
         # that only record model totals), the model-daily mix stands in as
         # unsplit tokens, reported outside comparison coverage.
-        usage = _measure_facade._routing_usage_by_model(days=days, since=since)
+        usage = _measure_facade._routing_usage_by_model(days=days, since=since, **window_end)
         from_rows = bool(usage)
         if not from_rows:
             usage = {m: {"unsplit": share * cur_total} for m, share in cur_shares.items()}

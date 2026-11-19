@@ -1,28 +1,36 @@
 """Limit realized routing credit to the period with routing guidance."""
 from datetime import date, datetime, timedelta
-from . import _compat
+from . import _compat, routing_default
 
 
 def routing_enabled_since(data_dir):
+    enabled, _ = routing_default.routing_credit_window(data_dir=data_dir)
     try:
-        value = (data_dir / 'routing_injected_at').read_text(encoding='utf-8').strip()
-        return date.fromisoformat(value).isoformat()
-    except (OSError, ValueError, TypeError):
+        return date.fromisoformat(enabled).isoformat()
+    except (ValueError, TypeError):
         return None
 
 
 def compute(days=30, since=None):
     f = _compat.facade()
-    enabled = routing_enabled_since(f.SNAPSHOT_DIR)
+    enabled, removed = routing_default.routing_credit_window(data_dir=f.SNAPSHOT_DIR)
+    try:
+        enabled = date.fromisoformat(enabled).isoformat()
+    except (ValueError, TypeError):
+        enabled = None
+    try:
+        removed = date.fromisoformat(removed).isoformat() if removed else None
+    except (ValueError, TypeError):
+        removed = None
     cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days or 30)).strftime('%Y-%m-%d')
     if enabled:
         cutoff = max(cutoff, enabled)
     unrestricted = getattr(f, '_routing_unrestricted', None)
     if unrestricted is None:
         unrestricted = f._measure_providers['pricing']._compute_model_routing_savings
-    result = unrestricted(days=days, since=cutoff)
+    result = unrestricted(days=days, since=cutoff, **({"until": removed} if removed else {}))
     result['routing_enabled'] = bool(enabled)
-    if not enabled:
+    if not enabled or (removed and cutoff >= removed):
         result['realized_cost_usd'] = 0.0
         result['measured_baseline_realized_cost_usd'] = None
     return result

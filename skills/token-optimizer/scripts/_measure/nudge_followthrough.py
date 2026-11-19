@@ -1,7 +1,29 @@
 """Record context nudges and price observed follow-through from transcripts."""
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _diagnostic(facade, exc):
+    """Keep a bounded, path-free diagnostic without breaking collection."""
+    try:
+        directory = Path(facade.SNAPSHOT_DIR)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / 'nudge-resolve.log'
+        line = json.dumps({'operation': 'resolve', 'error': type(exc).__name__}) + '\n'
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0)
+        fd = os.open(str(path), flags, 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as stream:
+            if stream.tell() + len(line.encode('utf-8')) > 65536:
+                stream.close()
+                fd = os.open(str(path), os.O_WRONLY | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0))
+                with os.fdopen(fd, 'w', encoding='utf-8') as replacement:
+                    replacement.write(line)
+            else:
+                stream.write(line)
+    except (OSError, AttributeError):
+        pass
 
 
 def _epoch(value):
@@ -103,7 +125,7 @@ def _project_index(directory):
             if stamps:
                 transcripts[path] = (min(stamps), max(stamps), rows)
         except OSError:
-            continue
+            raise
     return transcripts
 
 
@@ -180,14 +202,19 @@ def resolve(facade, conn=None):
                                            (datetime.fromtimestamp(_epoch(action)).isoformat(), 'nudge_followed', tokens, cost, sid, sid, 'nudge_id=' + str(ident), None, 0))
                         event_id = cur.lastrowid
                     conn.execute('UPDATE nudge_events SET status=?,action_ts=?,savings_event_id=? WHERE id=?', (status, action, event_id, ident))
-                except (OSError, ValueError, TypeError, KeyError):
-                    continue
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    raise exc
             conn.commit()
         finally:
             if owned:
                 conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        _diagnostic(facade, exc)
 
 
 def record_emitted(facade, sid, path, quality_data, fresh, compact, advisory):

@@ -134,3 +134,20 @@ def test_resolver_reads_each_project_transcript_once_before_write_lock(tmp_path,
     nudge.resolve(object(), conn)
     assert sorted(seen) == sorted([path, other])
     conn.close()
+
+
+def test_resolver_failure_is_logged_and_event_stays_pending(tmp_path, monkeypatch):
+    conn = sqlite3.connect(':memory:')
+    nudge._schema(conn)
+    conn.execute('INSERT INTO nudge_events(session_uuid,kind,ts,transcript_path) VALUES(?,?,?,?)', ('s', 'tip', '2026-01-01T00:00:00+00:00', str(tmp_path / 's.jsonl')))
+    conn.commit()
+    class Facade:
+        SNAPSHOT_DIR = tmp_path
+    def fail(_):
+        raise PermissionError('private transcript path')
+    monkeypatch.setattr(nudge, '_project_index', fail)
+    nudge.resolve(Facade(), conn)
+    assert conn.execute('SELECT status FROM nudge_events').fetchone() == ('pending',)
+    line = (tmp_path / 'nudge-resolve.log').read_text()
+    assert 'PermissionError' in line and 'private transcript path' not in line
+    conn.close()

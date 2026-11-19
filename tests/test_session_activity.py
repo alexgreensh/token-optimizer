@@ -43,12 +43,14 @@ def _euid():
 
 
 def _write_record(config_dir, pid, *, status="idle", idle_seconds=0, tmux=None,
-                  cwd="/tmp/work", session_id=None, updated_delta=None):
+                  cwd="/tmp/work", session_id=None, updated_delta=None, started_delta=5 * 86400):
     """Write a fake <config>/sessions/<pid>.json; timestamps are epoch ms."""
     now_ms = int(time.time() * 1000)
     updated = now_ms - int((idle_seconds if updated_delta is None else updated_delta) * 1000)
     rec = {"pid": pid, "sessionId": session_id or f"sess-{pid}", "cwd": cwd,
            "status": status, "updatedAt": updated, "statusUpdatedAt": updated}
+    if started_delta is not None:
+        rec["startedAt"] = now_ms - int(started_delta * 1000)
     if tmux:
         rec["tmux"] = tmux
     sessions = Path(config_dir) / "sessions"
@@ -77,7 +79,7 @@ def _live_session(pid, elapsed=5 * 86400):
 def test_missing_record_fails_open(tmp_path):
     act = sa.activity(424242, now=time.time(), config_dir=tmp_path)
     assert act == {"status": None, "last_active_ts": None, "idle_seconds": None,
-                   "tmux": None, "source": "none"}
+                   "tmux": None, "source": "none", "reason": "missing", "verified": False}
 
 
 def test_bad_json_fails_open(tmp_path):
@@ -337,3 +339,48 @@ def test_idle_never_exceeds_process_lifetime(tmp_path):
 
 def test_project_dir_encoding_maps_every_non_alphanumeric():
     assert sa._project_dir_name("/Users/a b/my.proj_x") == "-Users-a-b-my-proj-x"
+
+
+def test_kill_stale_skips_record_that_was_unreadable_then_busy(tmp_path, monkeypatch, capsys):
+    measure = _load_measure()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "sessions").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sessions" / "611.json").write_text("{not json", encoding="utf-8")
+    killed = _kill_stale(measure, monkeypatch, [_live_session(611)])
+    _write_record(tmp_path, 611, status="busy", idle_seconds=0)
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == []
+
+
+def test_kill_stale_skips_unreadable_record_on_both_reads(tmp_path, monkeypatch, capsys):
+    measure = _load_measure()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "sessions").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sessions" / "612.json").write_text("{not json", encoding="utf-8")
+    killed = _kill_stale(measure, monkeypatch, [_live_session(612)])
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == []
+
+
+def test_kill_stale_requires_explicit_idle_status(tmp_path, monkeypatch, capsys):
+    measure = _load_measure()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    _write_record(tmp_path, 613, status="weird", idle_seconds=3 * 86400)
+    killed = _kill_stale(measure, monkeypatch, [_live_session(613)])
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == []
+
+
+def test_kill_stale_requires_verified_start_time(tmp_path, monkeypatch, capsys):
+    measure = _load_measure()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    _write_record(tmp_path, 614, status="idle", idle_seconds=3 * 86400, started_delta=None)
+    killed = _kill_stale(measure, monkeypatch, [_live_session(614)])
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == []
+
+
+def test_zero_lifetime_clamps_idle_to_zero(tmp_path):
+    _write_record(tmp_path, 615, status="idle", idle_seconds=3 * 86400, started_delta=0)
+    act = sa.activity(615, config_dir=tmp_path, elapsed_seconds=0)
+    assert act["idle_seconds"] == 0

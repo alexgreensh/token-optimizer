@@ -16,6 +16,9 @@ import re
 import time
 from pathlib import Path
 
+# Process start (ps elapsed, whole seconds) vs the record startedAt.
+START_TOLERANCE_SECONDS = 10
+
 
 def _config_dir(config_dir=None):
     """Claude Code's config dir: explicit override, else claude_home() ($CLAUDE_CONFIG_DIR or ~/.claude)."""
@@ -67,40 +70,49 @@ def activity(pid, now=None, config_dir=None, elapsed_seconds=None):
     """
     if now is None:
         now = time.time()
-    base = _config_dir(config_dir)
-    record = None
+    def _none(reason):
+        return {"status": None, "last_active_ts": None, "idle_seconds": None,
+                "tmux": None, "source": "none", "reason": reason, "verified": False}
+
     try:
-        parsed = json.loads((base / "sessions" / f"{pid}.json").read_text(encoding="utf-8"))
-        if isinstance(parsed, dict):
-            record = parsed
+        base = _config_dir(config_dir)
+        path = base / "sessions" / f"{pid}.json"
+    except Exception:
+        # No resolvable config dir means no record can exist for this host.
+        return _none("missing")
+    if not path.exists():
+        return _none("missing")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        record = None
-    none = {"status": None, "last_active_ts": None, "idle_seconds": None,
-            "tmux": None, "source": "none"}
-    if record is None:
-        return none
+        return _none("unreadable")
+    if not isinstance(record, dict):
+        return _none("unreadable")
     # A record left by a dead session whose pid was reused describes another
-    # process: trust it only when its pid and start time match the live one.
+    # process: it counts only when its pid and start time match the live one.
     if record.get("pid") not in (None, pid):
-        return none
+        return _none("pid_mismatch")
     started = _ms(record.get("startedAt"))
-    if elapsed_seconds is not None and started is not None and elapsed_seconds > 0:
-        if abs((now - elapsed_seconds) - started) > 300:
-            return none
+    lifetime = float(elapsed_seconds) if isinstance(elapsed_seconds, (int, float)) and elapsed_seconds >= 0 else None
+    if started is not None and lifetime is not None and abs((now - lifetime) - started) > START_TOLERANCE_SECONDS:
+        return _none("start_mismatch")
+    verified = record.get("pid") == pid and started is not None and lifetime is not None
 
     stamps = [ts for ts in (_ms(record.get("statusUpdatedAt")),
                             _ms(record.get("updatedAt")),
                             _transcript_mtime(base, record)) if ts is not None]
     last_active = max(stamps) if stamps else None
     idle = max(0.0, now - last_active) if last_active is not None else None
-    if idle is not None and elapsed_seconds is not None and elapsed_seconds > 0:
-        idle = min(idle, float(elapsed_seconds))  # never idle longer than the process has lived
+    if idle is not None and lifetime is not None:
+        idle = min(idle, lifetime)  # never idle longer than the process has lived
     status = record.get("status")
     tmux = record.get("tmux")
     return {
-        "status": status if isinstance(status, str) else None,
+        "status": status if status in ("busy", "idle") else None,
         "last_active_ts": last_active,
         "idle_seconds": int(idle) if idle is not None else None,
         "tmux": tmux if isinstance(tmux, str) and tmux else None,
         "source": "record",
+        "reason": "ok",
+        "verified": verified,
     }

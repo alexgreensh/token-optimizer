@@ -1916,21 +1916,21 @@ def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None
         return age is not None and age > threshold_seconds
 
     def _record_busy_now(s):
-        # Re-read sessions/<pid>.json at kill time: a session that went busy
-        # between the health snapshot and the signal is never terminated.
-        # Only record-backed sessions are re-checked; sessions with no record
-        # have nothing to consult and keep the elapsed-based behavior.
-        act = s.get("activity") or {}
-        if act.get("source") in (None, "none"):
-            return False
+        # Re-read sessions/<pid>.json for EVERY candidate right before the
+        # signal and fail closed: a record-backed session is killed only when
+        # its identity is verified, it says "idle" explicitly and it has been
+        # idle past the threshold. Age alone decides only when the record is
+        # confirmed absent on both reads (older Claude Code writes none).
         from . import session_activity as _session_activity
-        # Fail closed: skip unless a fresh read still proves the session idle
-        # past the threshold (it may have just finished a turn).
         try:
             fresh = _session_activity.activity(s["pid"], elapsed_seconds=s.get("elapsed_seconds"))
         except Exception:
             return True
-        if fresh.get("source") != "record" or fresh.get("status") == "busy":
+        first = s.get("activity") or {}
+        if fresh.get("source") == "none":
+            return not (fresh.get("reason") == "missing" and first.get("source") in (None, "none")
+                        and first.get("reason", "missing") == "missing")
+        if not fresh.get("verified") or fresh.get("status") != "idle":
             return True
         idle = fresh.get("idle_seconds")
         return idle is None or idle <= threshold_seconds

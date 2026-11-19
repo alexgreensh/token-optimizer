@@ -81,3 +81,23 @@ def test_runway_uses_all_savings_tiers():
         _action_savings_components=lambda summary, counted: {'total_usd': 0.6, 'routing_usd': 0.2})
     assert abs(runway.extra_work(facade, conn, 30, {}) - 80) < 1e-9
     conn.close()
+
+
+def test_runway_estimate_increment_excludes_tokens_already_counted():
+    import datetime
+    from types import SimpleNamespace
+    spec = importlib.util.spec_from_file_location('runway_all_in_increment', MODULE.with_name('runway_all_in.py'))
+    runway = importlib.util.module_from_spec(spec); spec.loader.exec_module(runway)
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE session_log(parent_daily_usage_json TEXT, is_sidechain INTEGER)')
+    today = datetime.date.today().isoformat()
+    conn.execute('INSERT INTO session_log VALUES(?,0)', (json.dumps({today: {'sonnet': {'cache_read': 1000}}}),))
+    facade = SimpleNamespace(datetime=datetime.datetime, timedelta=datetime.timedelta,
+        _is_priced_model=lambda model: True,
+        _get_model_cost=lambda model, i, o, r, w: r / 1000,
+        _counted_cumulative_summary=lambda days: {},
+        _apply_counted_oneshot_pricing=lambda summary, counted: None,
+        _action_savings_components=lambda summary, counted: {'estimates_usd': {
+            'nudge_followed': 0.2, 'hint_followed': 0.3, 'resume_lean_verified': 0.4}})
+    assert abs(runway.extra_work(facade, conn, 30, {}, estimated_only=True) - 20) < 1e-9
+    conn.close()

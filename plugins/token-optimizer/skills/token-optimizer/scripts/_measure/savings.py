@@ -2313,7 +2313,7 @@ def runway_snapshot(days=None, now=None, token_headline=None):
 
         mult = context_mult * max(1.0, routing_mult if routing_mult is not None else 1.0)
         # Hide immaterial changes unless weekly savings are available.
-        if mult < 1.02 and not weekly_signal:
+        if mult + (direct_pct or 0) / 100 < 1.02 and not weekly_signal:
             return None
 
         # --- USD-per-window: API-credit OVERAGE over each window's OWN real span ---
@@ -2559,7 +2559,7 @@ def runway_snapshot(days=None, now=None, token_headline=None):
             "routing_unsplit_tokens": routing.get("unsplit_tokens", 0),
             "routing_standardized_baseline_cost_usd": routing.get("standardized_baseline_cost_usd"),
             "routing_standardized_actual_cost_usd": routing.get("standardized_actual_cost_usd"),
-            "extra_work_pct": round(direct_pct or 0, 1),
+            "extra_work_pct": round((mult - 1) * 100 + (direct_pct or 0), 1), "estimated_work_pct": round(direct_pct or 0, 1),
             "tokens_consumed": int(consumed),
             "tokens_consumed_basis": traffic["basis"] if traffic else None,
             "tokens_consumed_basis_complete": bool(traffic and traffic["complete"]),

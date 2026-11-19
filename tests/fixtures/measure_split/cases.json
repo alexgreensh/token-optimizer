@@ -115,6 +115,7 @@
     "mcp",
     "memory-review",
     "mod-action",
+    "pilot-report",
     "pin-baseline",
     "plugin-cleanup",
     "pricing-tier",
@@ -159,7 +160,8 @@
   "post_base_commands": [
     "coverage-replay",
     "file-refetch",
-    "mod-action"
+    "mod-action",
+    "pilot-report"
   ],
   "dispatch_branches": [
     {
@@ -2093,6 +2095,14 @@
       "lhs": "args[0]",
       "values": [
         "mod-action"
+      ]
+    },
+    {
+      "line": 64371,
+      "expression": "args[0] == 'pilot-report'",
+      "lhs": "args[0]",
+      "values": [
+        "pilot-report"
       ]
     }
   ],
@@ -4229,6 +4239,13 @@
         "--limits-lab"
       ],
       "line": 63428
+    },
+    {
+      "expression": "args[0] == 'pilot-report'",
+      "argv": [
+        "pilot-report"
+      ],
+      "line": 64371
     }
   ],
   "hooks": [
@@ -19024,6 +19041,65 @@
       "stdout": "cli-mod-action---limits-lab/stdout",
       "stderr": "cli-mod-action---limits-lab/stderr",
       "side_effects": "cli-mod-action---limits-lab/effects.json"
+    },
+    {
+      "id": "cli-pilot-report",
+      "entry": "cli",
+      "argv": [
+        "pilot-report"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-pilot-report/stdout",
+      "stderr": "cli-pilot-report/stderr",
+      "side_effects": "cli-pilot-report/effects.json"
+    },
+    {
+      "id": "cli-pilot-report---json",
+      "entry": "cli",
+      "argv": [
+        "pilot-report",
+        "--json"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-pilot-report---json/stdout",
+      "stderr": "cli-pilot-report---json/stderr",
+      "side_effects": "cli-pilot-report---json/effects.json"
+    },
+    {
+      "id": "cli-pilot-report---quiet",
+      "entry": "cli",
+      "argv": [
+        "pilot-report",
+        "--quiet"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-pilot-report---quiet/stdout",
+      "stderr": "cli-pilot-report---quiet/stderr",
+      "side_effects": "cli-pilot-report---quiet/effects.json"
+    },
+    {
+      "id": "cli-pilot-report---help",
+      "entry": "cli",
+      "argv": [
+        "pilot-report",
+        "--help"
+      ],
+      "runtime": "claude",
+      "stdin_base64": "",
+      "fixture": "synthetic-current",
+      "expected_exit": "capture-from-BASE",
+      "stdout": "cli-pilot-report---help/stdout",
+      "stderr": "cli-pilot-report---help/stderr",
+      "side_effects": "cli-pilot-report---help/effects.json"
     }
   ]
 }

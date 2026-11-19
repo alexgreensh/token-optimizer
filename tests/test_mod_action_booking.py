@@ -265,7 +265,7 @@ def test_manual_write_cost_uses_disclosed_conservative_rate(facade, tmp_path):
 def test_failed_cli_action_writes_bounded_diagnostic(facade, tmp_path, monkeypatch, capsys):
     import io
     from _measure import mod_action_booking, mod_action_diagnostics
-    monkeypatch.setattr(facade, 'args', ['mod-action'])
+    monkeypatch.setattr(facade, 'args', ['mod-action'], raising=False)
     monkeypatch.setattr(facade.sys, 'stdin', io.StringIO(json.dumps({'action': 'warm-prepare'})))
     assert mod_action_booking.main(facade) == 1
     row = json.loads((facade.SNAPSHOT_DIR / 'mod-actions.log').read_text())

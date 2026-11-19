@@ -66,7 +66,10 @@ def record(facade, sid, kind, tokens, model, path):
 
 def _context(message):
     usage = message.get('usage') or {}
-    return sum(int(usage.get(k) or 0) for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
+    try:
+        return sum(int(usage.get(k) or 0) for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return 0
 
 
 
@@ -152,7 +155,10 @@ def _next_session(path, stamp, index):
     end = entry[1]
     choices = [(start, str(candidate), rows) for candidate, (start, _, rows) in index.items()
                if candidate != current and start > end and start > stamp]
-    return min(choices, default=(None, None, None))[2]
+    if not choices:
+        return None, None
+    _, candidate, rows = min(choices)
+    return candidate, rows
 
 
 def resolve(facade, conn=None):
@@ -167,6 +173,8 @@ def resolve(facade, conn=None):
             projects = {Path(path).parent for _, _, _, _, path, _ in events if path}
             indexes = {project: _project_index(project) for project in projects}
             prepared = {}
+            claimed_sessions = set()
+            events.sort(key=lambda event: (_epoch(event[2]) or 0, event[0]), reverse=True)
             for ident, sid, ts, before, path, event_id in events:
                 if not path:
                     continue
@@ -176,11 +184,18 @@ def resolve(facade, conn=None):
                 rows = entry[2]
                 status, action, requests = classify(rows, ts)
                 if status == 'pending' or (status == 'followed' and not requests):
-                    next_rows = _next_session(path, _epoch(ts), indexes[Path(path).parent])
+                    next_path, next_rows = _next_session(path, _epoch(ts), indexes[Path(path).parent])
                     if next_rows and status == 'pending':
                         status, action, requests = classify(rows, ts, next_rows)
-                    elif next_rows:
+                        if status == 'followed':
+                            if next_path in claimed_sessions:
+                                status, action, requests = 'ignored', None, []
+                            else:
+                                claimed_sessions.add(next_path)
+                    elif next_rows and next_path not in claimed_sessions:
                         requests = _requests(next_rows)
+                        if requests:
+                            claimed_sessions.add(next_path)
                 prepared[ident] = status, action, requests
             conn.execute('BEGIN IMMEDIATE')
             claimed = set()
@@ -189,6 +204,10 @@ def resolve(facade, conn=None):
                     if ident not in prepared:
                         continue
                     status, action, requests = prepared[ident]
+                    current = conn.execute('SELECT savings_event_id FROM nudge_events WHERE id=?', (ident,)).fetchone()
+                    if current is None:
+                        continue
+                    event_id = current[0]
                     cost = 0.0
                     tokens = 0
                     duplicate = (sid, action) in claimed

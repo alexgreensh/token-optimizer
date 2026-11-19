@@ -159,3 +159,27 @@ def test_new_session_streamed_rows_count_once():
     status, _, requests = nudge.classify([assistant(1)], stamp, [row, row, assistant(3)])
     assert status == 'followed'
     assert [request['id'] for request in requests] == ['2', '3']
+
+
+def test_malformed_usage_is_skipped_without_stopping_followthrough():
+    bad = assistant(12)
+    bad['message']['usage']['cache_read_input_tokens'] = 'bad'
+    status, _, requests = nudge.classify([boundary(), bad, assistant(13)], '2026-01-01T00:00:00+00:00')
+    assert status == 'followed'
+    assert [r['id'] for r in requests] == ['13']
+
+
+def test_new_session_credits_only_most_recent_nudge(tmp_path):
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE savings_events (id INTEGER PRIMARY KEY, timestamp TEXT, event_type TEXT, tokens_saved INTEGER, cost_saved_usd REAL, session_id TEXT, session_uuid TEXT, detail TEXT, model TEXT, unjoinable INTEGER)')
+    conn.execute('CREATE TABLE compression_events (timestamp TEXT, session_uuid TEXT, session_id TEXT, feature TEXT, verified INTEGER)')
+    nudge._schema(conn)
+    old, recent, new = [tmp_path / (name + '.jsonl') for name in ('old', 'recent', 'new')]
+    for path, second in ((old, 4), (recent, 4), (new, 10)):
+        path.write_text(json.dumps(assistant(second)))
+    for path, stamp in ((old, '2026-01-01T00:00:01+00:00'), (recent, '2026-01-01T00:00:03+00:00')):
+        conn.execute('INSERT INTO nudge_events(session_uuid,kind,ts,context_tokens,transcript_path) VALUES(?,?,?,?,?)', (path.stem, 'tip', stamp, 0, str(path)))
+    conn.commit()
+    nudge.resolve(object(), conn)
+    assert conn.execute('SELECT session_uuid,status FROM nudge_events ORDER BY id').fetchall() == [('old', 'ignored'), ('recent', 'followed')]
+    conn.close()

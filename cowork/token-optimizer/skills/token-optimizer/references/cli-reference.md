@@ -53,6 +53,7 @@
 ## Other
 
 - `measure.py savings` -- Cumulative dollar savings report
+- `measure.py pilot-report [--json]` -- Weekly pilot report for Slack: capacity since install, all-in savings, routing state, setup trims, nudge follow-through
 - `measure.py expand [--list|<tool-use-id>|--search <query>]` -- Retrieve archived tool results, or search by keyword/lineage
 - `measure.py setup-hook [--uninstall]` -- SessionEnd tracking hook
 - `measure.py setup-quality-bar [--uninstall]` -- Terminal status line

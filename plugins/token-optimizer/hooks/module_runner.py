@@ -141,7 +141,7 @@ _MEASURE_PACKAGE_SOURCES = (
 )
 _MEASURE_PACKAGE_SOURCES += ('transcript_stream.py', 'checkpoint_direction.py', 'checkpoint_retention.py')
 _MEASURE_PACKAGE_SOURCES += ('keepwarm_safety.py', 'keepwarm_economics.py', 'keepwarm_linux.py', 'mod_action_booking.py', 'mod_compaction_booking.py', 'mod_fresh_booking.py',)
-_MEASURE_PACKAGE_SOURCES += ('quality_continuity.py', 'quality_checkpoint.py', 'codex_quality.py', 'lease_candidate_cleanup.py', 'session_store_spool.py', 'upgrade_drain_control.py', 'compression_scan_checkpoint.py', 'status_bar_lock.py', 'session_flush_lock.py', 'context_reset_marker.py', 'holdout_fallback.py', 'dashboard_heal_claim.py', 'config_cache.py', 'setup_observation_cache.py', 'status_bar_refresh.py',)
+_MEASURE_PACKAGE_SOURCES += ('quality_continuity.py', 'quality_checkpoint.py', 'codex_quality.py', 'lease_candidate_cleanup.py', 'session_store_spool.py', 'upgrade_drain_control.py', 'compression_scan_checkpoint.py', 'status_bar_lock.py', 'session_flush_lock.py', 'context_reset_marker.py', 'holdout_fallback.py', 'dashboard_heal_claim.py', 'config_cache.py', 'setup_observation_cache.py', 'status_bar_refresh.py', 'pilot_report.py',)
 
 
 def _runtime_sources(measure_src):

@@ -13,26 +13,28 @@ def routing_enabled_since(data_dir):
 
 def compute(days=30, since=None):
     f = _compat.facade()
-    enabled, removed = routing_default.routing_credit_window(data_dir=f.SNAPSHOT_DIR)
-    try:
-        enabled = date.fromisoformat(enabled).isoformat()
-    except (ValueError, TypeError):
-        enabled = None
-    try:
-        removed = date.fromisoformat(removed).isoformat() if removed else None
-    except (ValueError, TypeError):
-        removed = None
+    intervals = routing_default.routing_credit_intervals(data_dir=f.SNAPSHOT_DIR)
     cutoff = str(since) if since else (datetime.now() - timedelta(days=days or 30)).strftime('%Y-%m-%d')
-    if enabled:
-        cutoff = max(cutoff, enabled)
     unrestricted = getattr(f, '_routing_unrestricted', None)
     if unrestricted is None:
         unrestricted = f._measure_providers['pricing']._compute_model_routing_savings
-    result = unrestricted(days=days, since=cutoff, **({"until": removed} if removed else {}))
-    result['routing_enabled'] = bool(enabled)
-    if not enabled or (removed and cutoff >= removed):
-        result['realized_cost_usd'] = 0.0
-        result['measured_baseline_realized_cost_usd'] = None
+    valid = []
+    for enabled, removed in intervals:
+        try:
+            enabled = date.fromisoformat(enabled).isoformat()
+            removed = date.fromisoformat(removed).isoformat() if removed else None
+        except (ValueError, TypeError):
+            continue
+        start = max(cutoff, enabled)
+        if not removed or start < removed:
+            valid.append((start, removed))
+    results = [unrestricted(days=days, since=start, **({'until': end} if end else {}))
+               for start, end in valid]
+    result = dict(results[-1]) if results else unrestricted(days=days, since=cutoff)
+    result['routing_enabled'] = bool(intervals)
+    for key in ('realized_cost_usd', 'measured_baseline_realized_cost_usd'):
+        values = [item.get(key) for item in results if item.get(key) is not None]
+        result[key] = sum(values) if values else (0.0 if key == 'realized_cost_usd' else None)
     return result
 
 

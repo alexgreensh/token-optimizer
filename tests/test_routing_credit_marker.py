@@ -31,3 +31,23 @@ def test_routing_credit_stops_at_removal(tmp_path, monkeypatch):
     monkeypatch.setattr(routing_credit._compat, "facade", lambda: facade)
     assert routing_credit.compute(since="2026-11-01")["realized_cost_usd"] == 12
     assert routing_credit.compute(since="2026-11-11")["realized_cost_usd"] == 0
+
+
+def test_credit_keeps_both_enabled_periods(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from _measure import routing_credit, routing_default
+    facade = SimpleNamespace(SNAPSHOT_DIR=tmp_path)
+    day = ['2026-11-01']
+    monkeypatch.setattr(routing_default, '_utc_today', lambda: day[0])
+    monkeypatch.setattr(routing_default, 'managed_instruction_candidates', lambda f: [])
+    routing_default.record_injection(facade)
+    day[0] = '2026-11-10'
+    routing_default.uninstall_routing(facade)
+    day[0] = '2026-11-20'
+    routing_default.record_injection(facade)
+    activity = {'2026-11-05': 12, '2026-11-15': 30, '2026-11-25': 50}
+    facade._routing_unrestricted = lambda days, since, until=None: {
+        'realized_cost_usd': sum(v for d, v in activity.items() if d >= since and (not until or d < until))}
+    monkeypatch.setattr(routing_credit._compat, 'facade', lambda: facade)
+    assert routing_credit.compute(since='2026-11-01')['realized_cost_usd'] == 62
+    assert routing_default.routing_credit_intervals(facade) == [('2026-11-01', '2026-11-10'), ('2026-11-20', None)]

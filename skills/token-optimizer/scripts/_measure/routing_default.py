@@ -146,6 +146,13 @@ def routing_credit_window(f=None, data_dir=None):
     return routing_enabled_since(f, data_dir), routing_disabled_at(f, data_dir)
 
 
+def routing_credit_intervals(f=None, data_dir=None):
+    from . import routing_intervals
+    if data_dir is not None:
+        f = _compat.namespace({'SNAPSHOT_DIR': data_dir})
+    return routing_intervals.intervals(_data_dir(f), routing_injected_at(f), routing_removed_at(f))
+
+
 # ------------------------------------------------------- instruction files
 
 
@@ -214,7 +221,7 @@ def _inject_once(f, notices):
         # The block is present (fresh write or already there): stamp the
         # credit-window start once. "unchanged" still counts -- a missing
         # marker with a live block means the date was lost, not the guidance.
-        _write_marker_once(f, INJECTED_MARKER, _utc_today())
+        record_injection(f)
     if action in ("inserted", "replaced"):
         notices.append(_INJECT_NOTICE.format(name=target.name))
 
@@ -228,6 +235,10 @@ def record_injection(f=None):
     at today; a first injection keeps the earliest date (write-once).
     """
     f = _facade(f)
+    from . import routing_intervals
+    injected, removed = routing_credit_window(f)
+    if not injected or removed:
+        routing_intervals.append(_data_dir(f), {'injected_at': _utc_today()}, injected, removed)
     if _read_marker(f, REMOVED_MARKER) is not None:
         _write_marker(f, INJECTED_MARKER, _utc_today())
     else:
@@ -253,6 +264,10 @@ def uninstall_routing(f=None):
                 removed.append(str(candidate))
     except Exception:
         pass
+    from . import routing_intervals
+    injected, prior_removed = routing_credit_window(f)
+    if injected and not prior_removed:
+        routing_intervals.append(_data_dir(f), {'removed_at': _utc_today()}, injected, prior_removed)
     _write_marker(f, REMOVED_MARKER, _utc_today())
     return {"files": removed}
 

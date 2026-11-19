@@ -30,6 +30,7 @@ broken hook.
 from __future__ import annotations
 
 import os
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -146,11 +147,40 @@ def routing_credit_window(f=None, data_dir=None):
     return routing_enabled_since(f, data_dir), routing_disabled_at(f, data_dir)
 
 
+HISTORY = 'routing_intervals.jsonl'
+
+
+def _intervals(directory, injected=None, removed=None):
+    path = Path(directory) / HISTORY
+    try:
+        events = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line]
+    except FileNotFoundError:
+        return [(injected, removed)] if injected else []
+    result = []
+    for event in events:
+        if event.get('injected_at') and (not result or result[-1][1]):
+            result.append((event['injected_at'], None))
+        elif event.get('removed_at') and result and result[-1][1] is None:
+            result[-1] = (result[-1][0], event['removed_at'])
+    return result
+
+
+def _append_interval(directory, event, injected=None, removed=None):
+    path = Path(directory) / HISTORY
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists() and injected:
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'injected_at': injected}) + '\n')
+            if removed:
+                stream.write(json.dumps({'removed_at': removed}) + '\n')
+    with path.open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(event) + '\n')
+
+
 def routing_credit_intervals(f=None, data_dir=None):
-    from . import routing_intervals
     if data_dir is not None:
         f = _compat.namespace({'SNAPSHOT_DIR': data_dir})
-    return routing_intervals.intervals(_data_dir(f), routing_injected_at(f), routing_removed_at(f))
+    return _intervals(_data_dir(f), routing_injected_at(f), routing_removed_at(f))
 
 
 # ------------------------------------------------------- instruction files
@@ -235,10 +265,9 @@ def record_injection(f=None):
     at today; a first injection keeps the earliest date (write-once).
     """
     f = _facade(f)
-    from . import routing_intervals
     injected, removed = routing_credit_window(f)
     if not injected or removed:
-        routing_intervals.append(_data_dir(f), {'injected_at': _utc_today()}, injected, removed)
+        _append_interval(_data_dir(f), {'injected_at': _utc_today()}, injected, removed)
     if _read_marker(f, REMOVED_MARKER) is not None:
         _write_marker(f, INJECTED_MARKER, _utc_today())
     else:
@@ -264,10 +293,9 @@ def uninstall_routing(f=None):
                 removed.append(str(candidate))
     except Exception:
         pass
-    from . import routing_intervals
     injected, prior_removed = routing_credit_window(f)
     if injected and not prior_removed:
-        routing_intervals.append(_data_dir(f), {'removed_at': _utc_today()}, injected, prior_removed)
+        _append_interval(_data_dir(f), {'removed_at': _utc_today()}, injected, prior_removed)
     _write_marker(f, REMOVED_MARKER, _utc_today())
     return {"files": removed}
 

@@ -5951,6 +5951,7 @@ def _get_merged_savings(days=None, since=None):
     wins — compression_events rows are skipped for that key.
     """
     _measure_facade = _compat.facade()
+    since = since or savings_story.install_anchor()
     savings = _measure_facade._get_savings_summary(days=days, since=since)
     compression = _measure_facade._get_compression_summary(days=days, since=since)
 
@@ -6131,15 +6132,10 @@ def _savings_since_install():
             full["session_effect"] = session_effect.summary(days)
         except Exception:
             full["session_effect"] = {}
-        # Measured = logged runtime + realized structural. Model routing is an
-        # assumption and stays out of every savings total.
+        # Measured = logged runtime + realized structural; routing is separate.
         measured = float(full.get("total_cost_usd", 0) or 0) - savings_story.verbosity_logged(full)
         full_routing = full.get("model_routing") or {}
-        # Since-install routing for every user: a stated pre-TO share
-        # (pretool_baseline.json / TOKEN_OPTIMIZER_BASELINE_OPUS_SHARE) wins,
-        # else the model mix measured at install (snapshot or earliest
-        # history). Same pricing either way; no baseline, a non-Anthropic
-        # runtime, or no Opus in the baseline means $0, never invented Opus.
+        # A usable baseline supplies a separate estimated routing contribution.
         routing_source = savings_story.routing_baseline_kind(full_routing, _measure_facade.detect_runtime())
         stated = routing_source is not None
         stated_routing = max(0.0, float(full_routing.get("realized_cost_usd") or 0)) if stated else 0.0
@@ -6163,7 +6159,7 @@ def _savings_since_install():
         hf = full.get("hint_followed") or {}
         rs = full.get("retrieval_serve") or {}
         avoided = hf if int(hf.get("events") or 0) > 0 else rs
-        estimated += float(avoided.get("cost_saved_usd", 0) or 0) + float(((full.get("structural_detail") or {}).get("estimated") or {}).get("cost_saved_usd") or 0) + stated_routing - max(0.0, float(((full.get("session_effect") or {}).get("overhead") or {}).get("expand_usd") or 0))
+        estimated += float(avoided.get("cost_saved_usd", 0) or 0) + float(((full.get("structural_detail") or {}).get("estimated") or {}).get("cost_saved_usd") or 0) - max(0.0, float(((full.get("session_effect") or {}).get("overhead") or {}).get("expand_usd") or 0))
         # The all-in since install uses the monthly headline's own recipe
         # (logged + repeat reads + estimates); routing stays out of both.
         all_in = None

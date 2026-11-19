@@ -2,19 +2,26 @@
 from contextvars import ContextVar
 
 _SKIP_COMPARISON = ContextVar('skip_since_install_comparison', default=False)
+_INSTALL_ANCHOR = ContextVar('since_install_anchor', default=None)
 
 
 def since_install_summary(builder, days, since=None):
     """Skip an expensive comparison that the since-install card never reads."""
     token = _SKIP_COMPARISON.set(True)
+    anchor_token = _INSTALL_ANCHOR.set(since)
     try:
-        return builder(days=days, since=since)
+        return builder(days=days)
     finally:
+        _INSTALL_ANCHOR.reset(anchor_token)
         _SKIP_COMPARISON.reset(token)
 
 
 def skip_comparison():
     return _SKIP_COMPARISON.get()
+
+
+def install_anchor():
+    return _INSTALL_ANCHOR.get()
 
 def _number(value):
     try:

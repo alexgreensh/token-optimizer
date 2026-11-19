@@ -1761,7 +1761,12 @@ def set_pretool_baseline(args):
         print(f"  [Error] Could not write baseline: {e}")
 
 
-def _compute_model_routing_savings(days=None, since=None, *, until=None):
+def _compute_model_routing_savings(days=30, since=None):
+    from . import routing_credit
+    return routing_credit.compute(days=days, since=since)
+
+
+def _routing_unrestricted(days=None, since=None, *, until=None):
     """Model-routing savings: realized (mix shift vs baseline) + potential (remaining Opus).
 
     REALIZED: compare current model mix against the install-era baseline (snapshot

@@ -44,17 +44,17 @@ def test_baseline_uses_preinstall_window_and_measured_mix(tmp_path, monkeypatch)
     assert fallback['window']['start'] == '2026-07-05'
 
 
-def test_routing_credit_starts_at_injection(tmp_path, monkeypatch):
+def test_routing_credit_starts_at_install(tmp_path, monkeypatch):
     cutoffs = []
     def unrestricted(days, since):
         cutoffs.append(since)
         return {'realized_cost_usd': 12, 'measured_baseline_realized_cost_usd': 4}
     facade = SimpleNamespace(SNAPSHOT_DIR=tmp_path, _routing_unrestricted=unrestricted)
     monkeypatch.setattr(routing_credit._compat, 'facade', lambda: facade)
-    assert routing_credit.compute(since='2026-07-01')['realized_cost_usd'] == 0
+    assert routing_credit.compute(since='2026-07-01')['realized_cost_usd'] == 12
     (tmp_path / 'routing_injected_at').write_text('2026-11-01')
     assert routing_credit.compute(since='2026-07-01')['realized_cost_usd'] == 12
-    assert cutoffs[-1] == '2026-11-01'
+    assert cutoffs == ['2026-07-01', '2026-07-01']
 
 
 def test_legacy_baseline_is_kept_when_history_cannot_be_reanchored(tmp_path, monkeypatch):

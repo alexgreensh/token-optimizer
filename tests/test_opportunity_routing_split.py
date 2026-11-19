@@ -443,10 +443,10 @@ def test_since_install_keeps_routing_out_of_both_sides(measure, monkeypatch):
     long_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     monkeypatch.setattr(measure, "_install_date", lambda: long_ago)
     base = {"total_cost_usd": 10.0}
-    monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30, since=None: {
+    monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30: {
         **base, "model_routing": {"realized_cost_usd": 50.0, "evidence": "measured"}})
     meas = measure._savings_since_install()
-    monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30, since=None: {
+    monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30: {
         **base, "model_routing": {"realized_cost_usd": 50.0, "evidence": "estimated"}})
     est = measure._savings_since_install()
     for out in (meas, est):
@@ -518,7 +518,7 @@ def test_unsplit_usage_is_disclosed_on_both_routing_surfaces(measure, monkeypatc
 def test_since_install_discloses_unsplit_tokens_left_out_of_routing(measure, monkeypatch):
     long_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     monkeypatch.setattr(measure, "_install_date", lambda: long_ago)
-    monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30, since=None: {
+    monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30: {
         "total_cost_usd": 10.0,
         "model_routing": {"realized_cost_usd": 0.0, "evidence": "unavailable",
                           "unsplit_tokens": 4_000_000}})

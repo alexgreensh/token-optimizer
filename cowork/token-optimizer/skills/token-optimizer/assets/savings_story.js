@@ -247,12 +247,15 @@ function savingsStoryHtml(data, extras) {
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">What Token Optimizer saved</h2>' +
       '<div class="st-mega__row st-mega__row--hero">' +
-        (SIh && SIh.all > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-since">' + usd(SIh.all) + '</button>' +
+        (has(mr.routing_enabled) ? (SIh && SIh.all > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-since">' + usd(SIh.all) + '</button>' +
           tipCard('st-tip-since', 'Since ' + esc(SIh.date || 'install'), tipSinceLines) +
-          '<span class="st-mega__unit">saved since you installed' + soFar(soFarAll) + '</span></div>' : '') +
-        '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-total">' + usd(bigTotal) + '</button>' +
+          '<span class="st-mega__unit">saved since you installed' + soFar(soFarAll) + '</span></div>' : '') + '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-total">' + usd(bigTotal) + '</button>' +
           tipCard('st-tip-total', 'What makes up ' + usd(bigTotal), tipTotalLines) +
-          '<span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' +
+          '<span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' : '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-total">' + usd(bigTotal) + '</button>' +
+          tipCard('st-tip-total', 'What makes up ' + usd(bigTotal), tipTotalLines) +
+          '<span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' + (SIh && SIh.all > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-since">' + usd(SIh.all) + '</button>' +
+          tipCard('st-tip-since', 'Since ' + esc(SIh.date || 'install'), tipSinceLines) +
+          '<span class="st-mega__unit">saved since you installed' + soFar(soFarAll) + '</span></div>' : '')) +
         (totalTok > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--tok st-tip" aria-describedby="st-tip-tokens">' + tok(totalTok) + '</button>' +
           tipCard('st-tip-tokens', tok(totalTok) + ' tokens kept out of context', tipTokLines) +
           '<span class="st-mega__unit">tokens kept out of context in ' + days + ' days' + soFar(cp.remeasuring === true) + '</span></div>' : '') +

@@ -94,9 +94,11 @@ def get(freeze=True):
         old = None
     if isinstance(old, dict) and old.get('version') not in f._BASELINE_KNOWN_VERSIONS:
         return None
+    if isinstance(old, dict) and old.get('activity_basis') == 1 and old.get('typical_session') and baseline_provenance.install_evidence(f).get('source') not in ('snapshot', 'first_event'):
+        return old
     state = f._compute_baseline_state()
     if not state or not (state.get('window') or {}).get('elapsed'):
-        if isinstance(old, dict) and old.get('activity_basis') == 1 and f._baseline_is_well_formed(old):
+        if isinstance(old, dict) and old.get('activity_basis') == 1 and old.get('typical_session'):
             return old
         adopted = f._adopt_orphaned_baseline() if old is None else None
         if adopted and adopted.get('activity_basis') == 1:
@@ -114,3 +116,27 @@ def get(freeze=True):
         except OSError:
             pass
     return state
+
+
+def workload_anchor(f, conn, tier):
+    """Price the frozen window when its transcript-based anchor is unavailable."""
+    try:
+        state = json.loads((f.SNAPSHOT_DIR / 'baseline_state.json').read_text(encoding='utf-8'))
+        if state.get('version') != f._BASELINE_VERSION:
+            return None
+        window = state.get('window') or {}
+        start, end = window.get('start'), window.get('end')
+        if not start or not end:
+            return None
+        metrics = f._price_parent_window(conn, 'AND date >= ? AND date <= ?', (start, end), tier)
+        return {'metrics': metrics, 'label': 'baseline (%s to %s)' % (start, end)} if metrics else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def has_install_anchor(f):
+    try:
+        state = json.loads((f.SNAPSHOT_DIR / 'baseline_state.json').read_text(encoding='utf-8'))
+        return state.get('version') == f._BASELINE_VERSION
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False

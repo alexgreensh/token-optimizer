@@ -17,7 +17,10 @@ def compute(days=30, since=None):
     cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days or 30)).strftime('%Y-%m-%d')
     if enabled:
         cutoff = max(cutoff, enabled)
-    result = f._routing_unrestricted(days=days, since=cutoff)
+    unrestricted = getattr(f, '_routing_unrestricted', None)
+    if unrestricted is None:
+        unrestricted = f._measure_providers['pricing']._compute_model_routing_savings
+    result = unrestricted(days=days, since=cutoff)
     result['routing_enabled'] = bool(enabled)
     if not enabled:
         result['realized_cost_usd'] = 0.0

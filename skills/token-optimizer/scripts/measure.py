@@ -7132,7 +7132,7 @@ _pretool_baseline_mix = _measure_compat.bind(_measure_providers['pricing']._pret
 set_pretool_baseline = _measure_compat.bind(_measure_providers['pricing'].set_pretool_baseline, __name__)
 
 
-_routing_unrestricted = _measure_compat.bind(_measure_providers['pricing']._compute_model_routing_savings, __name__, defaults=(30, None,)); _compute_model_routing_savings = _measure_compat.bind(_routing_credit.compute, __name__, defaults=(30, None,))
+_compute_model_routing_savings = _measure_compat.bind(_routing_credit.compute, __name__, defaults=(30, None,))
 
 
 # Share of full-file Writes assumed avoidable via a targeted Edit, and the

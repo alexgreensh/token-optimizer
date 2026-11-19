@@ -117,6 +117,8 @@ def test_potential_excludes_all_cache_classes(m, db):
 
 
 def test_cache_only_has_no_potential_but_realized_is_unchanged(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     db.session(daily={db.day(): {
         OPUS_55: _buckets(read=10_000_000, cc=4_000_000, cc_5m=4_000_000),
@@ -249,6 +251,8 @@ def test_no_session_rows_falls_back_to_the_model_mix(m, db):
 
 
 def test_realized_prices_the_mix_shift_per_class(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     db.session(daily={db.day(): {OPUS_55: _buckets(out=1_000_000), SONNET_55: _buckets(out=1_000_000)}})
     db.mix(opus=1_000_000, sonnet=1_000_000)
@@ -263,6 +267,8 @@ def test_realized_prices_the_mix_shift_per_class(m, db, monkeypatch):
 
 
 def test_realized_survives_a_missing_target_rate(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     monkeypatch.setattr(m, "_routing_target_model", lambda: "no-such-model-1")
     db.session(daily={db.day(): {OPUS_55: _buckets(out=1_000_000), SONNET_55: _buckets(out=1_000_000)}})
@@ -317,6 +323,8 @@ def _out_rates(m):
 
 
 def test_premium_model_is_excluded_from_realized_routing(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     o, s, f = _out_rates(m)
     assert f > o, "fixture assumes the premium model costs more than Opus"
@@ -336,6 +344,8 @@ def test_premium_model_is_excluded_from_realized_routing(m, db, monkeypatch):
 
 
 def test_remaining_mix_is_renormalized_without_premium(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     o, s, _ = _out_rates(m)
     db.session(daily={db.day(): {
@@ -351,6 +361,8 @@ def test_remaining_mix_is_renormalized_without_premium(m, db, monkeypatch):
 
 
 def test_without_a_premium_model_realized_math_is_unchanged(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     o, s, _ = _out_rates(m)
     db.session(daily={db.day(): {OPUS_55: _buckets(out=1_000_000), SONNET_55: _buckets(out=1_000_000)}})
@@ -410,6 +422,8 @@ def test_realized_prices_each_models_own_class_volumes(m, db, monkeypatch):
     # Opus ran output, Sonnet ran fresh input. Baseline cost: 95% Opus on the
     # whole volume + 5% Sonnet = 0.95 * (20 + 4) + 0.05 * (10 + 2). Actual cost:
     # 20 + 2. A global model share applied to every class would invent $18.
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     db.session(daily={db.day(): {OPUS_55: _buckets(out=1_000_000), SONNET_55: _buckets(fresh=1_000_000)}})
     db.mix(opus=1_000_000, sonnet=1_000_000)
@@ -420,6 +434,8 @@ def test_realized_prices_each_models_own_class_volumes(m, db, monkeypatch):
 
 
 def test_cache_read_distribution_is_priced_from_the_models_that_read_it(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     c = _cards(m)
     o, s = c["opus_5_5"], c["sonnet_5_5"]
@@ -445,6 +461,8 @@ def _realized(m, db, usage, baseline=None, mix=None):
 
 
 def test_generation_order_does_not_change_realized(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     usage_a = {OPUS_41: _buckets(out=1_000_000), OPUS_55: _buckets(out=1_000_000), SONNET_55: _buckets(out=2_000_000)}
     usage_b = {OPUS_55: usage_a[OPUS_55], OPUS_41: usage_a[OPUS_41], SONNET_55: usage_a[SONNET_55]}
@@ -465,6 +483,8 @@ def _reset(db):
 
 
 def test_routing_is_valued_on_one_reference_schedule_and_disclosed(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     r = _realized(m, db, {SONNET_55: _buckets(out=1_000_000)})
     c = _cards(m)
@@ -502,6 +522,8 @@ def test_equal_volumes_with_only_generation_ids_changed_give_identical_routing(m
 
 
 def test_actual_generation_cost_is_reported_apart_from_routing(m, db, monkeypatch):
+    m.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    (m.SNAPSHOT_DIR / "routing_injected_at").write_text("2000-01-01", encoding="utf-8")
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     r = _realized(m, db, {OPUS_41: _buckets(out=1_000_000), SONNET_55: _buckets(out=1_000_000)})
     c = _cards(m)

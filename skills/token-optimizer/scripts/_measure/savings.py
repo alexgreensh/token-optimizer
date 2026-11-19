@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, baseline_provenance, own_price_card, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split, upgrade_drain_control
+from . import _compat, install_baseline, baseline_provenance, own_price_card, counted_orphans, counted_subagents, headline, structural_report, savings_story, transcript_stream, token_type_split, upgrade_drain_control
 
 def _counted_event_utc(ts):
     """Convert local event timestamps to UTC, respecting local DST."""
@@ -4726,8 +4726,8 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
                     "ORDER BY ym"
                 ).fetchall() if r and r[0]
             ]
-            pinned = _measure_facade._pinned_workload_anchor()
-            if not pinned:
+            pinned = _measure_facade._pinned_workload_anchor() or install_baseline.workload_anchor(_measure_facade, conn, tier)
+            if not pinned and (len(months) < 2 or install_baseline.has_install_anchor(_measure_facade)):
                 return None
             first_day = conn.execute(
                 "SELECT MIN(date) FROM session_activity WHERE input_tokens IS NOT NULL "

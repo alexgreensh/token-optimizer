@@ -101,3 +101,12 @@ def test_runway_estimate_increment_excludes_tokens_already_counted():
             'nudge_followed': 0.2, 'hint_followed': 0.3, 'resume_lean_verified': 0.4}})
     assert abs(runway.extra_work(facade, conn, 30, {}, estimated_only=True) - 20) < 1e-9
     conn.close()
+
+
+def test_next_session_must_start_within_thirty_minutes():
+    stamp = '2026-01-01T00:00:00+00:00'
+    original = [assistant(1)]
+    near = dict(assistant(2), timestamp='2026-01-01T00:10:01+00:00')
+    late = dict(assistant(2), timestamp='2026-01-03T00:00:01+00:00')
+    assert nudge.classify(original, stamp, [near])[0] == 'followed'
+    assert nudge.classify(original, stamp, [late])[0] == 'ignored'

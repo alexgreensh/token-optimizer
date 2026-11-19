@@ -82,6 +82,10 @@ def classify(rows, emitted, new_rows=None):
     if action is not None:
         return 'followed', action, following
     if new_rows:
+        end = max((_epoch(r.get('timestamp')) or 0 for r in rows), default=0)
+        start = min((_epoch(r.get('timestamp')) or float('inf') for r in new_rows), default=float('inf'))
+        if end and start - end > 1800:
+            return 'ignored', None, []
         return 'followed', new_rows[0].get('timestamp'), [r['message'] for r in new_rows if r.get('type') == 'assistant' and _context(r.get('message') or {}) > 0][:50]
     return 'pending', None, []
 

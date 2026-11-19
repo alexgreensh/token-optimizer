@@ -287,6 +287,13 @@ def _routing(facade):
     """{"on": bool, "since": "YYYY-MM-DD"|None} for routing guidance."""
     marker_state = _routing_markers(facade)
     snap = getattr(facade, "SNAPSHOT_DIR", None)
+    if snap is not None:
+        try:
+            failure = (Path(snap) / 'routing_injection_failure').read_text(encoding='utf-8').strip()
+            if failure:
+                return {'on': False, 'since': None, 'failure': failure[:200]}
+        except OSError:
+            pass
     if snap is not None and _marker_date(Path(snap) / "routing_removed_at"):
         return marker_state
     for name in _ROUTING_MODULES:
@@ -552,7 +559,9 @@ def render(report):
         lines.append("Since install split: not available yet")
 
     routing = report.get("routing") or {}
-    if routing.get("on"):
+    if routing.get("failure"):
+        lines.append("Routing guidance: failed (%s)" % routing["failure"])
+    elif routing.get("on"):
         since = routing.get("since")
         lines.append("Routing guidance: on%s" % (" since " + since if since else ""))
     else:

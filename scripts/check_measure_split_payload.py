@@ -14,8 +14,8 @@ SOURCES = ('__init__.py', '_compat.py') + tuple(name + '.py' for name in DOMAINS
 
 
 SOURCES += ('transcript_stream.py', 'quality_continuity.py', 'quality_checkpoint.py', 'codex_quality.py', 'checkpoint_direction.py', 'checkpoint_retention.py', 'lease_candidate_cleanup.py', 'session_store_spool.py', 'upgrade_drain_control.py', 'compression_scan_checkpoint.py')
-SOURCES += ('status_bar_lock.py', 'session_flush_lock.py', 'context_reset_marker.py', 'holdout_fallback.py', 'dashboard_heal_claim.py', 'config_cache.py', 'setup_observation_cache.py', 'status_bar_refresh.py', 'keepwarm_safety.py', 'keepwarm_economics.py', 'keepwarm_linux.py', 'mod_action_booking.py', 'mod_compaction_booking.py', 'mod_fresh_booking.py', 'nudge_followthrough.py', 'runway_all_in.py', 'routing_default.py', 'mod_action_diagnostics.py', 'mod_action_selftest.py', 'pilot_report.py')
-SOURCES += ('keepwarm_safety.py', 'keepwarm_economics.py', 'keepwarm_linux.py', 'mod_action_booking.py', 'mod_compaction_booking.py', 'mod_fresh_booking.py', 'nudge_followthrough.py', 'runway_all_in.py', 'routing_default.py', 'mod_action_diagnostics.py', 'mod_action_selftest.py')
+SOURCES += ('status_bar_lock.py', 'session_flush_lock.py', 'context_reset_marker.py', 'holdout_fallback.py', 'dashboard_heal_claim.py', 'config_cache.py', 'setup_observation_cache.py', 'status_bar_refresh.py', 'keepwarm_safety.py', 'keepwarm_economics.py', 'keepwarm_linux.py', 'mod_action_booking.py', 'mod_compaction_booking.py', 'mod_fresh_booking.py', 'nudge_followthrough.py', 'runway_all_in.py', 'routing_default.py', 'mod_action_diagnostics.py', 'mod_action_selftest.py', 'install_baseline.py', 'routing_credit.py', 'pilot_report.py')
+SOURCES += ('keepwarm_safety.py', 'keepwarm_economics.py', 'keepwarm_linux.py', 'mod_action_booking.py', 'mod_compaction_booking.py', 'mod_fresh_booking.py', 'nudge_followthrough.py', 'runway_all_in.py', 'routing_default.py', 'mod_action_diagnostics.py', 'mod_action_selftest.py', 'install_baseline.py', 'routing_credit.py')
 
 
 def verify(payload, canonical=REPO):

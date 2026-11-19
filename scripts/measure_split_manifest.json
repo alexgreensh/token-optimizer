@@ -27611,7 +27611,9 @@
     "runway_all_in",
     "mod_action_diagnostics",
     "mod_action_selftest",
-    "pilot_report"
+    "pilot_report",
+    "session_activity",
+    "routing_savings"
   ],
   "facade_binding_overrides": {
     "_compute_model_routing_savings": "_measure_providers['pricing']._compute_model_routing_savings",

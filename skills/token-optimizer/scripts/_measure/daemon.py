@@ -1445,6 +1445,8 @@ def _collect_health_data():
     installed_key = _measure_facade._semver_key(installed_version)
 
     # Flag sessions
+    from . import session_activity as _session_activity
+    _activity_now = _measure_facade.time.time()
     for s in running_sessions:
         if runtime == "codex":
             # Desktop app-server lifetime is not task age or evidence of an
@@ -1455,15 +1457,30 @@ def _collect_health_data():
         session_key = _measure_facade._semver_key(s.get("version"))
         if session_key is not None and installed_key is not None and session_key < installed_key:
             flags.append("OUTDATED")
-        if s["elapsed_seconds"] > 172800:
+        # Claude Code's sessions/<pid>.json record proves real idle time;
+        # process age alone flags busy orchestrators as ZOMBIE. Sessions with
+        # no record (older Claude Code) keep the elapsed-based thresholds.
+        act = _session_activity.activity(s["pid"], _activity_now)
+        s["activity"] = act
+        idle = act.get("idle_seconds")
+        s["idle_seconds"] = idle
+        s["idle_human"] = _measure_facade._format_elapsed(idle) if idle is not None else None
+        if act.get("source") == "none":
+            if s["elapsed_seconds"] > 172800:
+                flags.append("ZOMBIE")
+            elif s["elapsed_seconds"] > 86400:
+                flags.append("STALE")
+            elif system == "Windows" and s["elapsed_seconds"] == 0:
+                # Windows without a creation-time source (wmic gone, PowerShell locked
+                # down) can't threshold STALE/ZOMBIE. Surface explicitly so the user
+                # isn't fooled into thinking all sessions are fresh.
+                flags.append("UNKNOWN_AGE")
+        elif act.get("status") == "busy":
+            flags.append("ACTIVE")
+        elif idle is not None and idle >= 172800:
             flags.append("ZOMBIE")
-        elif s["elapsed_seconds"] > 86400:
+        elif idle is not None and idle >= 86400:
             flags.append("STALE")
-        elif system == "Windows" and s["elapsed_seconds"] == 0:
-            # Windows without a creation-time source (wmic gone, PowerShell locked
-            # down) can't threshold STALE/ZOMBIE. Surface explicitly so the user
-            # isn't fooled into thinking all sessions are fresh.
-            flags.append("UNKNOWN_AGE")
         identity = s.get("identity")
         if identity == "embedded_session":
             flags.append("DESKTOP")
@@ -1475,6 +1492,8 @@ def _collect_health_data():
             flags.append("TERMINAL")
         else:
             flags.append("HEADLESS")
+        if act.get("tmux"):
+            flags.append("ORCHESTRATED")
         s["flags"] = flags
 
     automated = []
@@ -1854,8 +1873,11 @@ def _kill_stale_owns(session):
 
 
 def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None):
-    """Kill Claude Code sessions that have been running longer than threshold_hours.
+    """Kill Claude Code sessions that have been idle longer than threshold_hours.
 
+    Selection uses the session record's idle time when Claude Code provides
+    one (sessions/<pid>.json); process age is only the fallback for sessions
+    with no record. A session whose record says "busy" is never selected.
     Targets abandoned terminal sessions only: a session is terminable when its
     collector positively identified it as a terminal CLI process. Orphans
     (orphan_cli: terminal gone, reparented to init, macOS/Linux) are listed but
@@ -1879,6 +1901,35 @@ def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None
     # carry no owner (see the closing message below).
     running = [s for s in health["running_sessions"] if _measure_facade._kill_stale_owns(s)]
     threshold_seconds = threshold_hours * 3600
+
+    def _age_seconds(s):
+        # Inactivity seconds for selection: the session record's idle time when
+        # Claude Code provides one (attached as s["activity"]), else the
+        # historical elapsed-since-start. None when neither signal exists.
+        act = s.get("activity") or {}
+        if act.get("source") not in (None, "none"):
+            return act.get("idle_seconds")
+        return s.get("elapsed_seconds")
+
+    def _past_threshold(s):
+        age = _age_seconds(s)
+        return age is not None and age > threshold_seconds
+
+    def _record_busy_now(s):
+        # Re-read sessions/<pid>.json at kill time: a session that went busy
+        # between the health snapshot and the signal is never terminated.
+        # Only record-backed sessions are re-checked; sessions with no record
+        # have nothing to consult and keep the elapsed-based behavior.
+        act = s.get("activity") or {}
+        if act.get("source") in (None, "none"):
+            return False
+        from . import session_activity as _session_activity
+        try:
+            fresh = _session_activity.activity(s["pid"])
+        except Exception:
+            return False
+        return fresh.get("status") == "busy"
+
     my_pid = _measure_facade.os.getpid()
     my_ppid = _measure_facade.os.getppid()
     # Never terminate the session this command is running inside of: it is an
@@ -1903,9 +1954,10 @@ def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None
     killable = ("terminal_cli", "orphan_cli") if include_orphans else ("terminal_cli",)
     protected = [s for s in running
                  if s.get("identity", "unknown") not in ("terminal_cli", "orphan_cli")
-                 and s["elapsed_seconds"] > threshold_seconds]
+                 and _past_threshold(s)]
     stale = [s for s in running
-             if s["elapsed_seconds"] > threshold_seconds
+             if _past_threshold(s)
+             and (s.get("activity") or {}).get("status") != "busy"
              and s["pid"] != my_pid
              and s["pid"] != my_ppid
              and s["pid"] not in my_ancestors
@@ -1913,7 +1965,7 @@ def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None
     held_orphans = [] if include_orphans else [
         s for s in running
         if s.get("identity") == "orphan_cli"
-        and s["elapsed_seconds"] > threshold_seconds
+        and _past_threshold(s)
         and s["pid"] not in (my_pid, my_ppid)
         and s["pid"] not in my_ancestors]
 
@@ -1924,7 +1976,7 @@ def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None
 
     if held_orphans:
         n = len(held_orphans)
-        print(f"\n  {n} orphaned session{'s' if n != 1 else ''} (terminal gone, running >{threshold_hours}h) "
+        print(f"\n  {n} orphaned session{'s' if n != 1 else ''} (terminal gone, idle >{threshold_hours}h) "
               f"{'were' if n != 1 else 'was'} left alone. Orphans are only ended on request:")
         print(f"    {_measure_facade._measure_cli('kill-stale', '--include-orphans', '--hours', str(threshold_hours))}   (add --dry-run to preview)")
 
@@ -1936,10 +1988,12 @@ def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None
         print(f"  {len(running)} active session{'s' if len(running) != 1 else ''}, all within threshold.")
         return
 
-    print(f"\n  Found {len(stale)} stale session{'s' if len(stale) != 1 else ''} (running >{threshold_hours}h):\n")
+    print(f"\n  Found {len(stale)} stale session{'s' if len(stale) != 1 else ''} (idle >{threshold_hours}h):\n")
     for s in stale:
         flags = " ".join(s.get("flags", []))
-        print(f"    PID {s['pid']:<7d}  {s['elapsed_human']:>10s}  v{s.get('version') or '?':<10s}  {flags}")
+        idle = s.get("idle_human")
+        idle_col = f"  idle {idle}" if idle else ""
+        print(f"    PID {s['pid']:<7d}  {s['elapsed_human']:>10s}{idle_col}  v{s.get('version') or '?':<10s}  {flags}")
 
     if dry_run:
         print(f"\n  Dry run. Would kill {len(stale)} process{'es' if len(stale) != 1 else ''}.")
@@ -1959,6 +2013,9 @@ def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None
         if not _measure_facade._revalidate_terminal_cli(s, identity=s.get("identity", "unknown")):
             print(f"    PID {s['pid']} skipped: identity changed or could not be re-verified.")
             continue
+        if _record_busy_now(s):
+            print(f"    PID {s['pid']} skipped: the session is busy now.")
+            continue
         try:
             _measure_facade.os.kill(s["pid"], signal.SIGTERM)
             killed += 1
@@ -1974,7 +2031,7 @@ def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None
 
     print(f"\n  Terminated {killed} stale session{'s' if killed != 1 else ''}.")
     if killed > 0:
-        print(f"  These were Claude Code processes running >{threshold_hours}h.")
+        print(f"  These were Claude Code processes idle >{threshold_hours}h.")
         if _measure_facade.os.name == "nt":
             # No owner column in the Windows process inventory (a GetOwner call per
             # process is a new slow CIM round trip), so do not claim an account filter.

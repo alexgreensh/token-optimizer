@@ -19782,6 +19782,8 @@
     "runway_all_in": "shared",
     "mod_action_diagnostics": "shared",
     "mod_action_selftest": "shared",
-    "pilot_report": "shared"
+    "pilot_report": "shared",
+    "session_activity": "shared",
+    "routing_savings": "shared"
   }
 }

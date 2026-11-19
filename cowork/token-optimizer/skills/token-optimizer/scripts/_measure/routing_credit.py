@@ -15,7 +15,8 @@ def compute(days=30, since=None):
     f = _compat.facade()
     unrestricted = getattr(f, '_routing_unrestricted', None)
     if unrestricted is None:
-        unrestricted = f._measure_providers['pricing']._routing_unrestricted
+        from . import routing_savings
+        unrestricted = routing_savings.unrestricted
     return unrestricted(days=days, since=since)
 
 

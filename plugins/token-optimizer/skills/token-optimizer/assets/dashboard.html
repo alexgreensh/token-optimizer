@@ -1526,6 +1526,16 @@ input:checked + .slider:before {
   border: 1px solid var(--c-waste, #f87171);
   background: var(--c-waste-fill, rgba(248,113,113,0.1));
 }
+.flag-badge.active {
+  color: var(--c-savings, #4ade80);
+  border: 1px solid var(--c-savings, #4ade80);
+  background: var(--c-savings-fill, rgba(74,222,128,0.1));
+}
+.flag-badge.orchestrated {
+  color: var(--c-info, #60a5fa);
+  border: 1px solid var(--c-info, #60a5fa);
+  background: rgba(96,165,250,0.1);
+}
 
 /* ========== VERSION HERO ========== */
 .version-hero {
@@ -5254,11 +5264,11 @@ var DB = (function() {
           '<div style="font-weight:500;color:var(--c-waste-strong, #ef4444)">' + staleCount + ' stale session' + (staleCount !== 1 ? 's' : '') + ' detected</div>' +
           '<button class="copy-fix-btn" id="kill-stale-btn" data-label="' + killLabel + '" style="background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">' + killLabel + '</button></div>' +
           '<div style="font-size:13px;color:var(--c-text-dim);line-height:1.5">' +
-          'These ' + esc(data.runtime_label || 'Claude Code') + ' sessions have been running 24+ hours. ' +
+          'These ' + esc(data.runtime_label || 'Claude Code') + ' sessions have been idle for 24+ hours. ' +
           'Some may be your active terminals (marked TERMINAL), others may be forgotten or headless. ' +
           'Check the status column before killing. Only kill sessions you are not actively using.<br><br>' +
           '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 1:</span> ' + (taggedInventory ? 'Click "Copy Preview Command" and paste it in any terminal. It only lists what would be ended; run Option 2 to end it.' : 'Click "Copy Kill Command" and paste in any terminal.') + '<br>' +
-          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 2:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">' + cliCmd + ' kill-stale</code> to auto-terminate terminal sessions running &gt;12 hours (desktop-hosted and unverified sessions are never terminated).<br>' +
+          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 2:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">' + cliCmd + ' kill-stale</code> to auto-terminate terminal sessions idle &gt;12 hours (busy sessions, desktop-hosted and unverified sessions are never terminated).<br>' +
           '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 3:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">' + cliCmd + ' kill-stale --dry-run</code> to preview without killing.' +
           '</div></div>';
       }
@@ -5272,7 +5282,7 @@ var DB = (function() {
       }
 
       html += '<table class="session-table"><thead><tr>' +
-        '<th>PID</th><th>Started</th><th>Elapsed</th>' + (isCodex ? '' : '<th>Version</th>') + '<th>Status</th><th></th>' +
+        '<th>PID</th><th>Started</th><th>Elapsed</th><th>Idle</th>' + (isCodex ? '' : '<th>Version</th>') + '<th>Status</th><th></th>' +
         '</tr></thead><tbody>';
       sessions.forEach(function(s) {
         var flagHtml = '';
@@ -5289,6 +5299,7 @@ var DB = (function() {
           '<td>' + s.pid + '</td>' +
           '<td>' + esc((s.started || '').slice(0, 20)) + '</td>' +
           '<td>' + esc(s.elapsed_human || '?') + '</td>' +
+          '<td>' + esc(s.idle_human || '—') + '</td>' +
           (isCodex ? '' : '<td>' + esc(s.version || 'unknown') + '</td>') +
           '<td>' + flagHtml + (flags.indexOf('ORPHAN') !== -1 ? '<div style="font-size:11px;color:var(--c-text-dim);margin-top:2px">terminal gone; started ' + esc(s.elapsed_human || '?') + ' ago</div>' : '') + '</td>' +
           '<td>' + killBtn + '</td>' +
@@ -5299,8 +5310,10 @@ var DB = (function() {
       html += '<div style="font-size:11px;color:var(--c-text-dim);margin-top:var(--s-2);line-height:1.6;font-family:var(--font-mono)">' +
         '<span class="flag-badge terminal" style="font-size:10px">TERMINAL</span> = attached to a terminal tab (your active sessions) &nbsp; ' +
         '<span class="flag-badge" style="font-size:10px;background:rgba(125,140,163,0.2);color:var(--c-text-dim)">HEADLESS</span> = no terminal (automation/background) &nbsp; ' +
-        '<span class="flag-badge stale" style="font-size:10px">STALE</span> = running 24h+ &nbsp; ' +
-        '<span class="flag-badge zombie" style="font-size:10px">ZOMBIE</span> = running 48h+' +
+        '<span class="flag-badge stale" style="font-size:10px">STALE</span> = idle 24h+ &nbsp; ' +
+        '<span class="flag-badge zombie" style="font-size:10px">ZOMBIE</span> = idle 48h+ &nbsp; ' +
+        '<span class="flag-badge active" style="font-size:10px">ACTIVE</span> = working now &nbsp; ' +
+        '<span class="flag-badge orchestrated" style="font-size:10px">ORCHESTRATED</span> = tmux/outsourcerer-managed' +
         (isCodex ? '' : ' &nbsp; <span class="flag-badge desktop" style="font-size:10px">DESKTOP</span> = hosted by the Claude desktop app (never auto-terminated)' +
           ' &nbsp; <span class="flag-badge unverified" style="font-size:10px">UNVERIFIED</span> = process identity could not be read (never auto-terminated)' +
           ' &nbsp; <span class="flag-badge orphan" style="font-size:10px">ORPHAN</span> = terminal gone (only ended with <code>kill-stale --include-orphans</code>)') +
@@ -7376,8 +7389,8 @@ function getSampleData() {
     health: {
       installed_version: '2.1.63',
       running_sessions: [
-        { pid: 48201, started: 'Sat Mar 01 10:18:43 2026', elapsed_seconds: 180000, elapsed_human: '2d 8h', version: '2.1.60', command: 'claude', flags: ['OUTDATED', 'ZOMBIE'] },
-        { pid: 51932, started: 'Sun Mar 02 14:10:59 2026', elapsed_seconds: 95000, elapsed_human: '1d 2h', version: '2.1.63', command: 'claude', flags: ['STALE'] }
+        { pid: 48201, started: 'Sat Mar 01 10:18:43 2026', elapsed_seconds: 180000, elapsed_human: '2d 8h', idle_seconds: 183600, idle_human: '2d 3h', version: '2.1.60', command: 'claude', flags: ['OUTDATED', 'ZOMBIE'] },
+        { pid: 51932, started: 'Sun Mar 02 14:10:59 2026', elapsed_seconds: 95000, elapsed_human: '1d 2h', idle_seconds: 98000, idle_human: '1d 3h', version: '2.1.63', command: 'claude', flags: ['STALE', 'ORCHESTRATED'] }
       ],
       automated: [
         '-\t0\tcom.anthropic.claudefordesktop.ShipIt',

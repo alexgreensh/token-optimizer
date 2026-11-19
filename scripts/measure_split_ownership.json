@@ -19773,5 +19773,15 @@
   "mutation_index_owner": 0,
   "shared_owner": 0,
   "worker_instruction": "Other workers are active. Do not revert their edits. Edit only assigned definitions, destination modules, test files, and mutation fragments; send shared-file changes to the integrator.",
-  "rule": "Only the assigned owner edits a shared test; send other changes to the integrator."
+  "rule": "Only the assigned owner edits a shared test; send other changes to the integrator.",
+  "helper_modules": {
+    "install_baseline": "shared",
+    "routing_credit": "shared",
+    "routing_default": "shared",
+    "nudge_followthrough": "shared",
+    "runway_all_in": "shared",
+    "mod_action_diagnostics": "shared",
+    "mod_action_selftest": "shared",
+    "pilot_report": "shared"
+  }
 }

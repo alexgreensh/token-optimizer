@@ -25,9 +25,10 @@ def check(root=split.REPO):
     package = scripts / '_measure'
     manifest = split.read_manifest(root / 'scripts/measure_split_manifest.json')
     records = {row['name']: row for row in manifest['symbols']}
+    helpers = HELPERS | {name + '.py' for name in manifest['helper_modules']}
     if 'dispatch' in manifest:
         records['__main__'] = manifest['dispatch']
-    expected_files = {'__init__.py', '_compat.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py'} | HELPERS | {name + '.py' for name in split.DOMAINS}
+    expected_files = {'__init__.py', '_compat.py', 'dashboard_history.py', 'weekly_activity.py', 'headline.py'} | helpers | {name + '.py' for name in split.DOMAINS}
     actual_files = {path.name for path in package.glob('*.py')}
     errors = []
     if actual_files != expected_files:
@@ -61,14 +62,14 @@ def check(root=split.REPO):
         limit = 200 if path.name == '_compat.py' else PASS1_PROVIDER_CEILING
         if len(text.splitlines()) > limit:
             errors.append(f'{path.name}: exceeds {limit} lines')
-        if path.name.startswith('_') or path.name in HELPERS:
+        if path.name.startswith('_') or path.name in helpers:
             continue
         domain_tree = ast.parse(text)
         for node in ast.walk(domain_tree):
             if isinstance(node, ast.Import) and any(alias.name == 'measure' or alias.name.startswith('_measure.') for alias in node.names):
                 errors.append(f'{path.name}: direct domain/facade import at line {node.lineno}')
             if isinstance(node, ast.ImportFrom) and (node.module == 'measure' or node.module and node.module.startswith('_measure') or
-                    node.level and (node.module not in (None, '_compat') or any(alias.name not in ('_compat',) + HELPER_NAMES for alias in node.names))):
+                    node.level and (node.module not in (None, '_compat') or any(alias.name not in ('_compat',) + HELPER_NAMES + tuple(manifest['helper_modules']) for alias in node.names))):
                 errors.append(f'{path.name}: direct domain/facade import at line {node.lineno}')
         for node in domain_tree.body:
             if isinstance(node, split.DEFINITION):
@@ -80,7 +81,7 @@ def check(root=split.REPO):
             elif isinstance(node, ast.ImportFrom):
                 allowed = (node.module == '__future__' or
                            node.level == 1 and node.module is None and
-                           all(a.name in ('_compat',) + HELPER_NAMES for a in node.names))
+                           all(a.name in ('_compat',) + HELPER_NAMES + tuple(manifest['helper_modules']) for a in node.names))
                 if not allowed or any(a.name == '*' for a in node.names):
                     errors.append(f'{path.name}: direct domain/facade import')
             elif not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
@@ -91,7 +92,7 @@ def check(root=split.REPO):
         if name in moved and name not in bindings and name != '__main__':
             errors.append(f'{name}: moved body has no facade binding')
         if name in bindings:
-            expected = f"_measure_providers[{records[name]['module']!r}].{name}"
+            expected = manifest['facade_binding_overrides'].get(name, f"_measure_providers[{records[name]['module']!r}].{name}")
             if bindings[name] != expected:
                 errors.append(f'{name}: wrong facade binding, expected {expected}')
         if name in bindings and name not in moved:

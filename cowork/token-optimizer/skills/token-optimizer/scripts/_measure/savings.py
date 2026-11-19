@@ -3507,99 +3507,7 @@ def _compute_baseline_state():
     opus_share, opus_share_source, window {start,end,sessions_used,sessions_total,
     elapsed}, method, winsor_pct, structural_overhead_tokens, source}.
     """
-    _measure_facade = _compat.facade()
-    try:
-        if not _measure_facade.TRENDS_DB.exists():
-            return None
-        conn = _measure_facade._init_trends_db()
-        _measure_facade.ensure_activity_view(conn)
-        try:
-            rows = conn.execute(
-                "SELECT date, id, input_tokens, output_tokens, cache_create_5m_tokens, "
-                "cache_create_1h_tokens, cache_hit_rate FROM session_activity "
-                # Human sessions only -- the baseline anchor must count the same population
-                # as _baseline_progress (the "ready" signal) and _mix_from_session_rows, so
-                # heavy sidechain/subagent volume can't inflate the frozen typical-session
-                # vector or qualify the window before the human-session count is actually met.
-                # Quality filter REMOVED (audit 2026-08-29): the filter inflated the
-                # frozen anchor by 69% on the real ledger (mean input 28.4M filtered vs
-                # 16.8M all). The winsorization already trims outliers; the filter was a
-                # second population-shrinking gate that hid the real session-count collapse.
-                "WHERE input_tokens IS NOT NULL AND COALESCE(is_sidechain, 0) = 0 "
-                "ORDER BY date, id"
-            ).fetchall()
-        finally:
-            conn.close()
-        if not rows:
-            return None
-        first = _measure_facade.datetime.fromisoformat(str(rows[0][0])[:10])
-        win_start = first + _measure_facade.timedelta(days=_measure_facade._BASELINE_ONBOARDING_DAYS)
-        win_end = win_start + _measure_facade.timedelta(days=_measure_facade._BASELINE_EARLY_WINDOW_DAYS)
-        vectors = {}
-        for row in rows:
-            if not win_start <= _measure_facade.datetime.fromisoformat(str(row[0])[:10]) < win_end:
-                continue
-            acc = vectors.setdefault(row[1], [0.0] * 5)
-            for index in range(4):
-                acc[index] += row[index + 2] or 0
-            acc[4] += (row[2] or 0) * (row[6] or 0)
-        window_rows = [(*v[:4], v[4] / v[0] if v[0] else 0.0) for v in vectors.values()]
-        if len(window_rows) < _measure_facade._BASELINE_MIN_STABLE_SESSIONS:
-            return None
-        vec, used, total = _measure_facade._winsorized_mean_session(window_rows)
-        # Guard against a corrupt DB row poisoning the frozen anchor with a non-finite
-        # value (json would persist `Infinity`, then int() raises later). Bail to None.
-        if not all(_measure_facade.math.isfinite(x) for x in vec):
-            return None
-
-        # Pre-TO Opus share: explicit per-user baseline if set, else the earliest measured
-        # mix over the SAME window as the token vector (aligned so the blend is honest;
-        # a 14-day mix on a 30-day vector would overstate if the user routed off Opus in
-        # weeks 3-4).
-        baseline = _measure_facade._pretool_baseline_mix()
-        if baseline:
-            model_shares = dict(baseline)  # {"opus": x, "sonnet": 1-x}
-            opus_share = float(baseline.get("opus", 0.0))
-            opus_source = "pretool_baseline"
-        else:
-            early = _measure_facade._earliest_model_mix(lookback_days=_measure_facade._BASELINE_EARLY_WINDOW_DAYS)
-            model_shares = dict((early.get("shares") or {})) if early else {}
-            opus_share = float(model_shares.get("opus", 0.0))
-            opus_source = "robust_earliest"
-
-        struct_overhead = 0
-        try:
-            snap = _measure_facade.SNAPSHOT_DIR / "snapshot_before.json"
-            if snap.exists():
-                struct_overhead = int(
-                    _measure_facade.json.loads(snap.read_text(encoding="utf-8"))
-                    .get("totals", {}).get("estimated_total", 0) or 0
-                )
-        except (_measure_facade.json.JSONDecodeError, OSError, ValueError, TypeError):
-            struct_overhead = 0
-
-        return {
-            "version": _measure_facade._BASELINE_VERSION,
-            "activity_basis": 1,
-            "typical_session": {
-                "fresh_input": round(vec[0], 1), "cache_write": round(vec[1], 1),
-                "cache_read": round(vec[2], 1), "output": round(vec[3], 1),
-            },
-            "opus_share": round(opus_share, 4),
-            "opus_share_source": opus_source,
-            "model_shares": {k: round(float(v), 4) for k, v in model_shares.items() if v},
-            "window": {
-                "start": win_start.strftime("%Y-%m-%d"),
-                "end": win_end.strftime("%Y-%m-%d"),
-                "sessions_used": used, "sessions_total": total,
-                "elapsed": _measure_facade.datetime.now() >= win_end,
-            },
-            "method": "winsorized_mean",
-            "winsor_pct": _measure_facade._BASELINE_WINSOR_PCT,
-            "structural_overhead_tokens": struct_overhead,
-        }
-    except (_measure_facade.sqlite3.Error, OSError, ValueError, TypeError, OverflowError):
-        return None
+    return install_baseline.compute()
 
 
 def _write_baseline_state(path, data):
@@ -3831,104 +3739,7 @@ def _get_baseline_state(freeze=None):
     then returns the live computation (or None), so a new user sees no transformation
     until a real, stable anchor exists. Never raises.
     """
-    _measure_facade = _compat.facade()
-    bpath = _measure_facade.SNAPSHOT_DIR / "baseline_state.json"
-    incumbent = None
-    try:
-        if bpath.exists():
-            data = _measure_facade.json.loads(bpath.read_text(encoding="utf-8"))
-            if (isinstance(data, dict) and data.get("typical_session")
-                    and data.get("version") == _measure_facade._BASELINE_VERSION and data.get("activity_basis") == 1):
-                return data
-            # Never unlink. The old code deleted a mismatched baseline and
-            # re-captured, so a single bump of _BASELINE_VERSION would destroy EVERY
-            # user's only record of their pre-TO cost, on our release schedule, with
-            # no way back. Migrate forward when we can; otherwise RETAIN the file
-            # under a versioned name so it stays recoverable and can still act as
-            # the incumbent for the shrink guard below.
-            if isinstance(data, dict):
-                migrated = _measure_facade._migrate_baseline(data) if data.get("activity_basis") == 1 else None
-                if migrated is not None and _measure_facade._baseline_is_well_formed(migrated):
-                    try:
-                        _measure_facade._write_baseline_state(bpath, migrated)
-                    except OSError:
-                        pass
-                    return migrated
-                if _measure_facade._baseline_is_well_formed(data) and data.get("activity_basis") == 1:
-                    incumbent = data
-                try:
-                    retained = bpath.with_name(
-                        f"baseline_state.v{data.get('version', 'unknown')}.json")
-                    if not retained.exists():
-                        _measure_facade.shutil.copy2(str(bpath), str(retained))
-                except (OSError, _measure_facade.shutil.Error):
-                    pass
-    except (_measure_facade.json.JSONDecodeError, OSError, ValueError):
-        pass
-
-    # Before re-capturing from scratch, look for an orphaned baseline left
-    # behind by a previous plugin identity. A re-install under a new marketplace id
-    # gets a fresh data dir; the old anchor is stranded, not deleted. Re-capturing
-    # months later reads a thinned history and yields a smaller, wronger anchor.
-    adopted = _measure_facade._adopt_orphaned_baseline()
-    if adopted is not None and adopted.get("activity_basis") == 1:
-        if incumbent is not None and _measure_facade._baseline_shrink_is_material(incumbent, adopted):
-            adopted = None          # never adopt DOWNWARD past the guard
-        else:
-            try:
-                _measure_facade._write_baseline_state(bpath, adopted)
-            except OSError:
-                pass
-            return adopted
-
-    state = _measure_facade._compute_baseline_state()
-    if not state:
-        return None
-
-    # Refuse to silently replace a good anchor with a materially smaller one.
-    # A shrinking baseline means the HISTORY thinned, not that the user got cheaper.
-    # Keep the incumbent, park the candidate beside it, and surface it rather than
-    # letting the reported saving quietly collapse.
-    if incumbent is not None and _measure_facade._baseline_shrink_is_material(incumbent, state):
-        try:
-            cand = bpath.with_name("baseline_state.candidate.json")
-            _measure_facade._write_baseline_state(cand, dict(
-                state,
-                rejected_reason="materially smaller than the existing baseline",
-                rejected_at=_measure_facade.datetime.now().isoformat(),
-                incumbent_cost_usd=round(_measure_facade._baseline_priced_cost(incumbent), 4),
-                candidate_cost_usd=round(_measure_facade._baseline_priced_cost(state), 4),
-            ))
-        except OSError:
-            pass
-        return incumbent
-    if freeze and (state.get("window") or {}).get("elapsed"):
-        try:
-            _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-            frozen = dict(state)
-            frozen["captured_at"] = _measure_facade.datetime.now().isoformat()
-            frozen["source"] = "frozen_from_history"
-            # Atomic write: unique temp via mkstemp + os.replace, with try/finally
-            # cleanup so a crash mid-write never leaks a stale temp file (matches the
-            # config-writer pattern used elsewhere in this file).
-            tmp_fd, tmp_path = _measure_facade.tempfile.mkstemp(
-                dir=str(_measure_facade.SNAPSHOT_DIR), prefix=".baseline_state-", suffix=".tmp")
-            try:
-                with _measure_facade.os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                    _measure_facade.json.dump(frozen, f, indent=2, default=str)
-                _measure_facade.os.chmod(tmp_path, 0o600)
-                _measure_facade.os.replace(tmp_path, str(bpath))
-                tmp_path = None
-            finally:
-                if tmp_path is not None:
-                    try:
-                        _measure_facade.os.unlink(tmp_path)
-                    except OSError:
-                        pass
-            return frozen
-        except OSError:
-            return state
-    return state
+    return install_baseline.get(True if freeze is None else freeze)
 
 
 def _cost_per_session(fi, cw, cr, out, shares, tier):
@@ -4724,7 +4535,8 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
                     "ORDER BY ym"
                 ).fetchall() if r and r[0]
             ]
-            pinned = _measure_facade._pinned_workload_anchor() or install_baseline.workload_anchor(_measure_facade, conn, tier)
+            pinned = _measure_facade._pinned_workload_anchor()
+            pinned = pinned or install_baseline.workload_anchor(_measure_facade, conn, tier)
             if not pinned and (len(months) < 2 or install_baseline.has_install_anchor(_measure_facade)):
                 return None
             first_day = conn.execute(

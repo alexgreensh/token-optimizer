@@ -7255,7 +7255,7 @@ _dashboard_spent_token_basis = _measure_compat.bind(_measure_providers['savings'
 _winsorized_mean_session = _measure_compat.bind(_measure_providers['savings']._winsorized_mean_session, __name__, defaults=(_BASELINE_WINSOR_PCT,))
 
 
-_compute_baseline_state = _measure_compat.bind(_measure_providers['install_baseline'].compute, __name__)
+_compute_baseline_state = _measure_compat.bind(_measure_providers['savings']._compute_baseline_state, __name__)
 
 
 _BASELINE_KNOWN_VERSIONS = (3, 4, 5)   # shapes this build can read or migrate forward
@@ -7290,7 +7290,7 @@ _adopt_orphaned_baseline = _measure_compat.bind(_measure_providers['savings']._a
 _baseline_shrink_is_material = _measure_compat.bind(_measure_providers['savings']._baseline_shrink_is_material, __name__)
 
 
-_get_baseline_state = _measure_compat.bind(_measure_providers['install_baseline'].get, __name__, defaults=(True,))
+_get_baseline_state = _measure_compat.bind(_measure_providers['savings']._get_baseline_state, __name__, defaults=(True,))
 
 
 _cost_per_session = _measure_compat.bind(_measure_providers['savings']._cost_per_session, __name__)

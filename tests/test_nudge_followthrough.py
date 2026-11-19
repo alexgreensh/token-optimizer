@@ -151,3 +151,11 @@ def test_resolver_failure_is_logged_and_event_stays_pending(tmp_path, monkeypatc
     line = (tmp_path / 'nudge-resolve.log').read_text()
     assert 'PermissionError' in line and 'private transcript path' not in line
     conn.close()
+
+
+def test_new_session_streamed_rows_count_once():
+    stamp = '2026-01-01T00:00:00+00:00'
+    row = assistant(2)
+    status, _, requests = nudge.classify([assistant(1)], stamp, [row, row, assistant(3)])
+    assert status == 'followed'
+    assert [request['id'] for request in requests] == ['2', '3']

@@ -69,6 +69,21 @@ def _context(message):
     return sum(int(usage.get(k) or 0) for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
 
 
+
+def _requests(rows):
+    seen, requests = set(), []
+    for row in rows:
+        if row.get('type') != 'assistant':
+            continue
+        message = row.get('message') or {}
+        ident = message.get('id') or row.get('uuid')
+        if ident not in seen and _context(message) > 0:
+            seen.add(ident)
+            requests.append(message)
+            if len(requests) == 50:
+                break
+    return requests
+
 def classify(rows, emitted, new_rows=None):
     """Return status, action timestamp and observed post-action requests."""
     stamp = _epoch(emitted)
@@ -108,7 +123,7 @@ def classify(rows, emitted, new_rows=None):
         start = min((_epoch(r.get('timestamp')) or float('inf') for r in new_rows), default=float('inf'))
         if end and start - end > 1800:
             return 'ignored', None, []
-        return 'followed', new_rows[0].get('timestamp'), [r['message'] for r in new_rows if r.get('type') == 'assistant' and _context(r.get('message') or {}) > 0][:50]
+        return 'followed', new_rows[0].get('timestamp'), _requests(new_rows)
     return 'pending', None, []
 
 
@@ -165,7 +180,7 @@ def resolve(facade, conn=None):
                     if next_rows and status == 'pending':
                         status, action, requests = classify(rows, ts, next_rows)
                     elif next_rows:
-                        requests = [r['message'] for r in next_rows if r.get('type') == 'assistant' and _context(r.get('message') or {}) > 0][:50]
+                        requests = _requests(next_rows)
                 prepared[ident] = status, action, requests
             conn.execute('BEGIN IMMEDIATE')
             claimed = set()

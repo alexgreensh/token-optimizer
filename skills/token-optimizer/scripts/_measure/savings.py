@@ -3688,13 +3688,13 @@ def _migrate_baseline(data):
     v = data.get("version")
     if v == _measure_facade._BASELINE_VERSION:
         return dict(data)
-    if v == 3:
+    if v in (3, 4):
         # v3 -> v4 added `structural_overhead_tokens`. Absent means "not measured
         # at capture time", which is 0 contribution, NOT a smaller baseline.
         out = dict(data)
         out.setdefault("structural_overhead_tokens", 0)
         out["version"] = _measure_facade._BASELINE_VERSION
-        out["migrated_from_version"] = 3
+        out["migrated_from_version"] = v
         return out
     return None
 
@@ -4530,7 +4530,7 @@ def _pinned_workload_anchor():
         m = data.get("metrics") if isinstance(data, dict) else None
         if (data.get("status") == "pinned" and data.get("activity_basis") == 1
                 and isinstance(m, dict)
-                and data.get("rates") == _measure_facade._WEIGHT_POOL_FLAT_RATES and all(d in str(data.get("label") or "") for d in (_measure_facade._pretool_window() or ("missing-start", "missing-end")))
+                and data.get("rates") == _measure_facade._WEIGHT_POOL_FLAT_RATES and (not _measure_facade._pretool_window() or all(d in str(data.get("label") or "") for d in _measure_facade._pretool_window()))
                 and all(isinstance(m.get(k), (int, float)) and _measure_facade.math.isfinite(m[k]) and m[k] >= 0
                         for k in ("sessions", "usd", "tokens", "flat_usd", "api_calls", "messages"))
                 and m["sessions"] >= _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS
@@ -5137,7 +5137,7 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         # Anthropic runtime; with none, the current mix. A frozen share is trusted as-is;
         # a non-Anthropic user is priced at their own measured mix, never fabricated Opus.
         anthropic = _measure_facade.detect_runtime() not in {"codex", "hermes", "copilot", "opencode", "cursor", "antigravity", "grok"}
-        before_shares = dict(baseline.get("model_shares") or after_shares)
+        before_shares = dict((baseline.get("model_shares") if anthropic else None) or after_shares)
         baseline_opus_share = float(before_shares.get("opus", 0.0))
         # Baseline cache-hit pattern, defined over the FRESH+CACHE_READ POOL only (cache
         # write excluded). C1/C2: the counterfactual redistributes caching over the pool,

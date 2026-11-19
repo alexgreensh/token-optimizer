@@ -49,6 +49,17 @@ def compute():
                     (start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))).fetchall()
             except f.sqlite3.Error:
                 model_rows = []
+            if not model_rows:
+                try:
+                    raw_rows = conn.execute(
+                        'SELECT model_usage_json, all_model_usage_json FROM session_activity '
+                        'WHERE date >= ? AND date < ? AND COALESCE(is_sidechain,0)=0',
+                        (start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))).fetchall()
+                    for parent, combined in raw_rows:
+                        usage = f._safe_json_dict(parent) or f._safe_json_dict(combined)
+                        model_rows.extend(usage.items())
+                except f.sqlite3.Error:
+                    pass
         finally:
             conn.close()
         totals = {}
@@ -81,9 +92,16 @@ def get(freeze=True):
             return old
     except (OSError, ValueError, TypeError):
         old = None
-    state = compute()
-    if not state:
+    if isinstance(old, dict) and old.get('version') not in f._BASELINE_KNOWN_VERSIONS:
         return None
+    state = f._compute_baseline_state()
+    if not state or not (state.get('window') or {}).get('elapsed'):
+        if isinstance(old, dict) and old.get('activity_basis') == 1 and f._baseline_is_well_formed(old):
+            return old
+        adopted = f._adopt_orphaned_baseline() if old is None else None
+        if adopted and adopted.get('activity_basis') == 1:
+            return adopted
+        return state
     if freeze and state['window']['elapsed']:
         try:
             if isinstance(old, dict):

@@ -206,7 +206,7 @@ def transformation(facade, baseline, weight_pool):
         except (TypeError, ValueError):
             stated, share = False, 0.0
         cov.update(anchor=anchor, pending_anchor=pending,
-                   mix_source="stated" if stated else ("measured" if baseline.get("model_shares") else "current_mix"))
+                   mix_source="stated" if stated else ("measured" if baseline.get("model_shares") or share > 0 else "current_mix"))
         cov["lead"], cov["note"] = _transformation_copy(cov)
         if cov["coverage"] in ("post_install", "partial"):
             # The tool ran in the baseline month, so the comparison is with that

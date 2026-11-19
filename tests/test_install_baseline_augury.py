@@ -55,3 +55,16 @@ def test_routing_credit_starts_at_injection(tmp_path, monkeypatch):
     (tmp_path / 'routing_injected_at').write_text('2026-11-01')
     assert routing_credit.compute(since='2026-07-01')['realized_cost_usd'] == 12
     assert cutoffs[-1] == '2026-11-01'
+
+
+def test_legacy_baseline_is_kept_when_history_cannot_be_reanchored(tmp_path, monkeypatch):
+    import json
+    old = {'version': 4, 'activity_basis': 1, 'typical_session': {'fresh_input': 1},
+           'model_shares': {'opus': 1}}
+    (tmp_path / 'baseline_state.json').write_text(json.dumps(old))
+    facade = SimpleNamespace(SNAPSHOT_DIR=tmp_path, _BASELINE_VERSION=5,
+        _BASELINE_KNOWN_VERSIONS=(3, 4, 5), _compute_baseline_state=lambda: None,
+        _baseline_is_well_formed=lambda state: True)
+    monkeypatch.setattr(install_baseline._compat, 'facade', lambda: facade)
+    assert install_baseline.get() == old
+    assert json.loads((tmp_path / 'baseline_state.json').read_text()) == old

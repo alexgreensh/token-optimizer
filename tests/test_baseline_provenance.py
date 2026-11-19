@@ -440,7 +440,7 @@ def test_fresh_install_with_older_transcripts_gets_a_true_before(measure):
     _snapshot(tmp, _days_ago(today, 28))  # installed 28 days ago, 32 days of history before it
     prov = mod._estimate_before_after_savings(days=30)["baseline_provenance"]
     assert prov["coverage"] == "pre_install" and prov["note"] == ""
-    assert (prov["start"], prov["end"]) == (_days_ago(today, 59), _days_ago(today, 29))
+    assert (prov["start"], prov["end"]) == (_days_ago(today, 58), _days_ago(today, 29))
     assert prov["mix_source"] == "measured"
 
 

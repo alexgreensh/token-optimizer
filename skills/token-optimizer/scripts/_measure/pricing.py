@@ -1840,7 +1840,7 @@ def _compute_model_routing_savings(days=None, since=None):
         frozen = _measure_facade._get_baseline_state() or {}
         baseline_shares = frozen.get("model_shares") or _measure_facade._pretool_baseline_mix()
         baseline_stated = frozen.get("opus_share_source") == "pretool_baseline" or (not frozen.get("model_shares") and bool(baseline_shares))
-        baseline_source = "pretool_baseline" if baseline_stated else "frozen_baseline"
+        baseline_source = "frozen_baseline" if frozen.get("model_shares") else "pretool_baseline"
         early_mix = None
         if not baseline_shares:
             return zero

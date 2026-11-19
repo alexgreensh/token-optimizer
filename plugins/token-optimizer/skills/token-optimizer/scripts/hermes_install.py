@@ -107,6 +107,7 @@ _MEASURE_PACKAGE_FILES = (
 _MEASURE_PACKAGE_FILES += ('_measure/transcript_stream.py', '_measure/checkpoint_direction.py', '_measure/checkpoint_retention.py')
 _MEASURE_PACKAGE_FILES += ('_measure/keepwarm_safety.py', '_measure/keepwarm_economics.py', '_measure/keepwarm_linux.py', '_measure/mod_action_booking.py', '_measure/mod_compaction_booking.py', '_measure/mod_fresh_booking.py',)
 _MEASURE_PACKAGE_FILES += ('_measure/quality_continuity.py', '_measure/quality_checkpoint.py', '_measure/codex_quality.py', '_measure/lease_candidate_cleanup.py', '_measure/session_store_spool.py', '_measure/upgrade_drain_control.py', '_measure/compression_scan_checkpoint.py', '_measure/status_bar_lock.py', '_measure/session_flush_lock.py', '_measure/context_reset_marker.py', '_measure/holdout_fallback.py', '_measure/dashboard_heal_claim.py', '_measure/config_cache.py', '_measure/setup_observation_cache.py', '_measure/status_bar_refresh.py',)
+_MEASURE_PACKAGE_FILES += ('_measure/routing_default.py',)
 
 
 def _scripts_dir() -> Path:

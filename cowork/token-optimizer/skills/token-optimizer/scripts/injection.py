@@ -27,7 +27,7 @@ _TIMESTAMP_PATTERN = re.compile(r"updated (\d{4}-\d{2}-\d{2}T\d{2}:\d{2})")
 DEFAULT_MAX_AGE_HOURS = 48
 
 
-def inject_managed_block(filepath, section, content, dry_run=False):
+def inject_managed_block(filepath, section, content, dry_run=False, timestamp=None):
     """Insert or replace a managed block in a file.
 
     Args:
@@ -35,6 +35,8 @@ def inject_managed_block(filepath, section, content, dry_run=False):
         section: Block identifier (e.g., "MODEL_ROUTING", "COACH")
         content: Markdown content to inject (without markers)
         dry_run: If True, return the diff without writing
+        timestamp: Optional "updated" stamp (YYYY-MM-DDTHH:MM). Defaults to
+            now; pass a pinned value for byte-stable auto-injected blocks.
 
     Returns:
         dict with: action ("inserted"|"replaced"|"unchanged"), diff (str), filepath
@@ -42,7 +44,8 @@ def inject_managed_block(filepath, section, content, dry_run=False):
     filepath = Path(filepath)
     marker_open = _MARKER_OPEN.format(section=section)
     marker_close = _MARKER_CLOSE.format(section=section)
-    timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M")
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M")
 
     # Build the full block with markers and timestamp
     block = f"{marker_open}\n{content}\n<!-- updated {timestamp} -->\n{marker_close}"

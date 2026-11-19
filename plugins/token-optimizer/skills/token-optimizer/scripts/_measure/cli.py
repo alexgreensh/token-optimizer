@@ -993,6 +993,20 @@ def main():
             else:
                 _measure_facade.section, _measure_facade.gen_fn, _measure_facade.err = "COACH", _measure_facade.generate_coach_block, "No coaching data available yet."
 
+            # inject-routing --uninstall removes the MODEL_ROUTING blocks and
+            # stamps routing_removed_at so routing credit stops from that date.
+            # The flag test stays an assignment, not an if-test, so the frozen
+            # measure-split dispatch inventory sees no new branch.
+            _measure_facade._routing_uninstall = ("--uninstall" in _measure_facade.args
+                                                and _measure_facade.args[0] == "inject-routing")
+            if _measure_facade._routing_uninstall:
+                from . import routing_default as _measure_routing_default
+                _measure_facade._rr = _measure_routing_default.uninstall_routing()
+                for _measure_facade._p in _measure_facade._rr["files"]:
+                    print(f"  Removed MODEL_ROUTING block from {_measure_facade._p}")
+                print("  Routing guidance uninstalled.")
+                return
+
             _measure_facade.block = _measure_facade.gen_fn()
             if not _measure_facade.block:
                 print(f"[Error] {_measure_facade.err} Run some sessions first.")
@@ -1012,6 +1026,11 @@ def main():
                 if _measure_facade.args[0] == "setup-coach-injection":
                     print("  Block will auto-remove after 48h if not refreshed.")
                     print("  Uninstall: measure.py setup-coach-injection --uninstall")
+                if _measure_facade.args[0] == "inject-routing":
+                    # Stamp routing_injected_at once and clear any earlier
+                    # routing_removed_at so the credit window matches reality.
+                    from . import routing_default as _measure_routing_default
+                    _measure_routing_default.record_injection()
     elif _measure_facade.args[0] == "check-staleness":
         from injection import check_staleness as _measure_import_38; _measure_facade.check_staleness = _measure_import_38; del _measure_import_38; from injection import remove_managed_block as _measure_import_39; _measure_facade.remove_managed_block = _measure_import_39; del _measure_import_39
         _measure_facade.section = _measure_facade.args[1] if len(_measure_facade.args) > 1 else "COACH"

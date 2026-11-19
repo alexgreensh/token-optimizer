@@ -524,6 +524,30 @@ def _sub_codemap_hint(hook_input: dict) -> None:
         print(text)
 
 
+def _sub_routing_default(hook_input: dict) -> None:
+    """Model-routing guidance on by default + first-run audit offer.
+
+    Delegates to ``_measure.routing_default.session_start``: injects the
+    byte-stable MODEL_ROUTING block into the global instruction file (once,
+    idempotent), stamps ``routing_injected_at``, honors the
+    TOKEN_OPTIMIZER_ROUTING=0 opt-out and ``routing_removed_at``, and shows a
+    one-time /token-optimizer setup-trim offer while the trim ledger is
+    empty. Cheap by contract: env checks, marker reads, one instruction-file
+    read, one ledger read -- no history or transcript scans. Takes no runner
+    budget share, like the codemap hint.
+
+    Notices print as ``{"systemMessage": ...}`` lines so the shared envelope
+    carries them user-facing (the same channel ensure-health uses); they are
+    never model context.
+    """
+    try:
+        from _measure import routing_default  # noqa: PLC0415
+        for notice in routing_default.session_start():
+            print(json.dumps({"systemMessage": notice}))
+    except Exception:
+        pass
+
+
 def _quality_cache_self_heal() -> None:
     """Replicate the quality-cache dispatch's self-healing block: if the
     quality-cache hook is missing from settings.json and this is NOT a plugin
@@ -657,6 +681,7 @@ def main() -> int:
              hook_input, _wrapped)
     _capture("codemap cleanup", _sub_codemap_cleanup)
     _capture("codemap hint", _sub_codemap_hint, hook_input)
+    _capture("routing-default", _sub_routing_default, hook_input)
 
     # Emit the compact-restore payloads and ensure-health/quality-cache
     # systemMessage lines as ONE host-valid JSON object. systemMessage values

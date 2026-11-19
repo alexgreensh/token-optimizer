@@ -56,10 +56,13 @@ def test_price_each_request_cap_and_compaction_dedupe(tmp_path):
     assert row[0] == 45000
     assert abs(row[1] - 0.0675) < 1e-10
     conn.execute("INSERT INTO compression_events VALUES(?,?,?,?,?)", ('2026-01-01T00:00:10+00:00', 'session', 'session', 'quality_nudge', 1))
+    conn.execute('INSERT INTO nudge_events(session_uuid,kind,ts,context_tokens,transcript_path) VALUES(?,?,?,?,?)', ('session', 'compact', '2026-01-01T00:00:00+00:00', 1000, str(transcript)))
     conn.commit(); conn.close()
     nudge.resolve(facade)
     conn = facade._init_trends_db()
-    assert conn.execute("SELECT tokens_saved,cost_saved_usd FROM savings_events WHERE event_type='nudge_followed'").fetchone() == (0, 0)
+    rows = conn.execute("SELECT tokens_saved,cost_saved_usd FROM savings_events WHERE event_type='nudge_followed'").fetchall()
+    assert len(rows) == 1 and rows[0][0] == 45000 and abs(rows[0][1] - 0.0675) < 1e-10
+    assert conn.execute('SELECT status,savings_event_id FROM nudge_events ORDER BY id').fetchall() == [('followed', 1), ('followed', None)]
     conn.close()
 
 
@@ -201,16 +204,16 @@ def test_successor_counts_only_after_nudged_session_ends(tmp_path):
     conn.commit()
     nudge.resolve(object(), conn)
     assert conn.execute('SELECT status FROM nudge_events').fetchone() == ('pending',)
-    class Gone:
-        def _session_process_alive(self, sid):
-            return False
-    nudge.resolve(Gone(), conn)
-    assert conn.execute('SELECT status,action_ts FROM nudge_events').fetchone() == ('followed', at(10))
     class Alive:
         def _session_process_alive(self, sid):
             return True
     nudge.resolve(Alive(), conn)
     assert conn.execute('SELECT status FROM nudge_events').fetchone() == ('pending',)
+    class Gone:
+        def _session_process_alive(self, sid):
+            return False
+    nudge.resolve(Gone(), conn)
+    assert conn.execute('SELECT status,action_ts FROM nudge_events').fetchone() == ('followed', at(10))
     conn.close()
 
 
@@ -323,4 +326,73 @@ def test_failed_nudge_record_is_logged_and_retry_is_idempotent(tmp_path, monkeyp
     nudge.record(Ok(), 's', 'tip', 10, 'sonnet', 'p.jsonl')
     conn = sqlite3.connect(db)
     assert conn.execute('SELECT COUNT(*) FROM nudge_events').fetchone()[0] == 1
+    conn.close()
+
+
+def test_damaged_transcript_does_not_block_the_batch(tmp_path, monkeypatch):
+    corrupt = tmp_path / 'corrupt.jsonl'
+    corrupt.write_bytes(b'\xff\xfe\x00not-json\n')
+    broken = tmp_path / 'broken.jsonl'
+    broken.write_text(json.dumps(assistant(1)))
+    good = tmp_path / 'good.jsonl'
+    good.write_text(json.dumps(boundary()) + '\n' + json.dumps(assistant(11)))
+    conn = sqlite3.connect(':memory:')
+    nudge._schema(conn)
+    for name, path in (('corrupt', corrupt), ('broken', broken), ('good', good)):
+        conn.execute('INSERT INTO nudge_events(session_uuid,kind,ts,context_tokens,transcript_path) VALUES(?,?,?,?,?)',
+                     (name, 'tip', '2026-01-01T00:00:00+00:00', 0, str(path)))
+    conn.commit()
+    real_rows = nudge._rows
+    def flaky(path):
+        if Path(path) == broken:
+            raise OSError('unreadable transcript')
+        return real_rows(path)
+    monkeypatch.setattr(nudge, '_rows', flaky)
+    class Facade:
+        SNAPSHOT_DIR = tmp_path
+    nudge.resolve(Facade(), conn)
+    assert conn.execute('SELECT session_uuid,status FROM nudge_events ORDER BY id').fetchall() == [
+        ('corrupt', 'pending'), ('broken', 'pending'), ('good', 'followed')]
+    assert 'OSError' in (tmp_path / 'nudge-resolve.log').read_text()
+    conn.close()
+
+
+def test_resolver_never_overwrites_an_existing_credit(tmp_path):
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE savings_events (id INTEGER PRIMARY KEY, timestamp TEXT, event_type TEXT, tokens_saved INTEGER, cost_saved_usd REAL, session_id TEXT, session_uuid TEXT, detail TEXT, model TEXT, unjoinable INTEGER)')
+    conn.execute('CREATE TABLE compression_events (timestamp TEXT, session_uuid TEXT, session_id TEXT, feature TEXT, verified INTEGER)')
+    nudge._schema(conn)
+    transcript = tmp_path / 'session.jsonl'
+    transcript.write_text('\n'.join(json.dumps(r) for r in [boundary()] + [assistant(i) for i in range(11, 21)]))
+    for tokens, status in ((777, 'followed'), (888, 'pending')):
+        conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_id,session_uuid,detail,model,unjoinable) VALUES(?,?,?,?,?,?,?,?,?)",
+                     ('2026-01-01T00:00:10+00:00', 'nudge_followed', tokens, 0.5, 's', 's', 'nudge_id=x', None, 0))
+        event_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        conn.execute('INSERT INTO nudge_events(session_uuid,kind,ts,context_tokens,model,transcript_path,status,savings_event_id) VALUES(?,?,?,?,?,?,?,?)',
+                     ('s', 'tip', '2026-01-01T00:00:00+00:00', 1000, 'sonnet', str(transcript), status, event_id))
+    conn.commit()
+    class Facade:
+        def _is_priced_model(self, model):
+            return model == 'sonnet'
+        def _get_model_cost(self, model, a, b, cache, d):
+            return cache / 1000000
+    nudge.resolve(Facade(), conn)
+    assert conn.execute('SELECT tokens_saved,cost_saved_usd FROM savings_events ORDER BY id').fetchall() == [(777, 0.5), (888, 0.5)]
+    assert conn.execute('SELECT status,savings_event_id IS NOT NULL FROM nudge_events ORDER BY id').fetchall() == [('followed', 1), ('pending', 1)]
+    conn.close()
+
+
+def test_resolver_leaves_callers_open_transaction_untouched(tmp_path):
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE caller_work (id INTEGER PRIMARY KEY, note TEXT)')
+    conn.execute("INSERT INTO caller_work(note) VALUES('pending')")
+    assert conn.in_transaction
+    class Facade:
+        SNAPSHOT_DIR = tmp_path
+    nudge.resolve(Facade(), conn)
+    assert conn.in_transaction
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='nudge_events'").fetchone() is None
+    conn.rollback()
+    assert conn.execute('SELECT COUNT(*) FROM caller_work').fetchone()[0] == 0
+    assert 'RuntimeError' in (tmp_path / 'nudge-resolve.log').read_text()
     conn.close()

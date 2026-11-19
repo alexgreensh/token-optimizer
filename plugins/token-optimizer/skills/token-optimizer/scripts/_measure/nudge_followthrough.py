@@ -34,7 +34,7 @@ def _epoch(value):
 
 
 def _rows(path):
-    with Path(path).open(encoding='utf-8') as stream:
+    with Path(path).open(encoding='utf-8', errors='replace') as stream:
         for line in stream:
             try:
                 row = json.loads(line)
@@ -161,7 +161,7 @@ def classify(rows, emitted, new_rows=None):
 
 def _project_index(directory):
     """Read each transcript once before the database write transaction."""
-    transcripts = {}
+    transcripts, failures = {}, []
     for path in Path(directory).glob('*.jsonl'):
         if path.is_symlink():
             continue
@@ -171,9 +171,9 @@ def _project_index(directory):
             stamps = [stamp for stamp in stamps if stamp is not None]
             if stamps:
                 transcripts[path] = (min(stamps), max(stamps), rows)
-        except OSError:
-            raise
-    return transcripts
+        except Exception as exc:
+            failures.append(exc)
+    return transcripts, failures
 
 
 def _next_session(path, stamp, index):
@@ -211,11 +211,22 @@ def resolve(facade, conn=None):
     try:
         conn = conn or facade._init_trends_db()
         try:
+            if getattr(conn, 'in_transaction', False):
+                _diagnostic(facade, RuntimeError('caller transaction open'))
+                return
             _schema(conn)
             conn.commit()
             events = conn.execute('SELECT id,session_uuid,ts,context_tokens,transcript_path,savings_event_id FROM nudge_events').fetchall()
             projects = {Path(path).parent for _, _, _, _, path, _ in events if path}
-            indexes = {project: _project_index(project) for project in projects}
+            indexes = {}
+            for project in projects:
+                try:
+                    transcripts, failures = _project_index(project)
+                except Exception as exc:
+                    transcripts, failures = {}, [exc]
+                for failure in failures:
+                    _diagnostic(facade, failure)
+                indexes[project] = transcripts
             prepared = {}
             claimed_sessions = set()
             events.sort(key=lambda event: (_epoch(event[2]) or 0, event[0]), reverse=True)
@@ -244,10 +255,10 @@ def resolve(facade, conn=None):
                     if ident not in prepared:
                         continue
                     status, action, requests = prepared[ident]
-                    current = conn.execute('SELECT savings_event_id FROM nudge_events WHERE id=?', (ident,)).fetchone()
-                    if current is None:
+                    current = conn.execute('SELECT status,savings_event_id FROM nudge_events WHERE id=?', (ident,)).fetchone()
+                    if current is None or current[0] != 'pending' or current[1] is not None:
                         continue
-                    event_id = current[0]
+                    event_id = current[1]
                     cost = 0.0
                     tokens = 0
                     duplicate = (sid, action) in claimed
@@ -270,9 +281,7 @@ def resolve(facade, conn=None):
                         except Exception as exc:
                             _diagnostic(facade, exc)
                             continue
-                    if event_id:
-                        conn.execute('UPDATE savings_events SET tokens_saved=?,cost_saved_usd=? WHERE id=?', (tokens, cost, event_id))
-                    elif cost > 0:
+                    if cost > 0:
                         cur = conn.execute('INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_id,session_uuid,detail,model,unjoinable) VALUES(?,?,?,?,?,?,?,?,?)',
                                            (datetime.fromtimestamp(_epoch(action)).isoformat(), 'nudge_followed', tokens, cost, sid, sid, 'nudge_id=' + str(ident), None, 0))
                         event_id = cur.lastrowid

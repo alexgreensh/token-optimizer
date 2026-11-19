@@ -91,6 +91,7 @@ Works on the AI coding tools below, with a [Devin output-filter beta](https://gi
 - 🎯 `route`: the model and effort this task actually needs, before you spend
 - 🔧 `doctor`: installation check
 - 💰 `savings`: dollar savings report
+- 📊 `pilot-report`: weekly Slack-ready savings report
 - 📋 `report`: per-component token breakdown
 - 🌐 `dashboard`: open the full dashboard
 - 📝 `memory-review`: MEMORY.md structural audit

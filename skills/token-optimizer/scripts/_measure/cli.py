@@ -2390,6 +2390,9 @@ def main():
             _measure_facade.usage_trends(days=_measure_facade.days, as_json=_measure_facade.output_json)
         else:
             _measure_facade.savings_report(days=_measure_facade.days, as_json=_measure_facade.output_json)
+    elif _measure_facade.args[0] == "pilot-report":
+        from . import pilot_report as _measure_pilot_report
+        _measure_facade.sys.exit(_measure_pilot_report.main(_measure_facade.args[1:], facade=_measure_facade))
     elif _measure_facade.args[0] == "pin-baseline":
         _measure_facade.status = "building"
         while _measure_facade.status == "building":
@@ -2740,6 +2743,8 @@ def main():
         print("  python3 measure.py savings              # Savings report (last 30 days)")
         print("  python3 measure.py savings --days 7     # Savings report (last 7 days)")
         print("  python3 measure.py savings --json       # Machine-readable savings output")
+        print("  python3 measure.py pilot-report          # Weekly pilot report for Slack")
+        print("  python3 measure.py pilot-report --json   # Machine-readable pilot report")
         print("  python3 measure.py structure-proof      # Replay local sessions for structure-map proof")
         print("  python3 measure.py structure-proof --json")
         print("  python3 measure.py structure-proof --torture")

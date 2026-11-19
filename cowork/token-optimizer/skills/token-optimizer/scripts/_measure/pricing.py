@@ -1836,12 +1836,8 @@ def _compute_model_routing_savings(days=None, since=None):
         if not cur_shares or cur_total <= 0:
             return zero
 
-        # The frozen window is the only measured routing baseline.
-        frozen = _measure_facade._get_baseline_state() or {}
-        baseline_shares = frozen.get("model_shares") or _measure_facade._pretool_baseline_mix()
-        baseline_stated = frozen.get("opus_share_source") == "pretool_baseline" or (not frozen.get("model_shares") and bool(baseline_shares))
-        baseline_source = "frozen_baseline" if frozen.get("model_shares") else "pretool_baseline"
-        early_mix = None
+        from . import routing_credit
+        baseline_shares, baseline_source, baseline_stated, early_mix = routing_credit.baseline(_measure_facade)
         if not baseline_shares:
             return zero
 

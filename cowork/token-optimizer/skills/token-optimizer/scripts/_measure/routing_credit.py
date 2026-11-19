@@ -26,3 +26,35 @@ def compute(days=30, since=None):
         result['realized_cost_usd'] = 0.0
         result['measured_baseline_realized_cost_usd'] = None
     return result
+
+
+def baseline(f):
+    """Choose the most specific measured baseline before any stated share."""
+    from . import baseline_provenance
+
+    frozen = f._get_baseline_state() or {}
+    shares = frozen.get('model_shares') or {}
+    stated_frozen = frozen.get('opus_share_source') == 'pretool_baseline'
+    window = frozen.get('window') or {}
+    coverage = window.get('coverage')
+    if not coverage and window.get('start') and window.get('end'):
+        coverage = baseline_provenance.window_coverage(
+            window['start'], window['end'], baseline_provenance.install_evidence(f))['coverage']
+    if shares and not stated_frozen and coverage == 'pre_install':
+        return shares, 'frozen_baseline', False, None
+
+    snap = baseline_provenance._read_json(f.SNAPSHOT_DIR / 'snapshot_before.json') or {}
+    mix = snap.get('model_mix') or {}
+    if mix.get('activity_basis') == 1 and mix.get('shares'):
+        return mix['shares'], 'snapshot', False, None
+
+    early = f._earliest_model_mix()
+    if early and early.get('shares'):
+        return early['shares'], 'history', False, early
+
+    stated = f._pretool_baseline_mix()
+    if stated:
+        return stated, 'pretool_baseline', True, None
+    if shares and stated_frozen:
+        return shares, 'frozen_baseline', True, None
+    return None, None, False, None

@@ -27614,8 +27614,8 @@
     "pilot_report"
   ],
   "facade_binding_overrides": {
-    "_compute_model_routing_savings": "_routing_credit.compute",
-    "_compute_baseline_state": "_install_baseline.compute",
-    "_get_baseline_state": "_install_baseline.get"
+    "_compute_model_routing_savings": "_measure_providers['routing_credit'].compute",
+    "_compute_baseline_state": "_measure_providers['install_baseline'].compute",
+    "_get_baseline_state": "_measure_providers['install_baseline'].get"
   }
 }

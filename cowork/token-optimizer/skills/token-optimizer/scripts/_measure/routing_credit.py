@@ -22,7 +22,7 @@ def compute(days=30, since=None):
         removed = date.fromisoformat(removed).isoformat() if removed else None
     except (ValueError, TypeError):
         removed = None
-    cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days or 30)).strftime('%Y-%m-%d')
+    cutoff = str(since) if since else (datetime.now() - timedelta(days=days or 30)).strftime('%Y-%m-%d')
     if enabled:
         cutoff = max(cutoff, enabled)
     unrestricted = getattr(f, '_routing_unrestricted', None)

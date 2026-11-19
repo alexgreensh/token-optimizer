@@ -285,6 +285,10 @@ def _routing_markers(facade):
 
 def _routing(facade):
     """{"on": bool, "since": "YYYY-MM-DD"|None} for routing guidance."""
+    marker_state = _routing_markers(facade)
+    snap = getattr(facade, "SNAPSHOT_DIR", None)
+    if snap is not None and _marker_date(Path(snap) / "routing_removed_at"):
+        return marker_state
     for name in _ROUTING_MODULES:
         fn = _sibling(name, "routing_enabled_since")
         if fn is None:

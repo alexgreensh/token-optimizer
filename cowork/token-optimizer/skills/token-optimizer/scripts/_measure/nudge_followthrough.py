@@ -106,10 +106,11 @@ def _next_session(path, stamp):
     return min(choices, key=lambda x: x[0])[1] if choices else None
 
 
-def resolve(facade):
+def resolve(facade, conn=None):
     """Update estimates on collection; requests may arrive after the action."""
+    owned = conn is None
     try:
-        conn = facade._init_trends_db()
+        conn = conn or facade._init_trends_db()
         try:
             _schema(conn)
             conn.commit()
@@ -160,7 +161,8 @@ def resolve(facade):
                     continue
             conn.commit()
         finally:
-            conn.close()
+            if owned:
+                conn.close()
     except Exception:
         pass
 

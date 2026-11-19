@@ -1350,14 +1350,12 @@ def _get_savings_summary(days=None, since=None):
     boundary (e.g. the subscription limit reset). When *since* is None / empty,
     the rolling cutoff is computed from *days* as before.
     """
-    _measure_facade = _compat.facade(); from . import keepwarm_economics, mod_fresh_booking, mod_compaction_booking, nudge_followthrough; nudge_followthrough.resolve(_measure_facade)
+    _measure_facade = _compat.facade(); from . import keepwarm_economics, mod_fresh_booking, mod_compaction_booking, nudge_followthrough
     try:
         conn = _measure_facade._init_trends_db()
         try:
-            if since:
-                cutoff = since
-            else:
-                cutoff = (_measure_facade.datetime.now() - _measure_facade.timedelta(days=days)).isoformat()
+            import sqlite3; nudge_followthrough.resolve(_measure_facade, conn) if isinstance(conn, sqlite3.Connection) else None; cutoff = since
+            if not since: cutoff = (_measure_facade.datetime.now() - _measure_facade.timedelta(days=days)).isoformat()
             table = _measure_facade._counted_table(conn, "savings_events")
             event_expr = _measure_facade._counted_cap.reexpand_type() if "detail" in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")} else "event_type"
             rows = conn.execute(
@@ -6078,11 +6076,12 @@ def _action_savings_components(summary, reread=None):
     estimates = {
         key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated") else float((((summary.get("structural_detail") or {}).get("estimated") if key == "structural_estimated" else summary.get(key)) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
-            "behavioral_estimate", "uncaptured_runtime", "nudge_followed",
+            "behavioral_estimate", "uncaptured_runtime",
             "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
             "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated", "keepwarm_estimated",
         )
     }
+    if summary.get("nudge_followed") is not None: estimates["nudge_followed"] = float((summary.get("nudge_followed") or {}).get("cost_saved_usd", 0) or 0)
     overhead = ((summary.get("session_effect") or {}).get("overhead") or {}); estimates["mod_fresh_estimated"] = mod_fresh_booking.additive(summary.get("mod_fresh_estimated"), summary.get("handover_rerun"))
     estimates["expand_overhead"] = -max(0.0, float(overhead.get("expand_usd") or 0))
     hints = summary.get("hint_followed") or {}

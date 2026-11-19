@@ -144,6 +144,7 @@ Each key below is one line in the report. All are priced at the window's input-r
 | `contamination_exit` | Sessions that heeded a fresh-session nudge, from your own cohorts |
 | `verbosity_steer` | Output shortened by a concise-output nudge, before an observed measurement exists |
 | `verbosity_output_estimated` | Nudged replies against matched replies in sessions TO ran in but never nudged (same position, reply count, running mean, context size), plus the later rereads of that difference until compaction. Signed; credits only a positive net, else $0 with the per-nudge figure and its 95% interval shown. Recomputed at most daily by a user-run or detached collect, never on the hook path. The booked `verbosity_steer_measured` rows are kept for reference and never credited |
+| `nudge_followed` | Estimated savings from observed follow-through on a context nudge, based on the subsequent reduction in context and priced requests. |
 | `hint_followed` | Searches avoided by a followed context hint. The hint->read pair is observed; the avoided-search size is a fixed estimate (used once any hint fires) |
 | `retrieval_serve` | Cohort estimate for avoided searches, used only before any hint fires |
 

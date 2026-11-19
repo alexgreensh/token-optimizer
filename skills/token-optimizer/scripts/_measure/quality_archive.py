@@ -5689,7 +5689,7 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
         # "start fresh (context is preserved)" is the stronger remedy than /compact, and
         # firing both would be noise. Only fall back to the /compact nudge if it didn't fire.
         fresh_msg = _measure_facade._maybe_fresh_session_nudge(result, cache_path, quality_data) if result["measured"] else None
-        remedy_fired = bool(fresh_msg)
+        nudge_msg = None; remedy_fired = bool(fresh_msg)
         if not fresh_msg and result["measured"]:
             nudge_msg = _measure_facade._maybe_nudge(result, cache_path, quality_data)
             if nudge_msg:
@@ -5709,13 +5709,7 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
         # must survive even if only the fresh nudge fired this turn).
         if system_messages or fresh_msg:
             _measure_facade._write_quality_cache(cache_path, result)
-        # ONE JSON object, never a stream of them. Printing N separate
-        # {"systemMessage": ...} lines is NDJSON, and a host that parses hook
-        # stdout as a single JSON document rejects the whole payload -- Codex
-        # fails the hook outright ("hook returned invalid session start JSON
-        # output"), losing every message including the ones it could have shown.
-        # Joining them costs nothing and both hosts render the result identically.
-        _emitted_messages = []
+        _emitted_messages = []; _emit_msgs = True
         if system_messages:
             # Gate the routine informational batch (quality/loop/fill warnings) under
             # context pressure.
@@ -5738,6 +5732,7 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
         if fresh_msg:
             _emitted_messages.append(fresh_msg)
         if _emitted_messages:
+            from . import nudge_followthrough; nudge_followthrough.record_emitted(_measure_facade, _session_id, filepath, quality_data, fresh_msg, nudge_msg if _emit_msgs else None, advisory_msg if _emit_msgs else None)
             try:
                 print(_measure_facade.json.dumps({"systemMessage": "\n\n".join(_emitted_messages)}))
             except Exception:
@@ -5767,12 +5762,12 @@ def quality_cache(throttle_seconds=None, warn_threshold=None, quiet=None, sessio
                 _size_ok = _warn_tel is not None and _warn_tel["tokens"] >= _measure_facade._SIZE_NUDGE_MIN_TOKENS
                 if result["score"] < 50:
                     if _size_ok:
-                        print(f"[Token Optimizer] Quality {result['score']}/100 (critical). /clear with checkpoint.")
+                        from . import nudge_followthrough; nudge_followthrough.record_emitted(_measure_facade, _session_id, filepath, quality_data, True, None, None); print(f"[Token Optimizer] Quality {result['score']}/100 (critical). /clear with checkpoint.")
                     else:
                         print(f"[Token Optimizer] Quality {result['score']}/100 (critical).")
                 else:
                     if _size_ok:
-                        print(f"[Token Optimizer] Quality {result['score']}/100. /compact.")
+                        from . import nudge_followthrough; nudge_followthrough.record_emitted(_measure_facade, _session_id, filepath, quality_data, None, True, None); print(f"[Token Optimizer] Quality {result['score']}/100. /compact.")
                     else:
                         print(f"[Token Optimizer] Quality {result['score']}/100.")
             _measure_facade._write_quality_cache(cache_path, result)

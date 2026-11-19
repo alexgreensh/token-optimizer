@@ -4325,7 +4325,7 @@ var DB = (function() {
       var rwEfficiencyHeadline = rwHasCostEfficiency
         ? '<div class="metric-large" style="text-wrap:balance;text-shadow:none;"><em style="font-style:normal;color:var(--c-accent-cyan);">&asymp;' + rwEfficiencyMult.toFixed(1) + '&times;</em> work per dollar</div>'
         : ((isFinite(Number(rw.extra_work_pct)) && Number(rw.extra_work_pct) > 0)
-          ? '<div class="metric-large" style="text-wrap:balance;text-shadow:none;"><em style="font-style:normal;color:var(--c-accent-cyan);">&asymp;' + rw.extra_work_pct + '%</em> more work per token</div>'
+          ? '<div class="metric-large" style="text-wrap:balance;text-shadow:none;"><em style="font-style:normal;color:var(--c-accent-cyan);">&asymp;' + rw.extra_work_pct + '%</em> more work per dollar</div>'
           : '<div class="metric-large" style="text-wrap:balance;text-shadow:none;">' + (usdHeadline || '<em style="font-style:normal;color:var(--c-accent-cyan);">more work</em>') + '</div>');
       // Visible: one short plain line. The technical explanation of how each
       // figure is built goes to the fold at the bottom of the card.
@@ -4468,7 +4468,7 @@ var DB = (function() {
             '<p>' + (rwHasCostEfficiency
               ? 'The &asymp;' + rwEfficiencyMult.toFixed(1) + '&times; figure is the before/after per-session cost ratio, not a sum of the token floor or per-window dollar figures.'
               : (rwHasLegacyMultiplier
-                ? 'The &asymp;' + rw.extra_work_pct + '% is a separate per-token throughput multiplier, not a sum of the per-window dollar figures.'
+                ? 'The &asymp;' + rw.extra_work_pct + '% uses measured, modeled and estimated savings over the same period.'
                 : 'The per-token throughput multiplier is separate from the per-window dollar figures.')) + '</p>' +
           '</div></details>' +
         '</div>' +

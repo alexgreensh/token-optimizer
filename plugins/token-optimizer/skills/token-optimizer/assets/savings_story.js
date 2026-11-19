@@ -506,7 +506,7 @@ function savingsLimitsHtml(data) {
   var direct = num(rw.extra_work_pct);
   var provider = (data && data.runtime) === 'codex' ? 'OpenAI' : 'Anthropic';
   var methodLines = [];
-  if (direct > 0) methodLines.push('Measured directly by Token Optimizer: about ' + (Math.round(direct * 10) / 10) + '% more work per token');
+  if (direct > 0) methodLines.push('Token Optimizer savings, including estimates: about ' + (Math.round(direct * 10) / 10) + '% more work per dollar');
   methodLines.push('The rest comes from your setup, habits and model choices since your earliest tracked month');
   if (prov.claim) methodLines.push('Token Optimizer was already running in that month, so the full gap is larger than shown');
   methodLines.push(provider + "'s own improvements in that time are not separated out");

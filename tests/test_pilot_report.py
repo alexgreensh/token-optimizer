@@ -177,19 +177,19 @@ def test_fallback_window_is_labeled(measure, monkeypatch):
     assert "+38% more work per token vs your earliest tracked month (fallback window)" in capacity
 
 
-def test_routing_off_zeroes_credit(measure, monkeypatch):
+def test_routing_off_retains_historical_credit(measure, monkeypatch):
     _install_marker(measure)
     _wire_dashboard(measure, monkeypatch)  # no routing markers written
     report = pilot_report.collect(measure)
     assert report["routing"]["on"] is False
-    # The $30 routing component inside all_in is removed, not reported.
-    assert report["saved_since_install_usd"] == 120.0
-    assert report["split"]["routing_usd"] == 0.0
+    # The already-windowed historical routing credit remains in the report.
+    assert report["saved_since_install_usd"] == 150.0
+    assert report["split"]["routing_usd"] == 30.0
     assert report["split"]["measured_usd"] == 100.0
-    assert report["saved_7d_usd"] == 10.0  # action 10 + routing 0
+    assert report["saved_7d_usd"] == 15.0
     text = "\n".join(pilot_report.render(report))
     assert "Routing guidance: off" in text
-    assert "routing $0.00" in text
+    assert "routing $30.00" in text
 
 
 def test_routing_removed_marker_turns_off(measure, monkeypatch):
@@ -200,7 +200,7 @@ def test_routing_removed_marker_turns_off(measure, monkeypatch):
     (snap / "routing_removed_at").write_text("2026-11-01")
     report = pilot_report.collect(measure)
     assert report["routing"]["on"] is False
-    assert report["saved_since_install_usd"] == 120.0
+    assert report["saved_since_install_usd"] == 150.0
 
 
 def test_no_trims_and_no_nudges(measure, monkeypatch):
@@ -225,3 +225,11 @@ def test_no_install_evidence_still_renders(measure, monkeypatch):
 def test_unknown_flag_rejected(measure, capsys):
     assert pilot_report.main(["--bogus"], facade=measure) == 2
     assert "Unknown pilot-report option" in capsys.readouterr().out
+
+
+def test_same_day_routing_removal_is_off(measure):
+    snap = Path(measure.SNAPSHOT_DIR)
+    snap.mkdir(parents=True, exist_ok=True)
+    (snap / 'routing_injected_at').write_text('2026-11-01')
+    (snap / 'routing_removed_at').write_text('2026-11-01')
+    assert pilot_report._routing(measure)['on'] is False

@@ -217,6 +217,28 @@ def resolve(facade, conn=None):
         _diagnostic(facade, exc)
 
 
+
+def weekly_counts(facade):
+    """Read the shipped event schema for the last seven days."""
+    from datetime import timedelta
+    try:
+        conn = facade._open_trends_db_readonly(timeout=1.0)
+    except Exception:
+        import sqlite3
+        path = Path(facade.TRENDS_DB)
+        if not path.exists():
+            return {'followed': 0, 'total': 0}
+        conn = sqlite3.connect('file:' + str(path) + '?mode=ro', uri=True)
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='nudge_events'").fetchone():
+            return {'followed': 0, 'total': 0}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+        rows = conn.execute('SELECT ts, status FROM nudge_events').fetchall()
+        recent = [status for ts, status in rows if (_epoch(ts) or 0) >= cutoff]
+        return {'followed': sum(status == 'followed' for status in recent), 'total': len(recent)}
+    finally:
+        conn.close()
+
 def record_emitted(facade, sid, path, quality_data, fresh, compact, advisory):
     try:
         telemetry = facade._absolute_context_tokens(quality_data, sid) or {}

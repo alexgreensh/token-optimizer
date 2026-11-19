@@ -1297,7 +1297,7 @@ def _net_realized_savings(rows, reprice_deltas):
     #     a counterfactual (file not read within the follow-up window).
     for name in ("setup_optimization", "mcp_cap", "hint_followed", "verbosity_steer",
                  "resume_lean", "checkpoint_restore", "verbosity_steer_measured",
-                 "codemap_lookup", "keepwarm_estimated"):
+                 "codemap_lookup", "keepwarm_estimated", "nudge_followed"):
         entry = popped[name] = by_category.pop(name, None)
         if entry:
             total_tokens -= int(entry.get("tokens_saved", 0) or 0)
@@ -1350,7 +1350,7 @@ def _get_savings_summary(days=None, since=None):
     boundary (e.g. the subscription limit reset). When *since* is None / empty,
     the rolling cutoff is computed from *days* as before.
     """
-    _measure_facade = _compat.facade(); from . import keepwarm_economics, mod_fresh_booking, mod_compaction_booking
+    _measure_facade = _compat.facade(); from . import keepwarm_economics, mod_fresh_booking, mod_compaction_booking, nudge_followthrough; nudge_followthrough.resolve(_measure_facade)
     try:
         conn = _measure_facade._init_trends_db()
         try:
@@ -1370,7 +1370,7 @@ def _get_savings_summary(days=None, since=None):
             # _session_model_reprice.
             unpriced_reprice = {}
             reprice_deltas, repriced_tokens, unmeasured_tokens = _measure_facade._session_model_reprice(
-                conn, cutoff, unpriced_out=unpriced_reprice)
+                conn, cutoff, unpriced_out=unpriced_reprice); reprice_deltas.pop("nudge_followed", None)
             tier_data = _measure_facade.PRICING_TIERS.get(_measure_facade._load_pricing_tier(), _measure_facade.PRICING_TIERS["anthropic"])
             resume_fix = _measure_facade._counted_pricing_v5.resume_lean_reprice(conn, _measure_facade._counted_table(conn, "savings_events"), cutoff,
                                                 lambda model: _measure_facade._counted_exact_card(model, tier_data))
@@ -1404,7 +1404,7 @@ def _get_savings_summary(days=None, since=None):
             "one_time_setup": one_time, "keepwarm_estimated": keepwarm_economics.headline_pool(_measure_facade, cutoff), "mod_fresh_estimated": mod_fresh_booking.summary(_measure_facade, cutoff), "mod_compaction_actions": mod_compaction_booking.summary(_measure_facade, cutoff),
             # U-G: observed-trigger / estimated-magnitude avoided-search from
             # proactive hints. Estimated tier, never in the realized total.
-            "hint_followed_estimated": hint_followed_est,
+            "hint_followed_estimated": hint_followed_est, "nudge_followed": popped["nudge_followed"],
             # Code map lookups: observed lookup, counterfactual avoided read. Estimated tier.
             "codemap_lookup_estimated": codemap_lookup_est,
             # Verbosity-steer: estimated output-token reduction from conciseness
@@ -2299,6 +2299,9 @@ def runway_snapshot(days=None, now=None, token_headline=None):
             token_parts = token_headline
         except Exception:
             token_parts = _compat.facade()._headline.token_headline({})
+        from . import runway_all_in; conn = _measure_facade._init_trends_db()
+        try: direct_pct = runway_all_in.safe_extra_work(_measure_facade, conn, days)
+        finally: conn.close()
         context_saved = token_parts["total_tokens"]
         context_mult = (consumed + context_saved) / consumed if consumed > 0 else 1.0
 
@@ -2308,12 +2311,9 @@ def runway_snapshot(days=None, now=None, token_headline=None):
         routing_state = routing.get("state")
         routing_mult = routing.get("factor")
 
-        # A heavier model mix is the user's choice, not a cost Token Optimizer
-        # caused, so it never shrinks what TO hands back (or hides the card).
-        # The raw factor is still reported as routing_multiplier below.
         mult = context_mult * max(1.0, routing_mult if routing_mult is not None else 1.0)
         # Hide immaterial changes unless weekly savings are available.
-        if mult < 1.02 and not weekly_signal:
+        if mult + (direct_pct or 0) / 100 < 1.02 and not weekly_signal:
             return None
 
         # --- USD-per-window: API-credit OVERAGE over each window's OWN real span ---
@@ -2559,7 +2559,7 @@ def runway_snapshot(days=None, now=None, token_headline=None):
             "routing_unsplit_tokens": routing.get("unsplit_tokens", 0),
             "routing_standardized_baseline_cost_usd": routing.get("standardized_baseline_cost_usd"),
             "routing_standardized_actual_cost_usd": routing.get("standardized_actual_cost_usd"),
-            "extra_work_pct": round((mult - 1) * 100, 1),
+            "extra_work_pct": round((mult - 1) * 100 + (direct_pct or 0), 1), "estimated_work_pct": round(direct_pct or 0, 1),
             "tokens_consumed": int(consumed),
             "tokens_consumed_basis": traffic["basis"] if traffic else None,
             "tokens_consumed_basis_complete": bool(traffic and traffic["complete"]),
@@ -6078,7 +6078,7 @@ def _action_savings_components(summary, reread=None):
     estimates = {
         key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated") else float((((summary.get("structural_detail") or {}).get("estimated") if key == "structural_estimated" else summary.get(key)) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
-            "behavioral_estimate", "uncaptured_runtime",
+            "behavioral_estimate", "uncaptured_runtime", "nudge_followed",
             "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
             "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated", "keepwarm_estimated",
         )
@@ -6273,7 +6273,7 @@ def _get_merged_savings(days=None, since=None):
         "one_time_setup": savings.get("one_time_setup"), "keepwarm_estimated": savings.get("keepwarm_estimated"), "mod_fresh_estimated": savings.get("mod_fresh_estimated"), "mod_compaction_actions": savings.get("mod_compaction_actions"),
         # U-G: deterministically-triggered avoided-search from proactive hints
         # (observed hint->read), estimated magnitude. Estimated tier, never realized.
-        "hint_followed": savings.get("hint_followed_estimated"),
+        "hint_followed": savings.get("hint_followed_estimated"), "nudge_followed": savings.get("nudge_followed"),
         # Verbosity-steer: estimated output-token reduction from conciseness
         # nudges. Estimated tier, never in the realized total. Surfaced for
         # the dashboard's estimated-tier display.

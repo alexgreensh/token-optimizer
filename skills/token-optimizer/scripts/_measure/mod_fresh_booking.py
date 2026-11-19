@@ -76,8 +76,8 @@ def record(facade, event):
             raise
         finally:
             conn.close()
-    except Exception:
-        return {'ok': False, 'reason': 'receipt-unavailable'}
+    except Exception as exc:
+        return {'ok': False, 'reason': 'receipt-unavailable', 'exception_class': type(exc).__name__}
 
 
 def summary(facade, cutoff):

@@ -141,6 +141,28 @@ export type DataIo = {
   log?: (text: string) => Promise<void>
 }
 
+/** Recover the latest request and a cache-write TTL when the status command is unavailable. */
+export function transcriptClock(raw: string): { lastRequestEpoch: number | null; cacheLifetime: '1h' | '5m' | null } {
+  let lastRequestEpoch: number | null = null
+  let cacheLifetime: '1h' | '5m' | null = null
+  for (const line of raw.split('\n').reverse()) {
+    try {
+      const row = JSON.parse(line)
+      if (row.type !== 'assistant' || row.isSidechain || row.agentId || row.message?.model === '<synthetic>' || !row.message?.usage) continue
+      const usage = row.message.usage
+      const timestamp = Date.parse(row.timestamp) / 1000
+      if (lastRequestEpoch === null && Number.isFinite(timestamp) && timestamp > 0) lastRequestEpoch = timestamp
+      const creation = usage.cache_creation
+      const hour = Number(creation?.ephemeral_1h_input_tokens || usage.ephemeral_1h_input_tokens || 0)
+      const five = Number(creation?.ephemeral_5m_input_tokens || usage.ephemeral_5m_input_tokens || 0)
+      if (cacheLifetime === null && hour > five) cacheLifetime = '1h'
+      else if (cacheLifetime === null && five > hour) cacheLifetime = '5m'
+      if (lastRequestEpoch !== null && cacheLifetime !== null) break
+    } catch { /* Ignore incomplete transcript lines. */ }
+  }
+  return { lastRequestEpoch, cacheLifetime }
+}
+
 async function attempt<T>(work: () => Promise<T>, fallback: T): Promise<T> {
   try {
     return await work()
@@ -455,6 +477,7 @@ export async function gather(
   const sawLimits = Boolean(base?.sawLimits || reported.fiveHour || reported.week)
   const branch = await readBranch(io, cwd)
   const quality = await readQuality(io, home, sid)
+  const transcriptState = options.transcript ? transcriptClock(await attempt(() => io.read(options.transcript!), '')) : null
 
   let status: StatusBar | 'outdated' | 'nopython' | null = null
   let notFound = false
@@ -473,8 +496,8 @@ export async function gather(
     savingsComputedAt: base?.savingsComputedAt ?? null,
     savingsRefreshFailed: base?.savingsRefreshFailed ?? false,
     savingsReason: base?.savingsReason ?? null,
-    lastRequestEpoch: base?.lastRequestEpoch ?? null,
-    cacheLifetime: base?.cacheLifetime ?? null,
+    lastRequestEpoch: newer(base?.lastRequestEpoch ?? null, transcriptState?.lastRequestEpoch ?? null),
+    cacheLifetime: transcriptState?.cacheLifetime ?? base?.cacheLifetime ?? null,
     compactWindow: base?.compactWindow ?? null,
     checkpointEpoch: base?.checkpointEpoch ?? null,
     earlierCheckpoint: base?.earlierCheckpoint ?? null,
@@ -499,7 +522,7 @@ export async function gather(
           savingsComputedAt: status.savingsComputedAt ?? kept.savingsComputedAt,
           savingsRefreshFailed: status.savingsRefreshFailed,
           savingsReason: status.savings || kept.savings ? null : status.savingsReason,
-          lastRequestEpoch: status.lastRequestEpoch ?? kept.lastRequestEpoch,
+          lastRequestEpoch: newer(status.lastRequestEpoch, kept.lastRequestEpoch),
           cacheLifetime: status.cacheLifetime ?? kept.cacheLifetime,
           // An answer with no window means the user has none now: a kept one must not linger.
           compactWindow: status.compactWindow,
@@ -595,12 +618,25 @@ export function mergeStored(
 
 /** Persist one mod action through the installed Token Optimizer CLI. */
 export async function bookModAction(io: DataIo, event: Record<string, unknown>): Promise<boolean> {
+  let root: TokenOptimizerRoot | null = null
   try {
-    const root = await findTokenOptimizerRoot(io, await readHome(io))
+    root = await findTokenOptimizerRoot(io, await readHome(io))
     if (!root) return false
     const result = await runMeasure(io, root, ['mod-action'], { timeoutMs: STATUS_TIMEOUT_MS, stdin: JSON.stringify(event) })
-    return result.exitCode === 0 && JSON.parse(result.stdout).ok === true
-  } catch {
+    if (result.exitCode === 0 && JSON.parse(result.stdout).ok === true) return true
+    await diagnostic(io, root, `booking ${String(event.action)} exited ${result.exitCode}`)
+    return false
+  } catch (error) {
+    if (root) await diagnostic(io, root, `booking ${String(event.action)}: ${error instanceof Error ? error.name : 'Error'}`)
     return false
   }
+}
+
+async function diagnostic(io: DataIo, root: TokenOptimizerRoot, reason: string): Promise<void> {
+  await attempt(() => runMeasure(io, root, ['mod-action'], { timeoutMs: STATUS_TIMEOUT_MS, stdin: JSON.stringify({ action: 'diagnostic', reason }) }), null)
+}
+
+export async function logForkFailure(io: DataIo, reason: string): Promise<void> {
+  const root = await attempt(async () => findTokenOptimizerRoot(io, await readHome(io)), null)
+  if (root) await diagnostic(io, root, reason)
 }

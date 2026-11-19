@@ -8,6 +8,10 @@ It ships inside the Token Optimizer plugin (`hooks/hooks.json` names this folder
 
 Needs Claude Code 2.1.287 or newer and Anthropic's mods feature. Anthropic can switch mods off remotely; when off, nothing breaks and the bar just does not appear. The terminal keeps its existing status line. VS Code is not supported.
 
+To check it is active, open a Claude desktop session with the Token Optimizer plugin enabled. Look for the Token Optimizer band above the prompt, with Clawd and the cache countdown. If it is absent, check that the plugin is enabled, mods are available, and `TOKEN_OPTIMIZER_STATUS_BAR` is not `0`, then restart the session. The plugin's `hooks/hooks.json` registers `desktop/token-optimizer-desktop/hooks/register.tsx`.
+
+To check booking without using your session, run `python3 <plugin>/skills/token-optimizer/scripts/measure.py mod-action --selftest`. It prints `PASS` or `FAIL` and uses a temporary data directory. Failed action diagnostics are recorded in the Token Optimizer data directory as `mod-actions.log`.
+
 ## What you get
 
 - One sentence about the most urgent thing, with at most one button.

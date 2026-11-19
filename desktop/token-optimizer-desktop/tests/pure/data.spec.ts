@@ -21,11 +21,22 @@ import {
   resetLauncher,
   runMeasure,
   shouldReset,
+  transcriptClock,
   type DataIo,
 } from '../../hooks/data.ts'
 import { NO_PYTHON_REASON, prepareHandoff } from '../../src/actions.ts'
 
 const HOME = '/home/me'
+
+test('transcript clock uses latest main request and latest detected write TTL', () => {
+  const rows = [
+    { type: 'assistant', timestamp: '2026-10-03T09:50:00Z', message: { usage: { cache_creation: { ephemeral_1h_input_tokens: 100 } } } },
+    { type: 'assistant', timestamp: '2026-10-03T09:55:00Z', message: { usage: { cache_read_input_tokens: 100 } } },
+    { type: 'assistant', isSidechain: true, timestamp: '2026-10-03T09:59:00Z', message: { usage: { cache_creation_input_tokens: 1 } } },
+  ]
+  assert.deepEqual(transcriptClock(rows.map(row => JSON.stringify(row)).join('\n') + '\n{'), { lastRequestEpoch: Date.parse('2026-10-03T09:55:00Z') / 1000, cacheLifetime: '1h' })
+  assert.deepEqual(transcriptClock('bad'), { lastRequestEpoch: null, cacheLifetime: null })
+})
 const NOW_MS = Date.parse('2026-10-03T10:00:00Z')
 const LEGACY_DIR = `${HOME}/.claude/token-optimizer`
 const DATA_DIR = `${HOME}/.claude/plugins/data/token-optimizer-alexgreensh-token-optimizer/token-optimizer`

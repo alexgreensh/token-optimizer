@@ -66,7 +66,7 @@ import {
   gather,
   mergeStored,
   readHome,
-  runMeasure, bookModAction,
+  runMeasure, bookModAction, logForkFailure,
   type DataIo,
   type GatherOptions,
 } from './data.ts'
@@ -671,18 +671,18 @@ function forkWithin($: EngineInterface, ms: number, receipt: (reply: ForkReply) 
   return new Promise<ForkReply | null>((resolve, reject) => {
     let timer: { cancel: () => void } | null = null
     try {
-      timer = $.clock.after(ms, () => resolve(null))
+      timer = $.clock.after(ms, () => { void logForkFailure(dataIo($), 'fork timed out'); resolve(null) })
     } catch {
       // No timer: the fork alone decides.
     }
     $.model.fork({ prompt: WARM_PROMPT }).then(
       async reply => {
-        timer?.cancel(); await receipt(reply).catch(() => undefined)
+        timer?.cancel(); if (!reply.isAnswered) void logForkFailure(dataIo($), `fork: ${reply.reason}`); await receipt(reply).catch(error => logForkFailure(dataIo($), `receipt: ${error instanceof Error ? error.name : 'Error'}`))
         resolve(reply)
       },
       error => {
         timer?.cancel()
-        reject(error)
+        void logForkFailure(dataIo($), `fork: ${error instanceof Error ? error.name : 'Error'}`); reject(error)
       },
     )
   })
@@ -693,7 +693,7 @@ async function runWarm($: EngineInterface, known: number | null, gen: number): P
     const session = await attempt(() => read($, sessionAtom), null); const sid = cleanId(await attempt(() => $.session.id(), '')); const path = transcriptFor(sid); const snapshot = path ? await attempt(() => $.fs.stat(path), null) : null; const actionId = `${sid}-${await $.clock.now()}-${Math.random().toString(36).slice(2)}`
     // A recorded 0 is no size at all: fall back to the session's own.
     const contextTokens = known || session?.contextTokens || 0; let receiptFailed = false; if (!await bookModAction(dataIo($), { action: 'warm-prepare', action_id: actionId, session_id: sid, timestamp: (await $.clock.now()) / 1000, transcript_path: path, byte_size: snapshot?.size, transcript_mtime: snapshot ? snapshot.mtimeMs / 1000 : null })) { await feedClock($, { type: 'warm-failed' }); toast($, 'Keep warm did not run: its cost could not be reserved.'); return }
-    const reply = await forkWithin($, BUSY_TIMEOUT_MS, async answer => { if (!answer.isAnswered && answer.reason === 'nothing-to-fork') { await bookModAction(dataIo($), { action: 'warm-cancel', action_id: actionId, session_id: sid, timestamp: (await $.clock.now()) / 1000 }); return } if (!('usage' in answer) || !answer.usage || !Object.values(answer.usage).some(n => typeof n === 'number' && n > 0)) return; const booked = await bookModAction(dataIo($), { action: 'warm', answered: answer.isAnswered, action_id: actionId, session_id: sid, timestamp: (await $.clock.now()) / 1000, transcript_path: path, byte_size: snapshot?.size, transcript_mtime: snapshot ? snapshot.mtimeMs / 1000 : null, usage: answer.usage }); receiptFailed = !booked; if (!booked) toast($, 'Warm-up cost could not be recorded in Token Optimizer.') })
+    const reply = await forkWithin($, BUSY_TIMEOUT_MS, async answer => { if (!answer.isAnswered && answer.reason === 'nothing-to-fork') { await bookModAction(dataIo($), { action: 'warm-cancel', action_id: actionId, session_id: sid, timestamp: (await $.clock.now()) / 1000 }); return } if (!('usage' in answer) || !answer.usage || !Object.values(answer.usage).some(n => typeof n === 'number' && n > 0)) { await logForkFailure(dataIo($), 'fork returned no usage'); return } const booked = await bookModAction(dataIo($), { action: 'warm', answered: answer.isAnswered, action_id: actionId, session_id: sid, timestamp: (await $.clock.now()) / 1000, transcript_path: path, byte_size: snapshot?.size, transcript_mtime: snapshot ? snapshot.mtimeMs / 1000 : null, usage: answer.usage }); receiptFailed = !booked; if (!booked) toast($, 'Warm-up cost could not be recorded in Token Optimizer.') })
     // Cleared meanwhile: this warm-up says nothing about the new session.
     if (gen !== sessionGen) return
     const at = await $.clock.now()

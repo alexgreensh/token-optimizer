@@ -161,18 +161,31 @@ def record(facade, event):
                     'ts': when, 'state': 'armed', 'owner': None, 'pings_fired': [when],
                     'pause_key': pause_key, 'manual_action_id': ident})
         return {'ok': True, 'pause_key': pause_key, 'cost_usd': cost, 'duplicate': bool(finished), 'resume_trackable': usable}
-    except Exception:
-        return {'ok': False, 'reason': 'receipt-unavailable'}
+    except Exception as exc:
+        return {'ok': False, 'reason': 'receipt-unavailable', 'exception_class': type(exc).__name__}
 
 
 def main(facade):
     """Read a single bounded action receipt from standard input."""
+    if '--selftest' in facade.args[1:]:
+        from . import mod_action_selftest
+        return mod_action_selftest.main(facade)
+    event = None
     try:
         raw = facade.sys.stdin.read(65537)
         if len(raw) > 65536:
             raise ValueError('receipt too large')
-        result = record(facade, json.loads(raw))
+        event = json.loads(raw)
+        if isinstance(event, dict) and event.get('action') == 'diagnostic':
+            from . import mod_action_diagnostics
+            mod_action_diagnostics.log(facade.SNAPSHOT_DIR, {'action': 'fork', 'reason': str(event.get('reason', 'failed'))[:200]})
+            result = {'ok': True}
+        else:
+            result = record(facade, event)
     except (ValueError, TypeError):
         result = {'ok': False, 'reason': 'invalid-receipt'}
+    if not result['ok'] or result.get('reason') == 'receipt-unavailable':
+        from . import mod_action_diagnostics
+        mod_action_diagnostics.log(facade.SNAPSHOT_DIR, {'action': event.get('action') if isinstance(event, dict) else None, **result})
     print(json.dumps(result, separators=(',', ':')))
     return 0 if result['ok'] else 1

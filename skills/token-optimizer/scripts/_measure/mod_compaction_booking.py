@@ -143,8 +143,8 @@ def _record_verified(facade, event):
             raise
         finally:
             conn.close()
-    except Exception:
-        return {'ok': False, 'reason': 'receipt-unavailable'}
+    except Exception as exc:
+        return {'ok': False, 'reason': 'receipt-unavailable', 'exception_class': type(exc).__name__}
 
 
 
@@ -208,8 +208,8 @@ def record(facade, event):
     if (isinstance(event, dict) and (event.get('observed_manual') is True or event.get('observed_action') is True) and result.get('reason') in
             ('invalid-token-delta', 'existing-compaction-credit', 'usage-unavailable', 'cost-unavailable', 'cost-mismatch', 'cache-write-class-unavailable', 'model-unpriced',
              'manual-boundary-unverified', 'receipt-unavailable')):
-        if _observe(facade, event, result.get('reason')):
-            return {'ok': True, 'priced': False, 'reason': result.get('reason')}
+        if _observe(facade, event, result.get('reason') + (':' + result['exception_class'] if result.get('exception_class') else '')):
+            return {'ok': True, 'priced': False, 'reason': result.get('reason'), **({'exception_class': result['exception_class']} if result.get('exception_class') else {})}
     return result
 
 

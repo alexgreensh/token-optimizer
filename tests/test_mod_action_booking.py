@@ -57,6 +57,7 @@ def test_manual_warm_rejects_unknown_model_without_false_zero_cost(facade, tmp_p
         'timestamp': 1767229000, 'transcript_path': str(path), 'byte_size': st.st_size, 'transcript_mtime': st.st_mtime,
         'usage': {'input_tokens': 1, 'output_tokens': 1, 'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}})
     assert not result['ok']
+    assert result['exception_class'] == 'ValueError'
     assert facade._keepwarm_load_ledger_rows() == []
 
 
@@ -259,3 +260,27 @@ def test_manual_write_cost_uses_disclosed_conservative_rate(facade, tmp_path):
     row = facade._keepwarm_load_ledger_rows()[0]
     assert row['cost_basis'] == 'conservative-1h-write'
     assert row['cost_usd'] == pytest.approx(0.006342)
+
+
+def test_failed_cli_action_writes_bounded_diagnostic(facade, tmp_path, monkeypatch, capsys):
+    import io
+    from _measure import mod_action_booking, mod_action_diagnostics
+    monkeypatch.setattr(facade, 'args', ['mod-action'], raising=False)
+    monkeypatch.setattr(facade.sys, 'stdin', io.StringIO(json.dumps({'action': 'warm-prepare'})))
+    assert mod_action_booking.main(facade) == 1
+    row = json.loads((facade.SNAPSHOT_DIR / 'mod-actions.log').read_text())
+    assert row['reason'] == 'receipt-unavailable'
+    assert row['exception_class'] == 'ValueError'
+    for _ in range(1000):
+        mod_action_diagnostics.log(facade.SNAPSHOT_DIR, {'reason': 'x' * 200})
+    assert (facade.SNAPSHOT_DIR / 'mod-actions.log').stat().st_size <= mod_action_diagnostics.MAX_BYTES
+
+
+def test_mod_action_selftest_is_isolated(tmp_path):
+    import os
+    import subprocess
+    env = dict(os.environ, HOME=str(tmp_path), CLAUDE_CONFIG_DIR=str(tmp_path), TOKEN_OPTIMIZER_SNAPSHOT_DIR=str(tmp_path / 'untouched'))
+    result = subprocess.run([sys.executable, str(SCRIPTS / 'measure.py'), 'mod-action', '--selftest'], env=env, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == 'PASS'
+    assert not (tmp_path / 'untouched').exists()

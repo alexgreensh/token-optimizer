@@ -1370,7 +1370,7 @@ def _get_savings_summary(days=None, since=None):
             # _session_model_reprice.
             unpriced_reprice = {}
             reprice_deltas, repriced_tokens, unmeasured_tokens = _measure_facade._session_model_reprice(
-                conn, cutoff, unpriced_out=unpriced_reprice)
+                conn, cutoff, unpriced_out=unpriced_reprice); reprice_deltas.pop("nudge_followed", None)
             tier_data = _measure_facade.PRICING_TIERS.get(_measure_facade._load_pricing_tier(), _measure_facade.PRICING_TIERS["anthropic"])
             resume_fix = _measure_facade._counted_pricing_v5.resume_lean_reprice(conn, _measure_facade._counted_table(conn, "savings_events"), cutoff,
                                                 lambda model: _measure_facade._counted_exact_card(model, tier_data))
@@ -2300,7 +2300,7 @@ def runway_snapshot(days=None, now=None, token_headline=None):
         except Exception:
             token_parts = _compat.facade()._headline.token_headline({})
         from . import runway_all_in; conn = _measure_facade._init_trends_db()
-        try: direct_pct = runway_all_in.extra_work(_measure_facade, conn, days, _measure_facade._get_merged_savings(days=days))
+        try: direct_pct = runway_all_in.safe_extra_work(_measure_facade, conn, days)
         finally: conn.close()
         context_saved = token_parts["total_tokens"]
         context_mult = (consumed + context_saved) / consumed if consumed > 0 else 1.0

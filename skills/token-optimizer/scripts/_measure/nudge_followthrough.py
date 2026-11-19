@@ -112,6 +112,8 @@ def resolve(facade):
         conn = facade._init_trends_db()
         try:
             _schema(conn)
+            conn.commit()
+            conn.execute('BEGIN IMMEDIATE')
             events = conn.execute('SELECT id,session_uuid,ts,context_tokens,transcript_path,savings_event_id FROM nudge_events').fetchall()
             claimed = set()
             for ident, sid, ts, before, path, event_id in events:
@@ -120,10 +122,12 @@ def resolve(facade):
                         continue
                     rows = list(_rows(path))
                     status, action, requests = classify(rows, ts)
-                    if status == 'pending':
+                    if status == 'pending' or (status == 'followed' and not requests):
                         next_rows = _next_session(path, _epoch(ts))
-                        if next_rows:
+                        if next_rows and status == 'pending':
                             status, action, requests = classify(rows, ts, next_rows)
+                        elif next_rows:
+                            requests = [r['message'] for r in next_rows if r.get('type') == 'assistant' and _context(r.get('message') or {}) > 0][:50]
                     cost = 0.0
                     tokens = 0
                     duplicate = (sid, action) in claimed

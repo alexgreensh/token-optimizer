@@ -27,3 +27,10 @@ def extra_work(facade, conn, days, summary):
     components = facade._action_savings_components(summary, counted)
     saved = components['total_usd'] + components['routing_usd']
     return max(0.0, saved / actual * 100)
+
+
+def safe_extra_work(facade, conn, days):
+    try:
+        return extra_work(facade, conn, days, facade._get_merged_savings(days=days))
+    except Exception:
+        return None

@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.13.74] - 2026-11-19
+
+- Savings and capacity are measured against your own 30 days before install, frozen on install day. Every headline number now counts since install.
+- Model-routing guidance is on from your first session, and routing savings count from the day it went on. Opt out with `TOKEN_OPTIMIZER_ROUTING=0`.
+- Nudges you act on now count: compacting or starting fresh after a status-bar nudge books an estimated saving, priced per request, into the all-in total and the capacity cards.
+- The Claude Code mod's Keep warm button shows whenever the cache state can be computed, and every press is recorded. `measure.py mod-action --selftest` checks the path in one command.
+- New `measure.py pilot-report`: a short, paste-ready summary of capacity gained, savings since install and this week, routing status and nudges followed.
+
 ## [5.13.73] - 2026-11-16
 
 - The prior-session hint arrives once per session instead of on most prompts. A session that stays on one topic no longer stacks copies of the same pointer in context; compaction or /clear re-arms it, and a different prior session or a stronger match still gets its hint. In the reporter's 20-prompt test, hint tokens dropped from 1,626 to 316 (#339, thanks @luysfernnando).

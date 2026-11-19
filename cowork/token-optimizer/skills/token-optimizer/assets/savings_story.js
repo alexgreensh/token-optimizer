@@ -185,7 +185,7 @@ function savingsStoryHtml(data, extras) {
           }).join('') + '</ul>' : '');
       }
     }
-    var method = '<p><strong>Last ' + days + ' days, ' + savingsCents(allCents / 100) + '</strong>: measured ' + savingsCents(cents(measured) / 100) +
+    var method = (mr.routing_enabled === false ? '<p>Routing off</p>' : '') + '<p><strong>Last ' + days + ' days, ' + savingsCents(allCents / 100) + '</strong>: measured ' + savingsCents(cents(measured) / 100) +
         ', estimated ' + savingsCents(cents(estimated) / 100) + (routing30 > 0 ? ', routing ' + savingsCents(routing30) : '') + '.</p>' +
       table('Measured, counted event by event', measured) +
       table('Estimated, sized by a documented method', estimated) +
@@ -247,12 +247,12 @@ function savingsStoryHtml(data, extras) {
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">What Token Optimizer saved</h2>' +
       '<div class="st-mega__row st-mega__row--hero">' +
-        '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-total">' + usd(bigTotal) + '</button>' +
-          tipCard('st-tip-total', 'What makes up ' + usd(bigTotal), tipTotalLines) +
-          '<span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' +
         (SIh && SIh.all > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-since">' + usd(SIh.all) + '</button>' +
           tipCard('st-tip-since', 'Since ' + esc(SIh.date || 'install'), tipSinceLines) +
           '<span class="st-mega__unit">saved since you installed' + soFar(soFarAll) + '</span></div>' : '') +
+        '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-total">' + usd(bigTotal) + '</button>' +
+          tipCard('st-tip-total', 'What makes up ' + usd(bigTotal), tipTotalLines) +
+          '<span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' +
         (totalTok > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--tok st-tip" aria-describedby="st-tip-tokens">' + tok(totalTok) + '</button>' +
           tipCard('st-tip-tokens', tok(totalTok) + ' tokens kept out of context', tipTokLines) +
           '<span class="st-mega__unit">tokens kept out of context in ' + days + ' days' + soFar(cp.remeasuring === true) + '</span></div>' : '') +
@@ -317,7 +317,7 @@ function savingsSinceInstallBody(data, SI) {
     (SI.measured > 0 ? '<li>Measured: ' + savingsCents(SI.measured) + '. Context removed, cheaper cache writes and re-reads avoided, counted event by event.</li>' : '') +
     (SI.estimated > 0 ? '<li>Estimated: ' + savingsCents(SI.estimated) + '. Setup cleanup from archives, handovers and other documented estimates.</li>' : '') +
     (SI.routing > 0 ? '<li>Model routing, estimated: ' + savingsCents(SI.routing) + '. ' + esc_(basis.lead) + (period ? ' Most of it from ' + esc_(period) + '.' : '') + '</li>' : '') +
-    '</ul>';
+    (mr.routing_enabled === false ? '<li>Routing off</li>' : '') + '</ul>';
   var alt = SI.routing > 0 && basis.kind === 'stated' && has(ai.routing_measured_baseline_opus_share) && has(ai.routing_measured_baseline_realized_cost_usd)
     ? '<p>Using the measured starting mix (' + (num(ai.routing_measured_baseline_opus_share) * 100).toFixed(2) + '% Opus), the routing estimate is ' + usd(ai.routing_measured_baseline_realized_cost_usd) + '.</p>' : '';
   return split +

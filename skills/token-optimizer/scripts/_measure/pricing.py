@@ -1836,15 +1836,12 @@ def _compute_model_routing_savings(days=None, since=None):
         if not cur_shares or cur_total <= 0:
             return zero
 
-        # Baseline mix: the user's stated pre-TO baseline first, then the mix
-        # captured at install, the frozen baseline, else earliest history.
-        baseline_shares, baseline_source, baseline_stated, early_mix = None, None, False, None
-        explicit = _measure_facade._pretool_baseline_mix()
-        if explicit:
-            baseline_shares, baseline_source, baseline_stated = explicit, "pretool_baseline", True
-        else:
-            from . import baseline_provenance
-            baseline_shares, baseline_source, baseline_stated, early_mix = baseline_provenance.routing_baseline(_measure_facade)
+        # The frozen window is the only measured routing baseline.
+        frozen = _measure_facade._get_baseline_state() or {}
+        baseline_shares = frozen.get("model_shares") or _measure_facade._pretool_baseline_mix()
+        baseline_stated = frozen.get("opus_share_source") == "pretool_baseline" or (not frozen.get("model_shares") and bool(baseline_shares))
+        baseline_source = "pretool_baseline" if baseline_stated else "frozen_baseline"
+        early_mix = None
         if not baseline_shares:
             return zero
 
@@ -2042,47 +2039,6 @@ def _compute_model_routing_savings(days=None, since=None):
             return max(0.0, baseline_cost - standardized_actual)
 
         measured_baseline = {}
-        if baseline_source == "pretool_baseline":
-            # The pre-activity migration retains the previously frozen baseline
-            # as baseline_state.json.pre-activity-v1[.N] beside the live file;
-            # its model_shares are the earliest measured mix, the honest
-            # measured alternative to a hand-entered pre-TO baseline.
-            archived = None
-            try:
-                for _ap in sorted(_measure_facade.SNAPSHOT_DIR.glob("baseline_state.json.pre-activity-v1*")):
-                    try:
-                        _ad = _measure_facade.json.loads(_ap.read_text(encoding="utf-8"))
-                    except (_measure_facade.json.JSONDecodeError, OSError, ValueError):
-                        continue
-                    _ashares = _ad.get("model_shares") if isinstance(_ad, dict) else None
-                    if isinstance(_ashares, dict) and _ashares.get("opus"):
-                        archived = {"shares": _ashares,
-                                    "first_date": (_ad.get("window") or {}).get("start")}
-                        break
-            except OSError:
-                archived = None
-            if archived:
-                measured_baseline = {
-                    "opus_share": round(float(archived["shares"].get("opus") or 0.0), 4),
-                    "source": "baseline_state_pre_activity",
-                    "first_date": archived.get("first_date"),
-                    "realized_cost_usd": round(_realized_for_baseline(archived["shares"]), 4),
-                }
-            else:
-                if early_mix is None:
-                    try:
-                        early_mix = _measure_facade._earliest_model_mix(
-                            lookback_days=_measure_facade._BASELINE_EARLY_WINDOW_DAYS)
-                    except Exception:
-                        early_mix = None
-                early_shares = (early_mix or {}).get("shares") or {}
-                if early_shares:
-                    measured_baseline = {
-                        "opus_share": round(float(early_shares.get("opus", 0.0) or 0.0), 4),
-                        "source": "history",
-                        "first_date": (early_mix or {}).get("first_date"),
-                        "realized_cost_usd": round(_realized_for_baseline(early_shares), 4),
-                    }
         compared_tokens = sum(kept_totals.values())
         window_tokens = unpriced_tokens + free_tokens + pooled + unsplit_tokens
 

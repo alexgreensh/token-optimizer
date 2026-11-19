@@ -239,6 +239,9 @@ def anchor_step(facade, budget_seconds=None, tier=None):
             # State written before activity dating (or surviving an archive
             # collision) was computed on session-date windows; rebuild it.
             state = {}
+        window = facade._pretool_window()
+        if window and state.get("window") != list(window):
+            state = {}
         if state.get("status") == "unavailable":
             return "unavailable"
         if tier is None:

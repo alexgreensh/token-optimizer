@@ -161,7 +161,7 @@ if __name__ in ("__main__",):
     from runtime_env import consume_runtime_flag as _consume_runtime_flag_early
     sys.argv[:] = _consume_runtime_flag_early(sys.argv, os.environ)
 
-from _measure import _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5, transcript_backfill as _transcript_backfill, counted_subagents as _counted_subagents, headline as _headline, structural_report as _structural_report
+from _measure import install_baseline as _install_baseline, routing_credit as _routing_credit, _compat as _measure_compat, counted_pricing_v5 as _counted_pricing_v5, transcript_backfill as _transcript_backfill, counted_subagents as _counted_subagents, headline as _headline, structural_report as _structural_report
 _measure_providers = _measure_compat.prepare(sys.modules[__name__])
 from _measure import counted_cap as _counted_cap, output_reread as _output_reread, transcript_product as _transcript_product  # noqa: E402
 from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared
@@ -7132,7 +7132,7 @@ _pretool_baseline_mix = _measure_compat.bind(_measure_providers['pricing']._pret
 set_pretool_baseline = _measure_compat.bind(_measure_providers['pricing'].set_pretool_baseline, __name__)
 
 
-_compute_model_routing_savings = _measure_compat.bind(_measure_providers['pricing']._compute_model_routing_savings, __name__, defaults=(30, None,))
+_routing_unrestricted = _measure_compat.bind(_measure_providers['pricing']._compute_model_routing_savings, __name__, defaults=(30, None,)); _compute_model_routing_savings = _measure_compat.bind(_routing_credit.compute, __name__, defaults=(30, None,))
 
 
 # Share of full-file Writes assumed avoidable via a targeted Edit, and the
@@ -7170,7 +7170,7 @@ _estimate_cache_drop_savings = _measure_compat.bind(_measure_providers['savings'
 # v4: store the full model-mix shares (not just opus_share) so the before/after
 # transformation prices each era at its real model mix -- works for Codex/GPT and any
 # provider, not just Anthropic opus-vs-sonnet.
-_BASELINE_VERSION = 4
+_BASELINE_VERSION = 5
 _BASELINE_ONBOARDING_DAYS = _int_env("TOKEN_OPTIMIZER_BASELINE_ONBOARDING_DAYS", 1)
 _BASELINE_EARLY_WINDOW_DAYS = _int_env("TOKEN_OPTIMIZER_BASELINE_WINDOW_DAYS", 30)
 # Percentile at which a single session's total tokens is capped (winsorized). 0.99
@@ -7255,10 +7255,10 @@ _dashboard_spent_token_basis = _measure_compat.bind(_measure_providers['savings'
 _winsorized_mean_session = _measure_compat.bind(_measure_providers['savings']._winsorized_mean_session, __name__, defaults=(_BASELINE_WINSOR_PCT,))
 
 
-_compute_baseline_state = _measure_compat.bind(_measure_providers['savings']._compute_baseline_state, __name__)
+_compute_baseline_state = _measure_compat.bind(_install_baseline.compute, __name__)
 
 
-_BASELINE_KNOWN_VERSIONS = (3, 4)   # shapes this build can read or migrate forward
+_BASELINE_KNOWN_VERSIONS = (3, 4, 5)   # shapes this build can read or migrate forward
 _BASELINE_MAX_BYTES = 256 * 1024    # a baseline is ~1KB; anything larger is not one
 # Shrink guard: a recapture this much cheaper than the incumbent is refused.
 # Rationale: a baseline that shrinks almost always means the HISTORY thinned
@@ -7290,7 +7290,7 @@ _adopt_orphaned_baseline = _measure_compat.bind(_measure_providers['savings']._a
 _baseline_shrink_is_material = _measure_compat.bind(_measure_providers['savings']._baseline_shrink_is_material, __name__)
 
 
-_get_baseline_state = _measure_compat.bind(_measure_providers['savings']._get_baseline_state, __name__, defaults=(True,))
+_get_baseline_state = _measure_compat.bind(_install_baseline.get, __name__, defaults=(True,))
 
 
 _cost_per_session = _measure_compat.bind(_measure_providers['savings']._cost_per_session, __name__)

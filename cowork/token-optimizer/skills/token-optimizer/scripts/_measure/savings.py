@@ -4530,7 +4530,7 @@ def _pinned_workload_anchor():
         m = data.get("metrics") if isinstance(data, dict) else None
         if (data.get("status") == "pinned" and data.get("activity_basis") == 1
                 and isinstance(m, dict)
-                and data.get("rates") == _measure_facade._WEIGHT_POOL_FLAT_RATES
+                and data.get("rates") == _measure_facade._WEIGHT_POOL_FLAT_RATES and all(d in str(data.get("label") or "") for d in (_measure_facade._pretool_window() or ("missing-start", "missing-end")))
                 and all(isinstance(m.get(k), (int, float)) and _measure_facade.math.isfinite(m[k]) and m[k] >= 0
                         for k in ("sessions", "usd", "tokens", "flat_usd", "api_calls", "messages"))
                 and m["sessions"] >= _measure_facade._SESSION_WEIGHT_MIN_ANCHOR_SESSIONS
@@ -4727,7 +4727,7 @@ def _session_weight_pool_savings(cutoff, days=None, tier=None, activity_window=N
                 ).fetchall() if r and r[0]
             ]
             pinned = _measure_facade._pinned_workload_anchor()
-            if len(months) < 2 and not pinned:
+            if not pinned:
                 return None
             first_day = conn.execute(
                 "SELECT MIN(date) FROM session_activity WHERE input_tokens IS NOT NULL "
@@ -5137,33 +5137,8 @@ def _estimate_before_after_savings(days=None, estimated_pools=None, model_routin
         # Anthropic runtime; with none, the current mix. A frozen share is trusted as-is;
         # a non-Anthropic user is priced at their own measured mix, never fabricated Opus.
         anthropic = _measure_facade.detect_runtime() not in {"codex", "hermes", "copilot", "opencode", "cursor", "antigravity", "grok"}
-        if anthropic and frozen_opus and frozen_opus > 0:
-            # A real measured baseline share exists -> trust it (e.g. an Anthropic
-            # user with a frozen ~0.95 Opus share resolves to ~0.95). Gated on
-            # `anthropic`: a non-Anthropic runtime never ran Opus, so a frozen
-            # opus_share > 0 there is inherited from a different runtime or a
-            # mixed-runtime capture. Trusting it prices the BEFORE arm at ~95%
-            # Opus against an after arm priced at the user's real non-Anthropic
-            # mix, fabricating a routing lever that never existed and OVERSTATING
-            # savings. Such a user falls through to before_shares = after_shares,
-            # which zeroes the routing lever instead of inventing one.
-            baseline_opus_share = frozen_opus
-            before_shares = {"opus": baseline_opus_share,
-                             "sonnet": round(1.0 - baseline_opus_share, 4)}
-        elif anthropic:
-            # Anthropic user with no MEASURED baseline. The pre-Token-Optimizer model
-            # mix is not knowable here, and a mix we cannot measure is a mix we do not
-            # claim: any assumed Opus share would directly scale the routing lever and
-            # inflate the _compat.facade()._headline. Price the before-arm at the user's real current mix
-            # so the routing lever is exactly zero until a baseline is measured.
-            baseline_opus_share = float(after_shares.get("opus", 0.0))
-            before_shares = dict(after_shares)
-        else:
-            # Non-Anthropic (Codex/Hermes/Copilot/OpenCode) with no baseline -> price the
-            # before-arm at the user's real current mix. Never inject Opus they never used;
-            # with no routing lever the transformation falls to the caching lever alone.
-            baseline_opus_share = float(after_shares.get("opus", 0.0))
-            before_shares = dict(after_shares)
+        before_shares = dict(baseline.get("model_shares") or after_shares)
+        baseline_opus_share = float(before_shares.get("opus", 0.0))
         # Baseline cache-hit pattern, defined over the FRESH+CACHE_READ POOL only (cache
         # write excluded). C1/C2: the counterfactual redistributes caching over the pool,
         # not over total_in (which includes CW); a total_in-based hit prices MORE volume on
@@ -6418,7 +6393,7 @@ def _savings_since_install():
             "excluded_usd": dict(savings_story.excluded_since_install(full), routing=None) if stated else savings_story.excluded_since_install(full),
             "measured_usd": round(measured, 2),
             "estimated_usd": round(estimated, 2),
-            "total_usd": round(measured + estimated, 2),
+            "total_usd": all_in["total_usd"] if all_in is not None else round(measured + estimated, 2),
             "all_in": all_in,
             # measured_usd is no longer a pure event-time meter once the
             # model-mix repair has moved a rate (see _session_model_reprice), so

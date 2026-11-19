@@ -198,13 +198,15 @@ def transformation(facade, baseline, weight_pool):
                 if len(dates) == 2:
                     start, end = dates
         cov = window_coverage(start, end, install_evidence(facade))
+        if window.get("coverage") == "post_install":
+            cov["coverage"] = "post_install"
         try:
             stated = baseline.get("opus_share_source") == "pretool_baseline"
             share = float(baseline.get("opus_share") or 0)
         except (TypeError, ValueError):
             stated, share = False, 0.0
         cov.update(anchor=anchor, pending_anchor=pending,
-                   mix_source="stated" if stated else ("measured" if share > 0 else "current_mix"))
+                   mix_source="stated" if stated else ("measured" if baseline.get("model_shares") else "current_mix"))
         cov["lead"], cov["note"] = _transformation_copy(cov)
         if cov["coverage"] in ("post_install", "partial"):
             # The tool ran in the baseline month, so the comparison is with that

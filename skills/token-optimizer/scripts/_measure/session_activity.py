@@ -12,6 +12,7 @@ Everything fails open: a missing or unreadable record returns
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -35,8 +36,8 @@ def _ms(value):
 
 
 def _project_dir_name(cwd):
-    """Claude Code's projects/ encoding: path separators, '.' and '_' become '-'."""
-    return cwd.replace("/", "-").replace("\\", "-").replace(".", "-").replace("_", "-")
+    """Claude Code's projects/ encoding: every non-alphanumeric character becomes '-'."""
+    return re.sub(r"[^A-Za-z0-9]", "-", cwd)
 
 
 def _transcript_mtime(config_dir, record):
@@ -53,7 +54,7 @@ def _transcript_mtime(config_dir, record):
         return None
 
 
-def activity(pid, now=None, config_dir=None):
+def activity(pid, now=None, config_dir=None, elapsed_seconds=None):
     """Activity snapshot for one live session pid.
 
     Returns ``{"status", "last_active_ts", "idle_seconds", "tmux", "source"}``:
@@ -74,15 +75,26 @@ def activity(pid, now=None, config_dir=None):
             record = parsed
     except (OSError, ValueError):
         record = None
+    none = {"status": None, "last_active_ts": None, "idle_seconds": None,
+            "tmux": None, "source": "none"}
     if record is None:
-        return {"status": None, "last_active_ts": None, "idle_seconds": None,
-                "tmux": None, "source": "none"}
+        return none
+    # A record left by a dead session whose pid was reused describes another
+    # process: trust it only when its pid and start time match the live one.
+    if record.get("pid") not in (None, pid):
+        return none
+    started = _ms(record.get("startedAt"))
+    if elapsed_seconds is not None and started is not None and elapsed_seconds > 0:
+        if abs((now - elapsed_seconds) - started) > 300:
+            return none
 
     stamps = [ts for ts in (_ms(record.get("statusUpdatedAt")),
                             _ms(record.get("updatedAt")),
                             _transcript_mtime(base, record)) if ts is not None]
     last_active = max(stamps) if stamps else None
     idle = max(0.0, now - last_active) if last_active is not None else None
+    if idle is not None and elapsed_seconds is not None and elapsed_seconds > 0:
+        idle = min(idle, float(elapsed_seconds))  # never idle longer than the process has lived
     status = record.get("status")
     tmux = record.get("tmux")
     return {

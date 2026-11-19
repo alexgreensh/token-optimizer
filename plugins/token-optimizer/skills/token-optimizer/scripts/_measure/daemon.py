@@ -1460,7 +1460,7 @@ def _collect_health_data():
         # Claude Code's sessions/<pid>.json record proves real idle time;
         # process age alone flags busy orchestrators as ZOMBIE. Sessions with
         # no record (older Claude Code) keep the elapsed-based thresholds.
-        act = _session_activity.activity(s["pid"], _activity_now)
+        act = _session_activity.activity(s["pid"], _activity_now, elapsed_seconds=s.get("elapsed_seconds"))
         s["activity"] = act
         idle = act.get("idle_seconds")
         s["idle_seconds"] = idle
@@ -1924,11 +1924,16 @@ def kill_stale_sessions(threshold_hours=None, dry_run=None, include_orphans=None
         if act.get("source") in (None, "none"):
             return False
         from . import session_activity as _session_activity
+        # Fail closed: skip unless a fresh read still proves the session idle
+        # past the threshold (it may have just finished a turn).
         try:
-            fresh = _session_activity.activity(s["pid"])
+            fresh = _session_activity.activity(s["pid"], elapsed_seconds=s.get("elapsed_seconds"))
         except Exception:
-            return False
-        return fresh.get("status") == "busy"
+            return True
+        if fresh.get("source") != "record" or fresh.get("status") == "busy":
+            return True
+        idle = fresh.get("idle_seconds")
+        return idle is None or idle <= threshold_seconds
 
     my_pid = _measure_facade.os.getpid()
     my_ppid = _measure_facade.os.getppid()

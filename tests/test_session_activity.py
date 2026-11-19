@@ -289,3 +289,51 @@ def test_kill_stale_never_kills_session_that_went_busy(tmp_path, monkeypatch, ca
     out = capsys.readouterr().out
     assert killed == []
     assert "busy now" in out
+
+
+def test_kill_stale_skips_session_that_just_finished_a_turn(tmp_path, monkeypatch, capsys):
+    """Selected as idle for days, then a turn completes (idle again, fresh stamp)."""
+    measure = _load_measure()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    _write_record(tmp_path, 606, status="idle", idle_seconds=3 * 86400)
+    killed = _kill_stale(measure, monkeypatch, [_live_session(606)])
+    _write_record(tmp_path, 606, status="idle", idle_seconds=5)
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == []
+
+
+def test_kill_stale_skips_when_the_fresh_read_fails(tmp_path, monkeypatch, capsys):
+    measure = _load_measure()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    _write_record(tmp_path, 607, status="idle", idle_seconds=3 * 86400)
+    killed = _kill_stale(measure, monkeypatch, [_live_session(607)])
+    (tmp_path / "sessions" / "607.json").unlink()
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == []
+
+
+def test_record_from_a_dead_session_with_a_reused_pid_is_ignored(tmp_path):
+    rec = _write_record(tmp_path, 608, status="idle", idle_seconds=10 * 86400)
+    rec["startedAt"] = int((time.time() - 20 * 86400) * 1000)
+    (tmp_path / "sessions" / "608.json").write_text(json.dumps(rec), encoding="utf-8")
+    act = sa.activity(608, config_dir=tmp_path, elapsed_seconds=3600)
+    assert act["source"] == "none"
+
+
+def test_record_for_another_pid_is_ignored(tmp_path):
+    rec = _write_record(tmp_path, 609, status="idle", idle_seconds=10 * 86400)
+    rec["pid"] = 12345
+    (tmp_path / "sessions" / "609.json").write_text(json.dumps(rec), encoding="utf-8")
+    assert sa.activity(609, config_dir=tmp_path)["source"] == "none"
+
+
+def test_idle_never_exceeds_process_lifetime(tmp_path):
+    rec = _write_record(tmp_path, 610, status="idle", idle_seconds=10 * 86400)
+    rec["startedAt"] = int((time.time() - 3600) * 1000)
+    (tmp_path / "sessions" / "610.json").write_text(json.dumps(rec), encoding="utf-8")
+    act = sa.activity(610, config_dir=tmp_path, elapsed_seconds=3600)
+    assert act["source"] == "record" and act["idle_seconds"] <= 3600
+
+
+def test_project_dir_encoding_maps_every_non_alphanumeric():
+    assert sa._project_dir_name("/Users/a b/my.proj_x") == "-Users-a-b-my-proj-x"

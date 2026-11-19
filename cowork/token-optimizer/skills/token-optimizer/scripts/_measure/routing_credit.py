@@ -43,15 +43,18 @@ def baseline(f):
     early = f._earliest_model_mix()
     first = (early or {}).get('first_date')
     install_date = getattr(f, '_install_date', lambda: None)()
-    boundary = install_date or str(snap.get('timestamp') or '')[:10] or date.today().isoformat()
-    if shares and not stated_frozen and window.get('end') and (not first or first > window['end'] or coverage == 'post_install'):
+    boundary = install_date or str(snap.get('timestamp') or '')[:10]
+    # A window that starts after install already carries Token Optimizer's
+    # effect, so it is never the "before" mix: fall through to history from
+    # before install, then the user's stated share.
+    if shares and not stated_frozen and window.get('end') and coverage != 'post_install' and (not first or first > window['end']):
         return shares, 'frozen_baseline', stated_frozen, None
-    if early and early.get('shares') and (not first or first < boundary):
+    if boundary and early and early.get('shares') and first and first < boundary:
         return early['shares'], 'history', False, early
 
     stated = f._pretool_baseline_mix()
     if stated:
         return stated, 'pretool_baseline', True, None
     if shares and stated_frozen:
-        return shares, 'frozen_baseline', True, None
+        return shares, 'pretool_baseline', True, None
     return None, None, False, None

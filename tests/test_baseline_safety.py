@@ -97,6 +97,67 @@ def test_shrink_guard_tolerates_small_honest_drift(m):
     assert m._baseline_shrink_is_material(inc, slightly_less) is False
 
 
+def test_recapture_materially_smaller_keeps_the_incumbent(m, tmp_path, monkeypatch):
+    """Upgrade re-anchor: a tiny recomputed baseline must not replace a frozen one."""
+    snap = tmp_path / "snap"
+    snap.mkdir(parents=True, exist_ok=True)
+    # Install proof lets get() past the "keep legacy baseline" early return.
+    (snap / "snapshot_before.json").write_text(
+        json.dumps({"timestamp": "2026-11-01T00:00:00"}), encoding="utf-8")
+    bpath = snap / "baseline_state.json"
+    incumbent = _baseline(20_616_554, version=4, fresh=100_000)
+    incumbent["activity_basis"] = 1
+    bpath.write_text(json.dumps(incumbent), encoding="utf-8")
+
+    candidate = _baseline(100, version=5, captured_at="2026-11-10T00:00:00")
+    candidate["activity_basis"] = 1
+    candidate["typical_session"] = {"fresh_input": 10, "cache_write": 0,
+                                   "cache_read": 100, "output": 10}
+    candidate["window"] = {"start": "2026-10-01", "end": "2026-10-30",
+                           "sessions_used": 40, "sessions_total": 40, "elapsed": True}
+    monkeypatch.setattr(m, "_compute_baseline_state", lambda: candidate)
+
+    got = m._get_baseline_state()
+
+    assert got["typical_session"]["fresh_input"] == 100_000, (
+        "a materially smaller recapture must not become the active baseline"
+    )
+    on_disk = json.loads(bpath.read_text(encoding="utf-8"))
+    assert on_disk["typical_session"]["fresh_input"] == 100_000
+    assert on_disk["version"] == 4
+    parked = json.loads((snap / "baseline_state.candidate.json").read_text(encoding="utf-8"))
+    assert parked["rejected_reason"] == "materially smaller than the existing baseline"
+    assert parked["typical_session"]["fresh_input"] == 10
+    assert parked["incumbent_cost_usd"] > parked["candidate_cost_usd"]
+
+
+def test_recapture_within_noise_still_freezes(m, tmp_path, monkeypatch):
+    """The guard is asymmetric: honest drift under the threshold still re-freezes."""
+    snap = tmp_path / "snap"
+    snap.mkdir(parents=True, exist_ok=True)
+    (snap / "snapshot_before.json").write_text(
+        json.dumps({"timestamp": "2026-11-01T00:00:00"}), encoding="utf-8")
+    bpath = snap / "baseline_state.json"
+    incumbent = _baseline(20_616_554, version=4, fresh=100_000)
+    incumbent["activity_basis"] = 1
+    bpath.write_text(json.dumps(incumbent), encoding="utf-8")
+
+    candidate = _baseline(20_616_554, version=5, fresh=90_000)
+    candidate["activity_basis"] = 1
+    candidate["window"] = {"start": "2026-10-01", "end": "2026-10-30",
+                           "sessions_used": 40, "sessions_total": 40, "elapsed": True}
+    monkeypatch.setattr(m, "_compute_baseline_state", lambda: candidate)
+
+    got = m._get_baseline_state()
+
+    assert got["version"] == m._BASELINE_VERSION
+    assert got["typical_session"]["fresh_input"] == 90_000
+    on_disk = json.loads(bpath.read_text(encoding="utf-8"))
+    assert on_disk["version"] == m._BASELINE_VERSION
+    assert on_disk["typical_session"]["fresh_input"] == 90_000
+    assert not (snap / "baseline_state.candidate.json").exists()
+
+
 # ------------------------------------------------- migrate, never delete
 
 def test_v3_migrates_forward_instead_of_being_deleted(m):

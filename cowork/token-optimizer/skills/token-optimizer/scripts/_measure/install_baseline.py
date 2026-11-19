@@ -104,6 +104,21 @@ def get(freeze=True):
         if adopted and adopted.get('activity_basis') == 1:
             return adopted
         return state
+    # A shrinking baseline means the HISTORY thinned, not that the user got cheaper.
+    # Keep the incumbent active, park the candidate beside it, and record the
+    # rejection rather than letting the reported saving quietly collapse.
+    incumbent = old if isinstance(old, dict) and old.get('activity_basis') == 1 and old.get('typical_session') else None
+    if incumbent is not None and f._baseline_shrink_is_material(incumbent, state):
+        try:
+            f._write_baseline_state(path.with_name('baseline_state.candidate.json'), dict(
+                state,
+                rejected_reason='materially smaller than the existing baseline',
+                rejected_at=datetime.now().isoformat(),
+                incumbent_cost_usd=round(f._baseline_priced_cost(incumbent), 4),
+                candidate_cost_usd=round(f._baseline_priced_cost(state), 4)))
+        except (OSError, AttributeError):
+            pass
+        return incumbent
     if freeze and state['window']['elapsed']:
         try:
             if isinstance(old, dict):

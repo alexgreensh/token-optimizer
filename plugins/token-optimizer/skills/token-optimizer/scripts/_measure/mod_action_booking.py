@@ -161,8 +161,8 @@ def record(facade, event):
                     'ts': when, 'state': 'armed', 'owner': None, 'pings_fired': [when],
                     'pause_key': pause_key, 'manual_action_id': ident})
         return {'ok': True, 'pause_key': pause_key, 'cost_usd': cost, 'duplicate': bool(finished), 'resume_trackable': usable}
-    except Exception:
-        return {'ok': False, 'reason': 'receipt-unavailable'}
+    except Exception as exc:
+        return {'ok': False, 'reason': 'receipt-unavailable', 'exception_class': type(exc).__name__}
 
 
 def main(facade):

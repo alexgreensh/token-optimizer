@@ -57,6 +57,7 @@ def test_manual_warm_rejects_unknown_model_without_false_zero_cost(facade, tmp_p
         'timestamp': 1767229000, 'transcript_path': str(path), 'byte_size': st.st_size, 'transcript_mtime': st.st_mtime,
         'usage': {'input_tokens': 1, 'output_tokens': 1, 'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}})
     assert not result['ok']
+    assert result['exception_class'] == 'ValueError'
     assert facade._keepwarm_load_ledger_rows() == []
 
 

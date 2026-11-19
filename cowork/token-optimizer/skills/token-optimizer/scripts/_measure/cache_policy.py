@@ -381,85 +381,8 @@ def _get_cache_ttl_waste(days=None, collect_sessions=None):
 
 
 def _cache_ttl_waste_cached(days=None, fresh=None):
-    """`_get_cache_ttl_waste` with a 15-min sidecar cache (cache_health.json).
-
-    Returns the cached payload when the sidecar is younger than the TTL AND its
-    stored `days` AND `platform` (runtime) match the current call; otherwise
-    recomputes and rewrites the sidecar. The runtime is part of the hit
-    condition because a `cd` into a Codex project (or a runtime flip) changes the
-    session source — a sidecar computed under a different runtime would otherwise
-    be served as if it described the current one. `fresh=True` bypasses the read
-    (cache-report --fresh). Freshness uses the mtime idiom (module-level
-    (mtime, payload) memo) for consistency with _demoted_cohorts. Fail-open: any
-    cache I/O error falls through to a fresh compute.
-    """
-    _measure_facade = _compat.facade()
-    pass
-    cache_path = _measure_facade.SNAPSHOT_DIR / "cache_health.json"
-    current_runtime = _measure_facade.detect_runtime()
-
-    def _is_hit(payload):
-        _measure_facade = _compat.facade()
-        try:
-            return (
-                int(payload.get("period_days", -1)) == int(days)
-                and payload.get("platform") == current_runtime
-                and payload.get("engine") == 2  # older sidecars predate the rebuild fix
-                and (_measure_facade.time.time() - float(payload.get("_cached_ts", 0)))
-                < _measure_facade._CACHE_HEALTH_CACHE_TTL_SECONDS
-            )
-        except (TypeError, ValueError):
-            return False
-
-    if not fresh:
-        try:
-            mtime = cache_path.stat().st_mtime
-            # In-process memo: same file version -> no re-read, no re-parse.
-            if _measure_facade._cache_health_memo is not None and _measure_facade._cache_health_memo[0] == mtime:
-                payload = _measure_facade._cache_health_memo[1]
-                if _is_hit(payload):
-                    return payload
-            else:
-                payload = _measure_facade.json.loads(cache_path.read_text(encoding="utf-8"))
-                _measure_facade._cache_health_memo = (mtime, payload)
-                if _is_hit(payload):
-                    return payload
-        except (_measure_facade.json.JSONDecodeError, OSError, ValueError, TypeError):
-            pass
-    result = _measure_facade._get_cache_ttl_waste(days=days)
-    try:
-        record = dict(result)
-        record["_cached_ts"] = _measure_facade.time.time()
-        _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        # mkstemp + replace: an interrupted write never leaves a half-written
-        # sidecar, and the 0600 mode is set before any content is visible.
-        fd, tmp_name = _measure_facade.tempfile.mkstemp(
-            prefix=".cache_health.", suffix=".tmp", dir=str(_measure_facade.SNAPSHOT_DIR))
-        try:
-            if hasattr(_measure_facade.os, "fchmod"):  # POSIX only; mkstemp is already 0600
-                _measure_facade.os.fchmod(fd, 0o600)
-            with _measure_facade.os.fdopen(fd, "w", encoding="utf-8") as fh:
-                # W7: json.dump can raise ValueError (e.g. a non-serializable
-                # value or nan/inf with allow_nan path quirks), not just OSError;
-                # broaden the inner cleanup trigger to Exception so a serialize
-                # failure still unlinks the temp file instead of leaking it.
-                _measure_facade.json.dump(record, fh)
-            _measure_facade.os.replace(tmp_name, str(cache_path))
-            try:
-                _measure_facade._cache_health_memo = (_measure_facade.os.stat(cache_path).st_mtime, record)
-            except OSError:
-                _measure_facade._cache_health_memo = None
-        except Exception:
-            try:
-                _measure_facade.os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
-    except Exception:
-        # W7: the whole memoization layer is best-effort; any failure (I/O or
-        # serialize) just means this call returns the fresh result uncached.
-        pass
-    return result
+    from . import ttl_period
+    return ttl_period.cache_health(_compat.facade(), days, fresh)
 
 
 def _keepwarm_sidecar_path():

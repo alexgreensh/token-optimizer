@@ -233,3 +233,14 @@ def test_same_day_routing_removal_is_off(measure):
     (snap / 'routing_injected_at').write_text('2026-11-01')
     (snap / 'routing_removed_at').write_text('2026-11-01')
     assert pilot_report._routing(measure)['on'] is False
+
+
+def test_dashboard_window_is_fetched_once_when_seven_days(measure, monkeypatch):
+    _install_marker(measure, days_ago=6)
+    calls = []
+    def dashboard(days=None, **kwargs):
+        calls.append(days)
+        return _payload(days)
+    monkeypatch.setattr(measure, '_dashboard_savings_data', dashboard)
+    pilot_report.collect(measure)
+    assert calls == [7]

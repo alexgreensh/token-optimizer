@@ -255,7 +255,7 @@ def collect(facade=None):
                        "routing_usd": since["routing_usd"]}
 
     try:
-        data7 = _dashboard(f, 7)
+        data7 = data if capacity_days == 7 else _dashboard(f, 7)
         report["saved_7d_usd"] = _saved_7d(data7, routing_on)
     except Exception:
         pass

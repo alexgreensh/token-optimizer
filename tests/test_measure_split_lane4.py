@@ -450,3 +450,47 @@ def test_tick_singleton_excludes_a_live_contender_and_releases(m, monkeypatch, f
     except ValueError:
         assert fail
     assert not lock.exists()
+
+
+def test_ttl_sidecar_retains_windows_and_platforms(m, monkeypatch, tmp_path):
+    snapshot = tmp_path / 'snap'
+    snapshot.mkdir()
+    runtime = ['claude']
+    monkeypatch.setattr(m, 'SNAPSHOT_DIR', snapshot)
+    monkeypatch.setattr(m, 'detect_runtime', lambda: runtime[0])
+    compute = Mock(side_effect=lambda days: {'period_days': days, 'platform': runtime[0], 'engine': 2, 'waste': days})
+    monkeypatch.setattr(m, '_get_cache_ttl_waste', compute)
+    monkeypatch.setattr(m, '_cache_health_memo', None)
+    monkeypatch.setattr(m, 'time', SimpleNamespace(time=lambda: 1000.0))
+    for days in (7, 30, 7, 30):
+        assert m._cache_ttl_waste_cached(days=days)['waste'] == days
+    runtime[0] = 'codex'
+    assert m._cache_ttl_waste_cached(days=7)['waste'] == 7
+    m._cache_health_memo = None
+    runtime[0] = 'claude'
+    assert m._cache_ttl_waste_cached(days=7)['waste'] == 7
+    assert compute.call_count == 3
+    sidecar = json.loads(_read(snapshot / 'cache_health.json'))
+    assert len(sidecar['entries']) == 3
+    m._cache_ttl_waste_cached(days=7, fresh=True)
+    assert compute.call_count == 4
+    assert m._cache_ttl_waste_cached(days=30)['waste'] == 30
+    assert compute.call_count == 4
+
+
+def test_ttl_sidecar_reads_legacy_entry_and_preserves_it(m, monkeypatch, tmp_path):
+    snapshot = tmp_path / 'snap'
+    snapshot.mkdir()
+    legacy = {'period_days': 7, 'platform': 'claude', 'engine': 2, '_cached_ts': 1000, 'waste': 7}
+    (snapshot / 'cache_health.json').write_text(json.dumps(legacy))
+    monkeypatch.setattr(m, 'SNAPSHOT_DIR', snapshot)
+    monkeypatch.setattr(m, 'detect_runtime', lambda: 'claude')
+    monkeypatch.setattr(m, '_cache_health_memo', None)
+    monkeypatch.setattr(m, 'time', SimpleNamespace(time=lambda: 1001.0))
+    compute = Mock(return_value={'period_days': 30, 'platform': 'claude', 'engine': 2, 'waste': 30})
+    monkeypatch.setattr(m, '_get_cache_ttl_waste', compute)
+    assert m._cache_ttl_waste_cached(days=7)['waste'] == 7
+    assert m._cache_ttl_waste_cached(days=30)['waste'] == 30
+    m._cache_health_memo = None
+    assert m._cache_ttl_waste_cached(days=7)['waste'] == 7
+    assert compute.call_count == 1

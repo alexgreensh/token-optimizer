@@ -110,3 +110,27 @@ def test_next_session_must_start_within_thirty_minutes():
     late = dict(assistant(2), timestamp='2026-01-03T00:00:01+00:00')
     assert nudge.classify(original, stamp, [near])[0] == 'followed'
     assert nudge.classify(original, stamp, [late])[0] == 'ignored'
+
+
+def test_resolver_reads_each_project_transcript_once_before_write_lock(tmp_path, monkeypatch):
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE savings_events (id INTEGER PRIMARY KEY, timestamp TEXT, event_type TEXT, tokens_saved INTEGER, cost_saved_usd REAL, session_id TEXT, session_uuid TEXT, detail TEXT, model TEXT, unjoinable INTEGER)')
+    conn.execute('CREATE TABLE compression_events (timestamp TEXT, session_uuid TEXT, session_id TEXT, feature TEXT, verified INTEGER)')
+    nudge._schema(conn)
+    path = tmp_path / 'session.jsonl'
+    path.write_text(json.dumps(assistant(1)))
+    other = tmp_path / 'next.jsonl'
+    other.write_text(json.dumps(assistant(2)))
+    for _ in range(2):
+        conn.execute('INSERT INTO nudge_events(session_uuid,kind,ts,context_tokens,transcript_path) VALUES(?,?,?,?,?)', ('s', 'tip', '2026-01-01T00:00:00+00:00', 0, str(path)))
+    conn.commit()
+    read = nudge._rows
+    seen = []
+    def tracked(file):
+        assert not conn.in_transaction
+        seen.append(file)
+        yield from read(file)
+    monkeypatch.setattr(nudge, '_rows', tracked)
+    nudge.resolve(object(), conn)
+    assert sorted(seen) == sorted([path, other])
+    conn.close()

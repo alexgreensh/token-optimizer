@@ -90,24 +90,32 @@ def classify(rows, emitted, new_rows=None):
     return 'pending', None, []
 
 
-def _next_session(path, stamp):
-    """Find a later transcript in the same project after this transcript ended."""
-    current = Path(path)
-    end = max((_epoch(r.get('timestamp')) or 0 for r in _rows(current)), default=0)
-    if not end:
-        return None
-    choices = []
-    for candidate in current.parent.glob('*.jsonl'):
-        if candidate == current or candidate.is_symlink():
+def _project_index(directory):
+    """Read each transcript once before the database write transaction."""
+    transcripts = {}
+    for path in Path(directory).glob('*.jsonl'):
+        if path.is_symlink():
             continue
         try:
-            rows = list(_rows(candidate))
-            start = min((_epoch(r.get('timestamp')) for r in rows if _epoch(r.get('timestamp'))), default=0)
-            if start > end and start > stamp:
-                choices.append((start, rows))
+            rows = list(_rows(path))
+            stamps = [_epoch(row.get('timestamp')) for row in rows]
+            stamps = [stamp for stamp in stamps if stamp is not None]
+            if stamps:
+                transcripts[path] = (min(stamps), max(stamps), rows)
         except OSError:
             continue
-    return min(choices, key=lambda x: x[0])[1] if choices else None
+    return transcripts
+
+
+def _next_session(path, stamp, index):
+    current = Path(path)
+    entry = index.get(current)
+    if not entry:
+        return None
+    end = entry[1]
+    choices = [(start, str(candidate), rows) for candidate, (start, _, rows) in index.items()
+               if candidate != current and start > end and start > stamp]
+    return min(choices, default=(None, None, None))[2]
 
 
 def resolve(facade, conn=None):
@@ -118,21 +126,32 @@ def resolve(facade, conn=None):
         try:
             _schema(conn)
             conn.commit()
-            conn.execute('BEGIN IMMEDIATE')
             events = conn.execute('SELECT id,session_uuid,ts,context_tokens,transcript_path,savings_event_id FROM nudge_events').fetchall()
+            projects = {Path(path).parent for _, _, _, _, path, _ in events if path}
+            indexes = {project: _project_index(project) for project in projects}
+            prepared = {}
+            for ident, sid, ts, before, path, event_id in events:
+                if not path:
+                    continue
+                entry = indexes[Path(path).parent].get(Path(path))
+                if not entry:
+                    continue
+                rows = entry[2]
+                status, action, requests = classify(rows, ts)
+                if status == 'pending' or (status == 'followed' and not requests):
+                    next_rows = _next_session(path, _epoch(ts), indexes[Path(path).parent])
+                    if next_rows and status == 'pending':
+                        status, action, requests = classify(rows, ts, next_rows)
+                    elif next_rows:
+                        requests = [r['message'] for r in next_rows if r.get('type') == 'assistant' and _context(r.get('message') or {}) > 0][:50]
+                prepared[ident] = status, action, requests
+            conn.execute('BEGIN IMMEDIATE')
             claimed = set()
             for ident, sid, ts, before, path, event_id in events:
                 try:
-                    if not path or not Path(path).is_file():
+                    if ident not in prepared:
                         continue
-                    rows = list(_rows(path))
-                    status, action, requests = classify(rows, ts)
-                    if status == 'pending' or (status == 'followed' and not requests):
-                        next_rows = _next_session(path, _epoch(ts))
-                        if next_rows and status == 'pending':
-                            status, action, requests = classify(rows, ts, next_rows)
-                        elif next_rows:
-                            requests = [r['message'] for r in next_rows if r.get('type') == 'assistant' and _context(r.get('message') or {}) > 0][:50]
+                    status, action, requests = prepared[ident]
                     cost = 0.0
                     tokens = 0
                     duplicate = (sid, action) in claimed

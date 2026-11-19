@@ -33,3 +33,11 @@ The context mark measures against your own compact window when you set one: `CLA
 ## Full docs
 
 See the [Token Optimizer README](../../README.md#desktop-status-bar) and the docs site page "Claude desktop app".
+
+To reserve a Keep warm attempt through the CLI, send a JSON receipt on standard input:
+
+```bash
+printf '%s' '{"action":"warm-prepare","action_id":"ATTEMPT_ID","session_id":"SESSION_ID","timestamp":UNIX_SECONDS,"transcript_path":"/path/to/SESSION_ID.jsonl","byte_size":FILE_SIZE,"transcript_mtime":FILE_MTIME}' | python3 <plugin>/skills/token-optimizer/scripts/measure.py mod-action
+```
+
+Replace the placeholders with the current transcript's exact file size and modification time, a unique attempt ID, and the current Unix time. The response is JSON. This reserves the booking; the caller must perform the warm request and submit its usage as a `warm` receipt, or send `warm-cancel` if it does not run.

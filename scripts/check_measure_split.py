@@ -15,6 +15,8 @@ HELPER_NAMES += ('transcript_stream', 'quality_continuity', 'quality_checkpoint'
 HELPER_NAMES += ('status_bar_lock', 'session_flush_lock', 'context_reset_marker', 'holdout_fallback', 'dashboard_heal_claim')
 HELPER_NAMES += ('keepwarm_safety', 'keepwarm_economics', 'keepwarm_linux', 'mod_action_booking', 'mod_compaction_booking', 'mod_fresh_booking')
 HELPER_NAMES += ('baseline_provenance', 'own_price_card')
+HELPER_NAMES += ('config_cache', 'setup_observation_cache', 'status_bar_refresh')
+HELPER_NAMES += ('routing_default',)
 HELPERS = {name + '.py' for name in HELPER_NAMES}
 
 def check(root=split.REPO):

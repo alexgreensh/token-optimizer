@@ -18,7 +18,7 @@ import importlib
 import json
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import _compat
@@ -359,11 +359,31 @@ def _nudges_helper(facade):
     return None
 
 
+def _parse_ts(value):
+    """Epoch seconds or ISO-8601 -> aware datetime, or None."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def _nudges_sql(facade):
     """Read nudge_events directly: (followed, total) over the last 7 days.
 
     `followed` is None when the table has no status column yet (emissions are
-    recorded but the follow-through resolver has not classified them).
+    recorded but the follow-through resolver has not classified them). Rows
+    are filtered in Python so ISO, epoch and mixed timestamp formats all work.
     """
     try:
         conn = facade._open_trends_db_readonly(timeout=1.0)
@@ -385,25 +405,20 @@ def _nudges_sql(facade):
         if not ts_col:
             return None
         status_col = next((c for c in _STATUS_COLS if c in cols), None)
-        cutoff = (datetime.now() - timedelta(days=7)).isoformat()
-        sample = conn.execute(
-            "SELECT %s FROM nudge_events ORDER BY rowid DESC LIMIT 1" % ts_col
-        ).fetchone()
-        epoch = bool(sample) and isinstance(sample[0], (int, float))
-        if epoch:
-            cutoff = (datetime.now() - timedelta(days=7)).timestamp()
-        total = int(conn.execute(
-            "SELECT COUNT(*) FROM nudge_events WHERE %s >= ?" % ts_col,
-            (cutoff,)).fetchone()[0])
-        followed = None
-        if status_col:
-            marks = ",".join("?" for _ in _FOLLOWED_VALUES)
-            followed = int(conn.execute(
-                "SELECT COUNT(*) FROM nudge_events WHERE %s >= ? "
-                "AND LOWER(CAST(%s AS TEXT)) IN (%s)" % (ts_col, status_col, marks),
-                (cutoff,) + _FOLLOWED_VALUES).fetchone()[0])
+        select = ts_col if not status_col else "%s, %s" % (ts_col, status_col)
+        rows = conn.execute("SELECT %s FROM nudge_events" % select).fetchall()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        total = 0
+        followed = 0 if status_col else None
+        for row in rows:
+            dt = _parse_ts(row[0])
+            if dt is None or dt < cutoff:
+                continue
+            total += 1
+            if status_col and str(row[1] or "").strip().lower() in _FOLLOWED_VALUES:
+                followed += 1
         return {"followed": followed, "total": total}
-    except sqlite3.Error:
+    except Exception:
         return None
     finally:
         try:

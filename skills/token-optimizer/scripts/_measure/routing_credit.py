@@ -49,7 +49,11 @@ def baseline(f):
         return mix['shares'], 'snapshot', False, None
 
     early = f._earliest_model_mix()
-    if early and early.get('shares'):
+    first = (early or {}).get('first_date')
+    boundary = routing_enabled_since(f.SNAPSHOT_DIR) or str(snap.get('timestamp') or '')[:10] or date.today().isoformat()
+    if shares and window.get('end') and (not first or first > window['end'] or coverage == 'post_install'):
+        return shares, 'frozen_baseline', stated_frozen, None
+    if early and early.get('shares') and (not first or first < boundary):
         return early['shares'], 'history', False, early
 
     stated = f._pretool_baseline_mix()

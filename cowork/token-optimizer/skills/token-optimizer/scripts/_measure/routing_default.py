@@ -30,6 +30,7 @@ broken hook.
 from __future__ import annotations
 
 import os
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,6 +41,7 @@ SECTION = "MODEL_ROUTING"
 INJECTED_MARKER = "routing_injected_at"
 REMOVED_MARKER = "routing_removed_at"
 AUDIT_OFFER_MARKER = "once-audit-offer.json"
+FAILURE_MARKER = "routing_injection_failure"
 
 # Runtimes whose instruction file this feature knows how to write.
 _ROUTING_RUNTIMES = ("claude", "codex")
@@ -146,6 +148,42 @@ def routing_credit_window(f=None, data_dir=None):
     return routing_enabled_since(f, data_dir), routing_disabled_at(f, data_dir)
 
 
+HISTORY = 'routing_intervals.jsonl'
+
+
+def _intervals(directory, injected=None, removed=None):
+    path = Path(directory) / HISTORY
+    try:
+        events = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line]
+    except FileNotFoundError:
+        return [(injected, removed)] if injected else []
+    result = []
+    for event in events:
+        if event.get('injected_at') and (not result or result[-1][1]):
+            result.append((event['injected_at'], None))
+        elif event.get('removed_at') and result and result[-1][1] is None:
+            result[-1] = (result[-1][0], event['removed_at'])
+    return result
+
+
+def _append_interval(directory, event, injected=None, removed=None):
+    path = Path(directory) / HISTORY
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists() and injected:
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'injected_at': injected}) + '\n')
+            if removed:
+                stream.write(json.dumps({'removed_at': removed}) + '\n')
+    with path.open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(event) + '\n')
+
+
+def routing_credit_intervals(f=None, data_dir=None):
+    if data_dir is not None:
+        f = _compat.namespace({'SNAPSHOT_DIR': data_dir})
+    return _intervals(_data_dir(f), routing_injected_at(f), routing_removed_at(f))
+
+
 # ------------------------------------------------------- instruction files
 
 
@@ -207,14 +245,22 @@ def _inject_once(f, notices):
         import injection
         result = injection.inject_managed_block(
             str(target), SECTION, block, timestamp=stamp)
-    except Exception:
+    except Exception as exc:
+        _write_marker(f, FAILURE_MARKER, type(exc).__name__)
         return
     action = result.get("action")
+    if action in ("inserted", "replaced", "unchanged"):
+        try:
+            _marker_path(f, FAILURE_MARKER).unlink(missing_ok=True)
+        except OSError:
+            pass
+    else:
+        _write_marker(f, FAILURE_MARKER, "injection failed")
     if action in ("inserted", "replaced", "unchanged") and not injected:
         # The block is present (fresh write or already there): stamp the
         # credit-window start once. "unchanged" still counts -- a missing
         # marker with a live block means the date was lost, not the guidance.
-        _write_marker_once(f, INJECTED_MARKER, _utc_today())
+        record_injection(f)
     if action in ("inserted", "replaced"):
         notices.append(_INJECT_NOTICE.format(name=target.name))
 
@@ -228,6 +274,9 @@ def record_injection(f=None):
     at today; a first injection keeps the earliest date (write-once).
     """
     f = _facade(f)
+    injected, removed = routing_credit_window(f)
+    if not injected or removed:
+        _append_interval(_data_dir(f), {'injected_at': _utc_today()}, injected, removed)
     if _read_marker(f, REMOVED_MARKER) is not None:
         _write_marker(f, INJECTED_MARKER, _utc_today())
     else:
@@ -253,6 +302,9 @@ def uninstall_routing(f=None):
                 removed.append(str(candidate))
     except Exception:
         pass
+    injected, prior_removed = routing_credit_window(f)
+    if injected and not prior_removed:
+        _append_interval(_data_dir(f), {'removed_at': _utc_today()}, injected, prior_removed)
     _write_marker(f, REMOVED_MARKER, _utc_today())
     return {"files": removed}
 

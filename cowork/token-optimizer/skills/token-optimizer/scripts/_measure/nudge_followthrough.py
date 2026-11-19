@@ -1,7 +1,29 @@
 """Record context nudges and price observed follow-through from transcripts."""
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _diagnostic(facade, exc):
+    """Keep a bounded, path-free diagnostic without breaking collection."""
+    try:
+        directory = Path(facade.SNAPSHOT_DIR)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / 'nudge-resolve.log'
+        line = json.dumps({'operation': 'resolve', 'error': type(exc).__name__}) + '\n'
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0)
+        fd = os.open(str(path), flags, 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as stream:
+            if stream.tell() + len(line.encode('utf-8')) > 65536:
+                stream.close()
+                fd = os.open(str(path), os.O_WRONLY | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0))
+                with os.fdopen(fd, 'w', encoding='utf-8') as replacement:
+                    replacement.write(line)
+            else:
+                stream.write(line)
+    except (OSError, AttributeError):
+        pass
 
 
 def _epoch(value):
@@ -44,8 +66,26 @@ def record(facade, sid, kind, tokens, model, path):
 
 def _context(message):
     usage = message.get('usage') or {}
-    return sum(int(usage.get(k) or 0) for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
+    try:
+        return sum(int(usage.get(k) or 0) for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return 0
 
+
+
+def _requests(rows):
+    seen, requests = set(), []
+    for row in rows:
+        if row.get('type') != 'assistant':
+            continue
+        message = row.get('message') or {}
+        ident = message.get('id') or row.get('uuid')
+        if ident not in seen and _context(message) > 0:
+            seen.add(ident)
+            requests.append(message)
+            if len(requests) == 50:
+                break
+    return requests
 
 def classify(rows, emitted, new_rows=None):
     """Return status, action timestamp and observed post-action requests."""
@@ -82,28 +122,43 @@ def classify(rows, emitted, new_rows=None):
     if action is not None:
         return 'followed', action, following
     if new_rows:
-        return 'followed', new_rows[0].get('timestamp'), [r['message'] for r in new_rows if r.get('type') == 'assistant' and _context(r.get('message') or {}) > 0][:50]
+        end = max((_epoch(r.get('timestamp')) or 0 for r in rows), default=0)
+        start = min((_epoch(r.get('timestamp')) or float('inf') for r in new_rows), default=float('inf'))
+        if end and start - end > 1800:
+            return 'ignored', None, []
+        return 'followed', new_rows[0].get('timestamp'), _requests(new_rows)
     return 'pending', None, []
 
 
-def _next_session(path, stamp):
-    """Find a later transcript in the same project after this transcript ended."""
-    current = Path(path)
-    end = max((_epoch(r.get('timestamp')) or 0 for r in _rows(current)), default=0)
-    if not end:
-        return None
-    choices = []
-    for candidate in current.parent.glob('*.jsonl'):
-        if candidate == current or candidate.is_symlink():
+def _project_index(directory):
+    """Read each transcript once before the database write transaction."""
+    transcripts = {}
+    for path in Path(directory).glob('*.jsonl'):
+        if path.is_symlink():
             continue
         try:
-            rows = list(_rows(candidate))
-            start = min((_epoch(r.get('timestamp')) for r in rows if _epoch(r.get('timestamp'))), default=0)
-            if start > end and start > stamp:
-                choices.append((start, rows))
+            rows = list(_rows(path))
+            stamps = [_epoch(row.get('timestamp')) for row in rows]
+            stamps = [stamp for stamp in stamps if stamp is not None]
+            if stamps:
+                transcripts[path] = (min(stamps), max(stamps), rows)
         except OSError:
-            continue
-    return min(choices, key=lambda x: x[0])[1] if choices else None
+            raise
+    return transcripts
+
+
+def _next_session(path, stamp, index):
+    current = Path(path)
+    entry = index.get(current)
+    if not entry:
+        return None
+    end = entry[1]
+    choices = [(start, str(candidate), rows) for candidate, (start, _, rows) in index.items()
+               if candidate != current and start > end and start > stamp]
+    if not choices:
+        return None, None
+    _, candidate, rows = min(choices)
+    return candidate, rows
 
 
 def resolve(facade, conn=None):
@@ -114,21 +169,45 @@ def resolve(facade, conn=None):
         try:
             _schema(conn)
             conn.commit()
-            conn.execute('BEGIN IMMEDIATE')
             events = conn.execute('SELECT id,session_uuid,ts,context_tokens,transcript_path,savings_event_id FROM nudge_events').fetchall()
+            projects = {Path(path).parent for _, _, _, _, path, _ in events if path}
+            indexes = {project: _project_index(project) for project in projects}
+            prepared = {}
+            claimed_sessions = set()
+            events.sort(key=lambda event: (_epoch(event[2]) or 0, event[0]), reverse=True)
+            for ident, sid, ts, before, path, event_id in events:
+                if not path:
+                    continue
+                entry = indexes[Path(path).parent].get(Path(path))
+                if not entry:
+                    continue
+                rows = entry[2]
+                status, action, requests = classify(rows, ts)
+                if status == 'pending' or (status == 'followed' and not requests):
+                    next_path, next_rows = _next_session(path, _epoch(ts), indexes[Path(path).parent])
+                    if next_rows and status == 'pending':
+                        status, action, requests = classify(rows, ts, next_rows)
+                        if status == 'followed':
+                            if next_path in claimed_sessions:
+                                status, action, requests = 'ignored', None, []
+                            else:
+                                claimed_sessions.add(next_path)
+                    elif next_rows and next_path not in claimed_sessions:
+                        requests = _requests(next_rows)
+                        if requests:
+                            claimed_sessions.add(next_path)
+                prepared[ident] = status, action, requests
+            conn.execute('BEGIN IMMEDIATE')
             claimed = set()
             for ident, sid, ts, before, path, event_id in events:
                 try:
-                    if not path or not Path(path).is_file():
+                    if ident not in prepared:
                         continue
-                    rows = list(_rows(path))
-                    status, action, requests = classify(rows, ts)
-                    if status == 'pending' or (status == 'followed' and not requests):
-                        next_rows = _next_session(path, _epoch(ts))
-                        if next_rows and status == 'pending':
-                            status, action, requests = classify(rows, ts, next_rows)
-                        elif next_rows:
-                            requests = [r['message'] for r in next_rows if r.get('type') == 'assistant' and _context(r.get('message') or {}) > 0][:50]
+                    status, action, requests = prepared[ident]
+                    current = conn.execute('SELECT savings_event_id FROM nudge_events WHERE id=?', (ident,)).fetchone()
+                    if current is None:
+                        continue
+                    event_id = current[0]
                     cost = 0.0
                     tokens = 0
                     duplicate = (sid, action) in claimed
@@ -157,15 +236,42 @@ def resolve(facade, conn=None):
                                            (datetime.fromtimestamp(_epoch(action)).isoformat(), 'nudge_followed', tokens, cost, sid, sid, 'nudge_id=' + str(ident), None, 0))
                         event_id = cur.lastrowid
                     conn.execute('UPDATE nudge_events SET status=?,action_ts=?,savings_event_id=? WHERE id=?', (status, action, event_id, ident))
-                except (OSError, ValueError, TypeError, KeyError):
-                    continue
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    raise exc
             conn.commit()
         finally:
             if owned:
                 conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        _diagnostic(facade, exc)
 
+
+
+def weekly_counts(facade):
+    """Read the shipped event schema for the last seven days."""
+    from datetime import timedelta
+    try:
+        conn = facade._open_trends_db_readonly(timeout=1.0)
+    except Exception:
+        import sqlite3
+        path = Path(facade.TRENDS_DB)
+        if not path.exists():
+            return {'followed': 0, 'total': 0}
+        conn = sqlite3.connect('file:' + str(path) + '?mode=ro', uri=True)
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='nudge_events'").fetchone():
+            return {'followed': 0, 'total': 0}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+        rows = conn.execute('SELECT ts, status FROM nudge_events').fetchall()
+        recent = [status for ts, status in rows if (_epoch(ts) or 0) >= cutoff]
+        return {'followed': sum(status == 'followed' for status in recent), 'total': len(recent)}
+    finally:
+        conn.close()
 
 def record_emitted(facade, sid, path, quality_data, fresh, compact, advisory):
     try:

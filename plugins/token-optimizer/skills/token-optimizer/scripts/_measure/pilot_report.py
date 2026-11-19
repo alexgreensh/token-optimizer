@@ -5,34 +5,17 @@ under a dozen lines, no personal paths; `--json` emits the same data. Every
 figure comes from the same payloads the dashboard renders, so the report can
 never quote a different dollar than the Savings page.
 
-Cross-lane adapters: the install-anchored baseline (t2), the routing injection
-markers and `routing_enabled_since()` (t3), and the `nudge_events` table (t4)
-land in sibling modules in this release. Each reader probes the canonical
-helper first and falls back to the on-disk contract, so this module merges
-cleanly whether or not those lanes have landed yet. Every piece is guarded:
-the command never raises and never blocks on missing data.
+The report uses the shipped baseline, routing, ledger and nudge readers.
 """
 from __future__ import annotations
 
-import importlib
 import json
-import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 from . import _compat
 
-# Sibling modules the parallel lanes may add, most likely name first.
-_ROUTING_MODULES = ("routing_credit", "install_baseline", "routing_state", "routing_enabled")
-_NUDGE_MODULES = ("nudge_followthrough", "nudges", "nudge_events")
-_NUDGE_FUNCS = ("weekly_counts", "week_counts", "followthrough_week", "summary", "counts")
-# nudge_events columns, most likely name first (t4 spec: session_uuid, kind,
-# ts, context_tokens, model; the resolver adds a status-ish column).
-_TS_COLS = ("ts", "timestamp", "created_at", "emitted_at")
-_STATUS_COLS = ("status", "outcome", "resolution", "result", "state",
-                "classification", "followup", "followed")
-_FOLLOWED_VALUES = ("followed", "1", "true", "yes")
 
 
 def _facade(facade):
@@ -55,68 +38,6 @@ def _money(value):
         return None
 
 
-def _iso_day(value):
-    """First YYYY-MM-DD inside a string, or None."""
-    try:
-        text = str(value or "")[:10]
-        datetime.strptime(text, "%Y-%m-%d")
-        return text
-    except (TypeError, ValueError):
-        return None
-
-
-def _read_json(path):
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
-
-
-def _marker_date(path):
-    """A date from a marker file: plain ISO text, or a JSON object with a
-    date-ish value. t3 writes `routing_injected_at` / `routing_removed_at`."""
-    try:
-        raw = Path(path).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if not raw:
-        return None
-    if raw.startswith("{"):
-        data = _read_json(path) or {}
-        for key in ("date", "since", "injected_at", "enabled_since", "ts", "timestamp"):
-            day = _iso_day(data.get(key))
-            if day:
-                return day
-        return None
-    return _iso_day(raw)
-
-
-def _sibling(module_name, func_name):
-    """A function on a sibling _measure module, or None when absent."""
-    try:
-        mod = importlib.import_module("." + module_name, __package__)
-    except Exception:
-        return None
-    return getattr(mod, func_name, None)
-
-
-def _call_flex(fn, *argsets):
-    """Call fn with the first argset that returns without raising.
-
-    Returns (value, answered): answered is False when every argset raised,
-    so callers fall through to their own fallback instead of trusting a
-    half-answer. Signatures of the parallel lanes' helpers are not final,
-    so any exception moves to the next candidate rather than aborting.
-    """
-    for args in argsets:
-        try:
-            return fn(*args), True
-        except Exception:
-            continue
-    return None, False
-
-
 # ---------------------------------------------------------------------------
 # Install date
 # ---------------------------------------------------------------------------
@@ -130,16 +51,6 @@ def _install(facade):
             return ev.get("date"), ev.get("source")
     except Exception:
         pass
-    for name in ("install_baseline",):
-        for fname in ("install_date", "install_evidence", "installed_at"):
-            fn = _sibling(name, fname)
-            if fn is None:
-                continue
-            val, answered = _call_flex(fn, (facade,), (facade.SNAPSHOT_DIR,), ())
-            if answered:
-                day = _iso_day(val.get("date") if isinstance(val, dict) else val)
-                if day:
-                    return day, (val.get("source") if isinstance(val, dict) else None)
     try:
         day = facade._install_date()
         if day:
@@ -202,9 +113,7 @@ def _routing_in_total(all_in):
 def _since_install(data, routing_on):
     """All-in saved-since-install with the measured/estimated/routing split.
 
-    Routing credit exists only while Token Optimizer actually injected its
-    routing guidance: when routing is off, the routing component is removed
-    from the total instead of being reported as a saving.
+    Routing credit is already limited to enabled periods by the dashboard.
     """
     si = (data or {}).get("since_install") or {}
     all_in = si.get("all_in") or {}
@@ -213,10 +122,9 @@ def _since_install(data, routing_on):
     if isinstance(all_in, dict) and all_in:
         routing_in = _routing_in_total(all_in)
         total = _num(all_in.get("total_usd"))
-        display_total = total - routing_in
-        saved = display_total + (routing_in if routing_on else 0.0)
+        saved = total
         estimated = _num(all_in.get("estimated_usd"))
-        routing = routing_in if routing_on else 0.0
+        routing = routing_in
         out.update(saved_usd=round(saved, 2),
                    estimated_usd=round(estimated, 2),
                    routing_usd=round(routing, 2),
@@ -231,76 +139,32 @@ def _since_install(data, routing_on):
 
 def _saved_7d(data7, routing_on):
     """All-in dollars saved in the last 7 days (the headline recipe:
-    action_savings.total_usd plus realized routing when guidance is on)."""
+    action_savings.total_usd plus realized routing)."""
     action = (data7 or {}).get("action_savings") or {}
     total = action.get("total_usd")
     if total is None:
         return None
     routing = _num(((data7 or {}).get("model_routing") or {}).get("realized_cost_usd"))
-    return round(_num(total) + (routing if routing_on else 0.0), 2)
+    return round(_num(total) + routing, 2)
 
 
 # ---------------------------------------------------------------------------
 # Routing guidance state
 # ---------------------------------------------------------------------------
 
-def _norm_routing(val):
-    """Normalize a routing_enabled_since() result to {"on", "since"}."""
-    if val is None or val is False:
-        return {"on": False, "since": None}
-    if val is True:
-        return {"on": True, "since": None}
-    if isinstance(val, str):
-        day = _iso_day(val)
-        return {"on": bool(day), "since": day} if day else None
-    if isinstance(val, dict):
-        since = _iso_day(val.get("since") or val.get("enabled_since")
-                         or val.get("injected_at") or val.get("date"))
-        removed = _iso_day(val.get("removed_at") or val.get("uninstalled_at"))
-        on = val.get("on", val.get("enabled"))
-        if on is None:
-            on = bool(since) and not (removed and since < removed)
-        return {"on": bool(on), "since": since if bool(on) else None}
-    return None
-
-
-def _routing_markers(facade):
-    """Fallback: routing_injected_at / routing_removed_at markers in the data
-    dir, or a routing_state.json carrying the same fields."""
-    snap = getattr(facade, "SNAPSHOT_DIR", None)
-    if snap is None:
-        return {"on": False, "since": None}
-    snap = Path(snap)
-    injected = _marker_date(snap / "routing_injected_at")
-    removed = _marker_date(snap / "routing_removed_at")
-    if injected is None:
-        state = _read_json(snap / "routing_state.json") or _read_json(snap / "routing.json") or {}
-        injected = _iso_day(state.get("injected_at") or state.get("enabled_since")
-                            or state.get("since") or state.get("date"))
-        if removed is None:
-            removed = _iso_day(state.get("removed_at") or state.get("uninstalled_at"))
-    on = bool(injected) and not (removed and removed > injected)
-    return {"on": on, "since": injected if on else None}
-
-
 def _routing(facade):
-    """{"on": bool, "since": "YYYY-MM-DD"|None} for routing guidance."""
-    marker_state = _routing_markers(facade)
-    snap = getattr(facade, "SNAPSHOT_DIR", None)
-    if snap is not None and _marker_date(Path(snap) / "routing_removed_at"):
-        return marker_state
-    for name in _ROUTING_MODULES:
-        fn = _sibling(name, "routing_enabled_since")
-        if fn is None:
-            continue
-        snap = getattr(facade, "SNAPSHOT_DIR", None)
-        val, answered = _call_flex(fn, (facade,), (snap,), ())
-        if not answered:
-            continue
-        state = _norm_routing(val)
-        if state is not None:
-            return state
-    return _routing_markers(facade)
+    from . import routing_default
+    snap = getattr(facade, 'SNAPSHOT_DIR', None)
+    if snap is None:
+        return {'on': False, 'since': None}
+    try:
+        failure = (Path(snap) / 'routing_injection_failure').read_text(encoding='utf-8').strip()
+        if failure:
+            return {'on': False, 'since': None, 'failure': failure[:200]}
+    except OSError:
+        pass
+    injected, removed = routing_default.routing_credit_window(data_dir=snap)
+    return {'on': bool(injected and not removed), 'since': injected if injected and not removed else None}
 
 
 # ---------------------------------------------------------------------------
@@ -308,134 +172,19 @@ def _routing(facade):
 # ---------------------------------------------------------------------------
 
 def _trims(facade, data):
-    """Count of setup trims still applied, or None when unreadable."""
+    from . import structural_ledger
     try:
-        from . import structural_ledger
-        rows = structural_ledger.load_trims(facade.SNAPSHOT_DIR)
-        return sum(1 for t in rows if not t.get("closed_at"))
-    except Exception:
-        pass
-    try:
-        rows = ((data or {}).get("structural_detail") or {}).get("trims") or []
-        return sum(1 for t in rows if not t.get("closed_at"))
+        return sum(1 for row in structural_ledger.load_trims(facade.SNAPSHOT_DIR) if not row.get('closed_at'))
     except Exception:
         return None
-
-
-# ---------------------------------------------------------------------------
-# Nudge follow-through
-# ---------------------------------------------------------------------------
-
-def _norm_counts(val):
-    """Normalize a helper result to {"followed": int|None, "total": int}."""
-    followed = total = None
-    if isinstance(val, dict):
-        followed = val.get("followed", val.get("followed_count", val.get("n_followed")))
-        total = val.get("total", val.get("emitted", val.get("count", val.get("nudges"))))
-    elif isinstance(val, (tuple, list)) and len(val) >= 2:
-        followed, total = val[0], val[1]
-    else:
-        return None
-    try:
-        total = int(total)
-    except (TypeError, ValueError):
-        return None
-    try:
-        followed = int(followed) if followed is not None else None
-    except (TypeError, ValueError):
-        followed = None
-    return {"followed": followed, "total": total}
-
-
-def _nudges_helper(facade):
-    for name in _NUDGE_MODULES:
-        for fname in _NUDGE_FUNCS:
-            fn = _sibling(name, fname)
-            if fn is None:
-                continue
-            val, answered = _call_flex(fn, (facade,), (facade.SNAPSHOT_DIR,), ())
-            if not answered:
-                continue
-            counts = _norm_counts(val)
-            if counts is not None:
-                return counts
-    return None
-
-
-def _parse_ts(value):
-    """Epoch seconds or ISO-8601 -> aware datetime, or None."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(value), timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
-def _nudges_sql(facade):
-    """Read nudge_events directly: (followed, total) over the last 7 days.
-
-    `followed` is None when the table has no status column yet (emissions are
-    recorded but the follow-through resolver has not classified them). Rows
-    are filtered in Python so ISO, epoch and mixed timestamp formats all work.
-    """
-    try:
-        conn = facade._open_trends_db_readonly(timeout=1.0)
-    except Exception:
-        try:
-            db = getattr(facade, "TRENDS_DB", None)
-            if db is None or not Path(db).exists():
-                return {"followed": 0, "total": 0}
-            conn = sqlite3.connect(str(db))
-        except Exception:
-            return None
-    try:
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
-        if "nudge_events" not in tables:
-            return {"followed": 0, "total": 0}
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(nudge_events)")]
-        ts_col = next((c for c in _TS_COLS if c in cols), None)
-        if not ts_col:
-            return None
-        status_col = next((c for c in _STATUS_COLS if c in cols), None)
-        select = ts_col if not status_col else "%s, %s" % (ts_col, status_col)
-        rows = conn.execute("SELECT %s FROM nudge_events" % select).fetchall()
-        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
-        total = 0
-        followed = 0 if status_col else None
-        for row in rows:
-            dt = _parse_ts(row[0])
-            if dt is None or dt < cutoff:
-                continue
-            total += 1
-            if status_col and str(row[1] or "").strip().lower() in _FOLLOWED_VALUES:
-                followed += 1
-        return {"followed": followed, "total": total}
-    except Exception:
-        return None
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 def _nudges(facade):
-    counts = _nudges_helper(facade)
-    if counts is not None:
-        return counts
-    counts = _nudges_sql(facade)
-    return counts if counts is not None else {"followed": None, "total": None}
+    from . import nudge_followthrough
+    try:
+        return nudge_followthrough.weekly_counts(facade)
+    except Exception:
+        return {'followed': None, 'total': None}
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +301,9 @@ def render(report):
         lines.append("Since install split: not available yet")
 
     routing = report.get("routing") or {}
-    if routing.get("on"):
+    if routing.get("failure"):
+        lines.append("Routing guidance: failed (%s)" % routing["failure"])
+    elif routing.get("on"):
         since = routing.get("since")
         lines.append("Routing guidance: on%s" % (" since " + since if since else ""))
     else:

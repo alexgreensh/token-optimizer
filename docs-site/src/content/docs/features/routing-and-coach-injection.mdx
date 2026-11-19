@@ -29,11 +29,11 @@ No section argument checks COACH only. Pass `MODEL_ROUTING` explicitly to check 
 
 ## When it fires
 
-Injection is manual in the current command dispatch; you may wire your own hook, but the setup verb alone does not do that. You run `inject-routing` or `inject-coach` when you want the block written. `check-staleness` runs when you call it, or from a hook you separately configure. The shipped `setup-coach-injection` dispatch writes the COACH block once; it does not install a recurring hook or scheduler. Run `check-staleness` explicitly (COACH by default; specify MODEL_ROUTING for that block).
+The model-routing block is written automatically on the first session after install, once, and its date is recorded so routing savings are only credited from that day. Set `TOKEN_OPTIMIZER_ROUTING=0` to skip it, or run `inject-routing --uninstall` to remove it; after an uninstall it is never re-added and routing credit stops on that date. The COACH block stays manual: you run `inject-coach` when you want it written. `check-staleness` runs when you call it, or from a hook you separately configure. The shipped `setup-coach-injection` dispatch writes the COACH block once; it does not install a recurring hook or scheduler. Run `check-staleness` explicitly (COACH by default; specify MODEL_ROUTING for that block).
 
 ## Default state
 
-Off, opt-in, on Claude Code and Codex (where the target is AGENTS.md). Nothing is written to your CLAUDE.md until you run a command or install the hook. See the [capability matrix](/reference/capability-matrix/).
+Model routing: on by default on Claude Code and Codex (where the target is AGENTS.md), opt out with `TOKEN_OPTIMIZER_ROUTING=0`. COACH: off, opt-in; nothing is written for it until you run a command or install the hook. See the [capability matrix](/reference/capability-matrix/).
 
 ## How to turn it on and off
 

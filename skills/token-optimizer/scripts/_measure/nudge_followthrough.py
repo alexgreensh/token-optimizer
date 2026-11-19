@@ -55,13 +55,14 @@ def record(facade, sid, kind, tokens, model, path):
         conn = facade._init_trends_db()
         try:
             _schema(conn)
-            conn.execute('INSERT INTO nudge_events(session_uuid,kind,ts,context_tokens,model,transcript_path) VALUES(?,?,?,?,?,?)',
-                         (sid, kind, datetime.now(timezone.utc).isoformat(), tokens, model, str(path or '')))
+            stamp = datetime.now(timezone.utc).isoformat()
+            conn.execute('INSERT INTO nudge_events(session_uuid,kind,ts,context_tokens,model,transcript_path) SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM nudge_events WHERE session_uuid=? AND kind=? AND ts=?)',
+                         (sid, kind, stamp, tokens, model, str(path or ''), sid, kind, stamp))
             conn.commit()
         finally:
             conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        _diagnostic(facade, exc)
 
 
 def _context(message):
@@ -73,13 +74,34 @@ def _context(message):
 
 
 
+_MISSING = object()
+
+
+def _message(row):
+    message = row.get('message')
+    return message if isinstance(message, dict) else None
+
+
+def _ident(row, message):
+    ident = message.get('id') or row.get('uuid')
+    try:
+        hash(ident)
+    except TypeError:
+        return _MISSING
+    return ident
+
+
 def _requests(rows):
     seen, requests = set(), []
     for row in rows:
         if row.get('type') != 'assistant':
             continue
-        message = row.get('message') or {}
-        ident = message.get('id') or row.get('uuid')
+        message = _message(row)
+        if message is None:
+            continue
+        ident = _ident(row, message)
+        if ident is _MISSING:
+            continue
         if ident not in seen and _context(message) > 0:
             seen.add(ident)
             requests.append(message)
@@ -97,16 +119,18 @@ def classify(rows, emitted, new_rows=None):
         ts = _epoch(row.get('timestamp'))
         if ts is None or ts < stamp:
             continue
-        message = row.get('message') or {}
         if action is None:
             if row.get('type') == 'system' and row.get('subtype') == 'compact_boundary':
                 action = row.get('timestamp')
                 continue
-            if row.get('type') == 'user' and isinstance(message.get('content'), str) and message['content'].strip() == '/clear':
+            message = _message(row)
+            if row.get('type') == 'user' and message is not None and isinstance(message.get('content'), str) and message['content'].strip() == '/clear':
                 action = row.get('timestamp')
                 continue
-            if row.get('type') == 'assistant':
-                ident = message.get('id') or row.get('uuid')
+            if row.get('type') == 'assistant' and message is not None:
+                ident = _ident(row, message)
+                if ident is _MISSING:
+                    continue
                 if ident not in seen:
                     seen.add(ident); replies += 1
                 if replies > 20:
@@ -114,7 +138,12 @@ def classify(rows, emitted, new_rows=None):
         elif row.get('type') == 'system' and row.get('subtype') == 'compact_boundary':
             break
         elif row.get('type') == 'assistant':
-            ident = message.get('id') or row.get('uuid')
+            message = _message(row)
+            if message is None:
+                continue
+            ident = _ident(row, message)
+            if ident is _MISSING:
+                continue
             if ident not in seen and _context(message) > 0:
                 seen.add(ident); following.append(message)
                 if len(following) == 50:
@@ -161,6 +190,21 @@ def _next_session(path, stamp, index):
     return candidate, rows
 
 
+def _session_ended(facade, sid, last_ts):
+    """A successor counts only once the nudged session has ended."""
+    if last_ts is None:
+        return False
+    if datetime.now(timezone.utc).timestamp() - last_ts >= 1800:
+        return True
+    probe = getattr(facade, '_session_process_alive', None)
+    if callable(probe):
+        try:
+            return probe(sid) is False
+        except Exception:
+            pass
+    return False
+
+
 def resolve(facade, conn=None):
     """Update estimates on collection; requests may arrive after the action."""
     owned = conn is None
@@ -183,19 +227,15 @@ def resolve(facade, conn=None):
                     continue
                 rows = entry[2]
                 status, action, requests = classify(rows, ts)
-                if status == 'pending' or (status == 'followed' and not requests):
+                if status == 'pending':
                     next_path, next_rows = _next_session(path, _epoch(ts), indexes[Path(path).parent])
-                    if next_rows and status == 'pending':
+                    if next_rows and _session_ended(facade, sid, entry[1]):
                         status, action, requests = classify(rows, ts, next_rows)
                         if status == 'followed':
                             if next_path in claimed_sessions:
                                 status, action, requests = 'ignored', None, []
                             else:
                                 claimed_sessions.add(next_path)
-                    elif next_rows and next_path not in claimed_sessions:
-                        requests = _requests(next_rows)
-                        if requests:
-                            claimed_sessions.add(next_path)
                 prepared[ident] = status, action, requests
             conn.execute('BEGIN IMMEDIATE')
             claimed = set()
@@ -222,13 +262,14 @@ def resolve(facade, conn=None):
                                 cost += facade._get_model_cost(model, 0, 0, delta, 0)
                                 tokens += delta
                         # Existing compaction credits take precedence for the same action.
-                        for table, kind in (('compression_events', 'feature'), ('savings_events', 'event_type')):
-                            try:
+                        try:
+                            for table, kind in (('compression_events', 'feature'), ('savings_events', 'event_type')):
                                 old = conn.execute(f"SELECT timestamp FROM {table} WHERE (session_uuid=? OR session_id=?) AND ({kind} LIKE '%compact%' OR {kind} IN ('quality_nudge','mod_clean','mod_clean_first'))" + (" AND verified=1" if table == 'compression_events' else " AND event_type != 'mod_compaction_cost'"), (sid, sid)).fetchall()
                                 if any(abs((_epoch(t) or 0) - (_epoch(action) or 0)) <= 120 for (t,) in old):
                                     cost = tokens = 0
-                            except Exception:
-                                pass
+                        except Exception as exc:
+                            _diagnostic(facade, exc)
+                            continue
                     if event_id:
                         conn.execute('UPDATE savings_events SET tokens_saved=?,cost_saved_usd=? WHERE id=?', (tokens, cost, event_id))
                     elif cost > 0:

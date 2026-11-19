@@ -12,6 +12,7 @@ Everything fails open: a missing or unreadable record returns
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -78,8 +79,17 @@ def activity(pid, now=None, config_dir=None, elapsed_seconds=None):
         base = _config_dir(config_dir)
         path = base / "sessions" / f"{pid}.json"
     except Exception:
-        # No resolvable config dir means no record can exist for this host.
-        return _none("missing")
+        # Resolve again with plain strings. "missing" (old behavior allowed)
+        # only when that proves no record exists; any doubt is "unresolved",
+        # which kill-stale never acts on.
+        try:
+            root = str(config_dir) if config_dir is not None else (
+                os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"))
+            if os.path.exists(os.path.join(root, "sessions", f"{pid}.json")):
+                return _none("unreadable")
+            return _none("missing")
+        except Exception:
+            return _none("unresolved")
     if not path.exists():
         return _none("missing")
     try:

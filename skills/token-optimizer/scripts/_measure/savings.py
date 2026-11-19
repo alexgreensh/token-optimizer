@@ -6125,7 +6125,7 @@ def _savings_since_install():
             return None
         days = (_measure_facade.datetime.now() - _measure_facade.datetime.fromisoformat(d)).days + 1
         days = max(1, min(days, 3650))
-        full = savings_story.since_install_summary(_measure_facade._get_merged_savings, days)
+        full = savings_story.since_install_summary(_measure_facade._get_merged_savings, days, since=d)
         try:
             from . import session_effect
             full["session_effect"] = session_effect.summary(days)

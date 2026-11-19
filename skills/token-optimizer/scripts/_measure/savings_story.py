@@ -4,11 +4,11 @@ from contextvars import ContextVar
 _SKIP_COMPARISON = ContextVar('skip_since_install_comparison', default=False)
 
 
-def since_install_summary(builder, days):
+def since_install_summary(builder, days, since=None):
     """Skip an expensive comparison that the since-install card never reads."""
     token = _SKIP_COMPARISON.set(True)
     try:
-        return builder(days=days)
+        return builder(days=days, since=since)
     finally:
         _SKIP_COMPARISON.reset(token)
 

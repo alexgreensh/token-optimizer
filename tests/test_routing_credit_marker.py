@@ -14,12 +14,10 @@ def test_routing_marker_requires_a_valid_date(tmp_path):
     assert routing_enabled_since(tmp_path) == "2026-11-19"
 
 
-def test_routing_credit_stops_at_removal(tmp_path, monkeypatch):
+def test_routing_credit_does_not_depend_on_guidance(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from _measure import routing_credit
 
-    (tmp_path / "routing_injected_at").write_text("2026-11-01", encoding="utf-8")
-    (tmp_path / "routing_removed_at").write_text("2026-11-10", encoding="utf-8")
     activity = {"2026-11-05": 12, "2026-11-10": 30, "2026-11-15": 50}
 
     def unrestricted(days, since, *, until=None):
@@ -29,8 +27,11 @@ def test_routing_credit_stops_at_removal(tmp_path, monkeypatch):
 
     facade = SimpleNamespace(SNAPSHOT_DIR=tmp_path, _routing_unrestricted=unrestricted)
     monkeypatch.setattr(routing_credit._compat, "facade", lambda: facade)
-    assert routing_credit.compute(since="2026-11-01")["realized_cost_usd"] == 12
-    assert routing_credit.compute(since="2026-11-11")["realized_cost_usd"] == 0
+    assert routing_credit.compute(since="2026-11-01")["realized_cost_usd"] == 92
+    (tmp_path / "routing_injected_at").write_text("2026-11-10", encoding="utf-8")
+    assert routing_credit.compute(since="2026-11-01")["realized_cost_usd"] == 92
+    (tmp_path / "routing_removed_at").write_text("2026-11-10", encoding="utf-8")
+    assert routing_credit.compute(since="2026-11-11")["realized_cost_usd"] == 50
 
 
 def test_credit_keeps_both_enabled_periods(tmp_path, monkeypatch):
@@ -49,5 +50,5 @@ def test_credit_keeps_both_enabled_periods(tmp_path, monkeypatch):
     facade._routing_unrestricted = lambda days, since, until=None: {
         'realized_cost_usd': sum(v for d, v in activity.items() if d >= since and (not until or d < until))}
     monkeypatch.setattr(routing_credit._compat, 'facade', lambda: facade)
-    assert routing_credit.compute(since='2026-11-01')['realized_cost_usd'] == 62
+    assert routing_credit.compute(since='2026-11-01')['realized_cost_usd'] == 92
     assert routing_default.routing_credit_intervals(facade) == [('2026-11-01', '2026-11-10'), ('2026-11-20', None)]

@@ -111,10 +111,7 @@ def _routing_in_total(all_in):
 
 
 def _since_install(data, routing_on):
-    """All-in saved-since-install with the measured/estimated/routing split.
-
-    Routing credit is already limited to enabled periods by the dashboard.
-    """
+    """All-in saved-since-install with the measured/estimated/routing split."""
     si = (data or {}).get("since_install") or {}
     all_in = si.get("all_in") or {}
     out = {"saved_usd": None, "measured_usd": None,

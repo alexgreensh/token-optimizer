@@ -243,3 +243,21 @@ def test_session_start_never_scans_history(tmp_path, monkeypatch):
     rd.session_start()
 
     assert calls == [], "SessionStart routing work must not scan history"
+
+
+def test_injection_failure_is_reported_and_cleared(tmp_path, monkeypatch):
+    _m, rd, snap, _home = _load(tmp_path, monkeypatch)
+    import injection
+    from _measure import pilot_report
+    original = injection.inject_managed_block
+    def fail(*args, **kwargs):
+        raise PermissionError('private path')
+    monkeypatch.setattr(injection, 'inject_managed_block', fail)
+    rd._inject_once(None, [])
+    from types import SimpleNamespace
+    state = pilot_report._routing(SimpleNamespace(SNAPSHOT_DIR=snap))
+    assert state['failure'] == 'PermissionError'
+    assert 'Routing guidance: failed (PermissionError)' in pilot_report.render({'routing': state})
+    monkeypatch.setattr(injection, 'inject_managed_block', original)
+    rd._inject_once(None, [])
+    assert not (snap / rd.FAILURE_MARKER).exists()

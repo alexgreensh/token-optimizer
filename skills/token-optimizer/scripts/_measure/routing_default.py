@@ -41,6 +41,7 @@ SECTION = "MODEL_ROUTING"
 INJECTED_MARKER = "routing_injected_at"
 REMOVED_MARKER = "routing_removed_at"
 AUDIT_OFFER_MARKER = "once-audit-offer.json"
+FAILURE_MARKER = "routing_injection_failure"
 
 # Runtimes whose instruction file this feature knows how to write.
 _ROUTING_RUNTIMES = ("claude", "codex")
@@ -244,9 +245,17 @@ def _inject_once(f, notices):
         import injection
         result = injection.inject_managed_block(
             str(target), SECTION, block, timestamp=stamp)
-    except Exception:
+    except Exception as exc:
+        _write_marker(f, FAILURE_MARKER, type(exc).__name__)
         return
     action = result.get("action")
+    if action in ("inserted", "replaced", "unchanged"):
+        try:
+            _marker_path(f, FAILURE_MARKER).unlink(missing_ok=True)
+        except OSError:
+            pass
+    else:
+        _write_marker(f, FAILURE_MARKER, "injection failed")
     if action in ("inserted", "replaced", "unchanged") and not injected:
         # The block is present (fresh write or already there): stamp the
         # credit-window start once. "unchanged" still counts -- a missing

@@ -102,19 +102,18 @@ def _sibling(module_name, func_name):
 
 
 def _call_flex(fn, *argsets):
-    """Call fn with the first signature that does not TypeError.
+    """Call fn with the first argset that returns without raising.
 
-    Returns (value, answered): answered is False when every signature raised,
+    Returns (value, answered): answered is False when every argset raised,
     so callers fall through to their own fallback instead of trusting a
-    half-answer.
+    half-answer. Signatures of the parallel lanes' helpers are not final,
+    so any exception moves to the next candidate rather than aborting.
     """
     for args in argsets:
         try:
             return fn(*args), True
-        except TypeError:
-            continue
         except Exception:
-            return None, False
+            continue
     return None, False
 
 

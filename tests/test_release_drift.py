@@ -149,3 +149,62 @@ def test_marketplace_entry_carries_the_plugin_version():
     market = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     entry = [p for p in market["plugins"] if p["name"] == plugin["name"]]
     assert len(entry) == 1 and entry[0]["version"] == plugin["version"], entry
+
+
+def _flaky_download(files: dict, failures: int, calls: list):
+    """npm right after a publish: the metadata resolves, the tarball 404s for a while."""
+    def download(url):
+        calls.append(url)
+        if len(calls) <= failures:
+            raise OSError("HTTP Error 404: Not Found")
+        return _tgz(files)
+    return download
+
+
+def test_a_tarball_that_404s_right_after_publish_is_retried(shipped):
+    """5.13.75: the registry document was up, the tarball URL 404'd once, and the gate failed a good release."""
+    calls, naps = [], []
+    ok, message = gate.match_tree("5.13.51", REPO, fetch=lambda v: {"tarball": "u", "integrity": "sha512-x"},
+                                  download=_flaky_download(shipped, 2, calls),
+                                  attempts=5, wait_seconds=15, sleep=naps.append)
+    assert ok, message
+    assert len(calls) == 3 and naps == [15, 15]
+
+
+def test_a_tarball_that_never_arrives_fails_after_the_last_attempt(shipped):
+    calls, naps = [], []
+    ok, message = gate.match_tree("5.13.51", REPO, fetch=lambda v: {"tarball": "u", "integrity": "sha512-x"},
+                                  download=_flaky_download(shipped, 99, calls),
+                                  attempts=3, wait_seconds=7, sleep=naps.append)
+    assert not ok and "404" in message and "could not download" in message
+    assert len(calls) == 3 and naps == [7, 7]
+
+
+def test_a_single_attempt_never_sleeps(shipped):
+    calls, naps = [], []
+    ok, _ = gate.match_tree("5.13.51", REPO, fetch=lambda v: {"tarball": "u", "integrity": "sha512-x"},
+                            download=_flaky_download(shipped, 1, calls), sleep=naps.append)
+    assert not ok and len(calls) == 1 and naps == []
+
+
+def test_a_retried_download_is_still_compared_with_the_tree(shipped):
+    """Retrying must not weaken the gate: the bytes that finally arrive are checked."""
+    rel = "skills/token-optimizer/scripts/measure.py"
+    older = dict(shipped)
+    older[rel] = shipped[rel].replace(b"def ", b"def  ", 1)
+    calls = []
+    ok, message = gate.match_tree("5.13.51", REPO, fetch=lambda v: {"tarball": "u", "integrity": "sha512-x"},
+                                  download=_flaky_download(older, 1, calls),
+                                  attempts=3, wait_seconds=0, sleep=lambda s: None)
+    assert not ok and "different bytes:  " + rel in message
+
+
+def test_main_passes_the_retry_budget_to_the_tree_match(monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setattr(gate, "check", lambda *a, **k: (True, "published"))
+    def fake_match(version, repo, fetch, **kwargs):
+        seen.update(kwargs)
+        return True, "matches"
+    monkeypatch.setattr(gate, "match_tree", fake_match)
+    assert gate.main(["--version", "5.13.51", "--match-tree", "--attempts", "60", "--wait", "15"]) == 0
+    assert seen == {"attempts": 60, "wait_seconds": 15.0}

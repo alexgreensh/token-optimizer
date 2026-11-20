@@ -118,17 +118,28 @@ def tree_mismatches(tgz: bytes, expected: dict) -> list:
     return out
 
 
-def match_tree(version: str, repo: Path, fetch, download=None) -> tuple:
+def match_tree(version: str, repo: Path, fetch, download=None, attempts: int = 1,
+               wait_seconds: float = 0.0, sleep=time.sleep) -> tuple:
     """(ok, message): the npm tarball for ``version`` is byte-for-byte what this
     checkout ships. The existence check alone passed 5.13.50, whose npm bytes
-    came from an earlier commit than the git release."""
+    came from an earlier commit than the git release.
+
+    ``attempts``/``wait_seconds`` cover registry propagation of the tarball: right after a
+    publish the metadata can resolve while the tarball URL still answers 404."""
     download = download or (lambda url: urllib.request.urlopen(url, timeout=60).read())  # noqa: S310
-    try:
-        dist = fetch(version)
-        tgz = download(dist["tarball"])
-    except Exception as exc:  # noqa: BLE001 - any failure is a failed gate, said out loud
+    last = ""
+    for attempt in range(max(1, attempts)):
+        try:
+            dist = fetch(version)
+            tgz = download(dist["tarball"])
+            break
+        except Exception as exc:  # noqa: BLE001 - any failure is a failed gate, said out loud
+            last = str(exc)
+            if attempt + 1 < attempts:
+                sleep(wait_seconds)
+    else:
         return False, "could not download %s@%s to compare it with the tree (%s)" % (
-            cloud_kit.PACKAGE, version, exc)
+            cloud_kit.PACKAGE, version, last)
     diffs = tree_mismatches(tgz, _staged_files(repo))
     if diffs:
         return False, ("%s@%s on npm is not this release's tree (%d difference(s)); the npm and "
@@ -162,7 +173,8 @@ def main(argv=None) -> int:
                         expect_integrity=args.expect_integrity, attempts=args.attempts,
                         wait_seconds=args.wait)
     if ok and args.match_tree:
-        ok, message = match_tree(version, args.repo, fetch=lambda v: cloud_kit.registry_dist(v, args.registry))
+        ok, message = match_tree(version, args.repo, fetch=lambda v: cloud_kit.registry_dist(v, args.registry),
+                                 attempts=args.attempts, wait_seconds=args.wait)
     if ok:
         print("OK: " + message)
         return 0

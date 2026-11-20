@@ -217,12 +217,17 @@ export const TokenOptimizerPlugin: Plugin = async (
     for (const [sid, state] of sessions) flushSession(sid, state);
   }
 
-  function maybeComputeQuality(state: SessionState, fillPct: number): QualityResult | null {
+  /**
+   * `fillSource` is a thunk so the fill estimate (a store read) only runs when the
+   * throttle lets a recompute through; throttled calls stay free of SELECTs.
+   */
+  function maybeComputeQuality(state: SessionState, fillSource: () => number): QualityResult | null {
     const now = Date.now();
     if (now - state.lastQualityTime < QUALITY_THROTTLE_MS && state.lastQuality) return state.lastQuality;
 
     const store = state.store;
     try {
+      const fillPct = fillSource();
       const contextWindow = contextWindowForModel(state.currentModel ?? "");
       // Store for window-consistency: freshSessionSavingsEstimate must use this
       // exact value, not re-derive it, so token count == fill% of this window.
@@ -481,8 +486,7 @@ export const TokenOptimizerPlugin: Plugin = async (
         const isSubstantive = text.split(/\s+/).filter(Boolean).length > 10;
         store.recordMessage(idx, "user", text.length, isSubstantive);
 
-        const fillPct = estimateFillFromSession(store, state.currentModel);
-        maybeComputeQuality(state, fillPct);
+        maybeComputeQuality(state, () => estimateFillFromSession(store, state.currentModel));
       } catch (err) {
         console.warn("[Token Optimizer] chat.message hook error:", err);
       }
@@ -554,8 +558,7 @@ export const TokenOptimizerPlugin: Plugin = async (
 
         // Refresh quality during autonomous tool runs (throttled), so token_status
         // doesn't report a stale high score mid-run.
-        const fillPct = estimateFillFromSession(store, state.currentModel);
-        maybeComputeQuality(state, fillPct);
+        maybeComputeQuality(state, () => estimateFillFromSession(store, state.currentModel));
       } catch (err) {
         console.warn("[Token Optimizer] tool.execute.after hook error:", err);
       }
@@ -683,8 +686,7 @@ export const TokenOptimizerPlugin: Plugin = async (
         // freshNudgeFired is intentionally NOT reset here — once-per-session must persist
         // across compactions. Python carries _fresh_nudge_fired in _CARRY_KEYS across compactions.
 
-        const fillPct = estimateFillFromSession(store, state.currentModel);
-        maybeComputeQuality(state, fillPct);
+        maybeComputeQuality(state, () => estimateFillFromSession(store, state.currentModel));
       } catch (err) {
         console.warn("[Token Optimizer] autocontinue hook error:", err);
       }
@@ -699,8 +701,8 @@ export const TokenOptimizerPlugin: Plugin = async (
           const sessionId = created.properties?.info?.id;
           if (sessionId) {
             const state = getSession(sessionId);
-            // Pre-seed the quality cache so the cold-start fill estimate (which
-            // would otherwise run extra SELECTs every call) has a row to read.
+            // Pre-seed the quality cache so readers of it (nudge cooldown,
+            // flushSession) have a row before the first quality computation.
             if (!state.store.getQualityCache()) {
               state.store.writeQualityCache({
                 resource_health: 100, session_efficiency: 100, fill_pct: 0,
@@ -809,16 +811,17 @@ export const TokenOptimizerPlugin: Plugin = async (
   return hooks as typeof hooks & { dispose: typeof dispose; statusForSession: typeof statusForSession };
 };
 
+/**
+ * Estimate context fill (0..1) from what this session has put into the context
+ * since the last compaction: user text plus tool-result output, at ~4 chars per
+ * token. It is recomputed on every call (never read back from quality_cache,
+ * which maybeComputeQuality itself writes, so reading it froze the first
+ * near-zero value forever). Each tool result is counted once: the messages
+ * table already holds it as a "tool_result" row, and the "assistant" row
+ * recorded next to it only mirrors that size.
+ */
 function estimateFillFromSession(store: SessionStore, model?: string): number {
-  const cache = store.getQualityCache();
-  if (cache?.fill_pct !== null && cache?.fill_pct !== undefined) {
-    return cache.fill_pct;
-  }
-  const messages = store.getRecentMessages(100);
-  const results = store.getRecentToolResults(100);
-  const totalChars = messages.reduce((s, m) => s + m.text_length, 0)
-    + results.reduce((s, r) => s + r.result_size, 0);
-  const estimatedTokens = totalChars / 4;
+  const estimatedTokens = store.getFillChars() / 4;
   const ctxWindow = contextWindowForModel(model ?? "");
   return Math.min(1, ctxWindow > 0 ? estimatedTokens / ctxWindow : 0);
 }

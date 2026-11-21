@@ -18,14 +18,15 @@
  *   requirement.
  *
  * • The scoring semantics are a direct port of:
- *     measure.py:keyword_relevance_score()   (~line 16305)
- *     measure.py:_checkpoint_topic_score()   (~line 15803)
- *     measure.py:_continuity_prompt_hint()   (~line 15840)
+ *     _measure/continuity.py:keyword_relevance_score()
+ *     _measure/continuity.py:_checkpoint_topic_score()
+ *     _measure/continuity.py:_continuity_prompt_hint()
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import { PROMPT_FUNCTION_WORDS } from "./prompt-function-words.js";
+import { PT_RESUME_CUE_RE, PT_RESUME_CUE_STRIP_RE } from "./pt-resume-cues.js";
 // checkpointSessionDir is used only for the sanitized-ID pattern; the
 // safe-resolve helpers in checkpoint-policy are module-private so we
 // re-implement the minimal path-safety logic locally.
@@ -907,32 +908,8 @@ export const RESUME_INTENT_RE =
 // calls .test() on it, and a global regex makes .test() stateful via lastIndex.
 const RESUME_INTENT_STRIP_RE = new RegExp(RESUME_INTENT_RE.source, "gi");
 
-/**
- * Portuguese (pt-BR/pt-PT) resume cues. Mirrors Python _PT_RESUME_CUE_RE in
- * measure.py (same fix: "continua a <infinitive>" excluded -
- * "keeps <verb>ing", not resume; "a" allowed only before a work noun,
- * mirroring English "resume the (work|session|...)"). Accent-tolerant (ultima/última, sessao/sessão).
- * A bare "continua"/"continuar" does NOT match; it needs a following o/com/de/...
- * word. Boundaries use Unicode property classes (\p{L}/\p{N}/_) with the u flag
- * because Python's \w is Unicode-aware: an accented letter glued to a cue
- * ("éúltima") must block the match identically in both runtimes. Latin script
- * with word boundaries, so it is safe to strip from the
- * prompt residual in resumeTopicScore (unlike CJK, which stays detection-only).
- */
-export const PT_RESUME_CUE_RE =
-  /(?<![\p{L}\p{N}_])(?:[úu]ltima sess[ãa]o|sess[ãa]o anterior|da [úu]ltima vez|onde paramos|onde parei|continu(?:a|ar) (?:o|com|de|daquilo|aquilo|trabalhando|a (?:sess[ãa]o|conversa|tarefa|trabalho|projeto|discuss[ãa]o))|retom(?:a|ar) (?:o|a|aquilo|de onde)|retomando|o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|ontem a gente|a gente estava)(?![\p{L}\p{N}_])/iu;
-
-// Global-flagged strip copy, same reasoning as RESUME_INTENT_STRIP_RE.
-const PT_RESUME_CUE_STRIP_RE = new RegExp(PT_RESUME_CUE_RE.source, "giu");
-
-
-/**
- * True when the prompt asks to continue or recall prior work.
- * Exported for tests.
- */
 export function isResumeIntent(text: string): boolean {
-  const t = text ?? "";
-  return RESUME_INTENT_RE.test(t) || PT_RESUME_CUE_RE.test(t);
+  return RESUME_INTENT_RE.test(text ?? "") || PT_RESUME_CUE_RE.test(text ?? "");
 }
 
 /**

@@ -2472,14 +2472,41 @@ def _extract_session_id_from_prompt(text):
     return (m.group(1) or m.group(2)).lower()
 
 
+
 def _resume_intent(text):
     """True when the prompt asks to continue/recall prior work (Latin or CJK cue)."""
     _measure_facade = _compat.facade()
+    # Portuguese (pt-BR/pt-PT) resume cues, compiled inline rather than at module
+    # level: scripts/check_measure_split.py requires this provider to stay
+    # definition-only (no module-level import or assignment), and the stdlib re
+    # cache makes the repeat compile a cache hit after first use. Kept separate
+    # from _RESUME_INTENT_RE (English) so that regex stays byte-stable. Latin
+    # script WITH word boundaries, so unlike CJK the cue is safe to strip from the
+    # prompt residual (_resume_topic_score applies .sub) -- otherwise
+    # "paramos"/"estavamos" would leak in as topic tokens. Accent-tolerant
+    # (ultima/última, sessao/sessão). A bare "continua"/"continuar" does NOT
+    # match; it needs a following o/com/de/... word. "a" is allowed ONLY before a
+    # work noun ("continua a sessão/tarefa/conversa..."), mirroring English
+    # "resume the (work|session|project|task|conversation|thread|discussion)".
+    # "continua a <infinitive>" ("keeps <verb>ing", the PT analog of the
+    # deliberately-excluded English "continue to <verb>", see D2 at
+    # _RESUME_INTENT_RE) still does NOT match.
+    # Keep in sync with the copy in _resume_topic_score.
+    pt_cue_re = _measure_facade.re.compile(
+        r"(?<!\w)(?:"
+        r"[úu]ltima sess[ãa]o|sess[ãa]o anterior|da [úu]ltima vez|"
+        r"onde paramos|onde parei|"
+        r"continu(?:a|ar) (?:o|com|de|daquilo|aquilo|trabalhando|a (?:sess[ãa]o|conversa|tarefa|trabalho|projeto|discuss[ãa]o))|"
+        r"retom(?:a|ar) (?:o|a|aquilo|de onde)|retomando|"
+        r"o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|"
+        r"ontem a gente|a gente estava"
+        r")(?!\w)",
+        _measure_facade.re.IGNORECASE,)
     t = text or ""
     return bool(
         _measure_facade._RESUME_INTENT_RE.search(t)
         or _measure_facade._CJK_RESUME_CUE_RE.search(t)
-        or _measure_facade._PT_RESUME_CUE_RE.search(t)
+        or pt_cue_re.search(t)
     )
 
 
@@ -2520,8 +2547,20 @@ def _resume_topic_score(text, checkpoint_path):
     keepwarm one") scores higher than a vague "continue last session" (-> 0.0).
     """
     _measure_facade = _compat.facade()
+    # Same PT cue regex as _resume_intent (keep the two copies in sync); inline
+    # compile because this provider must stay definition-only (see _resume_intent).
+    pt_cue_re = _measure_facade.re.compile(
+        r"(?<!\w)(?:"
+        r"[úu]ltima sess[ãa]o|sess[ãa]o anterior|da [úu]ltima vez|"
+        r"onde paramos|onde parei|"
+        r"continu(?:a|ar) (?:o|com|de|daquilo|aquilo|trabalhando|a (?:sess[ãa]o|conversa|tarefa|trabalho|projeto|discuss[ãa]o))|"
+        r"retom(?:a|ar) (?:o|a|aquilo|de onde)|retomando|"
+        r"o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|"
+        r"ontem a gente|a gente estava"
+        r")(?!\w)",
+        _measure_facade.re.IGNORECASE,)
     residual = _measure_facade._RESUME_INTENT_RE.sub(" ", str(text or "").lower())
-    residual = _measure_facade._PT_RESUME_CUE_RE.sub(" ", residual)
+    residual = pt_cue_re.sub(" ", residual)
     topic_tokens = _measure_facade._topic_tokens(residual, _measure_facade._RESUME_TOPIC_STOPWORDS)
     if not topic_tokens:
         return 0.0

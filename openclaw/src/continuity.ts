@@ -908,11 +908,27 @@ export const RESUME_INTENT_RE =
 const RESUME_INTENT_STRIP_RE = new RegExp(RESUME_INTENT_RE.source, "gi");
 
 /**
+ * Portuguese (pt-BR/pt-PT) resume cues. Mirrors Python _PT_RESUME_CUE_RE in
+ * measure.py (same fix: bare "a" excluded - "continua a <infinitive>" means
+ * "keeps <verb>ing", not resume). Accent-tolerant (ultima/última, sessao/sessão).
+ * A bare "continua"/"continuar" does NOT match; it needs a following o/com/de/...
+ * word. Latin script with word boundaries, so it is safe to strip from the
+ * prompt residual in resumeTopicScore (unlike CJK, which stays detection-only).
+ */
+export const PT_RESUME_CUE_RE =
+  /(?<!\w)(?:[úu]ltima sess[ãa]o|sess[ãa]o anterior|da [úu]ltima vez|onde paramos|onde parei|continu(?:a|ar) (?:o|com|de|daquilo|aquilo|trabalhando)|retom(?:a|ar) (?:o|a|aquilo|de onde)|retomando|o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|ontem a gente|a gente estava)(?!\w)/i;
+
+// Global-flagged strip copy, same reasoning as RESUME_INTENT_STRIP_RE.
+const PT_RESUME_CUE_STRIP_RE = new RegExp(PT_RESUME_CUE_RE.source, "gi");
+
+
+/**
  * True when the prompt asks to continue or recall prior work.
  * Exported for tests.
  */
 export function isResumeIntent(text: string): boolean {
-  return RESUME_INTENT_RE.test(text ?? "");
+  const t = text ?? "";
+  return RESUME_INTENT_RE.test(t) || PT_RESUME_CUE_RE.test(t);
 }
 
 /**
@@ -946,7 +962,7 @@ const RESUME_TOPIC_BAR = Number.parseFloat(
  * Mirrors Python _resume_topic_score in measure.py.
  */
 export function resumeTopicScore(promptText: string, checkpointContent: string): number {
-  const residual = (promptText ?? "").toLowerCase().replace(RESUME_INTENT_STRIP_RE, " ");
+  const residual = (promptText ?? "").toLowerCase().replace(RESUME_INTENT_STRIP_RE, " ").replace(PT_RESUME_CUE_STRIP_RE, " ");
   const topicTokens = extractTopicTokens(residual, RESUME_TOPIC_STOPWORDS);
   if (topicTokens.size === 0) return 0.0;
 

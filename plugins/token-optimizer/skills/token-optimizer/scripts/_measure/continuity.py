@@ -2476,7 +2476,11 @@ def _resume_intent(text):
     """True when the prompt asks to continue/recall prior work (Latin or CJK cue)."""
     _measure_facade = _compat.facade()
     t = text or ""
-    return bool(_measure_facade._RESUME_INTENT_RE.search(t) or _measure_facade._CJK_RESUME_CUE_RE.search(t))
+    return bool(
+        _measure_facade._RESUME_INTENT_RE.search(t)
+        or _measure_facade._CJK_RESUME_CUE_RE.search(t)
+        or _measure_facade._PT_RESUME_CUE_RE.search(t)
+    )
 
 
 def _in_ranges(cp, ranges):
@@ -2517,6 +2521,7 @@ def _resume_topic_score(text, checkpoint_path):
     """
     _measure_facade = _compat.facade()
     residual = _measure_facade._RESUME_INTENT_RE.sub(" ", str(text or "").lower())
+    residual = _measure_facade._PT_RESUME_CUE_RE.sub(" ", residual)
     topic_tokens = _measure_facade._topic_tokens(residual, _measure_facade._RESUME_TOPIC_STOPWORDS)
     if not topic_tokens:
         return 0.0

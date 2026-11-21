@@ -542,6 +542,13 @@ def test_bytes_text_and_bad_pool_are_guarded(m, tmp_path):
     "continua daquilo", "continuar trabalhando no parser", "retoma o parser",
     "retomar de onde parei", "retomando o parser", "o que estávamos fazendo",
     "no que estavamos trabalhando", "ontem a gente mexeu nisso", "a gente estava no parser",
+    # Pinned intended semantics, matching the English production regex:
+    # "continue with" fires, so "continua com" fires even in ongoing-status
+    # sentences; past-work recollection ("yesterday we", "we were working on")
+    # fires, so "a gente estava ..." fires; and dropping bare "a" does not lose
+    # "continua a última sessão", which still matches via the "última sessão" cue.
+    "continua com o erro no parser", "a gente estava no meio do refactor",
+    "continua a última sessão",
 ])
 def test_pt_resume_cues_detected(m, prompt):
     assert m._resume_intent(prompt), prompt
@@ -550,7 +557,14 @@ def test_pt_resume_cues_detected(m, prompt):
 @pytest.mark.parametrize("prompt", [
     "continua", "continuar", "continua!", "escreva uma função de ordenação",
     "adicione testes para o parser", "a sessão expirou",
+    # PT analog of the deliberately-excluded English "continue to <verb>" (D2 in
+    # measure.py): "continua a <infinitive>" means "keeps <verb>ing" - ongoing
+    # status of the CURRENT task, not a request to resume a prior session.
     "o build continua a falhar", "continua a chover", "ele continua a trabalhar",
+    "continua a implementar o parser",
+    # Boundary parity probe: cue glued to an accented letter is not a cue
+    # (Python \w is Unicode-aware; the JS ports pin the same with \p{L}).
+    "éúltima sessão",
 ])
 def test_pt_non_resume_not_detected(m, prompt):
     assert not m._resume_intent(prompt), prompt

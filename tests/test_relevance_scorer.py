@@ -531,3 +531,32 @@ def test_bytes_text_and_bad_pool_are_guarded(m, tmp_path):
     s2 = m.checkpoint_relevance_score(
         "continue working on the meridian competitor monitor", meridian, pool="not-a-list")
     assert 0.0 <= s2 <= 1.0
+
+
+# --- Portuguese resume cues (detection + residual stripping) ---
+
+@pytest.mark.parametrize("prompt", [
+    "continua de onde paramos", "Continuar de onde paramos", "na última sessão",
+    "na ultima sessao", "sessão anterior", "da última vez", "da ultima vez",
+    "onde paramos?", "onde parei", "continua o trabalho", "continuar com o parser",
+    "continua daquilo", "continuar trabalhando no parser", "retoma o parser",
+    "retomar de onde parei", "retomando o parser", "o que estávamos fazendo",
+    "no que estavamos trabalhando", "ontem a gente mexeu nisso", "a gente estava no parser",
+])
+def test_pt_resume_cues_detected(m, prompt):
+    assert m._resume_intent(prompt), prompt
+
+
+@pytest.mark.parametrize("prompt", [
+    "continua", "continuar", "continua!", "escreva uma função de ordenação",
+    "adicione testes para o parser", "a sessão expirou",
+])
+def test_pt_non_resume_not_detected(m, prompt):
+    assert not m._resume_intent(prompt), prompt
+
+
+def test_pt_cue_stripped_from_topic_residual(m, tmp_path):
+    cp = tmp_path / "cp.md"
+    cp.write_text("parser module notes", encoding="utf-8")
+    assert m._resume_topic_score("continua de onde paramos", cp) == 0.0
+    assert m._resume_topic_score("continua de onde paramos no parser", cp) == 1.0

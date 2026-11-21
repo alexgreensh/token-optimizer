@@ -5950,6 +5950,24 @@ _extract_session_id_from_prompt = _measure_compat.bind(_measure_providers['conti
 # run match the i18n parity fixture pins. Detection-only avoids that.
 _CJK_RESUME_CUE_RE = re.compile(r"继续|이어서|계속|続ける")
 
+# Portuguese (pt-BR/pt-PT) resume cues. Latin script WITH word boundaries, so unlike
+# CJK the cue is safe to strip from the prompt residual (continuity._resume_topic_score
+# applies .sub) -- otherwise "paramos"/"estavamos" would leak in as topic tokens.
+# Kept separate from _RESUME_INTENT_RE (English) so that regex stays byte-stable.
+# Accent-tolerant (ultima/última, sessao/sessão). A bare "continua"/"continuar"
+# does NOT match; it needs a following o/a/com/de/... word.
+_PT_RESUME_CUE_RE = re.compile(
+    r"(?<!\w)(?:"
+    r"[úu]ltima sess[ãa]o|sess[ãa]o anterior|da [úu]ltima vez|"
+    r"onde paramos|onde parei|"
+    r"continu(?:a|ar) (?:o|a|com|de|daquilo|aquilo|trabalhando)|"
+    r"retom(?:a|ar) (?:o|a|aquilo|de onde)|retomando|"
+    r"o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|"
+    r"ontem a gente|a gente estava"
+    r")(?!\w)",
+    re.IGNORECASE,
+)
+
 
 _resume_intent = _measure_compat.bind(_measure_providers['continuity']._resume_intent, __name__)
 

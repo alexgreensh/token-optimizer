@@ -4302,7 +4302,10 @@ def keyword_relevance_score(text, checkpoint_path):
         _measure_facade = _compat.facade()
         return _measure_facade._topic_tokens(s)
 
-    text_tokens = content_words(text)
+    # Function words never count as topic (neither denominator nor hits), and a
+    # resume cue followed only by them ("continue where we left off with these")
+    # stays a vague resume.
+    text_tokens = {w for w in content_words(text) if w not in _measure_facade._PROMPT_FUNCTION_WORDS}
 
     # Continuation cue present? (phrase OR strong single word)
     has_continuation = (
@@ -4325,6 +4328,7 @@ def keyword_relevance_score(text, checkpoint_path):
         residual = {
             w for w in content_words(residual_text)
             if w not in _measure_facade._RESUME_TOPIC_STOPWORDS and w not in _measure_facade._CONTINUATION_WORDS
+            and w not in _measure_facade._PROMPT_FUNCTION_WORDS
         }
         if not residual:
             return 1.0

@@ -549,6 +549,10 @@ def test_bytes_text_and_bad_pool_are_guarded(m, tmp_path):
     # "continua a última sessão", which still matches via the "última sessão" cue.
     "continua com o erro no parser", "a gente estava no meio do refactor",
     "continua a última sessão",
+    # Article + work noun is a real resume ask, mirroring English
+    # "resume the (work|session|project|task|conversation|thread|discussion)":
+    "continua a sessão", "continuar a tarefa", "continua a conversa sobre o parser",
+    "continua a discussão", "retoma a tarefa",
 ])
 def test_pt_resume_cues_detected(m, prompt):
     assert m._resume_intent(prompt), prompt
@@ -561,7 +565,7 @@ def test_pt_resume_cues_detected(m, prompt):
     # measure.py): "continua a <infinitive>" means "keeps <verb>ing" - ongoing
     # status of the CURRENT task, not a request to resume a prior session.
     "o build continua a falhar", "continua a chover", "ele continua a trabalhar",
-    "continua a implementar o parser",
+    "continua a implementar o parser", "continua a trabalhar no parser",
     # Boundary parity probe: cue glued to an accented letter is not a cue
     # (Python \w is Unicode-aware; the JS ports pin the same with \p{L}).
     "éúltima sessão",

@@ -75,5 +75,26 @@
     "checkpoint": "支付模块重构 的后续",
     "expect_match": false,
     "why": "KNOWN LIMIT: Chinese/Japanese have no word spaces, so a whole run only matches an identical run. '继续重构支付模块' != '支付模块重构'. Word-level parity needs morphological segmentation (jieba/mecab) — a tracked follow-up, not this PR."
+  },
+  {
+    "name": "portuguese_resume_cue_with_topic",
+    "prompt": "continua de onde paramos no módulo de pagamento",
+    "checkpoint": "refactor do módulo de pagamento",
+    "expect_match": true,
+    "why": "PT cue is stripped from the residual like English cues; módulo/pagamento survive as accented Latin tokens and match in all three runtimes."
+  },
+  {
+    "name": "portuguese_pure_cue_scores_zero",
+    "prompt": "continua de onde paramos",
+    "checkpoint": "parser module notes",
+    "expect_match": false,
+    "why": "A pure PT resume cue leaves no topic tokens after stripping, exactly like a pure English cue; vague asks fall to the recency path instead of keyword-matching."
+  },
+  {
+    "name": "portuguese_ongoing_status_keeps_topic",
+    "prompt": "continua a implementar o parser",
+    "checkpoint": "parser module notes",
+    "expect_match": true,
+    "why": "'continua a <infinitive>' is ongoing status, NOT a resume cue (PT analog of excluded English 'continue to <verb>'), so nothing is stripped; 'parser' remains a topic token and matches."
   }
 ]

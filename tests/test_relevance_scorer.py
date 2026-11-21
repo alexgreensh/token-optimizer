@@ -550,6 +550,7 @@ def test_pt_resume_cues_detected(m, prompt):
 @pytest.mark.parametrize("prompt", [
     "continua", "continuar", "continua!", "escreva uma função de ordenação",
     "adicione testes para o parser", "a sessão expirou",
+    "o build continua a falhar", "continua a chover", "ele continua a trabalhar",
 ])
 def test_pt_non_resume_not_detected(m, prompt):
     assert not m._resume_intent(prompt), prompt

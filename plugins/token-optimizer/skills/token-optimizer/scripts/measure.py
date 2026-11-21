@@ -5955,12 +5955,13 @@ _CJK_RESUME_CUE_RE = re.compile(r"继续|이어서|계속|続ける")
 # applies .sub) -- otherwise "paramos"/"estavamos" would leak in as topic tokens.
 # Kept separate from _RESUME_INTENT_RE (English) so that regex stays byte-stable.
 # Accent-tolerant (ultima/última, sessao/sessão). A bare "continua"/"continuar"
-# does NOT match; it needs a following o/a/com/de/... word.
+# does NOT match; it needs a following o/com/de/... word. Bare "a" is excluded:
+# "continua a <infinitive>" means "keeps <verb>ing", not resume.
 _PT_RESUME_CUE_RE = re.compile(
     r"(?<!\w)(?:"
     r"[úu]ltima sess[ãa]o|sess[ãa]o anterior|da [úu]ltima vez|"
     r"onde paramos|onde parei|"
-    r"continu(?:a|ar) (?:o|a|com|de|daquilo|aquilo|trabalhando)|"
+    r"continu(?:a|ar) (?:o|com|de|daquilo|aquilo|trabalhando)|"
     r"retom(?:a|ar) (?:o|a|aquilo|de onde)|retomando|"
     r"o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|"
     r"ontem a gente|a gente estava"

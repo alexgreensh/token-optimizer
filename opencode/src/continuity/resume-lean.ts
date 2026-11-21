@@ -63,9 +63,25 @@ export const RESUME_INTENT_RE = new RegExp(
 // calls .test() on it, and a global regex makes .test() stateful via lastIndex.
 const RESUME_INTENT_STRIP_RE = new RegExp(RESUME_INTENT_RE.source, "gi");
 
+/**
+ * Portuguese (pt-BR/pt-PT) resume cues. Mirrors Python _PT_RESUME_CUE_RE in
+ * measure.py (same fix: bare "a" excluded - "continua a <infinitive>" means
+ * "keeps <verb>ing", not resume). Accent-tolerant (ultima/última, sessao/sessão).
+ * A bare "continua"/"continuar" does NOT match; it needs a following o/com/de/...
+ * word. Latin script with word boundaries, so it is safe to strip from the
+ * prompt residual in resumeTopicScore (unlike CJK, which stays detection-only).
+ */
+export const PT_RESUME_CUE_RE =
+  /(?<!\w)(?:[úu]ltima sess[ãa]o|sess[ãa]o anterior|da [úu]ltima vez|onde paramos|onde parei|continu(?:a|ar) (?:o|com|de|daquilo|aquilo|trabalhando)|retom(?:a|ar) (?:o|a|aquilo|de onde)|retomando|o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|ontem a gente|a gente estava)(?!\w)/i;
+
+// Global-flagged strip copy, same reasoning as RESUME_INTENT_STRIP_RE.
+const PT_RESUME_CUE_STRIP_RE = new RegExp(PT_RESUME_CUE_RE.source, "gi");
+
+
 /** True when the prompt asks to continue/recall prior work. */
 export function resumeIntent(text: string): boolean {
-  return RESUME_INTENT_RE.test(text ?? "");
+  const t = text ?? "";
+  return RESUME_INTENT_RE.test(t) || PT_RESUME_CUE_RE.test(t);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +319,7 @@ function formatDisclosure(
  */
 export function resumeTopicScore(prompt: string, content: string): number {
   // Strip resume-intent phrases from the prompt, leaving only topic words.
-  const residual = (prompt ?? "").toLowerCase().replace(RESUME_INTENT_STRIP_RE, " ");
+  const residual = (prompt ?? "").toLowerCase().replace(RESUME_INTENT_STRIP_RE, " ").replace(PT_RESUME_CUE_STRIP_RE, " ");
 
   // Extract topic words via the shared non-English tokenizer: two-branch class +
   // script-aware floor (CJK kept at len>=2, ASCII/Latin at len>3), minus glue stopwords.

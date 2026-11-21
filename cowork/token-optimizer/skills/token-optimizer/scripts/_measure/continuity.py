@@ -4293,6 +4293,37 @@ def keyword_relevance_score(text, checkpoint_path):
     every checkpoint ties at 1.0 and the most RECENT one wins, surfacing the
     wrong parallel session instead of the one the user named.
     """
+    # Function words (EN + PT, len>3 so they would survive _topic_token_kept) that carry no
+    # topic. Only the PROMPT side of keyword_relevance_score drops them: a prompt such as
+    # "would this benchmark spend our tokens" must not match an unrelated checkpoint on
+    # "this"/"would" alone. Content words ("tokens", "build", "test") are deliberately absent.
+    # Lives inside this function: the measure.py facade may not
+    # definitions-only (scripts/check_measure_split.py) and the facade may not grow
+    # (scripts/check_file_size.py).
+    _PROMPT_FUNCTION_WORDS = frozenset({
+    # English
+    "this", "that", "these", "those", "them", "they", "their", "theirs", "there",
+    "then", "than", "what", "when", "where", "which", "while", "whom", "whose",
+    "with", "without", "within", "would", "should", "could", "shall", "might",
+    "must", "have", "been", "being", "were", "does", "done",
+    "your", "yours", "ours", "ourselves", "myself", "yourself", "itself",
+    "also", "just", "very", "more", "most", "some", "such", "only", "into",
+    "from", "about", "over", "here", "really", "still", "even", "each", "other",
+    "both", "same", "will", "because", "though", "although", "whether",
+    "much", "many", "ever", "never", "maybe", "again", "once",
+    # Portuguese (accented and unaccented forms)
+    "esse", "esses", "essa", "essas", "isso", "este", "estes", "esta", "estas",
+    "isto", "aquele", "aquela", "aqueles", "aquelas", "aquilo", "nosso", "nossa",
+    "nossos", "nossas", "seus", "suas", "meus", "minha",
+    "minhas", "para", "como", "temos", "tenho", "tinha", "tenha", "tambem",
+    "também", "está", "estou", "estão", "estao", "estamos", "mais",
+    "muito", "muita", "muitos", "muitas", "pois", "porque", "porém", "porem",
+    "entao", "então", "quando", "onde", "qual", "quais", "quem", "aqui", "ainda",
+    "apenas", "sobre", "entre", "sido", "será", "sera", "seria", "deve", "devem",
+    "pode", "podem", "poderia", "havia", "mesmo", "nunca", "sempre", "depois",
+    "agora", "tudo", "toda", "todos", "todas",
+    })
+
     _measure_facade = _compat.facade()
     text_lower = text.lower()
 
@@ -4305,7 +4336,7 @@ def keyword_relevance_score(text, checkpoint_path):
     # Function words never count as topic (neither denominator nor hits), and a
     # resume cue followed only by them ("continue where we left off with these")
     # stays a vague resume.
-    text_tokens = {w for w in content_words(text) if w not in _measure_facade._PROMPT_FUNCTION_WORDS}
+    text_tokens = {w for w in content_words(text) if w not in _PROMPT_FUNCTION_WORDS}
 
     # Continuation cue present? (phrase OR strong single word)
     has_continuation = (
@@ -4328,7 +4359,7 @@ def keyword_relevance_score(text, checkpoint_path):
         residual = {
             w for w in content_words(residual_text)
             if w not in _measure_facade._RESUME_TOPIC_STOPWORDS and w not in _measure_facade._CONTINUATION_WORDS
-            and w not in _measure_facade._PROMPT_FUNCTION_WORDS
+            and w not in _PROMPT_FUNCTION_WORDS
         }
         if not residual:
             return 1.0

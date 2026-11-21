@@ -25,6 +25,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { PROMPT_FUNCTION_WORDS } from "./prompt-function-words.js";
 // checkpointSessionDir is used only for the sanitized-ID pattern; the
 // safe-resolve helpers in checkpoint-policy are module-private so we
 // re-implement the minimal path-safety logic locally.
@@ -360,13 +361,12 @@ export function keywordRelevanceScore(
     if (lower.includes(phrase)) return 1.0;
   }
 
-  // Content-word extraction via the shared non-English tokenizer: two-branch
-  // class + script-aware floor (>= U+3000 kept at len>=2, other non-Latin at len>=3, Latin at len>3). See extractTopicTokens.
+  // Content words via extractTopicTokens; the prompt side drops EN/PT function words (mirrors Python _PROMPT_FUNCTION_WORDS).
   function contentWords(s: string): Set<string> {
     return extractTopicTokens(s);
   }
 
-  const textTokens = contentWords(text);
+  const textTokens = new Set([...contentWords(text)].filter((w) => !PROMPT_FUNCTION_WORDS.has(w)));
 
   // A bare continuation WORD ("continue", "resume") only means "resume my
   // prior thread" when it IS the request. In a substantive prompt

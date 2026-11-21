@@ -5956,34 +5956,6 @@ _resume_intent = _measure_compat.bind(_measure_providers['continuity']._resume_i
 
 # Generic glue words that carry no topic once the resume cue is removed; keeping
 # them would let "session"/"work" falsely match every checkpoint.
-# Function words (EN + PT, len>3 so they would survive _topic_token_kept) that carry no
-# topic. Only the PROMPT side of keyword_relevance_score drops them: a prompt such as
-# "would this benchmark spend our tokens" must not match an unrelated checkpoint on
-# "this"/"would" alone. Content words ("tokens", "build", "test") are deliberately absent.
-_PROMPT_FUNCTION_WORDS = frozenset({
-    # English
-    "this", "that", "these", "those", "them", "they", "their", "theirs", "there",
-    "then", "than", "what", "when", "where", "which", "while", "whom", "whose",
-    "with", "without", "within", "would", "should", "could", "shall", "might",
-    "must", "have", "been", "being", "were", "does", "done",
-    "your", "yours", "ours", "ourselves", "myself", "yourself", "itself",
-    "also", "just", "very", "more", "most", "some", "such", "only", "into",
-    "from", "about", "over", "here", "really", "still", "even", "each", "other",
-    "both", "same", "will", "because", "though", "although", "whether",
-    "much", "many", "ever", "never", "maybe", "again", "once",
-    # Portuguese (accented and unaccented forms)
-    "esse", "esses", "essa", "essas", "isso", "este", "estes", "esta", "estas",
-    "isto", "aquele", "aquela", "aqueles", "aquelas", "aquilo", "nosso", "nossa",
-    "nossos", "nossas", "seus", "suas", "meus", "minha",
-    "minhas", "para", "como", "temos", "tenho", "tinha", "tenha", "tambem",
-    "também", "está", "estou", "estão", "estao", "estamos", "mais",
-    "muito", "muita", "muitos", "muitas", "pois", "porque", "porém", "porem",
-    "entao", "então", "quando", "onde", "qual", "quais", "quem", "aqui", "ainda",
-    "apenas", "sobre", "entre", "sido", "será", "sera", "seria", "deve", "devem",
-    "pode", "podem", "poderia", "havia", "mesmo", "nunca", "sempre", "depois",
-    "agora", "tudo", "toda", "todos", "todas",
-})
-
 _RESUME_TOPIC_STOPWORDS = frozenset({
     "session", "sessions", "work", "working", "worked", "continue", "resume",
     "last", "time", "previous", "prior", "earlier", "thing", "things", "stuff",

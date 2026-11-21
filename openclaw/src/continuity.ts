@@ -912,14 +912,17 @@ const RESUME_INTENT_STRIP_RE = new RegExp(RESUME_INTENT_RE.source, "gi");
  * measure.py (same fix: bare "a" excluded - "continua a <infinitive>" means
  * "keeps <verb>ing", not resume). Accent-tolerant (ultima/última, sessao/sessão).
  * A bare "continua"/"continuar" does NOT match; it needs a following o/com/de/...
- * word. Latin script with word boundaries, so it is safe to strip from the
+ * word. Boundaries use Unicode property classes (\p{L}/\p{N}/_) with the u flag
+ * because Python's \w is Unicode-aware: an accented letter glued to a cue
+ * ("éúltima") must block the match identically in both runtimes. Latin script
+ * with word boundaries, so it is safe to strip from the
  * prompt residual in resumeTopicScore (unlike CJK, which stays detection-only).
  */
 export const PT_RESUME_CUE_RE =
-  /(?<!\w)(?:[úu]ltima sess[ãa]o|sess[ãa]o anterior|da [úu]ltima vez|onde paramos|onde parei|continu(?:a|ar) (?:o|com|de|daquilo|aquilo|trabalhando)|retom(?:a|ar) (?:o|a|aquilo|de onde)|retomando|o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|ontem a gente|a gente estava)(?!\w)/i;
+  /(?<![\p{L}\p{N}_])(?:[úu]ltima sess[ãa]o|sess[ãa]o anterior|da [úu]ltima vez|onde paramos|onde parei|continu(?:a|ar) (?:o|com|de|daquilo|aquilo|trabalhando)|retom(?:a|ar) (?:o|a|aquilo|de onde)|retomando|o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|ontem a gente|a gente estava)(?![\p{L}\p{N}_])/iu;
 
 // Global-flagged strip copy, same reasoning as RESUME_INTENT_STRIP_RE.
-const PT_RESUME_CUE_STRIP_RE = new RegExp(PT_RESUME_CUE_RE.source, "gi");
+const PT_RESUME_CUE_STRIP_RE = new RegExp(PT_RESUME_CUE_RE.source, "giu");
 
 
 /**

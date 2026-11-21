@@ -144,3 +144,29 @@ def test_recover_token_re_left_unchanged():
     mod = _measure()
     assert mod._RECOVER_TOKEN_RE.pattern == r"[a-zA-Z0-9_./:-]+"
     assert mod._RECOVER_TOKEN_RE.pattern != mod._TOPIC_TOKEN_RE.pattern
+
+
+def test_keyword_relevance_ignores_function_word_overlap(tmp_path):
+    """Prompt-side function words (EN + PT) must not count as topic: overlap on
+    them alone scores 0.0, while genuine content overlap is unchanged."""
+    mod = _measure()
+    en = tmp_path / "en.md"
+    en.write_text("Active task: fix the docker build cache for payments, we would check this later, "
+                  "our pipeline is slow and that should change.", encoding="utf-8")
+    pt = tmp_path / "pt.md"
+    pt.write_text("Tarefa: corrigir o cache do docker, esse pipeline é lento e nossos "
+                  "testes também falham, isso precisa mudar.", encoding="utf-8")
+    assert mod.keyword_relevance_score("would this should your have", en) == 0.0
+    assert mod.keyword_relevance_score("would this benchmark spend our tokens", en) == 0.0
+    assert mod.keyword_relevance_score("esse isso nossos também para como", pt) == 0.0
+    assert mod.keyword_relevance_score("esse benchmark gastaria nossos tokens", pt) == 0.0
+    assert mod.keyword_relevance_score("fix the docker build cache", en) == 1.0
+    assert mod.keyword_relevance_score("corrigir o cache do docker", pt) == 1.0
+    assert mod.keyword_relevance_score("continue", en) == 1.0
+    # A resume cue followed only by function words is still a vague resume.
+    assert mod.keyword_relevance_score("continue where we left off with these", en) == 1.0
+    assert mod.keyword_relevance_score("continue isso aqui", pt) == 1.0
+    # "todo" stays a topic word (TODO lists), not the Portuguese determiner.
+    todo = tmp_path / "todo.md"
+    todo.write_text("Active task: update the todo file.", encoding="utf-8")
+    assert mod.keyword_relevance_score("update the todo", todo) == 1.0

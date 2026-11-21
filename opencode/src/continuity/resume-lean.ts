@@ -64,8 +64,8 @@ export const RESUME_INTENT_RE = new RegExp(
 const RESUME_INTENT_STRIP_RE = new RegExp(RESUME_INTENT_RE.source, "gi");
 
 /**
- * Portuguese (pt-BR/pt-PT) resume cues. Mirrors Python _PT_RESUME_CUE_RE in
- * measure.py (same fix: "continua a <infinitive>" excluded -
+ * Portuguese (pt-BR/pt-PT) resume cues. Mirrors the inline PT cue regex in
+ * _measure/continuity.py:_resume_intent (same fix: "continua a <infinitive>" excluded -
  * "keeps <verb>ing", not resume; "a" allowed only before a work noun,
  * mirroring English "resume the (work|session|...)"). Accent-tolerant (ultima/última, sessao/sessão).
  * A bare "continua"/"continuar" does NOT match; it needs a following o/com/de/...

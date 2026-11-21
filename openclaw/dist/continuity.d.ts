@@ -18,9 +18,9 @@
  *   requirement.
  *
  * • The scoring semantics are a direct port of:
- *     measure.py:keyword_relevance_score()   (~line 16305)
- *     measure.py:_checkpoint_topic_score()   (~line 15803)
- *     measure.py:_continuity_prompt_hint()   (~line 15840)
+ *     _measure/continuity.py:keyword_relevance_score()
+ *     _measure/continuity.py:_checkpoint_topic_score()
+ *     _measure/continuity.py:_continuity_prompt_hint()
  */
 /** Minimum relevance score to emit a hint. Python default: 0.3 */
 export declare const RELEVANCE_THRESHOLD: number;
@@ -126,10 +126,6 @@ export declare function extractHintedPaths(checkpointContent: string): string[];
  * Mirrors Python _RESUME_INTENT_RE in measure.py.
  */
 export declare const RESUME_INTENT_RE: RegExp;
-/**
- * True when the prompt asks to continue or recall prior work.
- * Exported for tests.
- */
 export declare function isResumeIntent(text: string): boolean;
 /**
  * Compute residual-topic precision of the prompt against a checkpoint.

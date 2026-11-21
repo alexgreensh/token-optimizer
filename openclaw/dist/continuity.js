@@ -19,9 +19,9 @@
  *   requirement.
  *
  * • The scoring semantics are a direct port of:
- *     measure.py:keyword_relevance_score()   (~line 16305)
- *     measure.py:_checkpoint_topic_score()   (~line 15803)
- *     measure.py:_continuity_prompt_hint()   (~line 15840)
+ *     _measure/continuity.py:keyword_relevance_score()
+ *     _measure/continuity.py:_checkpoint_topic_score()
+ *     _measure/continuity.py:_continuity_prompt_hint()
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -76,6 +76,7 @@ exports.tryBuildResumeLeanHint = tryBuildResumeLeanHint;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const prompt_function_words_js_1 = require("./prompt-function-words.js");
+const pt_resume_cues_js_1 = require("./pt-resume-cues.js");
 // checkpointSessionDir is used only for the sanitized-ID pattern; the
 // safe-resolve helpers in checkpoint-policy are module-private so we
 // re-implement the minimal path-safety logic locally.
@@ -850,12 +851,8 @@ exports.RESUME_INTENT_RE = /\b(last session|previous session|prior session|earli
 // global-flagged copy on purpose: never put `g` on RESUME_INTENT_RE itself — isResumeIntent()
 // calls .test() on it, and a global regex makes .test() stateful via lastIndex.
 const RESUME_INTENT_STRIP_RE = new RegExp(exports.RESUME_INTENT_RE.source, "gi");
-/**
- * True when the prompt asks to continue or recall prior work.
- * Exported for tests.
- */
 function isResumeIntent(text) {
-    return exports.RESUME_INTENT_RE.test(text ?? "");
+    return exports.RESUME_INTENT_RE.test(text ?? "") || pt_resume_cues_js_1.PT_RESUME_CUE_RE.test(text ?? "");
 }
 /**
  * Glue words that carry no topic signal once resume cues are stripped.
@@ -884,7 +881,7 @@ const RESUME_TOPIC_BAR = Number.parseFloat(process.env.TOKEN_OPTIMIZER_RESUME_TO
  * Mirrors Python _resume_topic_score in measure.py.
  */
 function resumeTopicScore(promptText, checkpointContent) {
-    const residual = (promptText ?? "").toLowerCase().replace(RESUME_INTENT_STRIP_RE, " ");
+    const residual = (promptText ?? "").toLowerCase().replace(RESUME_INTENT_STRIP_RE, " ").replace(pt_resume_cues_js_1.PT_RESUME_CUE_STRIP_RE, " ");
     const topicTokens = extractTopicTokens(residual, RESUME_TOPIC_STOPWORDS);
     if (topicTokens.size === 0)
         return 0.0;

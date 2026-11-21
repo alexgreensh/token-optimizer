@@ -21,13 +21,17 @@ const POSITIVES = [
   // dropping bare "a" does not lose "continua a última sessão" (matches via "última sessão").
   "continua com o erro no parser", "a gente estava no meio do refactor",
   "continua a última sessão",
+  // Article + work noun is a real resume ask, mirroring English
+  // "resume the (work|session|project|task|conversation|thread|discussion)":
+  "continua a sessão", "continuar a tarefa", "continua a conversa sobre o parser",
+  "continua a discussão", "retoma a tarefa",
 ];
 
 const NEGATIVES = [
   "continua", "continuar", "continua!", "escreva uma função de ordenação",
   "adicione testes para o parser", "a sessão expirou",
   "o build continua a falhar", "continua a chover", "ele continua a trabalhar",
-  "continua a implementar o parser",
+  "continua a implementar o parser", "continua a trabalhar no parser",
   // Boundary parity probe: Python \w is Unicode-aware, so an accented letter glued
   // to the cue must block the match here too (\p{L} boundaries with the u flag).
   "éúltima sessão",

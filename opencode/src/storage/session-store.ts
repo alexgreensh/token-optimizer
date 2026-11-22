@@ -91,6 +91,12 @@ CREATE TABLE IF NOT EXISTS agent_dispatches (
 );
 `;
 
+const FILL_CHARS_KEY = "fill_chars";
+// Roles whose text lands in the model's context. "assistant" rows are excluded:
+// the tool hook writes them as a mirror of the tool result's size.
+const FILL_ROLES = ["user", "tool_result"];
+const FILL_ROLES_SQL = FILL_ROLES.map((r) => `'${r}'`).join(", ");
+
 export class SessionStore {
   private db: Database | null = null;
   private dbPath: string;
@@ -201,10 +207,32 @@ export class SessionStore {
 
   recordMessage(idx: number, role: string, textLength: number, isSubstantive: boolean): void {
     const db = this.connect();
-    db.run(
-      "INSERT INTO messages (idx, role, text_length, is_substantive, timestamp) VALUES (?, ?, ?, ?, ?)",
-      [idx, role, textLength, isSubstantive ? 1 : 0, Date.now() / 1000],
-    );
+    db.transaction(() => {
+      db.run(
+        "INSERT INTO messages (idx, role, text_length, is_substantive, timestamp) VALUES (?, ?, ?, ?, ?)",
+        [idx, role, textLength, isSubstantive ? 1 : 0, Date.now() / 1000],
+      );
+      if (FILL_ROLES.includes(role)) {
+        // Running total of context chars since the last compaction. The messages
+        // table is pruned to a row cap (capSignalTables) and the total must not
+        // shrink with it. UPDATE first: the common path is one indexed write.
+        // Only when the key is absent (a session created before this counter
+        // existed, or just after a compaction reset) do we seed it from the
+        // table, whose SUM already includes the row inserted above. (An
+        // INSERT .. ON CONFLICT would evaluate that SUM on every call.)
+        const updated = db.run(
+          "UPDATE session_meta SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT) WHERE key = ?",
+          [textLength, FILL_CHARS_KEY],
+        );
+        if (updated.changes === 0) {
+          db.run(
+            `INSERT OR REPLACE INTO session_meta (key, value)
+             VALUES (?, CAST((SELECT COALESCE(SUM(text_length), 0) FROM messages WHERE role IN (${FILL_ROLES_SQL})) AS TEXT))`,
+            [FILL_CHARS_KEY],
+          );
+        }
+      }
+    })();
   }
 
   recordAgentDispatch(idx: number, promptSize: number, resultSize: number): void {
@@ -241,6 +269,23 @@ export class SessionStore {
     return db
       .query("SELECT idx, role, text_length, is_substantive FROM messages ORDER BY id DESC LIMIT ?")
       .all(limit) as Array<{ idx: number; role: string; text_length: number; is_substantive: number }>;
+  }
+
+  /**
+   * Characters this session has added to the context since the last compaction:
+   * user text and tool results. Kept as a running total so row-cap pruning of
+   * the messages table cannot shrink it; resetSignalAccumulators clears it.
+   * "assistant" rows only mirror a tool result's size, so they are excluded.
+   * Sessions that predate the counter fall back to summing the table.
+   */
+  getFillChars(): number {
+    const stored = this.getMeta(FILL_CHARS_KEY);
+    if (stored !== undefined) return this.safeParseInt(stored);
+    const db = this.connect();
+    const row = db
+      .query(`SELECT COALESCE(SUM(text_length), 0) AS chars FROM messages WHERE role IN (${FILL_ROLES_SQL})`)
+      .get() as { chars: number } | null;
+    return row?.chars ?? 0;
   }
 
   getRecentAgentDispatches(limit: number): Array<{ idx: number; prompt_size: number; result_size: number }> {
@@ -310,11 +355,14 @@ export class SessionStore {
 
   resetSignalAccumulators(): void {
     const db = this.connect();
-    db.run("DELETE FROM reads");
-    db.run("DELETE FROM writes");
-    db.run("DELETE FROM tool_results");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM agent_dispatches");
+    db.transaction(() => {
+      db.run("DELETE FROM reads");
+      db.run("DELETE FROM writes");
+      db.run("DELETE FROM tool_results");
+      db.run("DELETE FROM messages");
+      db.run("DELETE FROM agent_dispatches");
+      db.run("DELETE FROM session_meta WHERE key = ?", [FILL_CHARS_KEY]);
+    })();
   }
 }
 

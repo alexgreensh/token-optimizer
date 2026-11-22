@@ -230,7 +230,7 @@ def emit_if_capped(
         detail = (
             f"capped {tool_name} ({original_char_count:,} chars -> {len(capped):,} chars)"
         )
-        log_savings_fn("tool_archive", tokens_saved, session_id=session_id, detail=detail)
+        log_savings_fn("subagent_cap", tokens_saved, session_id=session_id, detail=detail)
         try:
             import archive_verify
 

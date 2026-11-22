@@ -165,7 +165,7 @@ def test_archive_result_end_to_end_emits_updated_tool_output_for_agent(env, monk
     finally:
         conn.close()
     assert row is not None
-    assert row[0] == "tool_archive"
+    assert row[0] == "subagent_cap"
     assert row[1] > 0
     assert "capped Agent" in row[2]
 

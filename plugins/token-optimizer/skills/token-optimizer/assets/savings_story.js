@@ -157,6 +157,27 @@ function savingsStoryHtml(data, extras) {
     var bashNet = Object.keys(s.by_category || {}).reduce(function(n, k) {
       return n + ((/^bash_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
     }, 0);
+    var catFallback = {
+      crossturn_dedup: 'Cross-turn dedup',
+      bash_search_noise_fold: 'Bash search noise folding',
+      subagent_cap: 'Subagent result cap',
+      tool_archive: 'Tool replacements',
+      bash_compress_pipeline: 'Bash compress (pipelines)',
+      bash_compress_search: 'Bash compress (search results)',
+      build_output_compress: 'Build output compression'
+    };
+    var catRows = Object.keys(s.by_category || {}).filter(function(k) {
+      var v = s.by_category[k];
+      return v && (num(v.tokens_saved) > 0 || num(v.events) > 0) && k !== 'structural_savings';
+    }).sort(function(a, b) {
+      return num((s.by_category[b] || {}).tokens_saved) - num((s.by_category[a] || {}).tokens_saved);
+    }).map(function(k) {
+      var v = s.by_category[k] || {};
+      var lbl = v.label || catFallback[k] || k;
+      return '<li>' + esc(lbl) + ': ' + tok(v.tokens_saved) + ' tokens (' + count(v.events) + ' events' +
+        (num(v.cost_saved_usd) > 0 ? ', ' + savingsCents(v.cost_saved_usd) : '') + ')</li>';
+    }).join('');
+    var catBreakdown = catRows ? '<p><strong>Measured breakdown by feature</strong></p><ul>' + catRows + '</ul>' : '';
     var basis = savingsRoutingBasis(data);
     var routingRow = routing30 > 0 ? '<p><strong>Estimated, model routing, ' + savingsCents(routing30) + '</strong></p><ul><li>Model routing: ' + savingsCents(routing30) + '. ' +
       esc(basis.lead) + ' Your current work priced at that mix, against what it actually cost.</li></ul>' : '';
@@ -188,6 +209,7 @@ function savingsStoryHtml(data, extras) {
     var method = (mr.routing_enabled === false ? '<p>Routing off</p>' : '') + '<p><strong>Last ' + days + ' days, ' + savingsCents(allCents / 100) + '</strong>: measured ' + savingsCents(cents(measured) / 100) +
         ', estimated ' + savingsCents(cents(estimated) / 100) + (routing30 > 0 ? ', routing ' + savingsCents(routing30) : '') + '.</p>' +
       table('Measured, counted event by event', measured) +
+      catBreakdown +
       table('Estimated, sized by a documented method', estimated) +
       routingRow +
       setupDetail +

@@ -405,7 +405,7 @@ def _run(payload: dict) -> None:
         # full ANSI-stripped stdout (never a lossy preview) so changed-line diffs
         # are exact; prefer dedup only when it beats single-output compression.
         deduped = _crossturn_dedup(command, cleaned_stdout, str(payload.get("tool_use_id", "") or ""))
-        _log_feature = "bash_compress_pipeline"
+        _log_feature = "bash_search_noise_fold" if (comp_helped and "[Folded noisy matches:" in best) else "bash_compress_pipeline"
         if deduped is not None and len(deduped) < len(best):
             best, comp_helped = deduped, True
             _log_feature = "crossturn_dedup"

@@ -3584,7 +3584,7 @@ _session_model_reprice = _measure_compat.bind(_measure_providers['pricing']._ses
 #   * verbosity_* -- output reductions are estimated, not counted removals.
 _COUNTED_SE_EVENT_TYPES = (
     "tool_archive", "tool_archive_reexpand", "tool_archive_refetch_block",
-    "structure_map", "delta_read", "codemap_outline",
+    "structure_map", "delta_read", "codemap_outline", "subagent_cap",
 )
 # compression_events features that are bookkeeping, not removals.
 _COUNTED_CE_EXCLUDED_FEATURES = (
@@ -6770,7 +6770,7 @@ _LEGACY_SAVINGS_LABELS = {
     # the full transcript cold. Counterfactual trigger -> estimated tier
     # (popped from the measured total in _get_savings_summary).
     "resume_lean": "Lean resumes",
-    "tool_archive": "Tool replacements", "bash_archive_reexpand": "Bash output re-expanded",
+    "tool_archive": "Tool replacements", "subagent_cap": "Subagent result cap", "bash_archive_reexpand": "Bash output re-expanded",
     "structure_map": "Structure maps", "codemap_outline": "Code map re-read outlines", "codemap_lookup": "Code map lookups [est]",
     # mcp_cap: ESTIMATED (not measured). Claude Code truncates MCP output
     # before PostToolUse fires, so the true pre-cap size is invisible to TO.
@@ -6823,7 +6823,7 @@ _V5_COMPRESSION_LABELS = {
     "bash_compress_build": "Bash compress (build)",
     "bash_compress_test_exts": "Bash compress (test runners)",
     # v5.2 bash compression handlers
-    "bash_compress_search": "Bash compress (search results)",
+    "bash_compress_search": "Bash compress (search results)", "bash_search_noise_fold": "Bash search noise folding",
     "bash_compress_stack": "Bash compress (stack traces)",
     "bash_compress_k8s": "Bash compress (k8s)",
     "bash_compress_cloud": "Bash compress (cloud CLI)",

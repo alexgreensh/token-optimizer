@@ -2359,7 +2359,7 @@ def main():
             comp_bytes = len(compressed.encode("utf-8", errors="replace"))
             if comp_bytes < orig_bytes * 0.9:
                 _pattern = _detect_pattern(command_str)
-                _feature = _COMPRESS_FEATURE_MAP.get(_pattern or "")
+                _feature = "bash_search_noise_fold" if (_pattern == "search_results" and "[Folded noisy matches:" in compressed) else _COMPRESS_FEATURE_MAP.get(_pattern or "")
                 if _feature is None and _pattern is None:
                     _feature = "bash_generic"  # U4: unmatched-output coverage
                 if _feature:

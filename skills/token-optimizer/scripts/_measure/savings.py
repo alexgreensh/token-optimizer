@@ -6026,7 +6026,7 @@ def _get_merged_savings(days=None, since=None):
         verified_lean = lean_resume_carry.verified_summary(days=days, since=since)
     except Exception:
         verified_lean = None
-
+    [cv.setdefault("label", _measure_facade._SAVINGS_CATEGORY_LABELS.get(ck, ck)) for ck, cv in by_category.items() if isinstance(cv, dict)]
     return {
         "resume_lean_verified": verified_lean,
         "total_tokens": total_tokens,

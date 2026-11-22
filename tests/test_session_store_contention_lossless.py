@@ -577,3 +577,46 @@ def test_drain_sweeps_stranded_receipts_without_matching_pending_file(tmp_path):
     session_store_spool.drain(store, conn)
     assert conn.execute("SELECT COUNT(*) FROM spool_receipts").fetchone()[0] == 0
     store.close()
+
+
+def test_interrupted_item_receipt_is_not_committed_by_cleanup_sweep(tmp_path, monkeypatch):
+    """Regression: an uncaught exception mid-item must not let the finally-sweep
+    commit that item's receipt, or the next drain drops the event."""
+    import json
+    import uuid
+    import activity_tracker
+    from _measure import session_store_spool
+    from session_store import SessionStore
+
+    store = SessionStore("shared", snapshot_dir=tmp_path)
+    conn = store._connect()
+    spool = tmp_path / "session-store" / "shared.spool"
+    spool.mkdir(parents=True, exist_ok=True)
+    # A stranded receipt gives the sweep something to delete, so it commits.
+    conn.execute("CREATE TABLE IF NOT EXISTS spool_receipts (id TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO spool_receipts (id) VALUES ('stranded')")
+    conn.commit()
+    eid = uuid.uuid4().hex
+    pending = spool / f"{eid}.pending"
+    pending.write_text(json.dumps({
+        "id": eid, "kind": "activity", "tool_name": "Read", "bucket": "read",
+        "has_error": 0, "timestamp": 1.0,
+    }), encoding="utf-8")
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as m:
+        m.setattr(activity_tracker, "detect_mode", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            session_store_spool.drain(store, conn)
+
+    assert pending.exists()
+    receipts = {row[0] for row in conn.execute("SELECT id FROM spool_receipts")}
+    assert eid not in receipts
+    assert "stranded" not in receipts
+
+    session_store_spool.drain(store, conn)
+    assert conn.execute("SELECT COUNT(*) FROM activity_log").fetchone()[0] == 1
+    assert not pending.exists()
+    store.close()

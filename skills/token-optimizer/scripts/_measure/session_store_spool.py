@@ -197,6 +197,12 @@ def drain(store, conn, limit=64, deadline=None):
             except (OSError, ValueError, KeyError, TypeError):
                 conn.rollback()
     finally:
+        # An exception outside the caught set (KeyboardInterrupt, IntegrityError,
+        # ImportError) can leave an item's BEGIN IMMEDIATE open with its receipt
+        # inserted. Roll it back first, or the sweep's commit would persist that
+        # receipt and the next drain would unlink the event without recording it.
+        if conn.in_transaction:
+            conn.rollback()
         _sweep_stranded_receipts(conn, directory, unlinked_ids)
 
 

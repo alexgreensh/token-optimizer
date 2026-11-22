@@ -137,9 +137,15 @@ def test_eight_first_assignments_agree_while_database_is_busy(tmp_path):
     assert holdout.arm(sid, tmp_path, {holdout.ENV: '1'}) == arms[0]
 
 
-def test_old_committed_holdout_candidates_are_swept_safely(tmp_path):
+def test_old_committed_holdout_candidates_are_swept_safely(tmp_path, monkeypatch):
     import time
+    import types
     from _measure import holdout_fallback
+    # sweep() is a best-effort pass with a 10 ms wall-clock budget, and it gives up quietly when
+    # the budget is spent. This test checks which files a completed sweep removes, not how fast
+    # the machine is, so hold the budget clock still: a slow runner then cannot end the sweep early.
+    monkeypatch.setattr(holdout_fallback, 'time',
+                        types.SimpleNamespace(monotonic=lambda: 0.0, time=time.time))
     stored, pending = _sid(10), _sid(11)
     assert holdout.arm(stored, tmp_path, {holdout.ENV: '1'}) == holdout.CONTROL
     assert holdout_fallback.claim(tmp_path, pending, holdout.TREATMENT, 0.5)

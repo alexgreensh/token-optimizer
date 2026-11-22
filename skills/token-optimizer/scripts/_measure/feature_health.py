@@ -37,6 +37,7 @@ ZERO_EFFECT_SHARE = 0.9
 FEATURES = (
     ("structure_map", "Structure map", "savings_events", "event_type", ("structure_map",), False),
     ("delta_read", "Delta re-reads", "savings_events", "event_type", ("delta_read",), False),
+    ("big_read_preview", "Big non-code read previews", "savings_events", "event_type", ("big_read_preview",), False),
     ("crossturn_dedup", "Cross-turn dedup", "compression_events", "feature", ("crossturn_dedup",), False),
     ("hint_followed", "Followed hints", "savings_events", "event_type", ("hint_followed",), False),
     ("first_read_skeleton", "First-read skeleton", "compression_events", "feature", ("first_read_skeleton",), False),

@@ -701,7 +701,7 @@ def _codemap(fn: str, *args: Any, **kwargs: Any) -> Any:
 def _try_big_noncode_read(file_path: str, stat: os.stat_result, offset: int, limit: int, session_id: str, store: Any, mode: str, entry: dict[str, Any], cached_content: Optional[str], reset_epoch: Any, save_hook_context_enabled: bool, quiet: bool) -> bool:
     try:
         from big_noncode_read import try_big_noncode_read
-        return try_big_noncode_read(file_path, stat, offset, limit, session_id, store, mode, entry, cached_content=cached_content, reset_epoch=reset_epoch, save_hook_context_enabled=save_hook_context_enabled, quiet=quiet, emit_fn=_emit_pretool_response, log_decision_fn=_log_decision)
+        return try_big_noncode_read(file_path, stat, offset, limit, session_id, store, mode, entry, cached_content=cached_content, reset_epoch=reset_epoch, save_hook_context_enabled=save_hook_context_enabled, quiet=quiet, emit_fn=_emit_pretool_response, log_decision_fn=_log_decision, log_savings_fn=_log_savings_event)
     except Exception:
         return False
 

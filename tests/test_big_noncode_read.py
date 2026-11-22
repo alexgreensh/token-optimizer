@@ -169,6 +169,7 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(read_cache, "SNAPSHOT_DIR", snap)
     monkeypatch.setattr(read_cache, "CACHE_DIR", snap / "read-cache")
     monkeypatch.setattr(read_cache, "TRENDS_DB", snap / "trends.db")
+    monkeypatch.setattr(read_cache, "_savings_columns_verified", False)
     monkeypatch.setattr(session_store, "SNAPSHOT_DIR", snap)
     monkeypatch.setattr(session_store, "SESSION_STORE_DIR", snap / "session-store")
     monkeypatch.setattr(archive_result, "SNAPSHOT_DIR", snap)
@@ -407,22 +408,79 @@ def test_archive_roundtrip_and_measured_savings_logged(isolated_env, tmp_path, c
     archived = json.loads((isolated_env / "tool-archive" / sid / f"{key}.json").read_text(encoding="utf-8"))
     assert archived["response"] == raw
 
-    # Verify Measured savings logged to compression_events
+    # Verify Measured savings logged to BOTH savings_events (primary) and compression_events
     conn = sqlite3.connect(str(isolated_env / "trends.db"))
     try:
-        row = conn.execute(
+        se_row = conn.execute(
+            "SELECT event_type, tokens_saved, cost_saved_usd, detail "
+            "FROM savings_events WHERE event_type = ?",
+            (big_noncode_read.FEATURE_NAME,),
+        ).fetchone()
+        ce_row = conn.execute(
             "SELECT feature, tier, verified, original_tokens, compressed_tokens "
             "FROM compression_events WHERE feature = ?",
             (big_noncode_read.FEATURE_NAME,),
         ).fetchone()
     finally:
         conn.close()
-    assert row is not None
-    feature, tier, verified, orig_t, comp_t = row
-    assert feature == "big_noncode_read"
+    assert se_row is not None
+    ev_type, se_tokens, se_cost, se_detail = se_row
+    assert ev_type == "big_read_preview"
+    assert se_tokens > 0
+    assert se_cost > 0
+    assert "events.csv:csv:archive=" in se_detail
+    assert ce_row is not None
+    feature, tier, verified, orig_t, comp_t = ce_row
+    assert feature == "big_read_preview"
     assert tier == "measured"
     assert verified == 1
     assert orig_t > comp_t > 0
+
+
+def test_big_read_preview_shows_up_in_savings_summary_with_human_label(isolated_env, monkeypatch):
+    """Addendum requirement: big_read_preview appears in savings summary JSON with a human label,
+    flows into counted removals / limits / dashboard, and never double-counts."""
+    import measure
+
+    db = isolated_env / "trends.db"
+    monkeypatch.setattr(measure, "SNAPSHOT_DIR", isolated_env)
+    monkeypatch.setattr(measure, "TRENDS_DB", db)
+
+    sid = "22222222-3333-4444-5555-666666666666"
+    # Write both a savings_events row (primary) and a mirror compression_events row
+    read_cache._log_savings_event("big_read_preview", 12500, sid, "package-lock.json:lockfile:archive=abc123")
+    compression_log.log_compression_event(
+        feature="big_read_preview",
+        session_id=sid,
+        command_pattern="Read:lockfile:package-lock.json",
+        tier="measured",
+        verified=True,
+        quality_preserved=True,
+        detail="kind=lockfile size_bytes=90000 archive=abc123",
+        original_tokens=13000,
+        compressed_tokens=500,
+    )
+
+    assert "big_read_preview" in measure._COUNTED_SE_EVENT_TYPES
+    assert "big_read_preview" in measure._COUNTED_CE_EXCLUDED_FEATURES
+    assert measure._SAVINGS_CATEGORY_LABELS["big_read_preview"] == "Big non-code read previews"
+
+    summary = measure._get_merged_savings(days=30)
+    by_cat = summary["by_category"]
+    assert "big_read_preview" in by_cat
+    entry = by_cat["big_read_preview"]
+    assert entry["events"] == 1
+    assert entry["tokens_saved"] == 12500
+    assert entry["cost_saved_usd"] > 0
+    # Must NOT double-count the mirror compression_events row
+    assert summary["total_tokens"] == 12500
+    assert summary["category_labels"]["big_read_preview"] == "Big non-code read previews"
+    assert summary["oneshot_pricing"]["removal_tokens"] >= 12500
+
+    # Dashboard breakdown script carries big_read_preview label & rendering
+    story_js = (SCRIPTS_DIR.parent / "assets" / "savings_story.js").read_text(encoding="utf-8")
+    assert "big_read_preview" in story_js
+    assert "Big non-code read previews" in story_js
 
 
 # ---------------------------------------------------------------------------

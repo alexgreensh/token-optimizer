@@ -3584,14 +3584,14 @@ _session_model_reprice = _measure_compat.bind(_measure_providers['pricing']._ses
 #   * verbosity_* -- output reductions are estimated, not counted removals.
 _COUNTED_SE_EVENT_TYPES = (
     "tool_archive", "tool_archive_reexpand", "tool_archive_refetch_block",
-    "structure_map", "delta_read", "codemap_outline",
+    "structure_map", "delta_read", "codemap_outline", "big_read_preview",
 )
 # compression_events features that are bookkeeping, not removals.
 _COUNTED_CE_EXCLUDED_FEATURES = (
     "quality_nudge", "loop_detection", "cohort_demoted", "fresh_session_nudge",
     "cache_drop_warning", "first_read_edit_followup",
     "delta_read",  # read_cache emits both ledgers; savings_events owns this key
-    "structure_map",  # same: logged to both ledgers, savings_events owns it
+    "structure_map", "big_read_preview",  # same: logged to both ledgers, savings_events owns it
 )
 # Ledger events count from here; earlier months use transcript markers instead
 # (the Mar-Apr ledger logged 4+13 events against 73+232 physical markers).
@@ -6771,7 +6771,7 @@ _LEGACY_SAVINGS_LABELS = {
     # (popped from the measured total in _get_savings_summary).
     "resume_lean": "Lean resumes",
     "tool_archive": "Tool replacements", "bash_archive_reexpand": "Bash output re-expanded",
-    "structure_map": "Structure maps", "codemap_outline": "Code map re-read outlines", "codemap_lookup": "Code map lookups [est]",
+    "structure_map": "Structure maps", "codemap_outline": "Code map re-read outlines", "codemap_lookup": "Code map lookups [est]", "big_read_preview": "Big non-code read previews",
     # mcp_cap: ESTIMATED (not measured). Claude Code truncates MCP output
     # before PostToolUse fires, so the true pre-cap size is invisible to TO.
     # Logged by archive_result.py when an MCP result is at/near the configured
@@ -6848,7 +6848,7 @@ _V5_COMPRESSION_LABELS = {
     # errors and the summary line.
     "build_output_compress": "Build output compression",
     # Codex sessions: command output compressed by the Codex hook path.
-    "codex_command_compress": "Command output (Codex)", "mod_clean": "Clean-up from the Claude Code mod", "mod_clean_first": "Clean-up first from the Claude Code mod",
+    "codex_command_compress": "Command output (Codex)", "mod_clean": "Clean-up from the Claude Code mod", "mod_clean_first": "Clean-up first from the Claude Code mod", "big_read_preview": "Big non-code read previews",
 }
 
 # compression_events features that are bookkeeping, shadow measurement, or a

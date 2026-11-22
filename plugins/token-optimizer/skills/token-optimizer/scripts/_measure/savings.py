@@ -1395,6 +1395,7 @@ def _get_savings_summary(days=None, since=None):
             "total_cost_usd": round(total_cost, 4),
             "total_events": total_events,
             "by_category": by_category,
+        "category_labels": {k: _measure_facade._SAVINGS_CATEGORY_LABELS.get(k, k) for k in by_category},
             "daily_avg_usd": round(daily_avg, 4),
             "period_days": days,
             # A1: one-time first-trim (compare). Reported separately, NEVER summed
@@ -6037,6 +6038,7 @@ def _get_merged_savings(days=None, since=None):
         "compression_unpriced_credit_tokens": sum(int(v.get("unpriced_credit_tokens", 0) or 0) for v in by_category.values()),
         "compression_unpriced_debit_tokens": sum(int(v.get("unpriced_debit_tokens", 0) or 0) for v in by_category.values()),
         "by_category": by_category,
+        "category_labels": {k: _measure_facade._SAVINGS_CATEGORY_LABELS.get(k, k) for k in by_category},
         "daily_avg_usd": round(total_cost / max(days, 1), 4),
         "period_days": days,
         "pricing_detail": {

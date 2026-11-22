@@ -50,7 +50,7 @@ MAX_PREVIEW_CHARS = 6000        # Generous cap for log error preservation
 STRICT_PREVIEW_CHARS = 2400     # Tighter cap when hook additionalContext is saved
 MIN_LINES_NON_MINIFIED = 15     # Leave short multi-line files untouched
 
-FEATURE_NAME = "big_noncode_read"
+FEATURE_NAME = "big_read_preview"
 REPLACEMENT_TYPE = "big_noncode_preview"
 
 # Exact lockfile basenames (lowercased)
@@ -806,6 +806,7 @@ def try_big_noncode_read(
     quiet: bool = True,
     emit_fn: Optional[Callable[..., None]] = None,
     log_decision_fn: Optional[Callable[..., None]] = None,
+    log_savings_fn: Optional[Callable[..., Any]] = None,
 ) -> bool:
     """PreToolUse[Read] entry point called from read_cache.py on first read (entry is None).
 
@@ -904,9 +905,20 @@ def try_big_noncode_read(
                 save_hook_additional_context_enabled=save_hook_context_enabled,
             )
 
-        # Log Measured savings to compression_events (tier='measured', verified=True)
-        # per docs/METHODOLOGY.md Section 3.1. Re-expanding the archive debits via
-        # tool_archive_reexpand in savings_events (R8).
+        # Log Measured savings to savings_events (primary ledger, owns the key)
+        # and compression_events (ratio telemetry, excluded from double-count)
+        # per docs/METHODOLOGY.md Section 3.1. Re-expanding the archive debits
+        # via tool_archive_reexpand in savings_events (R8).
+        if log_savings_fn is not None and net_saved > 0:
+            try:
+                log_savings_fn(
+                    FEATURE_NAME,
+                    net_saved,
+                    session_id,
+                    f"{Path(file_path).name}:{kind}:archive={key}",
+                )
+            except Exception:
+                pass
         try:
             from compression_log import log_compression_event
             log_compression_event(

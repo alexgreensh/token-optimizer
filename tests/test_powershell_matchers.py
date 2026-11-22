@@ -43,7 +43,7 @@ RUNNER = HOOKS / "posttooluse_runner.py"
 BASH_COMPRESS_HOOK = SCRIPTS / "bash_compress_hook.py"
 
 UNION_MATCHER = (
-    "Bash|PowerShell|Read|Glob|Grep|WebFetch|WebSearch|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
+    "Bash|PowerShell|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
 )
 
 

@@ -1587,13 +1587,24 @@ def archive_result(quiet: bool = False) -> None:
     except Exception:
         pass
 
-    # Re-check that the entry survived the retention pass; if pruned, serve full
-    # result rather than stranding the model with an unrecoverable expand pointer.
-    replacement_emitted = False
+    # Re-check that the entry survived the retention pass.  _cleanup_archives_if_due
+    # runs AFTER the write and retention ceilings prune even protected sessions
+    # (TOKEN_OPTIMIZER_ARCHIVE_RETENTION_MAX_BYTES=1 reproduces this), so the entry
+    # we just wrote can be gone by the time we build the pointer.  When it is, serve
+    # the full result — a missing-entry pointer would strand the model with an
+    # unrecoverable expand.
+    replacement_emitted = False  # set below only when the pointer is actually emitted
     entry_exists = archive_entry_exists(session_id, tool_use_id)
     if not entry_exists:
         if not quiet:
-            print(f"[Tool Archive] Entry {tool_use_id} pruned after write; serving full result.", file=sys.stderr)
+            print(
+                f"[Tool Archive] Entry {tool_use_id} was pruned by retention pass "
+                f"after write; serving full result instead of pointer.",
+                file=sys.stderr,
+            )
+        # Fall through: the MCP replacement path below is skipped because
+        # replacement_emitted stays False, so the hook returns without printing
+        # an updatedMCPToolOutput — the original tool output reaches context.
 
     if not quiet:
         print(f"[Tool Archive] Archived {tool_name} result ({char_count:,} chars, ~{token_est:,} tokens): {tool_use_id}", file=sys.stderr)
@@ -1663,24 +1674,22 @@ def archive_result(quiet: bool = False) -> None:
             print(f"[Tool Archive] {tool_name} is allowlisted; serving full result (archived for expand).", file=sys.stderr)
         return
 
-    # Skip replacement if retention pass pruned the entry or tool is exempt.
+    # For MCP tools (tool_name contains "__"): output replacement via stdout
+    # No pressure gate here: the compressed replacement SAVES tokens.
+    # Suppressing it would cause the full uncompressed response to flow through.
+    #
+    # Skip the replacement when the entry was pruned by the retention pass that
+    # ran after write. Emitting a pointer to a missing entry strands the model.
     if not entry_exists:
         return
+
     if "__" in tool_name:
         output_type = _detect_output_type(safe_response)
         from _measure.mcp_archive_tripwire import structured_preview
         preview = structured_preview(safe_response, breaks_cluster=_breaks_cluster)
         suffix = f" ({output_type})" if output_type != "text" else ""
-        if original_char_count > _ARCHIVE_MAX_SIZE:
-            replacement = preview + (
-                f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB) — "
-                f"saved to disk, not lost.\n{_expand_instruction(tool_use_id, tool_name)}\n]"
-            )
-        else:
-            replacement = preview + (
-                f"\n\n[Full result archived ({char_count:,} chars{suffix}) — saved to disk, not lost.\n"
-                f"{_expand_instruction(tool_use_id, tool_name)}\n]"
-            )
+        size_note = f"{original_char_count:,} chars{suffix}, truncated to 5MB" if original_char_count > _ARCHIVE_MAX_SIZE else f"{char_count:,} chars{suffix}"
+        replacement = f"{preview}\n\n[Full result archived ({size_note}) — saved to disk, not lost.\n{_expand_instruction(tool_use_id, tool_name)}\n]"
         original_tokens = int(original_char_count / CODE_CHARS_PER_TOKEN)
         replacement_tokens = int(len(replacement) / CODE_CHARS_PER_TOKEN)
         tokens_saved = max(0, original_tokens - replacement_tokens)
@@ -1690,25 +1699,21 @@ def archive_result(quiet: bool = False) -> None:
         archive_verify.verify(TRENDS_DB, session_id)
         if tokens_saved > 0: archive_verify.record(TRENDS_DB, session_id, raw_tool_use_id, tool_name,
                                                    original_char_count, len(replacement), hook_input.get("transcript_path"), detail)
-        output = json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "updatedMCPToolOutput": replacement,
-            }
-        })
+        output = json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "updatedMCPToolOutput": replacement}})
         print(output)
         from _measure.mcp_archive_tripwire import record
         record(TRENDS_DB, tool_name, sanitize_sid(session_id), tool_use_id, tokens_saved)
-    elif tool_name in ("Grep", "Glob", "WebFetch", "WebSearch"):
-        from builtin_tool_compress import maybe_emit_builtin_replacement
-        maybe_emit_builtin_replacement(
-            tool_name=tool_name, raw_response=raw_response, safe_response=safe_response,
-            hook_input=hook_input, tool_use_id=tool_use_id, raw_tool_use_id=raw_tool_use_id,
-            session_id=session_id, original_char_count=original_char_count, char_count=char_count,
-            truncated=truncated, expand_instruction=_expand_instruction(tool_use_id, tool_name),
-            code_chars_per_token=CODE_CHARS_PER_TOKEN, trends_db=TRENDS_DB,
-            log_savings_event_fn=_log_savings_event, is_exempt_fn=_is_archive_exempt,
-            redact_fn=_redact_credentials)
+    elif tool_name in ("Grep", "Glob"):
+        try:
+            from builtin_tool_compress import maybe_emit_builtin_replacement
+            maybe_emit_builtin_replacement(
+                tool_name=tool_name, raw_response=raw_response, safe_response=safe_response, hook_input=hook_input,
+                tool_use_id=tool_use_id, raw_tool_use_id=raw_tool_use_id, session_id=session_id,
+                original_char_count=original_char_count, char_count=char_count, truncated=truncated,
+                code_chars_per_token=CODE_CHARS_PER_TOKEN, trends_db=TRENDS_DB,
+                log_savings_event_fn=_log_savings_event, is_exempt_fn=_is_archive_exempt, redact_fn=_redact_credentials)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

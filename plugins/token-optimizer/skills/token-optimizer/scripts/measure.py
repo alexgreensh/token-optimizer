@@ -6848,7 +6848,7 @@ _V5_COMPRESSION_LABELS = {
     # errors and the summary line.
     "build_output_compress": "Build output compression",
     # Codex sessions: command output compressed by the Codex hook path.
-    "codex_command_compress": "Command output (Codex)", "mod_clean": "Clean-up from the Claude Code mod", "mod_clean_first": "Clean-up first from the Claude Code mod",
+    "codex_command_compress": "Command output (Codex)", "mod_clean": "Clean-up from the Claude Code mod", "mod_clean_first": "Clean-up first from the Claude Code mod", "pipe_compress": "Bash pipelines", "bash_reread_unchanged": "Bash unchanged file re-reads",
 }
 
 # compression_events features that are bookkeeping, shadow measurement, or a

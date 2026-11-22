@@ -1561,13 +1561,13 @@ FIXTURES = [
         "min_compression": 0.30,
     },
     {
-        "name": "grep_non_file_format",
-        "category": "search_results",
-        "command": "rg --line-number 'test' README.md",
+        "name": "grep_non_file_format", "category": "search_results", "command": "rg --line-number 'test' README.md",
         "raw_output": "This is a README file.\nIt has some text.\nBut no file:line format.\n" * 15,
-        "must_preserve": [],
-        "min_compression": 0.0,
+        "must_preserve": [], "min_compression": 0.0,
     },
+    {"name": "pipe_grep_alternation_sort", "category": "pipe_compress", "command": "grep -rnE 'ERROR|WARN' src/ | sort", "raw_output": "\n".join(f"src/mod_{i % 6:02d}.py:{10 + i}:    logger.info('matched item {i} in handler pipeline')" for i in range(60)) + "\nsrc/auth.py:99:    raise RuntimeError('token AKIAIOSFODNN7EXAMPLE invalid')", "must_preserve": ["src/auth.py:99", "AKIAIOSFODNN7EXAMPLE"], "must_not_contain": [], "min_compression": 0.25},
+    {"name": "pipe_cd_git_diff", "category": "pipe_compress", "command": "cd /repo && git diff", "raw_output": "\n".join(f"diff --git a/src/f{i}.py b/src/f{i}.py\nindex 111..222 100644\n--- a/src/f{i}.py\n+++ b/src/f{i}.py\n@@ -1,3 +1,3 @@\n-old_{i} = 1\n+new_{i} = 2\n" for i in range(15)), "must_preserve": ["src/f0.py", "src/f14.py"], "must_not_contain": [], "min_compression": 0.20},
+    {"name": "pipe_explicit_limit_passthrough", "category": "pipe_compress", "command": "rg 'TODO' src/ | head -n 50", "raw_output": "\n".join(f"src/f{i:02d}.py:{i+1}:# TODO: item {i}" for i in range(30)), "must_preserve": ["src/f00.py:1", "src/f29.py:30"], "must_not_contain": [], "min_compression": 0.0},
 ]
 
 

@@ -155,7 +155,7 @@ function savingsStoryHtml(data, extras) {
     var archive = (s.by_category || {}).tool_archive;
     var bashExpand = (s.by_category || {}).bash_archive_reexpand;
     var bashNet = Object.keys(s.by_category || {}).reduce(function(n, k) {
-      return n + ((/^bash_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
+      return n + ((/^bash_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup' || k === 'pipe_compress') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
     }, 0);
     var basis = savingsRoutingBasis(data);
     var routingRow = routing30 > 0 ? '<p><strong>Estimated, model routing, ' + savingsCents(routing30) + '</strong></p><ul><li>Model routing: ' + savingsCents(routing30) + '. ' +

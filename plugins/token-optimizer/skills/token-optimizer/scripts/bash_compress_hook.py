@@ -266,6 +266,36 @@ def _run(payload: dict) -> None:
             _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
         return
 
+    # Explicit output-limit guard (head -n, tail -n, sed -n) + Step 3 cat re-read.
+    try:
+        from pipe_file_compress import (
+            FEATURE_BASH_REREAD, has_explicit_output_limit as _has_exp_lim,
+            hook_try_cat_reread as _try_cat,
+        )
+        if _has_exp_lim(command):
+            _cov("not_read_only", "explicit_limit", text=stdout)
+            if _nudge:
+                _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
+            return
+        if "cat" in command:
+            _cat_sid = _dedup_store_id(
+                os.environ.get("CLAUDE_SESSION_ID", ""),
+                os.environ.get(_DEDUP_AGENT_ENV, _MAIN_AGENT_SENTINEL),
+            )
+            _is_cat, _cat_out = _try_cat(command, stdout, payload, _cat_sid, exit_code, stderr)
+            if _is_cat:
+                if _cat_out is not None:
+                    _log_event(command, stdout, _cat_out, feature=FEATURE_BASH_REREAD)
+                    _cov("compressed", FEATURE_BASH_REREAD, "cat", stdout, _removed_tokens(stdout, _cat_out))
+                    _emit_updated_tool_output(_cat_out, stderr, nudge=_nudge)
+                else:
+                    _cov("not_read_only", "cat_file_read", text=stdout)
+                    if _nudge:
+                        _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
+                return
+    except Exception:
+        pass  # Fail open
+
     # A single renderer cannot safely separate output from multiple producers.
     try:
         from post_run_classify import unsafe_compound_output
@@ -301,6 +331,20 @@ def _run(payload: dict) -> None:
             except Exception:
                 pass  # Fail open: the baseline path below runs unchanged
         if not is_ro:
+            # Step 2: Safe read-only pipelines / harmless-prefix chains (pipe_compress).
+            _prc_env = os.environ.get("TOKEN_OPTIMIZER_POST_RUN_CLASSIFY", "").strip().lower()
+            if _prc_env not in ("0", "off", "false", "no", "shadow") and not _stdout_has_error_patterns(stdout):
+                try:
+                    from pipe_file_compress import FEATURE_PIPE_COMPRESS, hook_try_pipe_compress
+                    _pr = hook_try_pipe_compress(command, stdout, exit_code, stderr)
+                    if _pr is not None:
+                        _pipe_out, _clean_orig, _pipe_pat = _pr
+                        _log_event(command, _clean_orig, _pipe_out, feature=FEATURE_PIPE_COMPRESS)
+                        _cov("compressed", FEATURE_PIPE_COMPRESS, _pipe_pat, stdout, _removed_tokens(_clean_orig, _pipe_out))
+                        _emit_updated_tool_output(_pipe_out, stderr, nudge=_nudge)
+                        return
+                except Exception:
+                    pass  # Fail open: fall through to build/raw
             # --- K1: build/test/run output compression (PostToolUse) ---
             # The command is not read-only, so the standard compression path
             # skips it. But build/test/run commands (gcc, pytest, cargo, npm,

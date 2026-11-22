@@ -4706,7 +4706,7 @@ def generate_auto_recommendations(components, trends=None, days=None):
             f"This prevents cloud MCPs from loading in CLI sessions while keeping them on claude.ai."
         )
 
-    # --- Rule 16+: Subscription-limit advisory audits (effort, subagents, fork skills, monorepo, outputStyle) ---
+    # --- Rule 16+: Subscription-limit advisory audits (effort, monorepo CLAUDE.md, outputStyle) ---
     from . import subscription_audits as _sub_audits
     _sub_audits.append_claude_recommendations(components, trends, quick, medium, deep, habits, _measure_facade)
 
@@ -5199,7 +5199,7 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
         })
         score -= 3
 
-    # Subscription-limit advisory audits (effort, subagents, fork skills, monorepo, Codex MCP, outputStyle)
+    # Subscription-limit advisory audits (effort, monorepo CLAUDE.md, Codex MCP, outputStyle)
     from . import subscription_audits as _sub_audits
     _sub_audits.append_coach_findings(components, trends, is_claude, is_codex, patterns_good, patterns_bad, questions, _measure_facade)
 

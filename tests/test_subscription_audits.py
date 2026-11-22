@@ -1,4 +1,4 @@
-"""Tests for B3 subscription-limit advisory audits and verbosity-steer gating."""
+"""Tests for B3 subscription-limit advisory audits (items 1, 4, 5, 6) and verbosity-steer gating."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -55,7 +55,6 @@ def test_claude_effort_flags_xhigh_and_max_without_mutating(isolated_env, level)
     assert "weekly" in findings[0]["markdown"].lower()
     assert "medium" in findings[0]["markdown"].lower()
     assert "never auto-downgraded" in findings[0]["markdown"].lower()
-    # Advisory only: settings.json untouched
     assert settings_path.read_text(encoding="utf-8") == original
 
 
@@ -78,7 +77,7 @@ def test_claude_subagent_effort_flagged_without_mutation(isolated_env):
     agents_dir = isolated_env["proj_dir"] / ".claude" / "agents"
     agents_dir.mkdir(parents=True)
     agent_md = agents_dir / "deep-reviewer.md"
-    raw = "---\nname: deep-reviewer\nmodel: opus\neffort: xhigh\nmaxTurns: 20\ntools: [Read, Grep]\n---\nReview code.\n"
+    raw = "---\nname: deep-reviewer\nmodel: opus\neffort: xhigh\n---\nReview code.\n"
     agent_md.write_text(raw, encoding="utf-8")
 
     findings = sa.audit_claude_effort({"settings_local": {}}, measure, cwd=isolated_env["proj_dir"])
@@ -100,90 +99,6 @@ def test_codex_effort_flags_xhigh_and_allows_medium(isolated_env):
     cfg_path.write_text('model_reasoning_effort = "medium"\n', encoding="utf-8")
     measure._codex_config_cache = None
     assert sa.audit_codex_effort(measure, cwd=isolated_env["proj_dir"]) == []
-
-
-# ---------------------------------------------------------------------------
-# 2. Subagent governance (.claude/agents/*.md & plugin agents)
-# ---------------------------------------------------------------------------
-
-def test_subagent_governance_flags_project_and_enabled_plugin_agents(isolated_env):
-    agents_dir = isolated_env["proj_dir"] / ".claude" / "agents"
-    agents_dir.mkdir(parents=True)
-    # Uncapped agent
-    (agents_dir / "wild.md").write_text("---\nname: wild\ndescription: explores repo\n---\nGo wild.\n", encoding="utf-8")
-    # Fully governed agent
-    (agents_dir / "capped.md").write_text(
-        "---\nname: capped\ndescription: safe\nmodel: haiku\neffort: low\nmaxTurns: 15\ntools:\n  - Read\n  - Grep\n---\n",
-        encoding="utf-8",
-    )
-
-    # Enabled + disabled plugin agents
-    enabled_root = isolated_env["home"] / "plug_enabled"
-    (enabled_root / "agents").mkdir(parents=True)
-    (enabled_root / "agents" / "auditor.md").write_text("---\nname: auditor\nmodel: sonnet\n---\nAudit.\n", encoding="utf-8")
-
-    disabled_root = isolated_env["home"] / "plug_disabled"
-    (disabled_root / "agents").mkdir(parents=True)
-    (disabled_root / "agents" / "ignored.md").write_text("---\nname: ignored\n---\nNope.\n", encoding="utf-8")
-
-    plug_dir = isolated_env["claude_dir"] / "plugins"
-    plug_dir.mkdir(parents=True)
-    (plug_dir / "installed_plugins.json").write_text(json.dumps({
-        "plugins": {
-            "qa@local": [{"installPath": str(enabled_root)}],
-            "off@local": [{"installPath": str(disabled_root)}],
-        }
-    }), encoding="utf-8")
-    (isolated_env["claude_dir"] / "settings.json").write_text(
-        json.dumps({"enabledPlugins": {"qa@local": True, "off@local": False}}), encoding="utf-8"
-    )
-
-    findings = sa.audit_subagent_governance(measure, cwd=isolated_env["proj_dir"])
-    assert len(findings) == 1
-    names = {a["name"]: a["missing"] for a in findings[0]["agents"]}
-    assert "wild" in names
-    assert set(names["wild"]) == {"maxTurns", "model", "effort", "tools/disallowedTools"}
-    assert "qa:auditor" in names
-    assert "maxTurns" in names["qa:auditor"] and "effort" in names["qa:auditor"]
-    assert "capped" not in names
-    assert "off:ignored" not in names
-
-
-# ---------------------------------------------------------------------------
-# 3. Skills producing noisy output without `context: fork`
-# ---------------------------------------------------------------------------
-
-def test_noisy_skills_without_fork_flagged_and_forked_or_interactive_skipped(isolated_env):
-    skills_dir = isolated_env["claude_dir"] / "skills"
-
-    noisy = skills_dir / "repo-audit"
-    noisy.mkdir(parents=True)
-    (noisy / "SKILL.md").write_text(
-        "---\nname: repo-audit\ndescription: Run full codebase security scan and pytest\nallowed-tools: [Bash, Grep]\n---\n"
-        "Run pytest, git log, and grep across the codebase to triage failures.\n",
-        encoding="utf-8",
-    )
-
-    forked = skills_dir / "forked-audit"
-    forked.mkdir(parents=True)
-    (forked / "SKILL.md").write_text(
-        "---\nname: forked-audit\ncontext: fork\nallowed-tools: [Bash, Grep]\n---\nRun pytest and grep.\n",
-        encoding="utf-8",
-    )
-
-    interactive = skills_dir / "interview-audit"
-    interactive.mkdir(parents=True)
-    (interactive / "SKILL.md").write_text(
-        "---\nname: interview-audit\nallowed-tools: [Bash]\n---\n"
-        "Run pytest then ask the user clarifying questions in a multi-turn conversation.\n",
-        encoding="utf-8",
-    )
-
-    findings = sa.audit_noisy_skills_without_fork(measure)
-    assert len(findings) == 1
-    flagged_names = [s["name"] for s in findings[0]["skills"]]
-    assert flagged_names == ["repo-audit"]
-    assert "context: fork" in findings[0]["markdown"]
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +171,6 @@ def test_codex_mcp_unused_servers_flagged_from_session_logs(isolated_env):
 # ---------------------------------------------------------------------------
 
 def test_output_style_audit_and_verbosity_steer_suppression(isolated_env, tmp_path):
-    # Seed trends.db with 6 recent verbosity_steer events
     db = measure.TRENDS_DB
     conn = sqlite3.connect(str(db))
     conn.execute("CREATE TABLE savings_events (timestamp TEXT, event_type TEXT, tokens_saved INTEGER, session_uuid TEXT, detail TEXT)")
@@ -284,7 +198,7 @@ def test_output_style_audit_and_verbosity_steer_suppression(isolated_env, tmp_pa
         "model_context_window": 200000,
     }), encoding="utf-8")
 
-    # Baseline: no concise outputStyle -> nudge fires (non-empty JSON payload)
+    # Baseline: no concise outputStyle -> nudge fires
     before_payload = measure.run_verbosity_steer(transcript_path=str(transcript), quiet=True, session_id="sess-abc123")
     assert before_payload
     parsed = json.loads(before_payload)
@@ -308,41 +222,58 @@ def test_output_style_audit_and_verbosity_steer_suppression(isolated_env, tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# 7. Fail-open & ANSI sanitization
+# Guardrails: fail-open, ANSI sanitization, and dropped items absent
 # ---------------------------------------------------------------------------
 
 def test_corrupt_files_fail_open_and_strip_ansi(isolated_env):
     agents_dir = isolated_env["proj_dir"] / ".claude" / "agents"
     agents_dir.mkdir(parents=True)
-    (agents_dir / "bad.md").write_text("---\nname: \x1b[31mred-agent\x1b[0m\n---\nbody\n", encoding="utf-8")
+    (agents_dir / "bad.md").write_text("---\nname: \x1b[31mred-agent\x1b[0m\neffort: max\n---\nbody\n", encoding="utf-8")
     (isolated_env["codex_dir"] / "config.toml").write_text("not valid = [toml\n", encoding="utf-8")
 
     assert sa.audit_codex_effort(measure, cwd=isolated_env["proj_dir"]) == []
-    gov = sa.audit_subagent_governance(measure, cwd=isolated_env["proj_dir"])
-    assert len(gov) == 1
-    assert "\x1b" not in gov[0]["markdown"]
-    assert "red-agent" in gov[0]["markdown"]
+    eff = sa.audit_claude_effort({"settings_local": {}}, measure, cwd=isolated_env["proj_dir"])
+    assert len(eff) == 1
+    assert "\x1b" not in eff[0]["markdown"]
+    assert "red-agent" in eff[0]["markdown"]
 
 
-def test_end_to_end_recommendations_and_coach_integration(isolated_env, monkeypatch):
-    # Claude runtime: effortLevel=xhigh + uncapped subagent + frequent verbosity nudges
-    (isolated_env["claude_dir"] / "settings.json").write_text(json.dumps({"effortLevel": "xhigh"}), encoding="utf-8")
+def test_dropped_items_never_suggested(isolated_env, monkeypatch):
+    """Owner decision: never suggest subagent caps (maxTurns/disallowedTools) or skill context: fork."""
+    assert not hasattr(sa, "audit_subagent_governance")
+    assert not hasattr(sa, "audit_noisy_skills_without_fork")
+
+    # Uncapped agent + noisy skill present on disk -> neither triggers any recommendation
     agents_dir = isolated_env["proj_dir"] / ".claude" / "agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "helper.md").write_text("---\nname: helper\n---\nHelp.\n", encoding="utf-8")
+    skill_dir = isolated_env["claude_dir"] / "skills" / "repo-audit"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: repo-audit\nallowed-tools: [Bash, Grep]\n---\nRun pytest, git log, and grep.\n",
+        encoding="utf-8",
+    )
 
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    comps = {"settings_local": {}, "file_exclusion": {"has_rules": True}}
+    plan_md, _ = measure.generate_auto_recommendations(comps, trends={})
+    assert "maxTurns" not in plan_md
+    assert "disallowedTools" not in plan_md
+    assert "context: fork" not in plan_md
+
+
+def test_end_to_end_recommendations_and_coach_integration(isolated_env, monkeypatch):
+    (isolated_env["claude_dir"] / "settings.json").write_text(json.dumps({"effortLevel": "xhigh"}), encoding="utf-8")
     monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
     comps = {"settings_local": {"effortLevel": "xhigh"}, "file_exclusion": {"has_rules": True}}
     plan_md, count = measure.generate_auto_recommendations(comps, trends={"verbosity_steer_count": 9})
-    assert count >= 3
+    assert count >= 2
     assert "effortLevel" in plan_md and "xhigh" in plan_md
-    assert "helper" in plan_md
     assert "Concise" in plan_md
 
     coach = measure.generate_coach_data(components=comps, trends={"verbosity_steer_count": 9})
     bad_names = [p["name"] for p in coach["patterns_bad"]]
     assert any("effortLevel" in n for n in bad_names)
-    assert any("Subagent Governance" in n for n in bad_names)
     assert any("Concise" in n for n in bad_names)
 
     # Codex runtime: model_reasoning_effort=xhigh
@@ -352,4 +283,3 @@ def test_end_to_end_recommendations_and_coach_integration(isolated_env, monkeypa
     codex_md, codex_count = measure.generate_auto_recommendations({}, trends={})
     assert codex_count >= 1
     assert "model_reasoning_effort" in codex_md
-

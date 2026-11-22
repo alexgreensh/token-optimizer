@@ -22,18 +22,6 @@ _SKIP_WALK_DIRS = frozenset((
     ".git", "node_modules", ".venv", "venv", "dist", "build", "target",
     "vendor", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", ".next",
 ))
-_NOISY_SKILL_RE = re.compile(
-    r"\b(pytest|jest|vitest|cargo\s+test|go\s+test|npm\s+test|git\s+log|"
-    r"ripgrep|\brg\b|\bgrep\b|audit|forensic|benchmark|scrape|crawl|"
-    r"deep\s+research|log\s+analysis|stack\s+trace|triage|scan\s+the\s+codebase|"
-    r"full\s+codebase|security\s+scan|dependency\s+audit)\b",
-    re.IGNORECASE,
-)
-_INTERACTIVE_SKILL_RE = re.compile(
-    r"\b(ask\s+the\s+user|interactive\s+interview|ask_question|clarifying\s+questions|"
-    r"multi-turn\s+conversation|confirm\s+before\s+each\s+step)\b",
-    re.IGNORECASE,
-)
 _DOMAIN_HEADING_RE = re.compile(
     r"^#{1,3}\s+.*\b(test|tests|testing|frontend|backend|ui|css|sql|database|db|migration|"
     r"docker|kubernetes|k8s|ci|cd|deploy|infra|terraform|mobile|ios|android|"
@@ -103,15 +91,6 @@ def parse_yaml_frontmatter(text: str) -> dict:
                 val = val.split(" #", 1)[0].strip()
             data[key] = val.strip('"').strip("'")
     return data
-
-
-def _strip_frontmatter(text: str) -> str:
-    clean = text.lstrip("\ufeff")
-    lines = clean.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return clean
-    end_idx = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
-    return "\n".join(lines[end_idx + 1:]) if end_idx is not None else clean
 
 
 def _read_toml_file(path: Path, facade=None) -> dict:
@@ -384,130 +363,6 @@ def audit_codex_effort(facade, cwd: Path | None = None) -> list[dict]:
                 ),
             })
     return findings
-
-
-# ---------------------------------------------------------------------------
-# 2. Subagent governance (.claude/agents/*.md and plugin agents)
-# ---------------------------------------------------------------------------
-
-def audit_subagent_governance(facade, cwd: Path | None = None) -> list[dict]:
-    """Flag custom and plugin subagents missing maxTurns, model, effort, or tool caps."""
-    flagged = []
-    for ag in _scan_claude_agents(facade, cwd=cwd):
-        fm = ag.get("frontmatter") or {}
-        missing = [k for k in ("maxTurns", "model", "effort") if not fm.get(k)]
-        if not (fm.get("tools") or fm.get("disallowedTools") or fm.get("mcpServers")):
-            missing.append("tools/disallowedTools")
-        if missing:
-            flagged.append({"name": ag["name"], "path": ag["path"], "source": ag["source"], "missing": missing})
-    if not flagged:
-        return []
-
-    summary_items = [f"{item['name']} (missing {', '.join(item['missing'])})" for item in flagged[:6]]
-    more = f" (+{len(flagged) - 6} more)" if len(flagged) > 6 else ""
-    detail_list = "; ".join(summary_items) + more
-    return [{
-        "kind": "subagent_governance",
-        "severity": "medium",
-        "bucket": "medium",
-        "agents": flagged,
-        "title": f"Subagent Governance Gaps ({len(flagged)} agent(s))",
-        "markdown": (
-            f"**Add governance caps to {len(flagged)} subagent(s)**: {detail_list}. "
-            "Subagents without explicit caps inherit the parent model, effort level, and full MCP/tool "
-            "surface and can loop indefinitely, draining subscription quota.\n"
-            "  Suggested frontmatter caps (adjust per agent role): "
-            "`model: sonnet` (or `haiku` for explore/search), `effort: medium`, "
-            "`maxTurns: 20` (15-25 read-only, 30-50 edit agents), and `tools:` or `disallowedTools:` "
-            "to avoid inheriting unneeded MCP/write tools."
-        ),
-        "coach_detail": f"{len(flagged)} subagent(s) lack governance caps: {detail_list}.",
-        "coach_fix": (
-            "Add maxTurns, model, effort, and tools/disallowedTools to .claude/agents/*.md "
-            "(and review plugin agent defaults)."
-        ),
-    }]
-
-
-# ---------------------------------------------------------------------------
-# 3. Skills producing noisy output without `context: fork`
-# ---------------------------------------------------------------------------
-
-def audit_noisy_skills_without_fork(facade, trends: dict | None = None) -> list[dict]:
-    """Suggest `context: fork` for skills that run noisy multi-tool workflows inline."""
-    candidates = []
-    seen: set[Path] = set()
-    try:
-        skill_dirs = list(facade._skill_scan_dirs())
-    except Exception:
-        skill_dirs = []
-    skill_usage = (trends or {}).get("skill_usage") or {}
-    if not isinstance(skill_usage, dict):
-        skill_usage = {}
-
-    for sdir in skill_dirs:
-        sdir_path = Path(sdir)
-        if not sdir_path.is_dir():
-            continue
-        try:
-            items = sorted(sdir_path.iterdir())
-        except OSError:
-            continue
-        for item in items:
-            skill_md = item / "SKILL.md"
-            if not item.is_dir() or not skill_md.is_file():
-                continue
-            try:
-                resolved = skill_md.resolve()
-            except OSError:
-                resolved = skill_md
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            try:
-                text = skill_md.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            fm = parse_yaml_frontmatter(text)
-            if str(fm.get("context", "")).strip().lower() == "fork":
-                continue
-            body = _strip_frontmatter(text)
-            if _INTERACTIVE_SKILL_RE.search(body):
-                continue
-
-            noisy_hits = sorted({m.group(1).lower() for m in _NOISY_SKILL_RE.finditer(f"{fm.get('description', '')}\n{body}")})
-            allowed_tools = fm.get("allowed-tools") or fm.get("allowedTools") or []
-            if isinstance(allowed_tools, str):
-                allowed_tools = [t.strip() for t in allowed_tools.split(",") if t.strip()]
-            has_noisy_tools = any(t.lower() in ("bash", "grep", "webfetch", "websearch") for t in allowed_tools)
-
-            if len(noisy_hits) >= 2 or (noisy_hits and (has_noisy_tools or len(body) >= 300)):
-                name = _clean_label(fm.get("name") or item.name, facade)
-                uses = int(skill_usage.get(name) or skill_usage.get(item.name) or 0)
-                candidates.append({"name": name, "path": str(skill_md), "signals": noisy_hits[:4], "uses": uses})
-
-    if not candidates:
-        return []
-    candidates.sort(key=lambda c: (-c["uses"], c["name"]))
-    names = ", ".join(c["name"] for c in candidates[:8])
-    more = f" (+{len(candidates) - 8} more)" if len(candidates) > 8 else ""
-    return [{
-        "kind": "skill_context_fork",
-        "severity": "low",
-        "bucket": "medium",
-        "skills": candidates,
-        "title": f"Noisy Skills Without `context: fork` ({len(candidates)})",
-        "markdown": (
-            f"**Add `context: fork` to {len(candidates)} noisy skill(s) ({names}{more})**: "
-            "These skills run multi-step test, log, search, or audit workflows inline, dumping "
-            "verbose intermediate tool outputs into your main conversation context.\n"
-            "  Add `context: fork` to the `SKILL.md` YAML frontmatter so noisy tool loops run "
-            "in an isolated forked subagent and only the distilled summary returns to the main thread. "
-            "(Skip `context: fork` for skills that need interactive Q&A or leave edits in main-thread memory.)"
-        ),
-        "coach_detail": f"{len(candidates)} skill(s) ({names}{more}) run verbose/noisy workflows inline without context: fork.",
-        "coach_fix": "Add `context: fork` to SKILL.md YAML frontmatter for read-heavy/noisy skills so only the summary returns.",
-    }]
 
 
 # ---------------------------------------------------------------------------
@@ -821,8 +676,6 @@ def append_claude_recommendations(components, trends, quick, medium, deep, habit
     """Append Claude Code subscription-limit advisory findings to recommendation buckets."""
     for fn, args in (
         (audit_claude_effort, (components, facade)),
-        (audit_subagent_governance, (facade,)),
-        (audit_noisy_skills_without_fork, (facade, trends)),
         (audit_monorepo_claude_md, (components, facade)),
         (audit_output_style, (facade, trends)),
     ):
@@ -848,8 +701,6 @@ def append_coach_findings(components, trends, is_claude, is_codex, patterns_good
     if is_claude:
         runners = (
             (audit_claude_effort, (components, facade)),
-            (audit_subagent_governance, (facade,)),
-            (audit_noisy_skills_without_fork, (facade, trends)),
             (audit_monorepo_claude_md, (components, facade)),
             (audit_output_style, (facade, trends)),
         )

@@ -453,33 +453,9 @@ def _make_store(
 _COMPACT_SCAN_META_KEY = "compact_scan_cursor"
 _COMPACT_SCAN_MAX_PATHS = 32
 _COMPACT_SCAN_MAX_SEEN = 256
-_COMPACT_MARKERS = (b"compact_boundary", b"isCompactSummary")
+from compact_markers import COMPACT_MARKERS as _COMPACT_MARKERS, compact_boundary_id as _compact_boundary_id
 _COMPACT_SCAN_CHUNK = 1 << 20  # 1 MiB
 _COMPACT_SCAN_MAX_SECONDS = 0.25
-
-
-def _compact_boundary_id(line: bytes, where: str = ""):
-    """Stable id of a real compaction row (its uuid, else a hash of the row and
-    ``where`` it sits: path + byte offset, so two identical uuid-less rows stay
-    distinct), or None when the line is not one: a tool result that merely
-    quotes the marker text (reading TO's own source would otherwise trip it)
-    is not."""
-    if not any(m in line for m in _COMPACT_MARKERS):
-        return None
-    try:
-        row = json.loads(line.decode("utf-8", errors="replace"))
-    except (ValueError, UnicodeDecodeError):
-        return None
-    if not isinstance(row, dict):
-        return None
-    if not ((row.get("type") == "system" and row.get("subtype") == "compact_boundary")
-            or row.get("isCompactSummary") is True):
-        return None
-    uuid = row.get("uuid")
-    if isinstance(uuid, str) and uuid:
-        return "u:" + uuid[:80]
-    import hashlib
-    return "h:" + hashlib.sha1(where.encode("utf-8", "replace") + b"\0" + line.strip()).hexdigest()[:20]
 
 
 def _is_compact_boundary_row(line: bytes) -> bool:

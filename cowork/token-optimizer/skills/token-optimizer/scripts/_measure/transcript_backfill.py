@@ -189,7 +189,7 @@ def unmatched_markers(conn, session_uuid, scan, estimate_tokens, tokens_from_cha
     """Skip markers with a plausible native row, keeping ambiguous cases conservative."""
     ce = conn.execute("SELECT timestamp, original_tokens, command_pattern FROM compression_events WHERE "
                       "(session_uuid=? OR session_id=?) AND (origin IS NULL OR origin!=?) "
-                      "AND (feature LIKE 'bash_%' OR feature LIKE 'cmd_%' OR feature IN ('build_output_compress','crossturn_dedup'))", (session_uuid, session_uuid, ORIGIN)).fetchall()
+                      "AND (feature LIKE 'bash_%' OR feature LIKE 'cmd_%' OR feature IN ('build_output_compress','crossturn_dedup','pipe_compress'))", (session_uuid, session_uuid, ORIGIN)).fetchall()
     se = conn.execute("SELECT timestamp, tokens_saved, detail FROM savings_events WHERE "
                       "(session_uuid=? OR session_id=?) AND (origin IS NULL OR origin!=?) "
                       "AND event_type='tool_archive'", (session_uuid, session_uuid, ORIGIN)).fetchall()

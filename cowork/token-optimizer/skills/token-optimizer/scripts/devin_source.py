@@ -50,8 +50,8 @@ REPO_MODULES = frozenset((
     # Added by the 5.13.69 merges (pristine, codemap, quiet, coverage).
     'archive_verify', 'codemap', 'codemap_hint', 'codemap_index', 'codemap_ledger', 'codemap_reread',
     'coverage_funnel', 'hint_paths', 'holdout', 'post_run_classify', 'large_transcripts', 'preserved_reinject', 'session_store_guard',
-    # Added by 5.13.70+ (settings backup + builtin tools + benchmark fixtures dir).
-    'settings_backup', 'builtin_tool_compress', 'fixtures',
+    # Added by 5.13.70+ (settings backup + builtin tools + pipe/file compress + benchmark fixtures dir).
+    'settings_backup', 'builtin_tool_compress', 'pipe_file_compress', 'fixtures',
 ))
 
 class SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):

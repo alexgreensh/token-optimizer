@@ -159,7 +159,7 @@ function savingsStoryHtml(data, extras) {
     var bigReadLabel = ((s.category_labels || {}).big_read_preview) || 'Big non-code read previews';
     var bashExpand = (s.by_category || {}).bash_archive_reexpand;
     var bashNet = Object.keys(s.by_category || {}).reduce(function(n, k) {
-      return n + ((/^bash_/.test(k) || /^cmd_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
+      return n + ((/^bash_/.test(k) || /^cmd_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup' || k === 'pipe_compress') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
     }, 0);
     var catFallback = {
       crossturn_dedup: 'Cross-turn dedup',

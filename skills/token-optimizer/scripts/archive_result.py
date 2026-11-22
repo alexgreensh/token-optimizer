@@ -222,8 +222,6 @@ def _safe_archive_key(tool_use_id: str) -> str:
     return f"h{digest}"
 
 
-
-
 def _archive_dir_for_session(session_id: str) -> Path:
     """Return the archive directory for a given session."""
     sid = _sanitize_session_id(session_id)
@@ -1589,24 +1587,13 @@ def archive_result(quiet: bool = False) -> None:
     except Exception:
         pass
 
-    # Re-check that the entry survived the retention pass.  _cleanup_archives_if_due
-    # runs AFTER the write and retention ceilings prune even protected sessions
-    # (TOKEN_OPTIMIZER_ARCHIVE_RETENTION_MAX_BYTES=1 reproduces this), so the entry
-    # we just wrote can be gone by the time we build the pointer.  When it is, serve
-    # the full result — a missing-entry pointer would strand the model with an
-    # unrecoverable expand.
-    replacement_emitted = False  # set below only when the pointer is actually emitted
+    # Re-check that the entry survived the retention pass; if pruned, serve full
+    # result rather than stranding the model with an unrecoverable expand pointer.
+    replacement_emitted = False
     entry_exists = archive_entry_exists(session_id, tool_use_id)
     if not entry_exists:
         if not quiet:
-            print(
-                f"[Tool Archive] Entry {tool_use_id} was pruned by retention pass "
-                f"after write; serving full result instead of pointer.",
-                file=sys.stderr,
-            )
-        # Fall through: the MCP replacement path below is skipped because
-        # replacement_emitted stays False, so the hook returns without printing
-        # an updatedMCPToolOutput — the original tool output reaches context.
+            print(f"[Tool Archive] Entry {tool_use_id} pruned after write; serving full result.", file=sys.stderr)
 
     if not quiet:
         print(f"[Tool Archive] Archived {tool_name} result ({char_count:,} chars, ~{token_est:,} tokens): {tool_use_id}", file=sys.stderr)
@@ -1676,15 +1663,9 @@ def archive_result(quiet: bool = False) -> None:
             print(f"[Tool Archive] {tool_name} is allowlisted; serving full result (archived for expand).", file=sys.stderr)
         return
 
-    # For MCP tools (tool_name contains "__"): output replacement via stdout
-    # No pressure gate here: the compressed replacement SAVES tokens.
-    # Suppressing it would cause the full uncompressed response to flow through.
-    #
-    # Skip the replacement when the entry was pruned by the retention pass that
-    # ran after write. Emitting a pointer to a missing entry strands the model.
+    # Skip replacement if retention pass pruned the entry or tool is exempt.
     if not entry_exists:
         return
-
     if "__" in tool_name:
         output_type = _detect_output_type(safe_response)
         from _measure.mcp_archive_tripwire import structured_preview
@@ -1718,6 +1699,16 @@ def archive_result(quiet: bool = False) -> None:
         print(output)
         from _measure.mcp_archive_tripwire import record
         record(TRENDS_DB, tool_name, sanitize_sid(session_id), tool_use_id, tokens_saved)
+    elif tool_name in ("Grep", "Glob", "WebFetch", "WebSearch"):
+        from builtin_tool_compress import maybe_emit_builtin_replacement
+        maybe_emit_builtin_replacement(
+            tool_name=tool_name, raw_response=raw_response, safe_response=safe_response,
+            hook_input=hook_input, tool_use_id=tool_use_id, raw_tool_use_id=raw_tool_use_id,
+            session_id=session_id, original_char_count=original_char_count, char_count=char_count,
+            truncated=truncated, expand_instruction=_expand_instruction(tool_use_id, tool_name),
+            code_chars_per_token=CODE_CHARS_PER_TOKEN, trends_db=TRENDS_DB,
+            log_savings_event_fn=_log_savings_event, is_exempt_fn=_is_archive_exempt,
+            redact_fn=_redact_credentials)
 
 
 if __name__ == "__main__":

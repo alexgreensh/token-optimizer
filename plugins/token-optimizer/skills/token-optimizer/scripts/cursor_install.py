@@ -60,6 +60,7 @@ _PAYLOAD_MODULES = (
     "preserved_reinject.py",
     "bash_search_results.py",
     "command_compress_extra.py",
+    "bash_rerun_dedupe.py",
     # Dependency-free whitelist gate shared by bash_hook + bash_compress.
     "bash_whitelist.py",
     # command_filters + _tomli: user [filters.*] TOML config consulted by
@@ -112,6 +113,7 @@ _PAYLOAD_MODULES = (
     "delta_diff.py",
     "archive_result.py",
     "builtin_tool_compress.py",
+    "subagent_result_cap.py",
     "recovery_output.py",
     "refetch_fingerprint.py",
     "reset_epoch.py",

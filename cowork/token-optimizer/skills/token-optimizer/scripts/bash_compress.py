@@ -1902,7 +1902,7 @@ def _compress_cloud_cli(output):
 _SEARCH_FILE_LINE_RE = re.compile(r'^(.+?):(\d+)[:](.*)$')
 
 
-def _compress_search_results(output):
+def _compress_search_results(output, command_str=""):
     """Compress grep/ripgrep/ag/ack output: group by file, keep top matches per file.
 
     Search output is typically `file:line:content` (or `file:line:content` with
@@ -1939,7 +1939,7 @@ def _compress_search_results(output):
         return output  # not file:line format, don't compress
 
     from bash_search_results import render_search_results
-    return render_search_results(files, no_file)
+    return render_search_results(files, no_file, command_str=command_str)
 
 
 _PATTERN_HANDLERS = {
@@ -2198,7 +2198,7 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
             if handler is None:
                 extra = _call_extra("compress_for_pattern", pattern, cleaned, command_str)
                 compressed = extra if extra is not None else cleaned
-            elif pattern in ("find", "pytest"):
+            elif pattern in ("find", "pytest", "search_results"):
                 compressed = handler(cleaned, command_str)
             else:
                 compressed = handler(cleaned)
@@ -2356,7 +2356,10 @@ def main():
             comp_bytes = len(compressed.encode("utf-8", errors="replace"))
             if comp_bytes < orig_bytes * 0.9:
                 _pattern = _detect_pattern(command_str)
-                _feature = _call_extra("feature_for_command", command_str, raw_output) or _COMPRESS_FEATURE_MAP.get(_pattern or "")
+                _feature = _call_extra("feature_for_command", command_str, raw_output) or (
+                    "bash_search_noise_fold" if (_pattern == "search_results" and "[Folded noisy matches:" in compressed)
+                    else _COMPRESS_FEATURE_MAP.get(_pattern or "")
+                )
                 if _feature is None and _pattern is None:
                     _feature = "bash_generic"  # U4: unmatched-output coverage
                 if _feature:

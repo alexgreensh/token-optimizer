@@ -1,0 +1,26 @@
+[
+  {
+    "name": "rg_noise_folding_untargeted",
+    "category": "search_results",
+    "command": "rg -n 'createSession' .",
+    "raw_output": "src/auth/session.ts:14:export function createSession(userId: string) {\nsrc/auth/session.ts:42:  return createSession(req.user.id);\nsrc/api/login.ts:88:const s = createSession(account.id);\nnode_modules/express-session/index.js:10:function createSession() { return {}; }\nnode_modules/express-session/index.js:22:exports.createSession = createSession;\nnode_modules/express-session/store.js:15:Store.prototype.createSession = function(req, sess) {};\nnode_modules/cookie-session/index.js:12:function createSession(opts) { return opts; }\nnode_modules/cookie-session/lib/session.js:44:createSession.prototype.save = function() {};\nnode_modules/pkg-a/index.js:1:createSession();\nnode_modules/pkg-b/index.js:1:createSession();\nnode_modules/pkg-c/index.js:1:createSession();\nnode_modules/pkg-d/index.js:1:createSession();\nnode_modules/pkg-e/index.js:1:createSession();\ndist/auth/session.js:14:exports.createSession = function(userId) {};\ndist/auth/session.js:42:return createSession(req.user.id);\ndist/api/login.js:88:var s = createSession(account.id);\ndist/bundle.js:101:function createSession(){return 1;}\ndist/bundle.js:202:createSession(x);\nbuild/output/session.js:14:function createSession() {}\nbuild/output/login.js:88:createSession();\n.git/logs/HEAD:12:commit: refactor createSession flow\n.git/logs/refs/heads/main:12:commit: refactor createSession flow\nvendor/auth/session.go:19:func createSession() error { return nil }\nvendor/auth/session.go:55:err := createSession()\npackage-lock.json:1024:      \"name\": \"createSession-helper\",\npackage-lock.json:1025:      \"resolved\": \"https://registry.npmjs.org/createSession-helper\"\nyarn.lock:410:createSession-helper@^1.0.0:\npublic/assets/app.min.js:1:var a=function createSession(e){return e};createSession(1);\npublic/assets/vendor.min.js:1:function createSession(){return!0}\npublic/assets/chunk.min.js:1:e.createSession=t;n.createSession=r;",
+    "must_preserve": [
+      "src/auth/session.ts:14:export function createSession(userId: string) {",
+      "src/api/login.ts:88:const s = createSession(account.id);",
+      "node_modules/",
+      "dist/",
+      "build/",
+      ".git/",
+      "vendor/",
+      "package-lock.json",
+      "yarn.lock",
+      "public/assets/ (*.min.js)"
+    ],
+    "must_not_contain": [
+      "node_modules/express-session/index.js:10:",
+      "dist/bundle.js:101:",
+      "public/assets/app.min.js:1:"
+    ],
+    "min_compression": 0.30
+  }
+]

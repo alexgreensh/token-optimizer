@@ -55,10 +55,11 @@ the CLI as `ALL IN` and on the dashboard as the hero number.
 
 ### 3.1 Logged actions (measured)
 
-Token changes Token Optimizer metered itself: compressed command output, archived tool
-results that stayed collapsed, lossless built-in tool compression (`builtin_grep`,
-`builtin_glob`), structure maps, big non-code read previews (`big_read_preview`),
-quality nudges, cross-turn dedup.
+Token changes Token Optimizer metered itself: compressed command output
+(`bash_compress_*`, `bash_search_noise_fold`, `build_output_compress`), archived tool
+results that stayed collapsed (`tool_archive`, `subagent_cap`), lossless built-in tool
+compression (`builtin_grep`, `builtin_glob`), structure maps, big non-code read previews
+(`big_read_preview`), quality nudges, cross-turn dedup (`crossturn_dedup`).
 Dedicated measured command-output features in `compression_events` include
 `cmd_git_diff_stat`, `cmd_git_ls`, `cmd_gh_log`, `cmd_gh_list`, `cmd_terraform`,
 `cmd_kubectl_describe`, `cmd_pkg_install`, and `cmd_mypy`.

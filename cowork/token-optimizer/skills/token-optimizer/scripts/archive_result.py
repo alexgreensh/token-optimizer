@@ -222,8 +222,6 @@ def _safe_archive_key(tool_use_id: str) -> str:
     return f"h{digest}"
 
 
-
-
 def _archive_dir_for_session(session_id: str) -> Path:
     """Return the archive directory for a given session."""
     sid = _sanitize_session_id(session_id)
@@ -1690,16 +1688,8 @@ def archive_result(quiet: bool = False) -> None:
         from _measure.mcp_archive_tripwire import structured_preview
         preview = structured_preview(safe_response, breaks_cluster=_breaks_cluster)
         suffix = f" ({output_type})" if output_type != "text" else ""
-        if original_char_count > _ARCHIVE_MAX_SIZE:
-            replacement = preview + (
-                f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB) — "
-                f"saved to disk, not lost.\n{_expand_instruction(tool_use_id, tool_name)}\n]"
-            )
-        else:
-            replacement = preview + (
-                f"\n\n[Full result archived ({char_count:,} chars{suffix}) — saved to disk, not lost.\n"
-                f"{_expand_instruction(tool_use_id, tool_name)}\n]"
-            )
+        size_note = f"{original_char_count:,} chars{suffix}, truncated to 5MB" if original_char_count > _ARCHIVE_MAX_SIZE else f"{char_count:,} chars{suffix}"
+        replacement = f"{preview}\n\n[Full result archived ({size_note}) — saved to disk, not lost.\n{_expand_instruction(tool_use_id, tool_name)}\n]"
         original_tokens = int(original_char_count / CODE_CHARS_PER_TOKEN)
         replacement_tokens = int(len(replacement) / CODE_CHARS_PER_TOKEN)
         tokens_saved = max(0, original_tokens - replacement_tokens)
@@ -1709,15 +1699,21 @@ def archive_result(quiet: bool = False) -> None:
         archive_verify.verify(TRENDS_DB, session_id)
         if tokens_saved > 0: archive_verify.record(TRENDS_DB, session_id, raw_tool_use_id, tool_name,
                                                    original_char_count, len(replacement), hook_input.get("transcript_path"), detail)
-        output = json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "updatedMCPToolOutput": replacement,
-            }
-        })
+        output = json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "updatedMCPToolOutput": replacement}})
         print(output)
         from _measure.mcp_archive_tripwire import record
         record(TRENDS_DB, tool_name, sanitize_sid(session_id), tool_use_id, tokens_saved)
+    elif tool_name in ("Grep", "Glob"):
+        try:
+            from builtin_tool_compress import maybe_emit_builtin_replacement
+            maybe_emit_builtin_replacement(
+                tool_name=tool_name, raw_response=raw_response, safe_response=safe_response, hook_input=hook_input,
+                tool_use_id=tool_use_id, raw_tool_use_id=raw_tool_use_id, session_id=session_id,
+                original_char_count=original_char_count, char_count=char_count, truncated=truncated,
+                code_chars_per_token=CODE_CHARS_PER_TOKEN, trends_db=TRENDS_DB,
+                log_savings_event_fn=_log_savings_event, is_exempt_fn=_is_archive_exempt, redact_fn=_redact_credentials)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

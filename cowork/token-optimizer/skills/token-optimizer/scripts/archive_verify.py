@@ -43,7 +43,7 @@ def record(trends_db, session_id, tool_use_id, tool_name, original_chars, pointe
     conn = None
     try:
         conn = _connect(trends_db)
-        row = conn.execute("SELECT max(id) FROM savings_events WHERE event_type='tool_archive' AND session_id=? AND detail=?",
+        row = conn.execute("SELECT max(id) FROM savings_events WHERE event_type IN ('tool_archive','builtin_grep','builtin_glob') AND session_id=? AND detail=?",
                            (session_id, detail)).fetchone()
         conn.execute("INSERT OR IGNORE INTO " + TABLE + " (tool_use_id, session_id, event_id, tool_name, original_chars, "
                      "pointer_chars, transcript_path, logged_at) VALUES (?,?,?,?,?,?,?,?)",

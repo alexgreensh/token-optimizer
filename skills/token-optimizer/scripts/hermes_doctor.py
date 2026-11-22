@@ -76,6 +76,7 @@ REQUIRED_ENGINE_SCRIPTS = (
     "hermes_tool_hooks.py",
     "bash_compress_hook.py",
     "archive_result.py",
+    "builtin_tool_compress.py",
     "archive_verify.py",
     "context_intel.py",
     "read_cache.py",

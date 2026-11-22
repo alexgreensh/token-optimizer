@@ -56,7 +56,8 @@ the CLI as `ALL IN` and on the dashboard as the hero number.
 ### 3.1 Logged actions (measured)
 
 Token changes Token Optimizer metered itself: compressed command output, archived tool
-results that stayed collapsed, structure maps, quality nudges, cross-turn dedup.
+results that stayed collapsed, lossless built-in tool compression (`builtin_grep`,
+`builtin_glob`), structure maps, quality nudges, cross-turn dedup.
 Verbosity nudges are not here: their before/after has no control, so they sit in
 the estimated tier (section 3.4) at their net-of-control size.
 

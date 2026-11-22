@@ -1596,8 +1596,6 @@ def run_single_fixture(fixture, compressor=None):
             "status": "no_compressor",
         }
 
-    # Optional tee-on-failure kwargs (Unit 1): let fixtures simulate the
-    # subprocess outcome without actually running a real command.
     compressor_kwargs = {}
     if "returncode" in fixture:
         compressor_kwargs["returncode"] = fixture["returncode"]
@@ -1605,13 +1603,13 @@ def run_single_fixture(fixture, compressor=None):
         compressor_kwargs["stderr"] = fixture["stderr"]
 
     try:
-        compressed = compressor(fixture["command"], raw, **compressor_kwargs)
+        if fixture.get("compressor") == "builtin_tool":
+            from builtin_tool_compress import compress_benchmark_fixture
+            compressed = compress_benchmark_fixture(fixture)
+        else:
+            compressed = compressor(fixture["command"], raw, **compressor_kwargs)
     except Exception as e:
-        return False, {
-            "name": name,
-            "error": str(e),
-            "status": "compressor_error",
-        }
+        return False, {"name": name, "error": str(e), "status": "compressor_error"}
 
     compressed_tokens = estimate_tokens(compressed)
     ratio = 1.0 - compressed_tokens / max(raw_tokens, 1)

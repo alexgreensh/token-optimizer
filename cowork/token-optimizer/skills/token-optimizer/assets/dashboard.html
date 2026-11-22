@@ -4849,6 +4849,21 @@ var DB = (function() {
         '<div class="savings-split"><span>Setup <strong>' + money(periodValue(structMo)) + '</strong></span>' +
           '<span>Runtime <strong>' + money(periodValue(runtimeMo + rereadMo)) + '</strong></span>' +
           '<span>Habits <strong>' + money(periodValue(behavMo)) + '</strong></span></div>' +
+        (function() {
+          var cats = s.by_category || {};
+          var builtinFallback = { builtin_grep: 'Built-in Grep compression', builtin_glob: 'Built-in Glob compression' };
+          var rows = Object.keys(cats).filter(function(k) {
+            return cats[k] && (Number(cats[k].tokens_saved) || 0) > 0 && k !== 'structural_savings';
+          }).sort(function(a, b) {
+            return (Number(cats[b].tokens_saved) || 0) - (Number(cats[a].tokens_saved) || 0);
+          }).map(function(k) {
+            var c = cats[k];
+            var lbl = c.label || builtinFallback[k] || k;
+            return '<p>' + esc(lbl) + ': <strong>' + fmtTok(c.tokens_saved) + ' tokens</strong> (' +
+              money(Number(c.cost_saved_usd) || 0) + ', ' + (Number(c.events) || 0).toLocaleString() + ' events).</p>';
+          });
+          return rows.length ? '<p><strong>Measured by feature:</strong></p>' + rows.join('') : '';
+        })() +
         (estItems.length ? '<p>Other estimates:</p>' + estItems.map(function(it) {
           var shown = exactCents && estCents(it) != null ? moneyCents(estCents(it)) : money(periodValue(it.amt));
           return '<p>' + esc(it.label) + ': <strong>' + shown + '</strong> (' +

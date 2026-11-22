@@ -333,16 +333,19 @@ def _run(payload: dict) -> None:
         if not is_ro:
             # Step 2: Safe read-only pipelines / harmless-prefix chains (pipe_compress).
             _prc_env = os.environ.get("TOKEN_OPTIMIZER_POST_RUN_CLASSIFY", "").strip().lower()
-            if _prc_env not in ("0", "off", "false", "no", "shadow") and not _stdout_has_error_patterns(stdout):
+            if _prc_env not in ("0", "off", "false", "no", "shadow"):
                 try:
-                    from pipe_file_compress import FEATURE_PIPE_COMPRESS, hook_try_pipe_compress
-                    _pr = hook_try_pipe_compress(command, stdout, exit_code, stderr)
-                    if _pr is not None:
-                        _pipe_out, _clean_orig, _pipe_pat = _pr
-                        _log_event(command, _clean_orig, _pipe_out, feature=FEATURE_PIPE_COMPRESS)
-                        _cov("compressed", FEATURE_PIPE_COMPRESS, _pipe_pat, stdout, _removed_tokens(_clean_orig, _pipe_out))
-                        _emit_updated_tool_output(_pipe_out, stderr, nudge=_nudge)
-                        return
+                    from pipe_file_compress import FEATURE_PIPE_COMPRESS, classify_safe_pipeline, hook_try_pipe_compress
+                    _pipe_cls = classify_safe_pipeline(command)
+                    _pipe_is_search = bool(_pipe_cls and _pipe_cls[1] == "search_results")
+                    if _pipe_cls is not None and not _stdout_has_error_patterns(stdout, is_search=_pipe_is_search):
+                        _pr = hook_try_pipe_compress(command, stdout, exit_code, stderr)
+                        if _pr is not None:
+                            _pipe_out, _clean_orig, _pipe_pat = _pr
+                            _log_event(command, _clean_orig, _pipe_out, feature=FEATURE_PIPE_COMPRESS)
+                            _cov("compressed", FEATURE_PIPE_COMPRESS, _pipe_pat, stdout, _removed_tokens(_clean_orig, _pipe_out))
+                            _emit_updated_tool_output(_pipe_out, stderr, nudge=_nudge)
+                            return
                 except Exception:
                     pass  # Fail open: fall through to build/raw
             # --- K1: build/test/run output compression (PostToolUse) ---
@@ -425,9 +428,10 @@ def _run(payload: dict) -> None:
 
         # --- also scan stdout for error patterns ---
         # When stderr is redirected to stdout (2>&1), error lines appear
-        # on stdout. If the pipeline exits 0 but stdout contains error
-        # patterns, pass through raw so the model sees the errors.
-        if _stdout_has_error_patterns(cleaned_stdout):
+        # on stdout. For search commands, structured file:line:content hits of
+        # literal "error" are ordinary search hits, not tool failures.
+        _is_search_cmd = _detect_pattern(compress_command) == "search_results"
+        if _stdout_has_error_patterns(cleaned_stdout, is_search=_is_search_cmd):
             _cov("error_or_short", "error_words", text=stdout)
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
@@ -468,39 +472,28 @@ def _run(payload: dict) -> None:
         compressed = best
 
         # --- archive raw stdout + attach a retrieval pointer ---
-        # Progressive disclosure: the full uncompressed original is stored
-        # on disk so the model can retrieve it via `expand <key>`. Mirror
-        # the exact archiving path from bash_compress.main().
+        # Rule (d): every compressed output must have a verified archive entry
+        # and exact runnable expand command; if storage write fails or entry was
+        # pruned, return original stdout untouched.
         _archive_key = None
-        if len(stdout) > 500 or _log_feature == "crossturn_dedup":
-            try:
-                from archive_result import (
-                    archive_entry_exists,
-                    archive_original,
-                    build_archive_pointer,
-                )
-                _session_id = os.environ.get("CLAUDE_SESSION_ID", "")
-                _archive_key = hashlib.sha256(
-                    f"{_session_id}|{command}|{time.time()}|{os.urandom(4).hex()}".encode("utf-8", errors="replace")
-                ).hexdigest()[:16]
-                if archive_original(stdout, _session_id, _archive_key, "Bash") is not None:
-                    if archive_entry_exists(_session_id, _archive_key):
-                        compressed = build_archive_pointer(compressed, len(stdout), _archive_key)
-                    else:
-                        # Entry was pruned after write — serve raw, not lossy preview.
-                        # This matches the guarantee in bash_compress.main().
-                        compressed = stdout
-                        _archive_key = None
-                else:
-                    _archive_key = None
-            except Exception:
+        try:
+            from archive_result import (
+                archive_entry_exists,
+                archive_original,
+                build_archive_pointer,
+            )
+            _session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+            _archive_key = hashlib.sha256(
+                f"{_session_id}|{command}|{stdout}".encode("utf-8", errors="replace")
+            ).hexdigest()[:16]
+            if archive_original(stdout, _session_id, _archive_key, "Bash") is not None and archive_entry_exists(_session_id, _archive_key):
+                compressed = build_archive_pointer(compressed, len(stdout), _archive_key)
+            else:
                 _archive_key = None
+        except Exception:
+            _archive_key = None
 
-        # Search matches must remain recoverable even below the archive floor
-        # or when the archive write fails. Other handlers keep their contracts.
-        if _archive_key is None and _detect_pattern(compress_command) == "search_results":
-            compressed = stdout
-        if _archive_key is None and _log_feature == "crossturn_dedup":
+        if _archive_key is None:
             compressed = stdout
 
         # --- enforce the baseline-size invariant ---
@@ -566,52 +559,44 @@ def _get_combined_error_re():
     return _COMBINED_ERROR_RE
 
 
-def _stdout_has_error_patterns(stdout: str) -> bool:
+def _stdout_has_error_patterns(stdout: str, *, is_search: bool = False) -> bool:
     """Check stdout for error patterns (covers 2>&1 redirect case).
 
-    Uses the same _ERROR_STDERR_PATTERNS list as _looks_like_failure.
-    Only triggers when stdout is large enough to make compression
-    meaningful (>500 chars), so small outputs with coincidental
-    error-keyword lines are not blocked.
+    When ``is_search`` is True, structured ``file:line:content`` search matches
+    are skipped so grepping for literal ``error`` does not disable compression.
     """
     if not stdout or len(stdout) < 500:
         return False
     try:
+        try:
+            from visibility_rule import is_search_match_line as _is_hit
+        except Exception:
+            _is_hit = None
         combined = _get_combined_error_re()
-        if not combined:
-            # Fallback: fall back to the old per-pattern loop if the
-            # combined regex could not be built.
-            from bash_compress import _ERROR_STDERR_PATTERNS
-            lines = stdout.splitlines()
-            match_count = 0
-            for line in lines:
-                for pat in _ERROR_STDERR_PATTERNS:
-                    if pat.search(line):
-                        match_count += 1
-                        break
-            if match_count >= 3 and match_count > len(lines) * 0.10:
-                return True
-            return False
-        # C-3: single combined regex per line + early exit when the
-        # density threshold is met. O(lines × 1) instead of O(lines × 13).
         lines = stdout.splitlines()
         total_lines = len(lines)
         threshold = total_lines * 0.10
         match_count = 0
+        if not combined:
+            from bash_compress import _ERROR_STDERR_PATTERNS
+            for line in lines:
+                if is_search and _is_hit is not None and _is_hit(line):
+                    continue
+                for pat in _ERROR_STDERR_PATTERNS:
+                    if pat.search(line):
+                        match_count += 1
+                        break
+            return match_count >= 3 and match_count > threshold
         for line in lines:
+            if is_search and _is_hit is not None and _is_hit(line):
+                continue
             if combined.search(line):
                 match_count += 1
-                # Early exit: once we have enough matches AND the density
-                # threshold is met, no need to scan the rest.
                 if match_count >= 3 and match_count > threshold:
                     return True
-        # Final check in case we never hit the early-exit condition but
-        # the full scan meets the threshold.
-        if match_count >= 3 and match_count > threshold:
-            return True
+        return match_count >= 3 and match_count > threshold
     except Exception:
         return False
-    return False
 
 
 def _dedup_store_id(session_id: str, agent_id: str) -> str:
@@ -796,7 +781,7 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
         # returned None, or the entry was pruned after write), return None so
         # the caller serves raw stdout. Never return a lossy preview with no
         # archive pointer — the model would have no way to retrieve the original.
-        _archive_attempted = len(stdout) > 500
+        _archive_attempted = True
         _archive_key = None
         if _archive_attempted:
             try:
@@ -807,7 +792,7 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
                 )
                 _session_id = os.environ.get("CLAUDE_SESSION_ID", "")
                 _key = hashlib.sha256(
-                    f"{_session_id}|{command}|{time.time()}|{os.urandom(4).hex()}".encode("utf-8", errors="replace")
+                    f"{_session_id}|{command}|{stdout}".encode("utf-8", errors="replace")
                 ).hexdigest()[:16]
                 # _archive_key stays None until both archive write and
                 # existence check succeed, so any failure path (exception,

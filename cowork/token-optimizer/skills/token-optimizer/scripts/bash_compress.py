@@ -185,16 +185,12 @@ def _call_extra(name, *args):
         return None
 
 
-def _find_preserved_lines(text):
-    """Find line indices that must survive compression (credentials + errors).
-
-    Two scans run here:
-      1. Token patterns (credentials) — never drop a line carrying a secret.
-      2. Foreign-language error markers — the English-keyword handlers below
-         will happily drop a Dutch "fout:" line because it does not contain
-         "error"/"failed"/etc. We flag it here so the re-injection path
-         brings it back after compression runs.
-    """
+def _find_preserved_lines(text, *, is_search=False):
+    """Find line indices that must survive compression (credentials + errors)."""
+    try:
+        from visibility_rule import is_search_match_line as _is_hit
+    except Exception:
+        _is_hit = None
     preserved = set()
     for i, line in enumerate(text.splitlines()):
         for pat in _TOKEN_PATTERNS:
@@ -202,8 +198,8 @@ def _find_preserved_lines(text):
                 preserved.add(i)
                 break
         else:
-            # Only scan error patterns when the line did not already match
-            # a credential pattern (small optimization).
+            if is_search and _is_hit is not None and _is_hit(line):
+                continue
             for pat in _ERROR_STDERR_PATTERNS:
                 if pat.search(line):
                     preserved.add(i)
@@ -2163,20 +2159,15 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     cleaned = _strip_ansi(raw_output)
 
     # Preserve credentials, errors, and distinctive tokens before summarizing.
-    # Git log and find keep their own hashes and paths.
-    _summarizer_pattern = False
-    try:
-        _summarizer_pattern = _detect_pattern(command_str) in ("git_log", "find")
-    except Exception:
-        pass
-    preserved_lines = _find_preserved_lines(cleaned)
+    pattern = _detect_pattern(command_str)
+    _summarizer_pattern = pattern in ("git_log", "find")
+    _is_search = pattern == "search_results"
+    preserved_lines = _find_preserved_lines(cleaned, is_search=_is_search)
     if not _summarizer_pattern:
         preserved_lines = preserved_lines | _find_distinctive_lines(cleaned)
     from preserved_reinject import find_priority_lines, reinject
-    priority_lines = find_priority_lines(cleaned, _ERROR_STDERR_PATTERNS + _FOREIGN_ERROR_PATTERNS)
+    priority_lines = find_priority_lines(cleaned, _ERROR_STDERR_PATTERNS + _FOREIGN_ERROR_PATTERNS, is_search=_is_search)
     preserved_lines = preserved_lines | priority_lines
-    # Detect pattern
-    pattern = _detect_pattern(command_str)
     if pattern is None:
         # Output-based detection: stack traces can appear from any command.
         # Check before generic compression so tracebacks get frame-limited.
@@ -2314,40 +2305,24 @@ def main():
             stderr=stderr,
         )
 
-        # Progressive disclosure: archive the raw original BEFORE compression
-        # so the model can retrieve it via `expand <key>` if needed. Fail-open:
-        # if archiving fails, serve the original instead of a lossy preview.
+        # Progressive disclosure: archive the raw original BEFORE emitting a
+        # compressed preview so the model can retrieve it via `expand <key>`.
+        # Rule (d): if archive write fails or entry was pruned, return original.
         _archive_key = None
-        if compressed != raw_output and len(raw_output) > 500:
+        if compressed != raw_output:
             try:
                 from archive_result import archive_entry_exists, archive_original, build_archive_pointer
                 _session_id = os.environ.get("CLAUDE_SESSION_ID", "")
                 _archive_key = hashlib.sha256(
-                    f"{_session_id}|{command_str}|{time.time()}|{os.urandom(4).hex()}".encode("utf-8", errors="replace")
+                    f"{_session_id}|{command_str}|{raw_output}".encode("utf-8", errors="replace")
                 ).hexdigest()[:16]
-                if archive_original(raw_output, _session_id, _archive_key, "Bash") is not None:
-                    # Re-check the entry survived any concurrent retention prune
-                    # before we emit a pointer that would strand the model.
-                    if archive_entry_exists(_session_id, _archive_key):
-                        compressed = build_archive_pointer(compressed, len(raw_output), _archive_key)
-                    else:
-                        # Entry was pruned before we could point to it. The lossy
-                        # `compressed` preview has no recovery path once the archive
-                        # copy is gone, so serving it here would be silent, permanent
-                        # data loss. raw_output is still in scope untouched -- serve
-                        # that instead, matching the guarantee archive_result.py /
-                        # read_cache.py already give on the same post-prune re-check
-                        # (they fall back to the full original rather than a preview).
-                        compressed = raw_output
-                        _archive_key = None
+                if archive_original(raw_output, _session_id, _archive_key, "Bash") is not None and archive_entry_exists(_session_id, _archive_key):
+                    compressed = build_archive_pointer(compressed, len(raw_output), _archive_key)
                 else:
                     _archive_key = None
             except Exception:
                 _archive_key = None
-
-        # Search matches must remain recoverable even below the archive floor
-        # or when the archive write fails. Other handlers keep their contracts.
-        if _archive_key is None and _detect_pattern(command_str) == "search_results":
+        if _archive_key is None and compressed != raw_output:
             compressed = raw_output
 
         # Record savings to trends.db if compression was meaningful

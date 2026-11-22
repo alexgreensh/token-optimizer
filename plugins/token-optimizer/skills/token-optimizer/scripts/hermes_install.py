@@ -69,6 +69,7 @@ _ENGINE_SCRIPTS = (
     "hermes_tool_hooks.py",
     "bash_compress_hook.py",
     "command_compress_extra.py",
+    "visibility_rule.py",
     "bash_rerun_dedupe.py",
     "pipe_file_compress.py",
     "archive_result.py",

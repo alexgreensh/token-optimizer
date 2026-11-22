@@ -98,6 +98,16 @@ def _select_tail_start(lines: list[str], head_end: int) -> int:
     return start
 
 
+def _is_preserved_middle_line(ln: str) -> bool:
+    try:
+        from visibility_rule import is_error_or_failure_line
+        if is_error_or_failure_line(ln):
+            return True
+    except Exception:
+        pass
+    return bool(_IMPORTANT_LINE_RE.search(ln))
+
+
 def cap_subagent_result(
     text: str,
     *,
@@ -124,22 +134,23 @@ def cap_subagent_result(
         middle_lines = lines[head_end:tail_start]
         tail_lines = lines[tail_start:]
 
-        kept_middle = [ln for ln in middle_lines if _IMPORTANT_LINE_RE.search(ln)]
+        kept_middle = [ln for ln in middle_lines if _is_preserved_middle_line(ln)]
         omitted_count = len(middle_lines) - len(kept_middle)
         if omitted_count <= 0:
             return None
 
+        mid_loc = f"lines {head_end + 1}-{tail_start}"
         parts: list[str] = list(head_lines)
         parts.append("")
         if kept_middle:
             parts.append(
-                f"[... {omitted_count} middle lines archived; "
+                f"[... {omitted_count} middle lines archived ({mid_loc}); "
                 f"{len(kept_middle)} error/fail/TODO/file:line lines preserved below ...]"
             )
             parts.extend(kept_middle)
             parts.append("[... end of preserved middle lines ...]")
         else:
-            parts.append(f"[... {omitted_count} middle lines archived ...]")
+            parts.append(f"[... {omitted_count} middle lines archived ({mid_loc}) ...]")
         parts.append("")
         parts.extend(tail_lines)
 

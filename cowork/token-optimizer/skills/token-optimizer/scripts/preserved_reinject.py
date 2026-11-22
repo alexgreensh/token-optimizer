@@ -14,11 +14,28 @@ import re
 WARNING_LINE_RE = re.compile(r"(?i)\bwarn(?:ing)?s?\b|\b[A-Za-z]+Warning\b")
 
 
-def find_priority_lines(text, error_patterns):
-    """Indices of error and warning lines."""
+def find_priority_lines(text, error_patterns, *, is_search=False):
+    """Indices of error and warning lines.
+
+    When ``is_search`` is True, structured ``file:line:content`` grep/rg matches
+    of literal words like ``error`` or ``ValueError`` are ordinary search hits
+    and are not treated as runtime failures; non-match tool/diagnostic errors
+    still stay visible verbatim.
+    """
+    try:
+        from visibility_rule import is_error_or_failure_line, is_search_match_line
+    except Exception:
+        is_error_or_failure_line = None
+        is_search_match_line = None
     out = set()
     for i, line in enumerate(text.splitlines()):
-        if WARNING_LINE_RE.search(line) or any(p.search(line) for p in error_patterns):
+        if is_search and is_search_match_line is not None and is_search_match_line(line):
+            continue
+        if (
+            WARNING_LINE_RE.search(line)
+            or any(p.search(line) for p in error_patterns)
+            or (is_error_or_failure_line is not None and is_error_or_failure_line(line))
+        ):
             out.add(i)
     return out
 

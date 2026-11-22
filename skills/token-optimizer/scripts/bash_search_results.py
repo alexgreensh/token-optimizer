@@ -129,6 +129,24 @@ def _split_noisy_files(files, command_str: str = ""):
     return kept, folded
 
 
+def _line_range_suffix(file_lines: list[str]) -> str:
+    """Return 'lines A-B' / 'line N' for search hits, or '' if none parse."""
+    try:
+        from visibility_rule import extract_search_line_number, format_line_range
+    except Exception:
+        return ""
+    nums = [n for ln in file_lines if (n := extract_search_line_number(ln)) is not None]
+    return format_line_range(nums)
+
+
+def _is_error_nonfile(line: str) -> bool:
+    try:
+        from visibility_rule import is_error_or_failure_line
+        return is_error_or_failure_line(line)
+    except Exception:
+        return False
+
+
 def render_search_results(files, no_file, command_str: str = ""):
     _MAX_PER_FILE = 3
     _MAX_FILES = 20
@@ -145,7 +163,10 @@ def render_search_results(files, no_file, command_str: str = ""):
             result.extend(file_lines)
         else:
             result.extend(file_lines[:_MAX_PER_FILE])
-            result.append(f"  ... {len(file_lines) - _MAX_PER_FILE} more matches in {fname} (content omitted) ...")
+            hidden = file_lines[_MAX_PER_FILE:]
+            loc = _line_range_suffix(hidden)
+            loc_note = f"({loc})" if loc else "(content omitted)"
+            result.append(f"  ... {len(hidden)} more matches in {fname} {loc_note} ...")
         file_count += 1
 
     # Keep EVERY matching non-noisy filename (cheap) so "does file X match?" stays
@@ -154,7 +175,9 @@ def render_search_results(files, no_file, command_str: str = ""):
         result.append(f"... plus {len(file_items) - file_count} more files with matches "
                        f"(filenames + counts, content omitted):")
         for fname, file_lines in file_items[file_count:]:
-            result.append(f"  {fname}: {len(file_lines)} matches")
+            loc = _line_range_suffix(file_lines)
+            loc_suffix = f" ({loc})" if loc else ""
+            result.append(f"  {fname}: {len(file_lines)} matches{loc_suffix}")
 
     if folded:
         folded_total_matches = sum(v[1] for v in folded.values())
@@ -181,10 +204,17 @@ def render_search_results(files, no_file, command_str: str = ""):
         # the banner's "a file not listed has NO matches" stays true for binaries.
         binary = [ln for ln in no_file if ln.startswith("Binary file ") and " matches" in ln]
         other = [ln for ln in no_file if not (ln.startswith("Binary file ") and " matches" in ln)]
+        # Rule (a): error/failure/exception/traceback/panic/non-zero-exit lines stay visible verbatim.
+        error_other = [ln for ln in other if _is_error_nonfile(ln)]
+        plain_other = [ln for ln in other if not _is_error_nonfile(ln)]
         result.extend(binary)
-        result.extend(other[:10])
-        if len(other) > 10:
-            result.append(f"... {len(other) - 10} more non-file lines omitted ...")
+        result.extend(error_other)
+        result.extend(plain_other[:10])
+        if len(plain_other) > 10:
+            result.append(
+                f"... {len(plain_other) - 10} more non-file lines "
+                f"(lines 11-{len(plain_other)} of non-file output) omitted ..."
+            )
 
     total_matches = sum(len(v) for v in files.values())
     result.insert(0, f"[Search results: {total_matches} matches across {len(files)} files. "

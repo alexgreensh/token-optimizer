@@ -753,7 +753,7 @@ def try_bash_reread_unchanged(
                 basename = Path(file_path).name
                 line_count = len(stdout.splitlines())
                 note = (
-                    f"[Token Optimizer: {basename} ({line_count} lines, "
+                    f"[Token Optimizer: {basename} ({line_count} lines, lines 1-{line_count}, "
                     f"{st.st_size} bytes) is unchanged since your earlier "
                     f"full read in this session.]"
                 )
@@ -792,23 +792,21 @@ def archive_and_wrap(command: str, raw_stdout: str, compressed: str, session_id:
     identical outputs (prompt-cache stability)."""
     try:
         from bash_compress import _enforce_baseline_invariant
-        archive_key = None
-        if len(raw_stdout) > 500:
-            from archive_result import (
-                archive_entry_exists,
-                archive_original,
-                build_archive_pointer,
-            )
-            sid = session_id or os.environ.get("CLAUDE_SESSION_ID", "")
-            key = hashlib.sha256(
-                f"{sid}|{command}|{raw_stdout}".encode("utf-8", errors="replace")
-            ).hexdigest()[:16]
-            if archive_original(raw_stdout, sid, key, "Bash") is None:
-                return None
-            if not archive_entry_exists(sid, key):
-                return None
-            compressed = build_archive_pointer(compressed, len(raw_stdout), key)
-            archive_key = key
+        from archive_result import (
+            archive_entry_exists,
+            archive_original,
+            build_archive_pointer,
+        )
+        sid = session_id or os.environ.get("CLAUDE_SESSION_ID", "")
+        key = hashlib.sha256(
+            f"{sid}|{command}|{raw_stdout}".encode("utf-8", errors="replace")
+        ).hexdigest()[:16]
+        if archive_original(raw_stdout, sid, key, "Bash") is None:
+            return None
+        if not archive_entry_exists(sid, key):
+            return None
+        compressed = build_archive_pointer(compressed, len(raw_stdout), key)
+        archive_key = key
         try:
             compressed = _enforce_baseline_invariant(compressed, raw_stdout, archive_key)
         except Exception:

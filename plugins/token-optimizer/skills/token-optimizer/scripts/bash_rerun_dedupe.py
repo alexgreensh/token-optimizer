@@ -218,10 +218,30 @@ def dedupe_rerun(
             prev_time = _format_prev_time(prior_ts)
 
             if prior.get("output_hash") == out_h:
-                ref = (
-                    f"[Token Optimizer: `{label}`: identical to previous run "
-                    f"at {prev_time}, {n_lines} lines; unchanged.]"
-                )
+                err_lines: list[str] = []
+                try:
+                    from visibility_rule import is_error_or_failure_line, is_search_match_line
+                    is_srch = norm_cmd.split()[0] in ("rg", "grep", "egrep", "fgrep", "ag", "ack") or norm_cmd.startswith("git grep")
+                    for ln in safe_output.splitlines():
+                        if is_srch and is_search_match_line(ln):
+                            continue
+                        if is_error_or_failure_line(ln):
+                            err_lines.append(ln)
+                except Exception:
+                    pass
+                hidden_lines = n_lines - len(err_lines)
+                if err_lines:
+                    ref = (
+                        f"[Token Optimizer: `{label}`: identical to previous run "
+                        f"at {prev_time}, {hidden_lines} lines (lines 1-{n_lines}) hidden; "
+                        f"{len(err_lines)} error/failure lines preserved below:]\n"
+                        + "\n".join(err_lines)
+                    )
+                else:
+                    ref = (
+                        f"[Token Optimizer: `{label}`: identical to previous run "
+                        f"at {prev_time}, {n_lines} lines (lines 1-{n_lines}) hidden; unchanged.]"
+                    )
             else:
                 prior_text = prior.get("compressed_output") or ""
                 # Exactness guard: never diff when either side exceeded the
@@ -234,9 +254,11 @@ def dedupe_rerun(
                 changed = int(stats.get("changed_lines", 0))
                 if changed > max(MAX_CHANGED_FLOOR, int(n_lines * MAX_CHANGED_RATIO)):
                     return None
+                unchanged = max(0, n_lines - changed)
                 ref = (
                     f"[Token Optimizer: `{label}`: same as previous run "
-                    f"at {prev_time}, {n_lines} lines; changed lines below (except):]\n"
+                    f"at {prev_time}, {n_lines} lines; changed lines below "
+                    f"({unchanged} unchanged lines in lines 1-{n_lines} hidden):]\n"
                     f"{delta}"
                 )
 

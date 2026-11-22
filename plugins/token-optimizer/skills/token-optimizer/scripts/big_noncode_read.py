@@ -253,8 +253,27 @@ def _clip_line(line: str, max_len: int = 220) -> str:
     return line[: max_len - 18] + f"... ({len(line):,} chars)"
 
 
+def _is_error_line(line: str, *, strict_exception_only: bool = False) -> bool:
+    try:
+        from visibility_rule import is_error_or_failure_line
+        if is_error_or_failure_line(line, strict_exception_only=strict_exception_only):
+            return True
+    except Exception:
+        pass
+    if strict_exception_only:
+        return False
+    return bool(_LOG_IMPORTANT_RE.search(line))
+
+
 def _format_head_tail(
-    lines: list[str], head_n: int = 10, tail_n: int = 8, line_cap: int = 220
+    lines: list[str],
+    head_n: int = 10,
+    tail_n: int = 8,
+    line_cap: int = 220,
+    *,
+    place: str = "",
+    strict_errors: bool = False,
+    skip_middle_errors: bool = False,
 ) -> list[str]:
     total = len(lines)
     out: list[str] = []
@@ -265,8 +284,21 @@ def _format_head_tail(
     out.append(f"Head (lines 1-{head_n}):")
     for idx in range(head_n):
         out.append(f"  L{idx + 1}: {_clip_line(lines[idx], line_cap)}")
-    omitted = total - head_n - tail_n
-    out.append(f"  ... ({omitted:,} lines omitted) ...")
+    mid_start = head_n + 1
+    mid_end = total - tail_n
+    preserved_middle: list[tuple[int, str]] = []
+    if not skip_middle_errors:
+        for idx in range(head_n, total - tail_n):
+            if _is_error_line(lines[idx], strict_exception_only=strict_errors):
+                preserved_middle.append((idx + 1, lines[idx]))
+    omitted = (total - head_n - tail_n) - len(preserved_middle)
+    place_note = f" in {place}" if place else ""
+    if preserved_middle:
+        out.append(f"  Preserved error/failure lines ({len(preserved_middle)} verbatim):")
+        for lno, text in preserved_middle:
+            out.append(f"  L{lno}: {text}")
+    if omitted > 0:
+        out.append(f"  ... ({omitted:,} lines omitted{place_note}, lines {mid_start}-{mid_end}) ...")
     out.append(f"Tail (lines {total - tail_n + 1}-{total}):")
     for idx in range(total - tail_n, total):
         out.append(f"  L{idx + 1}: {_clip_line(lines[idx], line_cap)}")
@@ -353,7 +385,7 @@ def _preview_lockfile(content: str, file_path: str, lines: list[str]) -> tuple[s
         more = f" (+{len(pkg_names) - 15:,} more)" if len(pkg_names) > 15 else ""
         summary_lines.append(f"Sample packages: {sample}{more}")
 
-    summary_lines.extend(_format_head_tail(lines, head_n=10, tail_n=6))
+    summary_lines.extend(_format_head_tail(lines, head_n=10, tail_n=6, place=Path(file_path).name, strict_errors=True))
     return "\n".join(summary_lines), 11
 
 
@@ -377,7 +409,7 @@ def _preview_log(content: str, file_path: str, lines: list[str]) -> tuple[str, i
             m_ts = _TIMESTAMP_RE.search(ln)
             if m_ts:
                 first_ts = m_ts.group(0)
-        if _LOG_IMPORTANT_RE.search(ln):
+        if _is_error_line(ln):
             # Preserve exact text verbatim; deduplicate only exact identical lines
             if ln not in important_groups:
                 important_groups[ln] = [idx]
@@ -417,7 +449,7 @@ def _preview_log(content: str, file_path: str, lines: list[str]) -> tuple[str, i
     else:
         out.append("Errors/warnings: 0 detected.")
 
-    out.extend(_format_head_tail(lines, head_n=8, tail_n=12))
+    out.extend(_format_head_tail(lines, head_n=8, tail_n=12, place=Path(file_path).name, skip_middle_errors=True))
     return "\n".join(out), 9
 
 
@@ -453,7 +485,7 @@ def _preview_csv(content: str, file_path: str, lines: list[str]) -> tuple[str, i
         more = f" (+{len(header) - 15} more)" if len(header) > 15 else ""
         out.append("Columns: " + ", ".join(cols_desc) + more)
 
-    out.extend(_format_head_tail(lines, head_n=8, tail_n=5))
+    out.extend(_format_head_tail(lines, head_n=8, tail_n=5, place=Path(file_path).name))
     return "\n".join(out), 9
 
 
@@ -507,8 +539,8 @@ def _preview_jsonl(content: str, file_path: str, lines: list[str]) -> tuple[str,
                 if k.lower() in ("level", "severity") and isinstance(v, str) and v.upper() in ("ERROR", "FATAL", "CRITICAL", "WARN", "WARNING"):
                     has_err = True
                     break
-            if has_err:
-                error_records.append((idx, _clip_line(s, 220)))
+            if has_err or _is_error_line(s):
+                error_records.append((idx, s))
 
     out: list[str] = [
         f"Shape: JSONL, lines={total:,}, json_objects={valid_objs:,}, non_json_lines={len(non_json_lines)}"
@@ -530,7 +562,7 @@ def _preview_jsonl(content: str, file_path: str, lines: list[str]) -> tuple[str,
         for idx, txt in non_json_lines[:20]:
             out.append(f"  L{idx}: {txt}")
 
-    out.extend(_format_head_tail(lines, head_n=5, tail_n=3, line_cap=240))
+    out.extend(_format_head_tail(lines, head_n=5, tail_n=3, line_cap=240, place=Path(file_path).name, skip_middle_errors=True))
     return "\n".join(out), 6
 
 
@@ -685,7 +717,7 @@ def _preview_generated(content: str, file_path: str, lines: list[str]) -> tuple[
     else:
         out.append(f"Shape: generated file ({name}), lines={len(lines):,}")
 
-    out.extend(_format_head_tail(lines, head_n=8, tail_n=6))
+    out.extend(_format_head_tail(lines, head_n=8, tail_n=6, place=Path(file_path).name))
     return "\n".join(out), 9
 
 

@@ -92,7 +92,13 @@ _GH_FAIL_ROW_RE = re.compile(r"^\s*[X✗✖]\s+")
 
 
 def _is_important_line(ln: str) -> bool:
-    """Return True if a line carries an error, warning, or failed-job marker."""
+    """Return True if a line carries an error, exception, failure, warning, or non-zero exit."""
+    try:
+        from visibility_rule import is_error_or_failure_line
+        if is_error_or_failure_line(ln):
+            return True
+    except Exception:
+        pass
     return bool(_IMPORTANT_LINE_RE.search(ln) or _GH_FAIL_ROW_RE.search(ln))
 
 
@@ -421,23 +427,28 @@ def compress_gh_run_log(output: str) -> str | None:
 
         out: list[str] = []
         omitted = 0
+        omitted_start = 0
+        omitted_end = 0
         noise_dropped = 0
-        for ln, key in zip(lines, keys):
+        for idx, (ln, key) in enumerate(zip(lines, keys), 1):
             if key in failing_keys:
                 if omitted:
-                    out.append(f"... [{omitted} CI setup/boilerplate lines omitted] ...")
+                    out.append(f"... [{omitted} CI setup/boilerplate lines omitted (lines {omitted_start}-{omitted_end})] ...")
                     omitted = 0
                 out.append(ln)
             elif _GH_LOG_NOISE_RE.search(ln):
+                if omitted == 0:
+                    omitted_start = idx
+                omitted_end = idx
                 omitted += 1
                 noise_dropped += 1
             else:
                 if omitted:
-                    out.append(f"... [{omitted} CI setup/boilerplate lines omitted] ...")
+                    out.append(f"... [{omitted} CI setup/boilerplate lines omitted (lines {omitted_start}-{omitted_end})] ...")
                     omitted = 0
                 out.append(ln)
         if omitted:
-            out.append(f"... [{omitted} CI setup/boilerplate lines omitted] ...")
+            out.append(f"... [{omitted} CI setup/boilerplate lines omitted (lines {omitted_start}-{omitted_end})] ...")
 
         if noise_dropped < 5:
             return None
@@ -457,6 +468,12 @@ _GH_LIST_ALERT_RE = re.compile(
 
 
 def _is_gh_list_alert(ln: str) -> bool:
+    try:
+        from visibility_rule import is_error_or_failure_line
+        if is_error_or_failure_line(ln):
+            return True
+    except Exception:
+        pass
     return bool(_GH_LIST_ALERT_RE.search(ln) or _GH_FAIL_ROW_RE.search(ln))
 
 
@@ -471,12 +488,12 @@ def compress_gh_list(output: str) -> str | None:
         head = lines[:keep_head]
         rest = lines[keep_head:]
         alert_rows: list[str] = []
-        other_rows: list[str] = []
-        for ln in rest:
+        other_rows: list[tuple[int, str]] = []
+        for idx, ln in enumerate(rest, keep_head + 1):
             if _is_gh_list_alert(ln):
                 alert_rows.append(ln)
             else:
-                other_rows.append(ln)
+                other_rows.append((idx, ln))
 
         out = list(head)
         if alert_rows:
@@ -484,13 +501,15 @@ def compress_gh_list(output: str) -> str | None:
             out.extend(alert_rows)
         if other_rows:
             ids = []
-            for ln in other_rows:
+            for _idx, ln in other_rows:
                 cols = ln.split("\t") if "\t" in ln else ln.split()
                 if cols:
                     ids.append(cols[0].strip())
             sample = ", ".join(ids[:20])
             suffix = f", ... (+{len(ids) - 20} more)" if len(ids) > 20 else ""
-            out.append(f"... plus {len(other_rows)} more rows ({len(lines)} total): {sample}{suffix}")
+            lo, hi = other_rows[0][0], other_rows[-1][0]
+            loc = f"line {lo}" if lo == hi else f"lines {lo}-{hi}"
+            out.append(f"... plus {len(other_rows)} more rows ({loc} of {len(lines)} total): {sample}{suffix}")
 
         result = "\n".join(out)
         return result if len(result) < len(output) * 0.85 else None
@@ -536,27 +555,37 @@ def compress_terraform_plan(output: str) -> str | None:
 
         out: list[str] = []
         noise_dropped = 0
+        noise_first = 0
+        noise_last = 0
         in_resource = False
         resource_indent = 0
         unchanged_kept = 0
         unchanged_dropped = 0
         known_after_dropped = 0
+        res_first = 0
+        res_last = 0
         in_outputs = False
 
         def _flush_resource_omissions() -> None:
-            nonlocal unchanged_dropped, known_after_dropped
+            nonlocal unchanged_dropped, known_after_dropped, res_first, res_last
             parts = []
             if known_after_dropped:
                 parts.append(f"{known_after_dropped} '(known after apply)'")
             if unchanged_dropped:
                 parts.append(f"{unchanged_dropped} unchanged attributes")
             if parts:
-                out.append(f"      # ... ({', '.join(parts)} collapsed)")
+                loc = f", lines {res_first}-{res_last}" if res_first else ""
+                out.append(f"      # ... ({', '.join(parts)} collapsed{loc})")
             unchanged_dropped = 0
             known_after_dropped = 0
+            res_first = 0
+            res_last = 0
 
-        for ln in lines:
+        for idx, ln in enumerate(lines, 1):
             if _TF_NOISE_RE.match(ln):
+                if noise_dropped == 0:
+                    noise_first = idx
+                noise_last = idx
                 noise_dropped += 1
                 continue
 
@@ -608,6 +637,9 @@ def compress_terraform_plan(output: str) -> str | None:
                     continue
                 # Collapse `(known after apply)` placeholder lines.
                 if "(known after apply)" in ln:
+                    if not res_first:
+                        res_first = idx
+                    res_last = idx
                     known_after_dropped += 1
                     continue
                 # Never drop any `+`, `-`, or `~` attribute line inside a resource.
@@ -625,6 +657,9 @@ def compress_terraform_plan(output: str) -> str | None:
                     out.append(ln)
                     unchanged_kept += 1
                 else:
+                    if not res_first:
+                        res_first = idx
+                    res_last = idx
                     unchanged_dropped += 1
                 continue
 
@@ -633,7 +668,7 @@ def compress_terraform_plan(output: str) -> str | None:
 
         _flush_resource_omissions()
         if noise_dropped:
-            out.insert(0, f"[terraform plan: {noise_dropped} state-refresh/unchanged lines collapsed]")
+            out.insert(0, f"[terraform plan: {noise_dropped} state-refresh/unchanged lines collapsed (lines {noise_first}-{noise_last})]")
 
         result = "\n".join(out)
         return result if len(result) < len(output) * 0.85 else None
@@ -704,7 +739,7 @@ def compress_kubectl_describe(output: str) -> str | None:
                     out.extend(important_children)
                     dropped = len(block) - 3 - len(important_children)
                     if dropped > 0:
-                        out.append(f"{' ' * (indent + 2)}... ({dropped} more {sec_key.rstrip(':')} lines collapsed)")
+                        out.append(f"{' ' * (indent + 2)}... ({dropped} more {sec_key.rstrip(':')} lines collapsed, lines {i + 4}-{j})")
                     i = j
                     continue
 
@@ -750,9 +785,11 @@ def compress_package_install(output: str) -> str | None:
 
         kept: list[str] = []
         dropped = 0
+        first_dropped = 0
+        last_dropped = 0
         in_caveats = False
 
-        for ln in lines:
+        for idx, ln in enumerate(lines, 1):
             stripped = ln.strip()
             if not stripped:
                 if in_caveats:
@@ -775,6 +812,9 @@ def compress_package_install(output: str) -> str | None:
                 continue
 
             if _PKG_NOISE_RE.match(ln):
+                if dropped == 0:
+                    first_dropped = idx
+                last_dropped = idx
                 dropped += 1
                 continue
 
@@ -783,7 +823,7 @@ def compress_package_install(output: str) -> str | None:
         if dropped < 8:
             return None
 
-        header = f"[package install: {dropped} download/progress lines collapsed]"
+        header = f"[package install: {dropped} download/progress lines collapsed (lines {first_dropped}-{last_dropped})]"
         result = header + "\n" + "\n".join(kept)
         return result if len(result) < len(output) * 0.85 else None
     except Exception:
@@ -823,13 +863,13 @@ def compress_mypy(output: str) -> str | None:
                     j = i + 1
                     while j < n:
                         mj = _MYPY_NOTE_RE.match(lines[j])
-                        if mj and mj.group(1).startswith((" ", "\t")):
+                        if mj and mj.group(1).startswith((" ", "\t")) and not _is_important_line(lines[j]):
                             j += 1
                         else:
                             break
                     block_len = j - i
                     if block_len >= 4:
-                        out.append(f"  ... ({block_len} mypy overload variant notes collapsed)")
+                        out.append(f"  ... ({block_len} mypy overload variant notes collapsed, lines {i + 1}-{j})")
                         total_notes_dropped += block_len
                         i = j
                         continue
@@ -838,13 +878,13 @@ def compress_mypy(output: str) -> str | None:
                     j = i + 1
                     while j < n:
                         mj = _MYPY_NOTE_RE.match(lines[j])
-                        if mj and _MYPY_OVERLOAD_ITEM_RE.match(mj.group(1)):
+                        if mj and _MYPY_OVERLOAD_ITEM_RE.match(mj.group(1)) and not _is_important_line(lines[j]):
                             j += 1
                         else:
                             break
                     block_len = j - i
                     if block_len >= 4:
-                        out.append(f"  ... ({block_len} mypy overload variant notes collapsed)")
+                        out.append(f"  ... ({block_len} mypy overload variant notes collapsed, lines {i + 1}-{j})")
                         total_notes_dropped += block_len
                         i = j
                         continue

@@ -48,8 +48,8 @@ MARKER_RES = [re.compile(p) for p in (
     r"^Do NOT re-run the original tool to get this data — read the saved copy by running this in Bash:$",
     r"^\s*python3? \S*measure\.py expand KEY$",  # Windows prints `python`, not `python3`
     r"^\]$",
-    r"^\s*\.\.\. \d+ more matches in \S+ \(content omitted\) \.\.\.$",
-    r"^\s*\S+: \d+ matches$",
+    r"^\s*\.\.\. \d+ more matches in \S+ \((?:content omitted|lines? \d+(?:-\d+)?)\) \.\.\.$",
+    r"^\s*\S+: \d+ matches(?: \(lines? \d+(?:-\d+)?\))?$",
     r"^\.\.\. \(\d+ more lines, \+\d+/-\d+ total\)$",
     r"^\.\.\. \(\d+ entries omitted\)$",
     r"^\.\.\. \(\d+ more rows, \d+ total\)$",

@@ -87,6 +87,12 @@ def _is_error_or_warning(line: str) -> bool:
         return False
     if stripped.startswith(("rg:", "grep:", "Error:", "Warning:", "FATAL:", "ERROR:")):
         return True
+    try:
+        from visibility_rule import is_error_or_failure_line
+        if is_error_or_failure_line(stripped):
+            return True
+    except Exception:
+        pass
     return bool(_ERROR_WARN_RE.search(stripped))
 
 

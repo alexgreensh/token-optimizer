@@ -502,7 +502,13 @@ def classify_by_shape(output: str, command: str = "") -> bool:
 
 def _is_error_line(line: str) -> bool:
     """True if this line is a distinct error line that must be preserved."""
-    return bool(_COMBINED_ERROR_RE.search(line))
+    if _COMBINED_ERROR_RE.search(line):
+        return True
+    try:
+        from visibility_rule import is_error_or_failure_line
+        return is_error_or_failure_line(line, include_stack_frames=False)
+    except Exception:
+        return False
 
 
 def _is_summary_line(line: str) -> bool:
@@ -720,13 +726,15 @@ def compress(command: str, output: str) -> str | None:
         # prefixes) instead of a hand-maintained 13-token list.
         kept_lines: list[str] = []
         noise_dropped = 0
+        noise_first = 0
+        noise_last = 0
         distinct_errors: list[str] = []
         _error_seen: set[str] = set()
         summary_lines: list[str] = []
         _summary_seen: set[str] = set()
         preserved_lines: list[str] = []
 
-        for line in lines:
+        for idx, line in enumerate(lines, 1):
             # F1: credential check FIRST — a credential-bearing line is
             # never dropped, even if it also matches progress noise.
             is_credential = False
@@ -742,7 +750,7 @@ def compress(command: str, output: str) -> str | None:
             # "#10 0.317 ERROR: failed to solve") survives in
             # distinct_errors even when the progress filter would drop it
             # from kept_lines. It is re-injected later either way.
-            if _COMBINED_ERROR_RE.search(line):
+            if _is_error_line(line):
                 if line not in _error_seen:
                     _error_seen.add(line)
                     distinct_errors.append(line)
@@ -750,6 +758,9 @@ def compress(command: str, output: str) -> str | None:
             # Progress noise: drop immediately (cheapest check, most common).
             # But never drop a credential-bearing line (F1).
             if not is_credential and _COMBINED_PROGRESS_RE.search(line):
+                if noise_dropped == 0:
+                    noise_first = idx
+                noise_last = idx
                 noise_dropped += 1
                 continue
             kept_lines.append(line)
@@ -798,7 +809,9 @@ def compress(command: str, output: str) -> str | None:
             middle = collapsed[_HEAD_LINES:-_TAIL_LINES]
             parts = list(head)
             if len(middle) > 50:
-                parts.append(f"... [{len(middle)} more lines, repetition collapsed] ...")
+                parts.append(
+                    f"... [{len(middle)} more lines (lines {_HEAD_LINES + 1}-{len(collapsed) - _TAIL_LINES} of collapsed output), repetition collapsed] ..."
+                )
             else:
                 parts.extend(middle)
             parts.extend(tail)
@@ -821,6 +834,9 @@ def compress(command: str, output: str) -> str | None:
             if p not in current_set:
                 parts.append(p)
                 current_set.add(p)
+
+        if noise_dropped > 0:
+            parts.insert(0, f"[build output: {noise_dropped} progress lines collapsed (lines {noise_first}-{noise_last})]")
 
         compressed = "\n".join(parts)
 

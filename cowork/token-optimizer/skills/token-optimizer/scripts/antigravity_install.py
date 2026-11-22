@@ -61,6 +61,7 @@ _PAYLOAD_MODULES = (
     "preserved_reinject.py",
     "bash_search_results.py",
     "command_compress_extra.py",
+    "visibility_rule.py",
     # Dependency-free whitelist gate shared by bash_hook + bash_compress.
     "bash_whitelist.py",
     "command_filters.py",

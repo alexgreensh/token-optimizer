@@ -68,6 +68,7 @@ _RUNTIME_MODULES = (
 _ENGINE_SCRIPTS = (
     "hermes_tool_hooks.py",
     "bash_compress_hook.py",
+    "bash_rerun_dedupe.py",
     "archive_result.py",
     "archive_verify.py",
     "context_intel.py",

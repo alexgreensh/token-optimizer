@@ -401,12 +401,12 @@ def _run(payload: dict) -> None:
         best = compressed if comp_helped else cleaned_stdout
 
         # Cross-turn dedup: if this command's output repeats a recent same-session
-        # run, emit a compact delta reference instead. Catches repeats even when
-        # single-output compression did not help (a small repeated `git status`),
-        # which per-command tools cannot do -- they have no session memory.
-        deduped = _crossturn_dedup(command, best, str(payload.get("tool_use_id", "") or ""))
+        # run, emit a compact delta reference instead. Always compare against the
+        # full ANSI-stripped stdout (never a lossy preview) so changed-line diffs
+        # are exact; prefer dedup only when it beats single-output compression.
+        deduped = _crossturn_dedup(command, cleaned_stdout, str(payload.get("tool_use_id", "") or ""))
         _log_feature = "bash_compress_pipeline"
-        if deduped is not None:
+        if deduped is not None and len(deduped) < len(best):
             best, comp_helped = deduped, True
             _log_feature = "crossturn_dedup"
 
@@ -422,7 +422,7 @@ def _run(payload: dict) -> None:
         # on disk so the model can retrieve it via `expand <key>`. Mirror
         # the exact archiving path from bash_compress.main().
         _archive_key = None
-        if len(stdout) > 500:
+        if len(stdout) > 500 or _log_feature == "crossturn_dedup":
             try:
                 from archive_result import (
                     archive_entry_exists,
@@ -449,6 +449,8 @@ def _run(payload: dict) -> None:
         # Search matches must remain recoverable even below the archive floor
         # or when the archive write fails. Other handlers keep their contracts.
         if _archive_key is None and _detect_pattern(compress_command) == "search_results":
+            compressed = stdout
+        if _archive_key is None and _log_feature == "crossturn_dedup":
             compressed = stdout
 
         # --- enforce the baseline-size invariant ---
@@ -587,96 +589,26 @@ def _crossturn_dedup(command: str, output: str, tool_use_id: str = ""):
     """Return a compact delta-reference when this command's output repeats a
     recent same-session run, else None.
 
-    Per-command wrappers (e.g. Boost) compress each invocation in isolation and
-    so re-pay for every re-run of `git status`, `ls`, a test suite, etc. Token
-    Optimizer is a session-stateful hook, so it can collapse the repeat: the
-    identical case becomes a one-line note, a small change becomes just the diff.
-    Reuses the (previously dormant) command_outputs store + delta_diff. The
-    caller still attaches the progressive-disclosure pointer, so `expand`
-    recovers the full (credential-redacted) output even if the referenced run
-    has scrolled out of context -- the reference is self-sufficient, never a
-    dangling pointer.
+    Delegates to ``bash_rerun_dedupe.dedupe_rerun`` so normalization, bounded
+    storage, exact-diff checks, and redaction live in a dedicated module.
     Never raises (fail-open): any trouble returns None and normal output stands.
     """
     try:
         session_id = os.environ.get("CLAUDE_SESSION_ID", "")
-        if not session_id or len(output) < 200:
+        if not session_id:
             return None
-        from session_store import SessionStore
-        from delta_diff import content_hash, compute_delta
-        # Canonical source: credential_patterns.redact_credentials. Importing the
-        # private archive_result._redact_credentials wrapper coupled this hot path
-        # to archive_result's import side effects and its _TOKEN_PATTERNS fallback
-        # (which emits generic [REDACTED] labels). The shared module is the single
-        # owner of the labeled-placeholder redaction contract (L-1).
-        from credential_patterns import redact_credentials as _redact_credentials
-
         agent_id = os.environ.get(_DEDUP_AGENT_ENV, _MAIN_AGENT_SENTINEL)
-        store = SessionStore(_dedup_store_id(session_id, agent_id))
-        try:
-            cmd_h = content_hash(command.strip())
-            out_h = content_hash(output)  # identical-detection stays on raw bytes
-            # Redact before anything is persisted or diffed, mirroring the
-            # archive path (archive_result._redact_credentials), so a secret in
-            # command output never reaches the on-disk dedup store.
-            safe_output = _redact_credentials(output)
-            # The command itself can carry inline secrets (an auth header, a
-            # -pPASSWORD, a connection string). Redact BEFORE truncating so a
-            # secret split across the 500-char cutoff can't survive, matching the
-            # archive path which redacts the command too. cmd_h stays on the raw
-            # command -- the hash is non-reversible, like out_h.
-            safe_command = _redact_credentials(command, command=True)[:500]
-            prior = store.get_command_output(cmd_h)
-            # Record THIS run (redacted output) for the next comparison BEFORE we
-            # return a delta, so deltas always chain off full (redacted) outputs,
-            # not refs.
-            store.insert_command_output(
-                cmd_h, safe_command, out_h, len(output), safe_output,
-                tool_use_id=tool_use_id,
-            )
-            if not prior or not prior.get("compressed_output"):
-                return None
-            # Same tool_use_id = the SAME command seen by a second Token Optimizer
-            # install (e.g. a synced Cowork copy that predates the stand-down fix),
-            # not a re-run. Referencing it would say "identical to your previous
-            # output" about output the model has never seen.
-            if tool_use_id and prior.get("last_tool_use_id") == tool_use_id:
-                return None
-            # A pre-fix install writes no tool_use_id, so its twin row can only be
-            # recognised by shape: same bytes, written a moment ago. A genuine
-            # re-run this fast is rare, and missing one dedup costs nothing.
-            if (tool_use_id and not prior.get("last_tool_use_id")
-                    and prior.get("output_hash") == out_h
-                    and time.time() - float(prior.get("timestamp") or 0) < _LEGACY_TWIN_SECONDS):
-                return None
-            # Recency guard: only reference a run from the last hour, a rough
-            # proxy for "probably still in the agent's context".
-            if time.time() - float(prior.get("timestamp") or 0) > 3600:
-                return None
-            # C-1: the label is embedded in the ref string that becomes
-            # updatedToolOutput.stdout (the model sees it) AND is logged to
-            # trends.db as compressed_text via _log_event. Use the redacted
-            # command so an inline secret (Bearer token, -pPASSWORD, connection
-            # string) never reaches the model context or disk. safe_command is
-            # already computed above and in scope.
-            label = safe_command.strip()[:60]
-            if prior.get("output_hash") == out_h:
-                ref = (f"[Token Optimizer: identical to your previous `{label}` "
-                       f"output this session; unchanged.]")
-            else:
-                delta, _stats = compute_delta(
-                    prior["compressed_output"], safe_output, filename=label)
-                if not delta:
-                    return None
-                ref = (f"[Token Optimizer: same as your previous `{label}` output "
-                       f"this session, except:]\n{delta}")
-            return ref if len(ref) < len(output) * 0.85 else None
-        finally:
-            store.close()
+        store_id = _dedup_store_id(session_id, agent_id)
+        from bash_rerun_dedupe import dedupe_rerun
+        return dedupe_rerun(
+            command,
+            output,
+            session_id=session_id,
+            store_id=store_id,
+            tool_use_id=tool_use_id,
+            legacy_twin_seconds=_LEGACY_TWIN_SECONDS,
+        )
     except Exception as exc:
-        # M-15: log the exception type (not the message, which may contain
-        # unredacted text) so an admin can distinguish "no prior run" from
-        # "redaction failed" from logs. Fail-open: still return None.
         try:
             sys.stderr.write(
                 f"[Token Optimizer] crossturn dedup failed: "

@@ -232,3 +232,20 @@ def test_codex_coverage_uses_its_own_index(tmp_path, monkeypatch):
     list(values)
     assert not info['incomplete']
     assert count(tmp_path, limit=10)['unscanned_large_sessions'] == 0
+
+
+def test_slow_index_connect_does_not_starve_scan_budget(tmp_path, monkeypatch):
+    """A slow SQLite open/WAL init must not consume the scan deadline before
+    any record is read, while an explicit seconds=0 still reads nothing."""
+    monkeypatch.setenv('TOKEN_OPTIMIZER_SNAPSHOT_DIR', str(tmp_path / 'data'))
+    path = tmp_path / 'session.jsonl'
+    path.write_text('{"type":"assistant"}\n' * 5, encoding='utf-8')
+    clock = {'t': 100.0}
+    monkeypatch.setattr(stream.time, 'monotonic', lambda: clock['t'])
+    real_connect = stream._connect
+    def slow_connect():
+        clock['t'] += 5.0  # longer than PASS_SECONDS (1.0s)
+        return real_connect()
+    monkeypatch.setattr(stream, '_connect', slow_connect)
+    values, info = stream.records(path)
+    assert len(list(values)) == 5 and not info['incomplete']

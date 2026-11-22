@@ -81,7 +81,7 @@ def records(filepath, seconds=None, raw=False):
     growing session. Replacement, truncation and same-size rewrites restart it.
     Incomplete final lines remain at their starting offset until completed.
     """
-    deadline = time.monotonic() + (PASS_SECONDS if seconds is None else max(0, seconds))
+    budget = PASS_SECONDS if seconds is None else max(0, seconds)
     path = Path(filepath).resolve()
     key = str(path)
     conn = _connect()
@@ -102,7 +102,13 @@ def records(filepath, seconds=None, raw=False):
                 offset, skipped = row[1], row[5]
             handle.seek(offset)
             stop = min(stat.st_size, offset + PASS_BYTES)
-            while handle.tell() < stop and time.monotonic() < deadline:
+            # Start the scan budget after SQLite setup so a slow DB open/WAL init
+            # (e.g. AV scan on Windows) cannot consume the entire pass before any
+            # line is read.
+            deadline = time.monotonic() + budget
+            progressed = False
+            while handle.tell() < stop and (time.monotonic() < deadline or (budget > 0 and not progressed)):
+                progressed = True
                 start = handle.tell()
                 line = handle.readline(LINE_BYTES + 1)
                 if not line:

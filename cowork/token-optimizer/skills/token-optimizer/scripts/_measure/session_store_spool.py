@@ -70,6 +70,28 @@ def _enqueue(store, data):
             raise
 
 
+def _sweep_stranded_receipts(conn, directory, already_unlinked=()):
+    """Delete receipts for already-unlinked events and any stranded receipts
+    whose matching ``.pending`` file no longer exists."""
+    to_delete = list(already_unlinked)
+    seen = set(to_delete)
+    try:
+        rows = conn.execute("SELECT id FROM spool_receipts").fetchall()
+    except sqlite3.OperationalError:
+        rows = ()
+    for (rid,) in rows:
+        if rid not in seen and not (directory / (rid + ".pending")).exists():
+            to_delete.append(rid)
+            seen.add(rid)
+    if not to_delete:
+        return
+    try:
+        conn.executemany("DELETE FROM spool_receipts WHERE id = ?", [(eid,) for eid in to_delete])
+        conn.commit()
+    except sqlite3.OperationalError:
+        conn.rollback()
+
+
 def drain(store, conn, limit=64, deadline=None):
     if conn.in_transaction:
         return
@@ -84,94 +106,98 @@ def drain(store, conn, limit=64, deadline=None):
                 break
             if entry.name.endswith(".pending") and entry.is_file(follow_symlinks=False):
                 paths.append(directory / entry.name)
-    receipts_ready = False
+    if not paths:
+        _sweep_stranded_receipts(conn, directory)
+        return
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS spool_receipts (id TEXT PRIMARY KEY)")
+        conn.commit()
+    except sqlite3.OperationalError as exc:
+        conn.rollback()
+        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            return
+        raise
     unlinked_ids = []
-    for idx, path in enumerate(paths):
-        if idx > 0 and time.monotonic() >= deadline:
-            break
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if data["id"] != path.stem:
-                continue
-            if data.get("kind") == "hint_serves" and data.get("reset_epoch") is None:
-                continue
-            conn.execute("BEGIN IMMEDIATE")
-            if not path.is_file():
-                conn.rollback()
-                continue
-            if not receipts_ready:
-                conn.execute("CREATE TABLE IF NOT EXISTS spool_receipts (id TEXT PRIMARY KEY)")
-                receipts_ready = True
-            receipt = conn.execute("INSERT OR IGNORE INTO spool_receipts (id) VALUES (?)", (data["id"],))
-            if receipt.rowcount and data.get("kind", "intel") == "intel":
-                conn.execute(
-                    "INSERT INTO context_intel_events (tool_name, tool_use_id, summary, output_chars, timestamp) "
-                    "SELECT ?, ?, ?, ?, ? WHERE ? = '' OR NOT EXISTS "
-                    "(SELECT 1 FROM context_intel_events WHERE tool_use_id = ?)",
-                    (data["tool_name"], data["tool_use_id"], data["summary"],
-                     data["output_chars"], data["timestamp"], data["tool_use_id"], data["tool_use_id"]),
-                )
-            elif receipt.rowcount and data.get("kind") == "tool_output":
-                conn.execute(
-                    "INSERT OR IGNORE INTO tool_outputs (tool_use_id, tool_name, tool_type, command_or_path, "
-                    "output_hash, output_chars, output_tokens_est, compressed_preview, timestamp, source_file_path, "
-                    "language, archived_from, output_text, truncated, index_truncated) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", data["values"])
-            elif receipt.rowcount and data.get("kind") == "activity":
-                from activity_tracker import detect_mode, _WINDOW_SIZE, _PRUNE_THRESHOLD, _PRUNE_KEEP
-                conn.execute("INSERT INTO activity_log (tool_name, tool_bucket, has_error, timestamp) VALUES (?, ?, ?, ?)",
-                             (data["tool_name"], data["bucket"], data["has_error"], data["timestamp"]))
-                rows = conn.execute("SELECT tool_bucket, has_error FROM activity_log ORDER BY timestamp DESC, id DESC LIMIT ?", (_WINDOW_SIZE,)).fetchall()
-                if conn.execute("SELECT COUNT(*) FROM activity_log").fetchone()[0] > _PRUNE_THRESHOLD:
-                    conn.execute("DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY timestamp DESC, id DESC LIMIT ?)", (_PRUNE_KEEP,))
-                mode = detect_mode([row[0] for row in rows], any(row[1] for row in rows))
-                conn.execute("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('current_mode', ?)", (mode,))
-            elif receipt.rowcount and data.get("kind") == "hint_serves":
-                row = conn.execute("SELECT value FROM session_meta WHERE key='reset_epoch'").fetchone()
-                current = int(row[0]) if row else 0
-                if current == data["reset_epoch"]:
-                    conn.executemany(
-                        "INSERT INTO hint_serves (file_path, served_at, credited) VALUES (?, ?, 0) "
-                        "ON CONFLICT(file_path) DO NOTHING",
-                        [(path, data["timestamp"]) for path in data["paths"]],
-                    )
-            elif receipt.rowcount and data.get("kind") == "file_edit":
-                conn.execute("INSERT OR REPLACE INTO session_meta (key, value) VALUES (?, '1')",
-                             ("checkpoint_edit:" + data["fingerprint"],))
-            elif receipt.rowcount and data.get("kind") == "decisions":
-                from context_intel import _MAX_DECISIONS
-                row = conn.execute("SELECT value FROM session_meta WHERE key='session_decisions'").fetchone()
-                existing = json.loads(row[0]) if row and row[0] else []
-                if not isinstance(existing, list):
-                    raise ValueError("invalid decision state")
-                for decision in data["decisions"]:
-                    if decision not in existing and len(existing) < _MAX_DECISIONS:
-                        existing.append(decision)
-                conn.execute("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('session_decisions', ?)",
-                             (json.dumps(existing, ensure_ascii=False),))
-            elif receipt.rowcount:
-                raise ValueError("unknown spool record")
-            conn.commit()
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                continue
-            unlinked_ids.append(data["id"])
-        except sqlite3.OperationalError as exc:
-            conn.rollback()
-            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+    try:
+        for idx, path in enumerate(paths):
+            if idx > 0 and time.monotonic() >= deadline:
                 break
-            raise
-        except (OSError, ValueError, KeyError, TypeError):
-            conn.rollback()
-    if unlinked_ids:
-        try:
-            conn.executemany("DELETE FROM spool_receipts WHERE id = ?", [(eid,) for eid in unlinked_ids])
-            conn.commit()
-        except sqlite3.OperationalError:
-            conn.rollback()
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if data["id"] != path.stem:
+                    continue
+                if data.get("kind") == "hint_serves" and data.get("reset_epoch") is None:
+                    continue
+                conn.execute("BEGIN IMMEDIATE")
+                if not path.is_file():
+                    conn.rollback()
+                    continue
+                receipt = conn.execute("INSERT OR IGNORE INTO spool_receipts (id) VALUES (?)", (data["id"],))
+                if receipt.rowcount and data.get("kind", "intel") == "intel":
+                    conn.execute(
+                        "INSERT INTO context_intel_events (tool_name, tool_use_id, summary, output_chars, timestamp) "
+                        "SELECT ?, ?, ?, ?, ? WHERE ? = '' OR NOT EXISTS "
+                        "(SELECT 1 FROM context_intel_events WHERE tool_use_id = ?)",
+                        (data["tool_name"], data["tool_use_id"], data["summary"],
+                         data["output_chars"], data["timestamp"], data["tool_use_id"], data["tool_use_id"]),
+                    )
+                elif receipt.rowcount and data.get("kind") == "tool_output":
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tool_outputs (tool_use_id, tool_name, tool_type, command_or_path, "
+                        "output_hash, output_chars, output_tokens_est, compressed_preview, timestamp, source_file_path, "
+                        "language, archived_from, output_text, truncated, index_truncated) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", data["values"])
+                elif receipt.rowcount and data.get("kind") == "activity":
+                    from activity_tracker import detect_mode, _WINDOW_SIZE, _PRUNE_THRESHOLD, _PRUNE_KEEP
+                    conn.execute("INSERT INTO activity_log (tool_name, tool_bucket, has_error, timestamp) VALUES (?, ?, ?, ?)",
+                                 (data["tool_name"], data["bucket"], data["has_error"], data["timestamp"]))
+                    rows = conn.execute("SELECT tool_bucket, has_error FROM activity_log ORDER BY timestamp DESC, id DESC LIMIT ?", (_WINDOW_SIZE,)).fetchall()
+                    if conn.execute("SELECT COUNT(*) FROM activity_log").fetchone()[0] > _PRUNE_THRESHOLD:
+                        conn.execute("DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY timestamp DESC, id DESC LIMIT ?)", (_PRUNE_KEEP,))
+                    mode = detect_mode([row[0] for row in rows], any(row[1] for row in rows))
+                    conn.execute("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('current_mode', ?)", (mode,))
+                elif receipt.rowcount and data.get("kind") == "hint_serves":
+                    row = conn.execute("SELECT value FROM session_meta WHERE key='reset_epoch'").fetchone()
+                    current = int(row[0]) if row else 0
+                    if current == data["reset_epoch"]:
+                        conn.executemany(
+                            "INSERT INTO hint_serves (file_path, served_at, credited) VALUES (?, ?, 0) "
+                            "ON CONFLICT(file_path) DO NOTHING",
+                            [(path, data["timestamp"]) for path in data["paths"]],
+                        )
+                elif receipt.rowcount and data.get("kind") == "file_edit":
+                    conn.execute("INSERT OR REPLACE INTO session_meta (key, value) VALUES (?, '1')",
+                                 ("checkpoint_edit:" + data["fingerprint"],))
+                elif receipt.rowcount and data.get("kind") == "decisions":
+                    from context_intel import _MAX_DECISIONS
+                    row = conn.execute("SELECT value FROM session_meta WHERE key='session_decisions'").fetchone()
+                    existing = json.loads(row[0]) if row and row[0] else []
+                    if not isinstance(existing, list):
+                        raise ValueError("invalid decision state")
+                    for decision in data["decisions"]:
+                        if decision not in existing and len(existing) < _MAX_DECISIONS:
+                            existing.append(decision)
+                    conn.execute("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('session_decisions', ?)",
+                                 (json.dumps(existing, ensure_ascii=False),))
+                elif receipt.rowcount:
+                    raise ValueError("unknown spool record")
+                conn.commit()
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    continue
+                unlinked_ids.append(data["id"])
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                    break
+                raise
+            except (OSError, ValueError, KeyError, TypeError):
+                conn.rollback()
+    finally:
+        _sweep_stranded_receipts(conn, directory, unlinked_ids)
 
 
 def drain_collect(snapshot_dir, seconds=0.5, max_sessions=8):

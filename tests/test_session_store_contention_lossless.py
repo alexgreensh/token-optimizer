@@ -444,3 +444,136 @@ def test_drain_makes_progress_even_after_deadline_stall_and_batches_receipt_clea
     assert conn.execute("SELECT COUNT(*) FROM context_intel_events").fetchone()[0] == 4
     assert conn.execute("SELECT COUNT(*) FROM spool_receipts").fetchone()[0] == 0
     store.close()
+
+
+def test_drain_survives_first_item_rollback_on_fresh_store(tmp_path, monkeypatch):
+    """Regression: rolling back the first pending item on a fresh store must not
+    roll back CREATE TABLE spool_receipts and crash subsequent items with
+    'no such table: spool_receipts'.
+    """
+    import json
+    import uuid
+    from contextlib import contextmanager
+    from _measure import session_store_spool
+    from session_store import SessionStore
+
+    store = SessionStore("fresh", snapshot_dir=tmp_path)
+    conn = store._connect()
+    spool = tmp_path / "session-store" / "fresh.spool"
+    spool.mkdir(parents=True, exist_ok=True)
+
+    bad_id = "0" * 32
+    good_ids = [uuid.uuid4().hex, uuid.uuid4().hex]
+    (spool / f"{bad_id}.pending").write_text(json.dumps({"id": bad_id, "kind": "bogus"}), encoding="utf-8")
+    for idx, eid in enumerate(good_ids):
+        (spool / f"{eid}.pending").write_text(json.dumps({
+            "id": eid, "kind": "intel", "tool_name": "Read",
+            "tool_use_id": f"good-{idx}", "summary": "ok", "output_chars": 4, "timestamp": 1.0 + idx,
+        }), encoding="utf-8")
+
+    # Force deterministic scan order so the bogus record is always processed first.
+    real_scandir = os.scandir
+
+    @contextmanager
+    def ordered_scandir(path):
+        with real_scandir(path) as it:
+            entries = sorted(list(it), key=lambda e: (0 if e.name == f"{bad_id}.pending" else 1, e.name))
+            yield entries
+
+    monkeypatch.setattr(session_store_spool.os, "scandir", ordered_scandir)
+    session_store_spool.drain(store, conn)
+
+    rows = conn.execute("SELECT tool_use_id FROM context_intel_events ORDER BY tool_use_id").fetchall()
+    assert [r[0] for r in rows] == ["good-0", "good-1"]
+    assert conn.execute("SELECT COUNT(*) FROM spool_receipts").fetchone()[0] == 0
+    store.close()
+
+
+def test_drain_cleans_up_unlinked_receipts_even_when_later_item_raises(tmp_path):
+    """When item 1 succeeds and item 2 raises a non-busy OperationalError, the
+    try/finally block must still delete item 1's receipt from spool_receipts.
+    """
+    import json
+    import uuid
+    from _measure import session_store_spool
+    from session_store import SessionStore
+
+    store = SessionStore("raise-cleanup", snapshot_dir=tmp_path)
+    conn = store._connect()
+    spool = tmp_path / "session-store" / "raise-cleanup.spool"
+    spool.mkdir(parents=True, exist_ok=True)
+
+    for idx in range(2):
+        eid = uuid.uuid4().hex
+        (spool / f"{eid}.pending").write_text(json.dumps({
+            "id": eid, "kind": "intel", "tool_name": "Read",
+            "tool_use_id": f"ev-{idx}", "summary": "ok", "output_chars": 4, "timestamp": 1.0 + idx,
+        }), encoding="utf-8")
+
+    class _FailSecondInsertConn:
+        def __init__(self, inner):
+            self._inner = inner
+            self._inserts = 0
+
+        @property
+        def in_transaction(self):
+            return self._inner.in_transaction
+
+        def execute(self, sql, *args, **kwargs):
+            if "INSERT INTO context_intel_events" in sql:
+                self._inserts += 1
+                if self._inserts == 2:
+                    raise sqlite3.OperationalError("synthetic disk I/O error")
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def executemany(self, *args, **kwargs):
+            return self._inner.executemany(*args, **kwargs)
+
+        def commit(self):
+            return self._inner.commit()
+
+        def rollback(self):
+            return self._inner.rollback()
+
+    with pytest.raises(sqlite3.OperationalError, match="synthetic disk I/O error"):
+        session_store_spool.drain(store, _FailSecondInsertConn(conn))
+
+    assert conn.execute("SELECT COUNT(*) FROM context_intel_events").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM spool_receipts").fetchone()[0] == 0
+    store.close()
+
+
+def test_drain_sweeps_stranded_receipts_without_matching_pending_file(tmp_path):
+    """Stranded spool_receipts rows (no matching .pending file) are swept on
+    subsequent drain calls, while receipts with an active .pending file remain.
+    """
+    import json
+    from _measure import session_store_spool
+    from session_store import SessionStore
+
+    store = SessionStore("sweep", snapshot_dir=tmp_path)
+    conn = store._connect()
+    spool = tmp_path / "session-store" / "sweep.spool"
+    spool.mkdir(parents=True, exist_ok=True)
+
+    conn.execute("CREATE TABLE IF NOT EXISTS spool_receipts (id TEXT PRIMARY KEY)")
+    conn.executemany(
+        "INSERT INTO spool_receipts (id) VALUES (?)",
+        [("stranded-1",), ("stranded-2",), ("still-pending",)],
+    )
+    conn.commit()
+    # Keep a matching .pending file for "still-pending" (deferred hint_serves is skipped).
+    (spool / "still-pending.pending").write_text(
+        json.dumps({"id": "still-pending", "kind": "hint_serves", "reset_epoch": None}),
+        encoding="utf-8",
+    )
+
+    session_store_spool.drain(store, conn)
+    remaining = [r[0] for r in conn.execute("SELECT id FROM spool_receipts ORDER BY id").fetchall()]
+    assert remaining == ["still-pending"]
+
+    # Once the .pending file is gone, even an empty-spool drain sweeps the last receipt.
+    (spool / "still-pending.pending").unlink()
+    session_store_spool.drain(store, conn)
+    assert conn.execute("SELECT COUNT(*) FROM spool_receipts").fetchone()[0] == 0
+    store.close()

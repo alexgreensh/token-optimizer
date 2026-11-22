@@ -131,6 +131,114 @@ def test_locked_global_cache_keeps_new_result_in_pending_file(sb, monkeypatch):
     assert not list(sb._status_bar_dir().glob('*.tmp'))
 
 
+def _lock_global_replace(sb, monkeypatch):
+    real = sb.os.replace
+    def locked(source, dest):
+        if str(dest).endswith('global.json'):
+            raise PermissionError('busy')
+        return real(source, dest)
+    monkeypatch.setattr(sb.os, 'replace', locked)
+
+
+def test_tied_clock_keeps_the_newest_pending_write(sb, monkeypatch):
+    # Coarse timer-tick clocks (Windows before 3.13) can stamp two rapid writes
+    # with the same computed_at; the newest write must still win.
+    monkeypatch.setattr(sb.time, 'time', lambda: 1_700_000_000.0)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    _lock_global_replace(sb, monkeypatch)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 9}, None)
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 9
+    assert not list(sb._status_bar_dir().glob('*.tmp'))
+
+
+def test_tied_clock_newest_of_multiple_pending_writes_wins(sb, monkeypatch):
+    monkeypatch.setattr(sb.time, 'time', lambda: 1_700_000_000.0)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    _lock_global_replace(sb, monkeypatch)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 7}, None)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 9}, None)
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 9
+
+
+def test_subsecond_rollback_keeps_the_newest_write(sb, monkeypatch):
+    clock = {'now': 1_700_000_000.0}
+    monkeypatch.setattr(sb.time, 'time', lambda: clock['now'])
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    _lock_global_replace(sb, monkeypatch)
+    clock['now'] -= 0.5  # small NTP step-back must not resurrect the old value
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 9}, None)
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 9
+
+
+def test_equal_stamps_resolve_by_physical_write_order(sb):
+    # Two writers that saw the same prior can produce equal computed_at stamps;
+    # the payload cannot order them, so the later physical write wins.
+    directory = sb._status_bar_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    older = directory / 'global-pending-older.json'
+    newer = directory / 'global-pending-newer.json'
+    older.write_text(json.dumps({'computed_at': 1_700_000_000.0, 'savings': {'session_tokens': 5}}), encoding='utf-8')
+    newer.write_text(json.dumps({'computed_at': 1_700_000_000.0, 'savings': {'session_tokens': 9}}), encoding='utf-8')
+    os.utime(older, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(newer, ns=(2_000_000_000, 2_000_000_000))
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 9
+
+
+def test_first_write_on_empty_cache_uses_the_clock(sb, monkeypatch):
+    monkeypatch.setattr(sb.time, 'time', lambda: 1_700_000_000.0)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    assert sb._status_bar_read_cache(SID_A)['computed_at'] == 1_700_000_000.0
+
+
+def test_future_stamp_inside_tie_window_is_overtaken(sb, monkeypatch):
+    monkeypatch.setattr(sb.time, 'time', lambda: 1_700_000_000.0)
+    sb._status_bar_dir().mkdir(parents=True, exist_ok=True)
+    inside = sb._status_bar_dir() / 'global-pending-inside.json'
+    inside.write_text(json.dumps({'computed_at': 1_700_000_000.5, 'savings': {'session_tokens': 7}}), encoding='utf-8')
+    _lock_global_replace(sb, monkeypatch)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 9}, None)
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 9
+
+
+def test_future_stamp_beyond_tie_window_keeps_winning(sb, monkeypatch):
+    monkeypatch.setattr(sb.time, 'time', lambda: 1_700_000_000.0)
+    sb._status_bar_dir().mkdir(parents=True, exist_ok=True)
+    beyond = sb._status_bar_dir() / 'global-pending-beyond.json'
+    beyond.write_text(json.dumps({'computed_at': 1_700_000_001.0, 'savings': {'session_tokens': 42}}), encoding='utf-8')
+    _lock_global_replace(sb, monkeypatch)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 9}, None)
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 42
+
+
+def test_tied_pending_files_are_cleaned_after_the_next_successful_write(sb, monkeypatch):
+    monkeypatch.setattr(sb.time, 'time', lambda: 1_700_000_000.0)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    state = {'locked': True}
+    real = sb.os.replace
+    def maybe_locked(source, dest):
+        if state['locked'] and str(dest).endswith('global.json'):
+            raise PermissionError('busy')
+        return real(source, dest)
+    monkeypatch.setattr(sb.os, 'replace', maybe_locked)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 7}, None)
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 8}, None)
+    assert len(list(sb._status_bar_dir().glob('global-pending-*.json'))) == 2
+    state['locked'] = False
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 10}, None)
+    assert not list(sb._status_bar_dir().glob('global-pending-*.json'))
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 10
+
+
+def test_large_rollback_defers_to_skewed_writers_future_stamp(sb, monkeypatch):
+    clock = {'now': 1_700_000_000.0}
+    monkeypatch.setattr(sb.time, 'time', lambda: clock['now'])
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 5}, None)
+    _lock_global_replace(sb, monkeypatch)
+    clock['now'] -= 3600  # an hour back reads as a skewed-writer future stamp
+    sb._status_bar_write_cache(SID_A, {'session_tokens': 9}, None)
+    assert sb._status_bar_read_cache(SID_A)['savings']['session_tokens'] == 5
+
+
 @pytest.mark.parametrize("failure", ["returned", "raised"])
 def test_failed_sync_keeps_last_good_as_stale(sb, monkeypatch, failure):
     _three_day_fixture(sb)

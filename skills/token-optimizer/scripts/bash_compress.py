@@ -1906,7 +1906,7 @@ def _compress_cloud_cli(output):
 _SEARCH_FILE_LINE_RE = re.compile(r'^(.+?):(\d+)[:](.*)$')
 
 
-def _compress_search_results(output):
+def _compress_search_results(output, command_str=""):
     """Compress grep/ripgrep/ag/ack output: group by file, keep top matches per file.
 
     Search output is typically `file:line:content` (or `file:line:content` with
@@ -1943,7 +1943,7 @@ def _compress_search_results(output):
         return output  # not file:line format, don't compress
 
     from bash_search_results import render_search_results
-    return render_search_results(files, no_file)
+    return render_search_results(files, no_file, command_str=command_str)
 
 
 _PATTERN_HANDLERS = {
@@ -2201,7 +2201,7 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
         if handler is None:
             return cleaned
         try:
-            if pattern in ("find", "pytest"):
+            if pattern in ("find", "pytest", "search_results"):
                 compressed = handler(cleaned, command_str)
             else:
                 compressed = handler(cleaned)

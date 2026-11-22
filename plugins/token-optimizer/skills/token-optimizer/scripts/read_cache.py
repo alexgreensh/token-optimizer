@@ -453,7 +453,11 @@ def _make_store(
 _COMPACT_SCAN_META_KEY = "compact_scan_cursor"
 _COMPACT_SCAN_MAX_PATHS = 32
 _COMPACT_SCAN_MAX_SEEN = 256
-from compact_markers import COMPACT_MARKERS as _COMPACT_MARKERS, compact_boundary_id as _compact_boundary_id
+from compact_markers import (
+    COMPACT_MARKERS as _COMPACT_MARKERS,
+    compact_boundary_id as _compact_boundary_id,
+    should_invalidate_for_id as _should_invalidate_for_id,
+)
 _COMPACT_SCAN_CHUNK = 1 << 20  # 1 MiB
 _COMPACT_SCAN_MAX_SECONDS = 0.25
 
@@ -463,15 +467,15 @@ def _is_compact_boundary_row(line: bytes) -> bool:
 
 
 def _load_compact_cursor(store: Any) -> tuple:
-    """(paths: {path: offset}, seen: [boundary ids]) from session_meta. Reads
-    the pre-map single-slot shape too. Never raises."""
+    """(paths: {path: offset}, seen: [boundary ids], cm: {path: [c, u, t]})
+    from session_meta. Reads the pre-map single-slot shape too. Never raises."""
     try:
         raw = store.get_meta(_COMPACT_SCAN_META_KEY)
         cur = json.loads(raw) if raw else None
     except Exception:
         cur = None
     if not isinstance(cur, dict):
-        return {}, []
+        return {}, [], {}
     paths: dict = {}
     if isinstance(cur.get("paths"), dict):
         for k, v in cur["paths"].items():
@@ -485,7 +489,15 @@ def _load_compact_cursor(store: Any) -> tuple:
         except (TypeError, ValueError):
             pass
     seen = [x for x in cur.get("seen") or [] if isinstance(x, str)]
-    return paths, seen
+    cm: dict = {}
+    if isinstance(cur.get("cm"), dict):
+        for k, v in cur["cm"].items():
+            if isinstance(v, list) and len(v) == 3:
+                try:
+                    cm[str(k)] = [max(0, int(v[0])), max(0, int(v[1])), max(0, int(v[2]))]
+                except (TypeError, ValueError):
+                    continue
+    return paths, seen, cm
 
 
 def _scan_for_compaction(store: Any, transcript_path: Any) -> bool:
@@ -508,7 +520,7 @@ def _scan_for_compaction(store: Any, transcript_path: Any) -> bool:
         if not stat_module.S_ISREG(st.st_mode):
             return False
         size = st.st_size
-        paths, seen = _load_compact_cursor(store)
+        paths, seen, cm = _load_compact_cursor(store)
         offset = paths.get(path, 0)
         if offset > size:
             offset = 0  # rewritten / truncated transcript: rescan
@@ -516,6 +528,8 @@ def _scan_for_compaction(store: Any, transcript_path: Any) -> bool:
             return False
         found = False
         new_ids: list = []
+        cm_wm = list(cm.get(path, [0, 0, 0]))
+        orig_cm_wm = list(cm_wm)
         start = time.monotonic()
         pos = offset
         with open(path, "rb") as fh:
@@ -538,21 +552,28 @@ def _scan_for_compaction(store: Any, transcript_path: Any) -> bool:
                     for line in complete.split(b"\n"):
                         bid = _compact_boundary_id(line, "%s@%d" % (path, line_at)) if line else None
                         line_at += len(line) + 1
-                        if bid and bid not in seen and bid not in new_ids:
-                            new_ids.append(bid)
+                        if bid and _should_invalidate_for_id(bid, seen, new_ids, cm_wm):
                             found = True
                 pos += len(complete)
                 if time.monotonic() - start > _COMPACT_SCAN_MAX_SECONDS:
                     break
-        if pos != offset or new_ids:
+        if pos != offset or new_ids or cm_wm != orig_cm_wm:
             paths.pop(path, None)
             paths[path] = pos  # most recent last; the oldest paths drop first
+            if any(cm_wm):
+                cm[path] = cm_wm
+            else:
+                cm.pop(path, None)
             while len(paths) > _COMPACT_SCAN_MAX_PATHS:
-                paths.pop(next(iter(paths)))
+                evicted = next(iter(paths))
+                paths.pop(evicted)
+                cm.pop(evicted, None)
             seen = (seen + new_ids)[-_COMPACT_SCAN_MAX_SEEN:]
             try:
-                store.set_meta(_COMPACT_SCAN_META_KEY,
-                               json.dumps({"v": 2, "paths": paths, "seen": seen}))
+                payload = {"v": 2, "paths": paths, "seen": seen}
+                if cm:
+                    payload["cm"] = cm
+                store.set_meta(_COMPACT_SCAN_META_KEY, json.dumps(payload))
             except Exception:
                 pass
         return found

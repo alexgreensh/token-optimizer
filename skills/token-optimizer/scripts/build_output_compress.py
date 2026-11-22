@@ -166,6 +166,9 @@ _SHAPE_MARKER_PATTERNS = [
     re.compile(r"Successfully installed"),   # pip
     re.compile(r"added \d+ package"),        # npm
     re.compile(r"removed \d+ package"),      # npm
+    re.compile(r"^=== RUN\s+", re.MULTILINE),  # go test -v
+    re.compile(r"^--- (?:PASS|FAIL|SKIP):\s+", re.MULTILINE),  # go test -v
+    re.compile(r"^test result:\s+", re.MULTILINE),  # cargo test
 ]
 
 # Combined shape-marker regex for the classify_by_shape fallback (single
@@ -207,6 +210,11 @@ _ERROR_LINE_PATTERNS = [
     re.compile(r"help: ", re.I),                   # Rust help
     re.compile(r"panicked at", re.I),              # Rust panic
     re.compile(r"thread '.*' panicked", re.I),     # Rust panic
+    re.compile(r"^\s*--- FAIL:\s+", re.MULTILINE),  # go test failure
+    re.compile(r"^FAIL\t\S+", re.MULTILINE),        # go test package failure
+    re.compile(r"^\s+\S+_test\.go:\d+:", re.MULTILINE),  # go test assertion line
+    re.compile(r"^test \S+ \.\.\. FAILED\s*$", re.MULTILINE),  # cargo test failure
+    re.compile(r"^\s*(?:✖|not ok \d+ -)\s+", re.MULTILINE),    # node --test failure
 ]
 
 # F4: import foreign-language and localized error markers from bash_compress
@@ -266,6 +274,11 @@ _SUMMARY_LINE_PATTERNS = [
     re.compile(r"===\s*FAILURES\s*===", re.I),
     re.compile(r"===\s*ERRORS\s*===", re.I),
     re.compile(r"---\s*FAILED\s+---", re.I),
+    re.compile(r"^ok\s+\S+\t"),                     # go test package pass
+    re.compile(r"^FAIL\t\S+"),                      # go test package fail
+    re.compile(r"^\?\s+\S+\t\[no test files\]"),    # go test no test files
+    re.compile(r"^test result:\s+"),                # cargo test summary
+    re.compile(r"^(?:#|ℹ)\s+(?:tests|pass|fail|skipped)\s+\d+"),  # node --test summary
 ]
 
 _COMBINED_SUMMARY_RE = re.compile(
@@ -312,6 +325,13 @@ _PROGRESS_NOISE_PATTERNS = [
     re.compile(r"^#[\d.]+\s+"),
     # npm install progress
     re.compile(r"^\s*⸨\s*⸩\s*"),  # npm spinner
+    # Go test verbose pass/run/skip progress
+    re.compile(r"^\s*=== (?:RUN|PAUSE|CONT)\s+"),
+    re.compile(r"^\s*--- (?:PASS|SKIP):\s+"),
+    # Cargo per-test pass/ignored progress
+    re.compile(r"^test \S+ \.\.\. (?:ok|ignored)\s*$"),
+    # Node --test passing lines
+    re.compile(r"^\s*(?:✔|ok \d+ -)\s+"),
 ]
 
 _COMBINED_PROGRESS_RE = re.compile(
@@ -369,6 +389,10 @@ def classify(command: str) -> bool:
                     and subcmd.endswith(".py")):
                 return True
             return False
+
+        # Node built-in test runner (`node --test ...`), never arbitrary `node script.js`
+        if cmd == "node":
+            return "--test" in tokens[cmd_start + 1:]
 
         # Direct command match
         if cmd in _BUILD_TEST_COMMANDS:

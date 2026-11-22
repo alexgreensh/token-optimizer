@@ -747,24 +747,24 @@ _PYTEST_SUMMARY_TAIL_LINES = 40
 
 
 def _compress_pytest(output):
-    """Compress pytest/cypress/playwright/mocha/karma/rspec/unittest/gradle/tox/deno/bun/ava test output.
+    """Compress pytest/go/cargo/node/mocha/karma/rspec/unittest/gradle/tox/deno/bun/ava output.
 
-    Extracts trailing summary lines (anything containing passed, passing,
-    failed, failing, error, pending, or skipped) plus the explicit
-    FAILURES/ERRORS section when pytest emits one. Cypress and playwright
-    speak in "passing" / "failing" terms, so the reverse-scan accepts both
-    vocabularies. The v5.8 extensions add "ran " (unittest), "build
-    successful"/"build failed" (gradle), "congratulations" (tox), and
-    "ok |" (deno) to the summary keyword set. The scan window is bounded
-    by ``_PYTEST_SUMMARY_TAIL_LINES`` to avoid walking the whole output on
-    pathological inputs, but is wide enough to survive 15-20 trailing
-    warning lines emitted after the summary.
+    Delegates Go, Cargo, and Node ``--test`` outputs to
+    ``go_cargo_test_compress`` first, then extracts trailing summary lines and
+    FAILURES/ERRORS blocks for pytest-family runners.
     """
     lines = output.strip().splitlines()
     if not lines:
         return output
     if len(lines) < 15:
         return output  # too short to meaningfully compress
+    try:
+        from go_cargo_test_compress import compress_structured_test_output
+        structured = compress_structured_test_output(output)
+        if structured is not None:
+            return structured
+    except Exception:
+        pass
 
     summary_kw = ("passed", "passing", "failed", "failing", "error",
                   "pending", "skipped",
@@ -1494,7 +1494,7 @@ def _detect_pattern(command_str):
         return "pytest"
     elif cmd == "npx" and subcmd == "playwright":
         return "pytest"
-    elif cmd in ("go", "cargo") and subcmd == "test":
+    elif (cmd in ("go", "cargo") and subcmd == "test") or (cmd == "node" and "--test" in tokens[cmd_start + 1:]):
         return "pytest"
     # v5.8 test-runner extensions: unittest, tox, nox, gradle, mvn, deno, bun, ava
     elif cmd in ("python", "python3") and subcmd == "-m" and cmd_start + 2 < len(tokens) and tokens[cmd_start + 2] == "unittest":

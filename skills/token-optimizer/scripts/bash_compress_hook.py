@@ -289,6 +289,8 @@ def _run(payload: dict) -> None:
                     _cov("compressed", FEATURE_BASH_REREAD, "cat", stdout, _removed_tokens(stdout, _cat_out))
                     _emit_updated_tool_output(_cat_out, stderr, nudge=_nudge)
                 else:
+                    if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+                        return
                     _cov("not_read_only", "cat_file_read", text=stdout)
                     if _nudge:
                         _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
@@ -300,6 +302,8 @@ def _run(payload: dict) -> None:
     try:
         from post_run_classify import unsafe_compound_output
         if unsafe_compound_output(command):
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+                return
             _cov("not_read_only", "mixed_output", text=stdout)
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
@@ -383,6 +387,8 @@ def _run(payload: dict) -> None:
                             return
                 except Exception:
                     pass  # Fail open: raw output stands
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+                return
             _cov("not_read_only", reason, text=stdout)
             if _post_run_shadow is not None:
                 try:
@@ -418,6 +424,8 @@ def _run(payload: dict) -> None:
 
         # --- check for failure (exit code or stderr patterns) ---
         if _looks_like_failure(exit_code, stderr):
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+                return
             _cov("error_or_short", "failed_command", text=stdout)
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
@@ -432,6 +440,8 @@ def _run(payload: dict) -> None:
         # literal "error" are ordinary search hits, not tool failures.
         _is_search_cmd = _detect_pattern(compress_command) == "search_results"
         if _stdout_has_error_patterns(cleaned_stdout, is_search=_is_search_cmd):
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+                return
             _cov("error_or_short", "error_words", text=stdout)
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
@@ -465,6 +475,8 @@ def _run(payload: dict) -> None:
                 pass
 
         if not comp_helped:
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+                return
             _cov("under_10pct", "read_only", _detect_pattern(command), stdout)
             if _nudge:
                 _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
@@ -827,6 +839,36 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
         return compressed
     except Exception:
         return None
+
+
+def _try_large_output_policy(command: str, stdout: str, stderr: str,
+                             payload: dict, nudge: str | None,
+                             cov_fn) -> bool:
+    """Run large_output_policy after existing compressors (shadow by default).
+
+    Returns True only in active mode when compression + archival succeeded and
+    updatedToolOutput was emitted. In shadow mode always returns False so the
+    caller's output and coverage path stay byte-identical to today.
+    """
+    if not stdout or len(stdout.encode("utf-8", errors="replace")) <= 8192:
+        return False
+    try:
+        from large_output_policy import FEATURE_NAME, handle_post_tool_use
+        compressed, cleaned_orig = handle_post_tool_use(
+            command,
+            stdout,
+            session_id=os.environ.get("CLAUDE_SESSION_ID", ""),
+            tool_use_id=str(payload.get("tool_use_id", "") or ""),
+        )
+        if compressed is None:
+            return False
+        _log_event(command, cleaned_orig, compressed, feature=FEATURE_NAME)
+        cov_fn("compressed", FEATURE_NAME, FEATURE_NAME, stdout,
+               _removed_tokens(cleaned_orig, compressed))
+        _emit_updated_tool_output(compressed, stderr, nudge=nudge)
+        return True
+    except Exception:
+        return False
 
 
 def _emit_updated_tool_output(stdout: str, stderr: str,

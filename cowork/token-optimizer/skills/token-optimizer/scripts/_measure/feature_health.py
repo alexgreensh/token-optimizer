@@ -50,6 +50,7 @@ FEATURES = (
     ("build_output_compress", "Build output compression", "compression_events", "feature", ("build_output_compress",), False),
     ("pipe_compress", "Bash pipelines", "compression_events", "feature", ("pipe_compress",), False),
     ("bash_reread_unchanged", "Bash unchanged file re-reads", "compression_events", "feature", ("bash_reread_unchanged",), False),
+    ("large_output_policy", "Large Bash output policy", "compression_events", "feature", ("large_output_policy",), False),
     ("checkpoint_restore", "Checkpoint restore", "savings_events", "event_type", ("checkpoint_restore",), False),
     ("resume_lean", "Lean resume", "savings_events", "event_type", ("resume_lean",), False),
 )

@@ -72,6 +72,7 @@ _ENGINE_SCRIPTS = (
     "visibility_rule.py",
     "bash_rerun_dedupe.py",
     "pipe_file_compress.py",
+    "large_output_policy.py",
     "archive_result.py",
     "builtin_tool_compress.py",
     "subagent_result_cap.py",

@@ -159,7 +159,7 @@ function savingsStoryHtml(data, extras) {
     var bigReadLabel = ((s.category_labels || {}).big_read_preview) || 'Big non-code read previews';
     var bashExpand = (s.by_category || {}).bash_archive_reexpand;
     var bashNet = Object.keys(s.by_category || {}).reduce(function(n, k) {
-      return n + ((/^bash_/.test(k) || /^cmd_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup' || k === 'pipe_compress') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
+      return n + ((/^bash_/.test(k) || /^cmd_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup' || k === 'pipe_compress' || k === 'large_output_policy') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
     }, 0);
     var catFallback = {
       crossturn_dedup: 'Cross-turn dedup',
@@ -168,7 +168,8 @@ function savingsStoryHtml(data, extras) {
       tool_archive: 'Tool replacements',
       bash_compress_pipeline: 'Bash compress (pipelines)',
       bash_compress_search: 'Bash compress (search results)',
-      build_output_compress: 'Build output compression'
+      build_output_compress: 'Build output compression',
+      large_output_policy: 'Large Bash output policy'
     };
     var catRows = Object.keys(s.by_category || {}).filter(function(k) {
       var v = s.by_category[k];

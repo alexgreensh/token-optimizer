@@ -57,8 +57,10 @@ the CLI as `ALL IN` and on the dashboard as the hero number.
 
 Token changes Token Optimizer metered itself: compressed command output
 (`bash_compress_*`, `bash_search_noise_fold`, `build_output_compress`, safe
-read-only pipelines via `pipe_compress`, and proven unchanged Bash file re-reads via
-`bash_reread_unchanged`), archived tool results that stayed collapsed (`tool_archive`,
+read-only pipelines via `pipe_compress`, proven unchanged Bash file re-reads via
+`bash_reread_unchanged`, and opt-in active-mode large Bash output compression via
+`large_output_policy` (default shadow mode is logged separately as counts-only and
+never credited to savings totals)), archived tool results that stayed collapsed (`tool_archive`,
 `subagent_cap`), lossless built-in tool compression (`builtin_grep`, `builtin_glob`),
 structure maps, big non-code read previews (`big_read_preview`), quality nudges,
 cross-turn dedup (`crossturn_dedup`).

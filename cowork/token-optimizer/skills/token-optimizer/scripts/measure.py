@@ -6848,7 +6848,7 @@ _V5_COMPRESSION_LABELS = {
     # errors and the summary line.
     "build_output_compress": "Build output compression",
     # Codex sessions: command output compressed by the Codex hook path.
-    "codex_command_compress": "Command output (Codex)", "mod_clean": "Clean-up from the Claude Code mod", "mod_clean_first": "Clean-up first from the Claude Code mod", "cmd_git_diff_stat": "Git diff --stat compression", "cmd_git_ls": "Git ls-files/ls-tree compression", "cmd_gh_log": "GitHub Actions log compression", "cmd_gh_list": "GitHub CLI list compression", "cmd_terraform": "Terraform/OpenTofu plan compression", "cmd_kubectl_describe": "kubectl describe compression", "cmd_pkg_install": "Package installer compression", "cmd_mypy": "mypy output compression", "big_read_preview": "Big non-code read previews", "pipe_compress": "Bash pipelines", "bash_reread_unchanged": "Bash unchanged file re-reads",
+    "codex_command_compress": "Command output (Codex)", "mod_clean": "Clean-up from the Claude Code mod", "mod_clean_first": "Clean-up first from the Claude Code mod", "cmd_git_diff_stat": "Git diff --stat compression", "cmd_git_ls": "Git ls-files/ls-tree compression", "cmd_gh_log": "GitHub Actions log compression", "cmd_gh_list": "GitHub CLI list compression", "cmd_terraform": "Terraform/OpenTofu plan compression", "cmd_kubectl_describe": "kubectl describe compression", "cmd_pkg_install": "Package installer compression", "cmd_mypy": "mypy output compression", "big_read_preview": "Big non-code read previews", "pipe_compress": "Bash pipelines", "bash_reread_unchanged": "Bash unchanged file re-reads", "large_output_policy": "Large Bash output policy",
 }
 
 # compression_events features that are bookkeeping, shadow measurement, or a

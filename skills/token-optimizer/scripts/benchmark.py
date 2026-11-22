@@ -1604,10 +1604,10 @@ def run_single_fixture(fixture, compressor=None):
 
     try:
         if fixture.get("compressor") == "builtin_tool":
-            from builtin_tool_compress import compress_benchmark_fixture
-            compressed = compress_benchmark_fixture(fixture)
-        else:
-            compressed = compressor(fixture["command"], raw, **compressor_kwargs)
+            from builtin_tool_compress import compress_benchmark_fixture; compressed = compress_benchmark_fixture(fixture)
+        elif fixture.get("compressor") == "large_output_policy":
+            from large_output_policy import compress_benchmark_fixture; compressed = compress_benchmark_fixture(fixture)
+        else: compressed = compressor(fixture["command"], raw, **compressor_kwargs)
     except Exception as e:
         return False, {"name": name, "error": str(e), "status": "compressor_error"}
 

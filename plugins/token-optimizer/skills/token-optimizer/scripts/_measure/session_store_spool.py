@@ -80,12 +80,14 @@ def drain(store, conn, limit=64, deadline=None):
     paths = []
     with os.scandir(directory) as entries:
         for entry in entries:
-            if len(paths) >= limit or time.monotonic() >= deadline:
+            if len(paths) >= limit or (paths and time.monotonic() >= deadline):
                 break
             if entry.name.endswith(".pending") and entry.is_file(follow_symlinks=False):
                 paths.append(directory / entry.name)
-    for path in paths:
-        if time.monotonic() >= deadline:
+    receipts_ready = False
+    unlinked_ids = []
+    for idx, path in enumerate(paths):
+        if idx > 0 and time.monotonic() >= deadline:
             break
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -97,7 +99,9 @@ def drain(store, conn, limit=64, deadline=None):
             if not path.is_file():
                 conn.rollback()
                 continue
-            conn.execute("CREATE TABLE IF NOT EXISTS spool_receipts (id TEXT PRIMARY KEY)")
+            if not receipts_ready:
+                conn.execute("CREATE TABLE IF NOT EXISTS spool_receipts (id TEXT PRIMARY KEY)")
+                receipts_ready = True
             receipt = conn.execute("INSERT OR IGNORE INTO spool_receipts (id) VALUES (?)", (data["id"],))
             if receipt.rowcount and data.get("kind", "intel") == "intel":
                 conn.execute(
@@ -154,14 +158,19 @@ def drain(store, conn, limit=64, deadline=None):
                 pass
             except OSError:
                 continue
-            conn.execute("DELETE FROM spool_receipts WHERE id = ?", (data["id"],))
-            conn.commit()
+            unlinked_ids.append(data["id"])
         except sqlite3.OperationalError as exc:
             conn.rollback()
             if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                return
+                break
             raise
         except (OSError, ValueError, KeyError, TypeError):
+            conn.rollback()
+    if unlinked_ids:
+        try:
+            conn.executemany("DELETE FROM spool_receipts WHERE id = ?", [(eid,) for eid in unlinked_ids])
+            conn.commit()
+        except sqlite3.OperationalError:
             conn.rollback()
 
 

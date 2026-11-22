@@ -413,3 +413,34 @@ def test_unknown_reset_epoch_cannot_revive_cleared_context(tmp_path, monkeypatch
     assert written is False
     assert store.get_file_entry("example.py") is None
     store.close()
+
+
+def test_drain_makes_progress_even_after_deadline_stall_and_batches_receipt_cleanup(tmp_path):
+    from _measure import session_store_spool
+    from session_store import SessionStore
+
+    store = SessionStore("shared", snapshot_dir=tmp_path)
+    conn = store._connect()
+    spool = tmp_path / "session-store" / "shared.spool"
+    spool.mkdir(parents=True, exist_ok=True)
+    # Seed 4 pending events directly in the spool.
+    import json, uuid
+    for i in range(4):
+        eid = uuid.uuid4().hex
+        (spool / f"{eid}.pending").write_text(json.dumps({
+            "id": eid, "kind": "intel", "tool_name": "Read",
+            "tool_use_id": f"e{i}", "summary": "s", "output_chars": 5, "timestamp": 1.0 + i,
+        }), encoding="utf-8")
+
+    # Even if the monotonic deadline has already expired before drain() enters its loop,
+    # drain() must still make progress on at least one item instead of returning empty.
+    session_store_spool.drain(store, conn, deadline=0.0)
+    drained = conn.execute("SELECT COUNT(*) FROM context_intel_events").fetchone()[0]
+    assert drained == 1
+    assert conn.execute("SELECT COUNT(*) FROM spool_receipts").fetchone()[0] == 0
+
+    # Normal drain cleans up all remaining items and leaves zero permanent receipts.
+    session_store_spool.drain(store, conn)
+    assert conn.execute("SELECT COUNT(*) FROM context_intel_events").fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM spool_receipts").fetchone()[0] == 0
+    store.close()

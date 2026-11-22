@@ -361,7 +361,9 @@ def test_v3_repo_name_policy_covers_current_sources_and_dependencies():
                 # Lazy, failure-contained imports of repo modules the closed payload does not ship.
                 # post_run_classify.py: the build classifier fails closed (raw output); the
                 # pipeline analyzer and compression log sit inside try/except and degrade to no-ops.
-                lazy={'bash_compress.py':{'archive_result','measure'},
+                # bash_compress.py: the go/cargo/node test compressor is optional; on ImportError the
+                # generic pytest-style summary path runs instead.
+                lazy={'bash_compress.py':{'archive_result','measure','go_cargo_test_compress'},
                       'post_run_classify.py':{'build_output_compress','pipeline_analyzer','compression_log'}}
                 assert module in devin_source.ALLOWED_MODULES or module in lazy.get(name,())
 

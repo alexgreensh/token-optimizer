@@ -698,6 +698,14 @@ def _codemap(fn: str, *args: Any, **kwargs: Any) -> Any:
         return None
 
 
+def _try_big_noncode_read(file_path: str, stat: os.stat_result, offset: int, limit: int, session_id: str, store: Any, mode: str, entry: dict[str, Any], cached_content: Optional[str], reset_epoch: Any, save_hook_context_enabled: bool, quiet: bool) -> bool:
+    try:
+        from big_noncode_read import try_big_noncode_read
+        return try_big_noncode_read(file_path, stat, offset, limit, session_id, store, mode, entry, cached_content=cached_content, reset_epoch=reset_epoch, save_hook_context_enabled=save_hook_context_enabled, quiet=quiet, emit_fn=_emit_pretool_response, log_decision_fn=_log_decision)
+    except Exception:
+        return False
+
+
 def _log_unexpected_tool(tool_name: str, quiet: bool = False) -> None:
     """Log when the hook is invoked for a non-Read tool (matcher bypass)."""
     log_dir = SNAPSHOT_DIR / "diagnostics"
@@ -1538,32 +1546,18 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                 pass
         _reset_replacement_state(entry)
         store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
-        # Reuse cached content for the first-read decision when available.
-        if _first_read_compress(
-            file_path, stat, offset, limit, language, session_id, store, mode,
-            cached_content=entry.get("cached_content") or delta_content,
-            save_hook_context_enabled=save_hook_context_enabled,
-            quiet=quiet, tool_use_id=current_tool_use_id, parent_session_id=str(hook_input.get("session_id") or ""),
-        ):
+        _fr_content = entry.get("cached_content") or delta_content
+        if _try_big_noncode_read(file_path, stat, offset, limit, session_id, store, mode, entry, _fr_content, reset_epoch, save_hook_context_enabled, quiet):
+            return
+        if _first_read_compress(file_path, stat, offset, limit, language, session_id, store, mode, cached_content=_fr_content, save_hook_context_enabled=save_hook_context_enabled, quiet=quiet, tool_use_id=current_tool_use_id, parent_session_id=str(hook_input.get("session_id") or "")):
             return
         _log_decision(
-            "allow",
-            file_path,
-            "first_read",
-            session_id,
-            mode=mode,
-            actual_substitution=False,
-            eligible=False,
-            language=language,
-            reason_code="first_read",
-            offset=offset,
-            limit=limit,
-            replacement_type=None,
-            file_tokens_est=tokens_est,
-            replacement_tokens_est=0,
-            net_saved_tokens_est=0,
-            replacement_fingerprint=None,
-            repeat_replacement_count=0,
+            "allow", file_path, "first_read", session_id, mode=mode,
+            actual_substitution=False, eligible=False, language=language,
+            reason_code="first_read", offset=offset, limit=limit,
+            replacement_type=None, file_tokens_est=tokens_est,
+            replacement_tokens_est=0, net_saved_tokens_est=0,
+            replacement_fingerprint=None, repeat_replacement_count=0,
             save_hook_additional_context_enabled=save_hook_context_enabled,
         )
         return

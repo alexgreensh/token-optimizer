@@ -20,7 +20,7 @@ REPO_MODULES = frozenset((
     '_measure', '_tomli', 'hook_skip_log', 'lean_resume_carry', 'structural',
     'activity_tracker', 'adapter_hook_command', 'antigravity_doctor', 'antigravity_hook_bridge', 'antigravity_install',
     'antigravity_proto', 'antigravity_session', 'antigravity_state', 'archive_result',
-    'bash_compress', 'bash_search_results', 'bash_compress_hook', 'bash_hook', 'bash_whitelist', 'benchmark', 'cloud_kit',
+    'bash_compress', 'bash_search_results', 'bash_compress_hook', 'bash_hook', 'bash_whitelist', 'benchmark', 'big_noncode_read', 'cloud_kit',
     'build_output_compress', 'compact_markers', 'codex_command_compress', 'codex_compact_prompt', 'codex_doctor',
     'codex_hook_bridge', 'codex_hook_provenance', 'codex_install', 'codex_io', 'codex_log_index', 'codex_models',
     'codex_session', 'codex_state', 'codex_statusline', 'command_filters',

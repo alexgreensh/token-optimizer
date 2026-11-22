@@ -25,6 +25,25 @@ def retry_delay(failures):
     return min(600, 60 * 2 ** min(max(0, int(failures) - 1), 6))
 
 
+TIE_WINDOW_S = 1.0
+STAMP_STEP_S = 0.000001
+
+
+def fresh_stamp(facade, prior):
+    """Strictly increasing computed_at for a fresh write inside the tie window: a
+    coarse timer tick or sub-second rollback must never let an older cached
+    result shadow the newest write. A stamp further in the future belongs to a
+    clock-skewed writer and keeps winning until real time catches up."""
+    now = facade.time.time()
+    try:
+        previous = float((prior or {}).get('computed_at'))
+    except (TypeError, ValueError):
+        previous = None
+    if previous is not None and now <= previous < now + TIE_WINDOW_S:
+        return previous + STAMP_STEP_S
+    return now
+
+
 def write_cache(facade, session_id, savings, reason):
     # One failure is routine (a hook writing): the retry note needs two in a row.
     directory = facade._status_bar_dir()
@@ -37,7 +56,7 @@ def write_cache(facade, session_id, savings, reason):
         savings = prior['savings']
     friendly = 'no savings recorded yet' if reason == 'no savings recorded yet' else 'still counting savings'
     data = {
-        'schema': facade._STATUS_BAR_SCHEMA, 'computed_at': prior['computed_at'] if stale else facade.time.time(),
+        'schema': facade._STATUS_BAR_SCHEMA, 'computed_at': prior['computed_at'] if stale else fresh_stamp(facade, prior),
         'savings': savings, 'reason': friendly if savings is None else None, 'stale': stale,
         'last_attempt': facade.time.time() if failed else 0, 'failures': failures, 'refresh_failed': failed and failures >= 2 and reason != 'no savings recorded yet',
     }
@@ -88,11 +107,22 @@ def read_cache(facade, session_id):
             try:
                 data = facade.json.loads(candidate.read_text(encoding='utf-8'))
                 if isinstance(data, dict) and isinstance(data.get('computed_at'), (int, float)):
-                    valid.append(data)
+                    try:
+                        written = candidate.stat().st_mtime_ns
+                    except OSError:
+                        written = 0
+                    valid.append((data, written))
             except (OSError, ValueError):
                 pass
         if valid:
-            return max(valid, key=lambda item: (item['computed_at'], item.get('last_attempt', 0) if isinstance(item.get('last_attempt', 0), (int, float)) else 0))
+            # Equal stamps cannot be ordered causally from the payload; fall back
+            # to physical write order (file mtime) so a later write never loses
+            # to an earlier one just because their stamps tied.
+            return max(valid, key=lambda item: (
+                item[0]['computed_at'],
+                item[0].get('last_attempt', 0) if isinstance(item[0].get('last_attempt', 0), (int, float)) else 0,
+                item[1],
+            ))[0]
     except OSError:
         pass
     return seed_legacy(facade, session_id)

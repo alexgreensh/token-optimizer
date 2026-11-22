@@ -27613,7 +27613,8 @@
     "mod_action_selftest",
     "pilot_report",
     "session_activity",
-    "routing_savings"
+    "routing_savings",
+    "pt_resume_cues"
   ],
   "facade_binding_overrides": {
     "_compute_model_routing_savings": "_measure_providers['pricing']._compute_model_routing_savings",

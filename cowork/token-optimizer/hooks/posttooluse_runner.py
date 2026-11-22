@@ -277,13 +277,13 @@ _MATCHER_BASH_COMPRESS = "Bash"
 # tool-name-generic. bash_compress_hook stays Bash-only -- it rewrites Bash
 # command-line output, which is not valid for PowerShell -- and read_cache
 # --invalidate stays on the edit tools.
-_MATCHER_ARCHIVE = "Bash|PowerShell|Read|Glob|Grep|Agent|mcp__.*"
+_MATCHER_ARCHIVE = "Bash|PowerShell|Read|Glob|Grep|WebFetch|WebSearch|Agent|mcp__.*"
 _MATCHER_CONTEXT_INTEL = (
     "Bash|PowerShell|Read|Grep|Glob|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
 )
 _MATCHER_READ_CACHE_INVALIDATE = "Edit|Write|MultiEdit|NotebookEdit"
 _MATCHER_QUALITY_CACHE = (
-    "Bash|PowerShell|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
+    "Bash|PowerShell|Read|Glob|Grep|WebFetch|WebSearch|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
 )
 
 # Entry 6's matcher IS the union, and the union is what the consolidated

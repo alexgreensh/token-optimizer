@@ -6148,18 +6148,15 @@ def _savings_since_install():
         # cards agree about what "estimated" contains. cache_drop and
         # output_waste are OPPORTUNITY (avoidable waste TO does not yet prevent),
         # so they are excluded here, along with the unsupported MCP-cap estimate.
+        from . import mod_fresh_booking
         estimated = sum(
             float((full.get(k) or {}).get("cost_saved_usd", 0) or 0)
             for k in (
-                "behavioral_estimate", "uncaptured_runtime",
-                "contamination_exit", "handover_rerun", "resume_lean_verified",
+                "behavioral_estimate", "uncaptured_runtime", "contamination_exit",
+                "handover_rerun", "resume_lean_verified", "keepwarm_estimated", "nudge_followed",
             )
-        )
-        # Avoided-search: prefer the hint->read estimate (hint_followed; the
-        # trigger is observed, the avoided-search magnitude is not metered);
-        # fall back to the cohort estimate (retrieval_serve)
-        # only before any hint has fired, so the two are never summed — the
-        # exact dedup rule the dashboard applies (dashboard.html renderSavings).
+        ) + mod_fresh_booking.additive(full.get("mod_fresh_estimated"), full.get("handover_rerun"))
+        # Avoided-search: prefer hint_followed once any hint has fired, else retrieval_serve.
         hf = full.get("hint_followed") or {}
         rs = full.get("retrieval_serve") or {}
         avoided = hf if int(hf.get("events") or 0) > 0 else rs

@@ -212,3 +212,19 @@ def test_sonnet_only_install_mix_has_no_routing(m, monkeypatch):
                                          'baseline_source': 'history', 'baseline_opus_share': 0.0})
     assert out['all_in']['components_usd']['routing_estimated'] == 0
     assert out['all_in']['routing_baseline_source'] is None
+
+
+def test_since_install_top_level_estimated_matches_all_in_for_all_pools(m, monkeypatch):
+    _install(m, 90)
+    full = {
+        'total_cost_usd': 10.0,
+        'keepwarm_estimated': {'cost_saved_usd': 2.5},
+        'nudge_followed': {'cost_saved_usd': 1.25},
+        'mod_fresh_estimated': {'cost_saved_usd': 3.0},
+        'model_routing': {'realized_cost_usd': 0.0, 'evidence': 'unavailable'},
+    }
+    monkeypatch.setattr(m, '_get_merged_savings', lambda days=30, since=None: dict(full))
+    monkeypatch.setattr(m, '_counted_cumulative_summary', lambda days=None, **k: {'available': False})
+    out = m._savings_since_install()
+    assert out['estimated_usd'] == pytest.approx(6.75)
+    assert out['all_in']['estimated_usd'] == pytest.approx(6.75)

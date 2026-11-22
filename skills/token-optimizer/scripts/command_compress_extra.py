@@ -50,12 +50,24 @@ import shlex
 # Feature map for compression_events logging (measured tier)
 # ---------------------------------------------------------------------------
 FEATURE_MAP: dict[str, str] = {
-    "git_ls": "bash_compress_ls",
-    "gh_run_log": "bash_compress_logs",
-    "gh_list": "bash_compress_list",
-    "terraform_plan": "bash_compress_build",
-    "pkg_install": "bash_compress_npm",
-    "mypy": "bash_compress_lint",
+    "git_diff_stat": "cmd_git_diff_stat",
+    "git_ls": "cmd_git_ls",
+    "gh_run_log": "cmd_gh_log",
+    "gh_list": "cmd_gh_list",
+    "terraform_plan": "cmd_terraform",
+    "kubectl_describe": "cmd_kubectl_describe",
+    "pkg_install": "cmd_pkg_install",
+    "mypy": "cmd_mypy",
+}
+FEATURE_LABELS: dict[str, str] = {
+    "cmd_git_diff_stat": "Git diff --stat compression",
+    "cmd_git_ls": "Git ls-files/ls-tree compression",
+    "cmd_gh_log": "GitHub Actions log compression",
+    "cmd_gh_list": "GitHub CLI list compression",
+    "cmd_terraform": "Terraform/OpenTofu plan compression",
+    "cmd_kubectl_describe": "kubectl describe compression",
+    "cmd_pkg_install": "Package installer compression",
+    "cmd_mypy": "mypy output compression",
 }
 
 # Read-only gh sub-subcommands allowed across pipeline_analyzer / whitelist.
@@ -87,6 +99,33 @@ def _is_important_line(ln: str) -> bool:
 def feature_for_pattern(pattern: str) -> str | None:
     """Return the measured-tier feature name for an extra pattern."""
     return FEATURE_MAP.get(pattern)
+
+
+def feature_for_command(command_str: str, output: str = "") -> str | None:
+    """Return the dedicated measured feature name for a B2 command, or None."""
+    try:
+        pat = detect_pattern(command_str)
+        if pat in FEATURE_MAP:
+            return FEATURE_MAP[pat]
+        tokens = _extract_primary_tokens(command_str)
+        if not tokens:
+            return None
+        cmd = tokens[0].rsplit("/", 1)[-1]
+        sub = tokens[1] if len(tokens) > 1 else ""
+        if cmd == "git":
+            j = 1
+            while j < len(tokens) and tokens[j].startswith("-"):
+                j += 2 if tokens[j] in ("-C", "-c", "--git-dir", "--work-tree") else 1
+            gsub = tokens[j] if j < len(tokens) else ""
+            if gsub in ("diff", "show") and any(t == "--stat" or t.startswith("--stat=") for t in tokens[j + 1 :]):
+                return "cmd_git_diff_stat"
+        if cmd == "kubectl" and sub == "describe":
+            return "cmd_kubectl_describe"
+        if cmd == "npm" and sub in ("install", "ci"):
+            return "cmd_pkg_install"
+        return None
+    except Exception:
+        return None
 
 
 def _extract_primary_tokens(command_str: str) -> list[str]:

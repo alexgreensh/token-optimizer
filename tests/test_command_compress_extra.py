@@ -598,3 +598,85 @@ def test_benchmark_b2_fixtures_pass():
     for fx in fixtures:
         passed, result = benchmark.run_single_fixture(fx, compressor=bash_compress.compress)
         assert passed, f"Benchmark fixture {fx['name']} failed: {result}"
+
+
+# ---------------------------------------------------------------------------
+# Addendum: measured feature visibility across savings, dashboard, runway, hook
+# ---------------------------------------------------------------------------
+
+class TestMeasuredFeatureVisibility:
+    def test_every_new_feature_shows_in_savings_summary_and_runway_with_human_label(self, tmp_path, monkeypatch):
+        from datetime import datetime
+        import measure
+
+        db_path = tmp_path / "trends.db"
+        monkeypatch.setattr(measure, "TRENDS_DB", db_path)
+        conn = measure._init_trends_db()
+        try:
+            ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            for feat in extra.FEATURE_LABELS:
+                conn.execute(
+                    "INSERT INTO compression_events "
+                    "(timestamp, feature, session_id, command_pattern, original_tokens, "
+                    "compressed_tokens, quality_preserved, verified, tier) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'measured')",
+                    (ts, feat, "real-vis-20261122", f"cmd {feat}", 1000, 300),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        summary = measure._get_merged_savings(days=30)
+        by_cat = summary["by_category"]
+        for feat, expected_label in extra.FEATURE_LABELS.items():
+            assert feat in measure._V5_COMPRESSION_CATEGORIES, f"{feat} missing from _V5_COMPRESSION_CATEGORIES"
+            assert measure._SAVINGS_CATEGORY_LABELS.get(feat) == expected_label
+            assert feat in by_cat, f"{feat} missing from savings summary by_category"
+            assert by_cat[feat]["tokens_saved"] == 700
+            assert by_cat[feat]["events"] == 1
+
+        # Verify plan-limits / runway SQL counts all measured cmd_* rows
+        conn = measure._init_trends_db()
+        try:
+            runway_total = measure._runway_saved_tokens(conn, "2026-01-01T00:00:00")
+            assert runway_total >= 700 * len(extra.FEATURE_LABELS)
+            sql = measure._RUNWAY_COMPRESSED_SQL["compression_events"]
+            rows = dict(conn.execute(sql, ("2026-01-01T00:00:00",)).fetchall())
+            for feat in extra.FEATURE_LABELS:
+                assert rows.get(feat) == 700, f"{feat} missing from runway compressed breakdown"
+        finally:
+            conn.close()
+
+        # Verify savings_story.js includes cmd_* features in bashNet
+        story_js = (SCRIPTS_DIR.parent / "assets" / "savings_story.js").read_text(encoding="utf-8")
+        assert "/^cmd_/.test(k)" in story_js
+
+    def test_hook_logs_dedicated_feature_names(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path))
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "test-b2-feat-sess")
+        logged = []
+        monkeypatch.setattr(
+            bash_compress_hook,
+            "_log_event",
+            lambda cmd, orig, comp, feature="bash_compress_pipeline": logged.append((cmd, feature)),
+        )
+        monkeypatch.setattr(
+            bash_compress_hook,
+            "_emit_updated_tool_output",
+            lambda out, err, nudge=None: None,
+        )
+
+        # Read-only path: terraform plan -> cmd_terraform
+        bash_compress_hook._run({
+            "tool_name": "Bash",
+            "session_id": "test-b2-feat-sess",
+            "tool_input": {"command": "terraform plan"},
+            "tool_response": {"stdout": _sample_terraform_plan(), "stderr": "", "exit_code": 0},
+        })
+        assert any(feat == "cmd_terraform" for _, feat in logged), f"Expected cmd_terraform, got {logged}"
+
+        # Build-output path: pip install -> cmd_pkg_install
+        logged.clear()
+        res = bash_compress_hook._try_build_output_compress("pip install -r requirements.txt", _sample_pip_install(20))
+        assert res is not None
+        assert any(feat == "cmd_pkg_install" for _, feat in logged), f"Expected cmd_pkg_install, got {logged}"

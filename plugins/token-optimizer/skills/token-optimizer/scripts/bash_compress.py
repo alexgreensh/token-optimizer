@@ -2356,9 +2356,7 @@ def main():
             comp_bytes = len(compressed.encode("utf-8", errors="replace"))
             if comp_bytes < orig_bytes * 0.9:
                 _pattern = _detect_pattern(command_str)
-                _feature = _COMPRESS_FEATURE_MAP.get(_pattern or "")
-                if _feature is None and _pattern is not None:
-                    _feature = _call_extra("feature_for_pattern", _pattern)
+                _feature = _call_extra("feature_for_command", command_str, raw_output) or _COMPRESS_FEATURE_MAP.get(_pattern or "")
                 if _feature is None and _pattern is None:
                     _feature = "bash_generic"  # U4: unmatched-output coverage
                 if _feature:

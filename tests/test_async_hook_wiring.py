@@ -135,7 +135,7 @@ EXPECTED_ASYNC = {
     # in-process. See tests/test_posttooluse_runner.py.
     (
         "PostToolUse",
-        "Bash|PowerShell|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "Bash|PowerShell|Read|Glob|Grep|WebFetch|WebSearch|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
         "posttooluse_runner.py",
     ): False,
     # A failed Bash call is delivered on PostToolUseFailure, not PostToolUse --

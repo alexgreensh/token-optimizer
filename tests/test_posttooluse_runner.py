@@ -50,7 +50,7 @@ HOOKS_JSON = HOOKS / "hooks.json"
 RUNNER = HOOKS / "posttooluse_runner.py"
 
 UNION_MATCHER = (
-    "Bash|PowerShell|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
+    "Bash|PowerShell|Read|Glob|Grep|WebFetch|WebSearch|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
 )
 
 # The six commands the consolidation replaces. None of them may survive as a
@@ -173,13 +173,12 @@ def test_total_declared_posttooluse_budget_collapsed():
 # row because its matcher IS the union the host already matched.
 EXPECTED_BY_TOOL = {
     "Bash": ["bash_compress", "archive_result", "context_intel", "quality_cache"],
-    # PowerShell (the Windows shell tool): output-only handlers run -- the
-    # archiver, activity/intel logger, and the throttle tick -- while the
-    # Bash-grammar compressor and the edit-tool invalidator stay out.
     "PowerShell": ["archive_result", "context_intel", "quality_cache"],
     "Read": ["archive_result", "context_intel", "quality_cache"],
     "Glob": ["archive_result", "context_intel", "quality_cache"],
     "Grep": ["archive_result", "context_intel", "quality_cache"],
+    "WebFetch": ["archive_result", "quality_cache"],
+    "WebSearch": ["archive_result", "quality_cache"],
     "Agent": ["archive_result", "quality_cache"],
     "Edit": ["context_intel", "read_cache_invalidate", "quality_cache"],
     "Write": ["context_intel", "read_cache_invalidate", "quality_cache"],

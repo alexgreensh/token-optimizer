@@ -637,7 +637,9 @@ function savingsSinceInstall(data) {
   if (!parts.length) return null;
   var date = si.install_date ? new Date(si.install_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
   var base = parts.reduce(function(a, p) { return a + num(p[1]); }, 0);
-  var routing = has(ai.routing_usd) ? num(ai.routing_usd) : num(c.routing_estimated) + num(c.routing_measured);
+  var routing = (has(c.routing_estimated) || has(c.routing_measured))
+    ? num(c.routing_estimated) + num(c.routing_measured)
+    : (has(ai.routing_usd) ? num(ai.routing_usd) : 0);
   if (!(routing > 0)) routing = 0;
   var all = has(ai.total_usd) ? num(ai.total_usd) : base + routing;
   var estimated = num(ai.estimated_usd);

@@ -969,3 +969,22 @@ def test_no_page_eyebrows_or_banned_patterns_in_template():
         assert "'" + eyebrow + "'" not in tpl and '>" + eyebrow + "<' not in tpl
     assert 'over the limit' not in tpl
     assert 'Measuring' not in tpl or 'measuring' in tpl.lower()  # placeholder banned in UI copy
+
+
+def test_since_install_uncredited_routing_never_turns_measured_negative():
+    """When all_in.total_usd excludes routing (routing_estimated == 0) while
+    all_in.routing_usd carries the uncredited figure, savingsSinceInstall must
+    use the credited routing amount so Measured stays positive and parts sum."""
+    s = full()
+    s['since_install']['all_in'] = {
+        'total_usd': 92.64, 'estimated_usd': 0.01, 'routing_usd': 300.25,
+        'routing_baseline_source': None,
+        'components_usd': {'logged': 12.5, 'class_premium': 0.0, 'reread': 80.13, 'routing_estimated': 0.0},
+    }
+    si = json.loads(call('JSON.stringify(savingsSinceInstall(data))', {'savings': s}))
+    assert si['routing'] == 0
+    assert si['measured'] == pytest.approx(92.63, abs=0.01)
+    assert si['measured'] + si['estimated'] + si['routing'] == pytest.approx(si['all'], abs=0.01)
+    out = story({'savings': s})
+    assert 'Measured: $92.63' in out
+    assert 'Model routing, estimated: $300.25' not in out

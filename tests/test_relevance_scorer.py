@@ -539,10 +539,10 @@ def test_bytes_text_and_bad_pool_are_guarded(m, tmp_path):
     "continua de onde paramos", "Continuar de onde paramos", "na última sessão",
     "na ultima sessao", "sessão anterior", "da última vez", "da ultima vez",
     "onde paramos?", "onde parei", "continua o trabalho", "continuar com o projeto",
-    "continua daquilo", "continuar trabalhando no parser", "retoma o parser",
+    "continua daquilo", "continuar trabalhando no parser", "retoma o projeto",
     "retome o trabalho", "retomar de onde parei", "retomando o parser",
     "o que estávamos fazendo", "no que estavamos trabalhando",
-    "ontem a gente mexeu nisso", "a gente estava no parser",
+    "ontem a gente mexeu nisso", "a gente estava trabalhando no parser",
     "a gente estava no meio do refactor", "continua a última sessão",
     # Article/preposition + work noun is a real resume ask, mirroring English
     # "resume the (work|session|project|task|conversation|thread|discussion)":
@@ -565,6 +565,10 @@ def test_pt_resume_cues_detected(m, prompt):
     "continua com o erro no parser", "continua o mesmo erro",
     "o build continua com erro", "o teste continua de pé",
     "a gente estava errado sobre o cache",
+    "o worker continua trabalhando depois do timeout",
+    "a gente estava no escritório ontem",
+    "a gente estava em dúvida sobre o nome",
+    "o servidor retoma a conexão sozinho",
     # Boundary parity probe: cue glued to an accented letter is not a cue
     # (Python \w is Unicode-aware; the JS ports pin the same with \p{L}).
     "éúltima sessão",

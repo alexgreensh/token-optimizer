@@ -65,10 +65,9 @@ MUTATIONS = [
        "        if False:\n")]),
     ("a tool result quoting compact_boundary clears the read cache (5.13.50)",
      [PARITY + "::test_reread_after_compaction_is_not_soft_blocked"],
-     READ_CACHE,
-     [("    if not ((row.get(\"type\") == \"system\" and row.get(\"subtype\") == \"compact_boundary\")\n"
-       "            or row.get(\"isCompactSummary\") is True):\n        return None\n",
-       "")]),
+     "skills/token-optimizer/scripts/compact_markers.py",
+     [("    if is_system_boundary or row.get(\"isCompactSummary\") is True:\n",
+       "    if True:\n")]),
     ("deadline remaining() can exceed its own length by float rounding (Windows CI, 5.13.51)",
      ["tests/test_cloud_parity.py::test_deadline_remaining_never_exceeds_its_length"],
      "skills/token-optimizer/scripts/hook_runtime.py",

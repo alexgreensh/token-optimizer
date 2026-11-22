@@ -6822,17 +6822,14 @@ def run_verbosity_steer(transcript_path=None, quiet=None, session_id=None):
 
     Returns the JSON string if a nudge was emitted, empty string otherwise.
 
-    Tiered messaging:
-      25-74% fill + degraded session  → gentle nudge (floor is
-                                        _VERBOSITY_NUDGE_MIN_FILL;
-                                        SessionEfficiency gates it)
-      75-89% fill                     → strong nudge with specific directives
-      90%+ fill                        → suppressed (adding tokens makes it worse)
-
-    Cooldown: max 3 nudges per session, 5 min between nudges.
+    Tiered messaging: 25-74% fill + degraded -> gentle nudge; 75-89% -> strong; 90%+ -> suppressed.
+    Suppressed when a concise outputStyle is active. Cooldown: max 3 nudges/session, 5 min apart.
     """
     _measure_facade = _compat.facade()
     try:
+        from . import subscription_audits as _sub_audits
+        if _sub_audits.is_concise_output_style_active(_measure_facade):
+            return ""
         filepath = None
         # Whether this transcript was told to us or inferred. _find_current_session_jsonl()
         # returns the most recently active transcript, which on a brand-new session

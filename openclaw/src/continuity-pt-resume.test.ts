@@ -11,20 +11,16 @@ import { isResumeIntent, resumeTopicScore } from "./continuity.js";
 const POSITIVES = [
   "continua de onde paramos", "Continuar de onde paramos", "na última sessão",
   "na ultima sessao", "sessão anterior", "da última vez", "da ultima vez",
-  "onde paramos?", "onde parei", "continua o trabalho", "continuar com o parser",
+  "onde paramos?", "onde parei", "continua o trabalho", "continuar com o projeto",
   "continua daquilo", "continuar trabalhando no parser", "retoma o parser",
-  "retomar de onde parei", "retomando o parser", "o que estávamos fazendo",
-  "no que estavamos trabalhando", "ontem a gente mexeu nisso", "a gente estava no parser",
-  // Pinned intended semantics, matching the English production regex: "continue with"
-  // fires, so "continua com" fires even in ongoing-status sentences; past-work
-  // recollection ("we were working on") fires, so "a gente estava ..." fires; and
-  // dropping bare "a" does not lose "continua a última sessão" (matches via "última sessão").
-  "continua com o erro no parser", "a gente estava no meio do refactor",
-  "continua a última sessão",
-  // Article + work noun is a real resume ask, mirroring English
+  "retome o trabalho", "retomar de onde parei", "retomando o parser",
+  "o que estávamos fazendo", "no que estavamos trabalhando",
+  "ontem a gente mexeu nisso", "a gente estava no parser",
+  "a gente estava no meio do refactor", "continua a última sessão",
+  // Article/preposition + work noun is a real resume ask, mirroring English
   // "resume the (work|session|project|task|conversation|thread|discussion)":
   "continua a sessão", "continuar a tarefa", "continua a conversa sobre o parser",
-  "continua a discussão", "retoma a tarefa",
+  "continua a discussão", "continua com a tarefa", "retoma a tarefa",
 ];
 
 const NEGATIVES = [
@@ -32,6 +28,10 @@ const NEGATIVES = [
   "adicione testes para o parser", "a sessão expirou",
   "o build continua a falhar", "continua a chover", "ele continua a trabalhar",
   "continua a implementar o parser", "continua a trabalhar no parser",
+  // Ordinary status reports and non-work recollections must not trigger resume:
+  "continua com o erro no parser", "continua o mesmo erro",
+  "o build continua com erro", "o teste continua de pé",
+  "a gente estava errado sobre o cache",
   // Boundary parity probe: Python \w is Unicode-aware, so an accented letter glued
   // to the cue must block the match here too (\p{L} boundaries with the u flag).
   "éúltima sessão",

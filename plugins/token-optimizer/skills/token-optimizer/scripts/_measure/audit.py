@@ -4128,6 +4128,9 @@ def _generate_codex_auto_recommendations(components, trends=None, days=None):
         "Session continuity is valuable inside a task, but stale tool outputs and old plans hurt quality. Use a new thread or compact/checkpoint when the objective changes."
     )
 
+    from . import subscription_audits as _sub_audits
+    _sub_audits.append_codex_recommendations(components, trends, quick, medium, deep, habits, _measure_facade)
+
     sections = []
     if quick:
         sections.append("## Quick Wins\n\n" + "\n\n".join(f"- [ ] {item}" for item in quick))
@@ -4703,19 +4706,9 @@ def generate_auto_recommendations(components, trends=None, days=None):
             f"This prevents cloud MCPs from loading in CLI sessions while keeping them on claude.ai."
         )
 
-    # --- Rule 16: effortLevel reporting (informational, not prescriptive) ---
-    # User's model and effort choices reflect their intent. We report, not recommend.
-    effort_level = components.get("settings_local", {}).get("effortLevel")
-    if effort_level and str(effort_level).lower() == "high":
-        habits.append(
-            "**`effortLevel` is set to \"high\" (FYI)**: "
-            "Your settings.json has `effortLevel: \"high\"`. This maximizes response quality "
-            "and thinking depth. If you chose this deliberately, no action needed, "
-            "the optimizer respects your model and effort choices.\n"
-            "  For awareness: \"high\" uses ~15-25% more output tokens per response than \"medium\". "
-            "You can check token usage with `/cost`. Claude's adaptive thinking still adjusts "
-            "within the effort level based on task complexity."
-        )
+    # --- Rule 16+: Subscription-limit advisory audits (effort, subagents, fork skills, monorepo, outputStyle) ---
+    from . import subscription_audits as _sub_audits
+    _sub_audits.append_claude_recommendations(components, trends, quick, medium, deep, habits, _measure_facade)
 
     # --- Rule 13: Compact habits (always include) ---
     try:
@@ -5206,13 +5199,9 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
         })
         score -= 3
 
-    # Check effortLevel (informational, not a penalty)
-    effort_level = components.get("settings_local", {}).get("effortLevel")
-    if effort_level and str(effort_level).lower() == "high":
-        patterns_good.append({
-            "name": "Effort Level Set",
-            "detail": "effortLevel: \"high\" — deliberate quality choice. Uses ~15-25% more output tokens than \"medium\".",
-        })
+    # Subscription-limit advisory audits (effort, subagents, fork skills, monorepo, Codex MCP, outputStyle)
+    from . import subscription_audits as _sub_audits
+    _sub_audits.append_coach_findings(components, trends, is_claude, is_codex, patterns_good, patterns_bad, questions, _measure_facade)
 
     # Check settings env vars for optimization opportunities. Resolve across
     # process env + all settings files so a project-level opt-out is honoured.

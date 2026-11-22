@@ -27,7 +27,7 @@ _SAFE_ENV_VARS = frozenset({
 _WHITELIST_SINGLE = frozenset({
     "git", "pytest", "py.test", "jest", "vitest", "rspec", "ls", "find",
     # v5.1 lint handlers (read-only static analysis)
-    "eslint", "flake8", "pylint", "shellcheck", "rubocop",
+    "eslint", "flake8", "pylint", "shellcheck", "rubocop", "mypy",
     # v5.1 logs handler (read-only log inspection)
     "tail", "journalctl",
     # v5.1 tree handler (read-only directory tree)
@@ -49,6 +49,8 @@ _WHITELIST_SINGLE = frozenset({
 })
 _WHITELIST_COMPOUND = {
     ("git", "status"), ("git", "log"), ("git", "diff"), ("git", "show"), ("git", "branch"),
+    ("git", "grep"), ("git", "ls-files"), ("git", "ls-tree"),
+    ("terraform", "plan"), ("tofu", "plan"),
     ("python", "-m"), ("python3", "-m"),  # python -m pytest
     ("npx", "jest"), ("npx", "vitest"),
     # NOTE: npm install, npm ci, pip install, pip3 install, cargo build, docker build
@@ -199,6 +201,9 @@ def is_whitelisted(command_str):
     subcmd = tokens[cmd_start + 1] if cmd_start + 1 < len(tokens) else ""
 
     # Check compound whitelist first (more specific)
+    if cmd == "gh" and subcmd in ("run", "pr", "issue", "workflow", "release"):
+        subsub = tokens[cmd_start + 2] if cmd_start + 2 < len(tokens) else ""
+        return subsub in ("view", "list", "checks", "diff", "status")
     if (cmd, subcmd) in _WHITELIST_COMPOUND:
         if cmd == "git" and subcmd in _GIT_WRITE_SUBCMDS:
             return False

@@ -101,8 +101,14 @@ _BUILD_TEST_COMMANDS: dict[str, frozenset[str] | None] = {
     "tox": None, "nox": None,
     # Ruby
     "rspec": None, "rake": None,
-    # Python project/dependency manager (uv run pytest, uv pip install, ...)
+    # Python project/dependency managers (pip install, uv run/sync/pip)
+    "pip": frozenset({"install", "wheel", "download"}),
+    "pip3": frozenset({"install", "wheel", "download"}),
     "uv": frozenset({"run", "sync", "pip"}),
+    # Package managers / IaC
+    "brew": frozenset({"install", "upgrade", "reinstall", "update"}),
+    "terraform": frozenset({"plan", "apply", "init", "validate"}),
+    "tofu": frozenset({"plan", "apply", "init", "validate"}),
     # Debuggers / instrumentation
     "valgrind": None,
     "gdb": frozenset({"-batch"}),
@@ -127,6 +133,7 @@ _SHAPE_FALLBACK_KEYWORDS = frozenset({
     "npm", "yarn", "pnpm", "mvn", "gradle", "cmake", "ninja", "gcc",
     "g++", "cc", "clang", "rustc", "dotnet", "swift", "rspec", "rake",
     "tox", "nox", "webpack", "vite", "rollup", "esbuild", "next",
+    "pip", "pip3", "brew", "terraform", "tofu",
 })
 
 # ---------------------------------------------------------------------------
@@ -683,6 +690,27 @@ def compress(command: str, output: str) -> str | None:
         lines = output.splitlines()
         if len(lines) < _MIN_COMPRESS_LINES:
             return None
+
+        # Structured fast-path for verbose package installers / terraform plan.
+        # Runs credential preservation so a secret-bearing line is never dropped.
+        try:
+            from command_compress_extra import compress_build_command
+            structured = compress_build_command(command, output)
+            if structured is not None and len(structured) < len(output):
+                if _CRED_PATTERNS:
+                    s_lines = set(structured.splitlines())
+                    missing_creds = [
+                        ln for ln in lines
+                        if _cred_prefilter(ln)
+                        and any(p.search(ln) for p in _CRED_PATTERNS)
+                        and ln not in s_lines
+                    ]
+                    if missing_creds:
+                        structured = structured + "\n" + "\n".join(missing_creds)
+                if len(structured) < len(output):
+                    return structured
+        except Exception:
+            pass
 
         # --- single O(n) pass: credential scan + noise drop + error/summary ---
         # F1: credential scan runs FIRST, before the progress-noise drop. A

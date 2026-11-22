@@ -213,8 +213,9 @@ _ERROR_LINE_PATTERNS = [
     re.compile(r"^\s*--- FAIL:\s+", re.MULTILINE),  # go test failure
     re.compile(r"^FAIL\t\S+", re.MULTILINE),        # go test package failure
     re.compile(r"^\s+\S+_test\.go:\d+:", re.MULTILINE),  # go test assertion line
-    re.compile(r"^test \S+ \.\.\. FAILED\s*$", re.MULTILINE),  # cargo test failure
+    re.compile(r"^test .+? \.\.\. FAILED\s*$", re.MULTILINE),  # cargo test failure
     re.compile(r"^\s*(?:✖|not ok \d+ -)\s+", re.MULTILINE),    # node --test failure
+    re.compile(r"^test at \S+:\d+", re.MULTILINE),             # node spec failure site
 ]
 
 # F4: import foreign-language and localized error markers from bash_compress
@@ -329,7 +330,7 @@ _PROGRESS_NOISE_PATTERNS = [
     re.compile(r"^\s*=== (?:RUN|PAUSE|CONT)\s+"),
     re.compile(r"^\s*--- (?:PASS|SKIP):\s+"),
     # Cargo per-test pass/ignored progress
-    re.compile(r"^test \S+ \.\.\. (?:ok|ignored)\s*$"),
+    re.compile(r"^test .+? \.\.\. (?:ok|ignored)\s*$"),
     # Node --test passing lines
     re.compile(r"^\s*(?:✔|ok \d+ -)\s+"),
 ]
@@ -392,7 +393,11 @@ def classify(command: str) -> bool:
 
         # Node built-in test runner (`node --test ...`), never arbitrary `node script.js`
         if cmd == "node":
-            return "--test" in tokens[cmd_start + 1:]
+            return next(
+                (t == "--test" for t in tokens[cmd_start + 1:]
+                 if t in ("--test", "--") or not t.startswith("-")),
+                False,
+            )
 
         # Direct command match
         if cmd in _BUILD_TEST_COMMANDS:

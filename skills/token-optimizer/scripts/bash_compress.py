@@ -746,10 +746,10 @@ def _compress_git_diff(output):
 _PYTEST_SUMMARY_TAIL_LINES = 40
 
 
-def _compress_pytest(output):
+def _compress_pytest(output, command_str=""):
     """Compress pytest/go/cargo/node/mocha/karma/rspec/unittest/gradle/tox/deno/bun/ava output.
 
-    Delegates Go, Cargo, and Node ``--test`` outputs to
+    Delegates Go, Cargo, and Node ``--test`` outputs (matched by runner) to
     ``go_cargo_test_compress`` first, then extracts trailing summary lines and
     FAILURES/ERRORS blocks for pytest-family runners.
     """
@@ -759,8 +759,8 @@ def _compress_pytest(output):
     if len(lines) < 15:
         return output  # too short to meaningfully compress
     try:
-        from go_cargo_test_compress import compress_structured_test_output
-        structured = compress_structured_test_output(output)
+        from go_cargo_test_compress import compress_for_command
+        structured = compress_for_command(output, command_str)
         if structured is not None:
             return structured
     except Exception:
@@ -1494,7 +1494,7 @@ def _detect_pattern(command_str):
         return "pytest"
     elif cmd == "npx" and subcmd == "playwright":
         return "pytest"
-    elif (cmd in ("go", "cargo") and subcmd == "test") or (cmd == "node" and "--test" in tokens[cmd_start + 1:]):
+    elif (cmd in ("go", "cargo") and subcmd == "test") or (cmd == "node" and next((t == "--test" for t in tokens[cmd_start + 1:] if t in ("--test", "--") or not t.startswith("-")), False)):
         return "pytest"
     # v5.8 test-runner extensions: unittest, tox, nox, gradle, mvn, deno, bun, ava
     elif cmd in ("python", "python3") and subcmd == "-m" and cmd_start + 2 < len(tokens) and tokens[cmd_start + 2] == "unittest":
@@ -2201,7 +2201,7 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
         if handler is None:
             return cleaned
         try:
-            if pattern == "find":
+            if pattern in ("find", "pytest"):
                 compressed = handler(cleaned, command_str)
             else:
                 compressed = handler(cleaned)

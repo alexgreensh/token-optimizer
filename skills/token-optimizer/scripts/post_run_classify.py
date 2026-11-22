@@ -38,7 +38,7 @@ _DEFAULT_MODE = "on"
 
 ALLOWED_PATTERNS = frozenset({
     "git_diff", "search_results", "disk_stats", "pytest", "sqlite3", "ls",
-    "git_status",
+    "git_status", "git_ls", "gh_run_log", "gh_list", "terraform_plan", "mypy",
 })
 
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -271,7 +271,7 @@ _CANDIDATE_HEADS = frozenset({
     "pytest", "py.test", "python", "python3", "rspec", "mocha", "karma",
     "cypress", "playwright", "npx", "go", "cargo", "tox", "nox",
     "nox-sessions", "gradle", "gradlew", "./gradlew", "mvn", "deno", "bun",
-    "ava", "npm", "jest", "vitest",
+    "ava", "npm", "jest", "vitest", "gh", "terraform", "tofu", "mypy",
 })
 
 

@@ -409,6 +409,12 @@ def _run(payload: dict) -> None:
         if deduped is not None:
             best, comp_helped = deduped, True
             _log_feature = "crossturn_dedup"
+        else:
+            try:
+                from command_compress_extra import feature_for_command as _extra_feat
+                _log_feature = _extra_feat(compress_command, cleaned_stdout) or "bash_compress_pipeline"
+            except Exception:
+                pass
 
         if not comp_helped:
             _cov("under_10pct", "read_only", _detect_pattern(command), stdout)
@@ -848,8 +854,14 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
         except Exception:
             pass
 
-        # Log to trends.db with the build_output_compress feature
-        _log_event(command, cleaned_stdout, compressed, feature="build_output_compress")
+        # Log to trends.db with the dedicated B2 feature when applicable, else build_output_compress
+        _build_feature = "build_output_compress"
+        try:
+            from command_compress_extra import feature_for_command as _extra_feat
+            _build_feature = _extra_feat(command, cleaned_stdout) or "build_output_compress"
+        except Exception:
+            pass
+        _log_event(command, cleaned_stdout, compressed, feature=_build_feature)
 
         return compressed
     except Exception:

@@ -31,7 +31,7 @@ REPO_MODULES = frozenset((
     'shipped_hook_templates', 'shipped_starter_hooks', 'cursor_doctor', 'cursor_hook_bridge', 'cursor_install',
     'cursor_session', 'cursor_state', 'dashboard_assets', 'delta_diff', 'detectors', 'deterministic_candidates',
     'devin_compress', 'devin_doctor', 'devin_hooks', 'devin_install', 'devin_source', 'devin_state',
-    'devin_verify', 'go_cargo_test_compress', 'grok_doctor', 'grok_hook_bridge', 'grok_install', 'grok_session',
+    'devin_verify', 'go_cargo_test_compress', 'command_compress_extra', 'grok_doctor', 'grok_hook_bridge', 'grok_install', 'grok_session',
     'grok_state', 'hermes_doctor', 'hermes_hook_bridge', 'hermes_install', 'hermes_session',
     'hermes_state', 'hermes_tool_hooks', 'hook_io', 'hook_runtime', 'injection', 'install_reconcile', 'measure',
     'outline', 'pipeline_analyzer', 'plugin_env', 'py_trust', 'quality_cache_gate',
@@ -50,7 +50,7 @@ REPO_MODULES = frozenset((
     # Added by the 5.13.69 merges (pristine, codemap, quiet, coverage).
     'archive_verify', 'codemap', 'codemap_hint', 'codemap_index', 'codemap_ledger', 'codemap_reread',
     'coverage_funnel', 'hint_paths', 'holdout', 'post_run_classify', 'large_transcripts', 'preserved_reinject', 'session_store_guard',
-    # Added by 5.13.70 (settings self-heal keeps a secret-free backup).
+    # Added by 5.13.70+ (settings backup + builtin tools + benchmark fixtures dir).
     'settings_backup', 'builtin_tool_compress', 'fixtures',
 ))
 

@@ -244,7 +244,7 @@ def _split_stages(tokens: list[str]) -> list[list[str]]:
 _READ_ONLY_SINGLE = frozenset({
     # === From bash_hook._WHITELIST_SINGLE ===
     "git", "pytest", "py.test", "jest", "vitest", "rspec", "ls", "find",
-    "eslint", "flake8", "pylint", "shellcheck", "rubocop",
+    "eslint", "flake8", "pylint", "shellcheck", "rubocop", "mypy",
     "tail", "journalctl", "tree",
     "tsc", "webpack", "esbuild",
     "mocha", "karma", "tox", "nox", "ava", "gradle", "gradlew", "mvn",
@@ -330,6 +330,14 @@ _READ_ONLY_COMPOUND = frozenset({
     ("terraform", "plan"),
     ("terraform", "show"),
     ("terraform", "output"),
+    ("tofu", "plan"),
+    ("tofu", "show"),
+    ("tofu", "output"),
+    ("gh", "run"),
+    ("gh", "pr"),
+    ("gh", "issue"),
+    ("gh", "workflow"),
+    ("gh", "release"),
     ("yarn", "test"),
     ("make", "-n"),
     ("cargo", "check"),
@@ -544,6 +552,12 @@ def _is_stage_read_only(tokens: list[str]) -> tuple[bool, str]:
             if subsub in ("up", "down", "build", "run", "exec", "pull", "push", "restart", "start", "stop", "rm"):
                 return False, "docker-compose-side-effect"
             return False, "docker-compose-unknown"
+        # gh: strict read-only sub-subcommand allow-list (view/list/checks/diff/status).
+        if cmd == "gh":
+            subsub = tokens[cmd_start + 2] if cmd_start + 2 < len(tokens) else ""
+            if subsub in ("view", "list", "checks", "diff", "status"):
+                return True, "gh-read-only"
+            return False, f"gh-forbidden-action:{subsub}"
         return True, "compound-whitelist"
 
     # -------------------------------------------------------------------

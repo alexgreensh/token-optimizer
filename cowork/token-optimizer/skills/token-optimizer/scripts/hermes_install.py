@@ -70,6 +70,7 @@ _ENGINE_SCRIPTS = (
     "bash_compress_hook.py",
     "bash_rerun_dedupe.py",
     "archive_result.py",
+    "subagent_result_cap.py",
     "archive_verify.py",
     "context_intel.py",
     "read_cache.py",

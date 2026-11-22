@@ -1611,10 +1611,7 @@ def archive_result(quiet: bool = False) -> None:
     if not quiet:
         print(f"[Tool Archive] Archived {tool_name} result ({char_count:,} chars, ~{token_est:,} tokens): {tool_use_id}", file=sys.stderr)
 
-    # WS4: measure-only opportunity event for large Agent/Task results. We do NOT
-    # replace the output (the 39.1% harm proxy fails the gate), but we record the
-    # would-be saving so coverage/dashboard surface the pool. The full result is
-    # already archived above, so an `expand` path exists regardless. Fail-open.
+    # Record WS4 opportunity metric for 8KB-12KB Agent/Task results (larger ones are capped below).
     if tool_name in _AGENT_RESULT_TOOL_NAMES and original_char_count >= _AGENT_RESULT_MIN_CHARS:
         try:
             _log_agent_result_opportunity(tool_response, session_id)
@@ -1676,13 +1673,13 @@ def archive_result(quiet: bool = False) -> None:
             print(f"[Tool Archive] {tool_name} is allowlisted; serving full result (archived for expand).", file=sys.stderr)
         return
 
-    # For MCP tools (tool_name contains "__"): output replacement via stdout
-    # No pressure gate here: the compressed replacement SAVES tokens.
-    # Suppressing it would cause the full uncompressed response to flow through.
-    #
-    # Skip the replacement when the entry was pruned by the retention pass that
-    # ran after write. Emitting a pointer to a missing entry strands the model.
+    # MCP tools emit updatedMCPToolOutput; oversized Agent/Task results emit updatedToolOutput.
     if not entry_exists:
+        return
+
+    if tool_name in _AGENT_RESULT_TOOL_NAMES:
+        from subagent_result_cap import emit_if_capped
+        emit_if_capped(tool_name=tool_name, raw_response=raw_response, safe_response=safe_response, original_char_count=original_char_count, tool_use_id=tool_use_id, raw_tool_use_id=raw_tool_use_id, session_id=session_id, entry_exists=entry_exists, expand_instruction=_expand_instruction(tool_use_id, tool_name), chars_per_token=CODE_CHARS_PER_TOKEN, trends_db=TRENDS_DB, transcript_path=hook_input.get("transcript_path"), log_savings_fn=_log_savings_event)
         return
 
     if "__" in tool_name:

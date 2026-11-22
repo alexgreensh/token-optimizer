@@ -110,6 +110,7 @@ _PAYLOAD_MODULES = (
     "hint_paths.py",  # session_store imports it at module load
     "delta_diff.py",
     "archive_result.py",
+    "subagent_result_cap.py",
     "recovery_output.py",
     "refetch_fingerprint.py",
     "reset_epoch.py",

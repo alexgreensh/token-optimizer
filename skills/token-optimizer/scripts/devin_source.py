@@ -37,7 +37,7 @@ REPO_MODULES = frozenset((
     'outline', 'pipeline_analyzer', 'plugin_env', 'py_trust', 'quality_cache_gate',
     'read_cache', 'recovery_output', 'refetch_fingerprint', 'refetch_guard', 'routing_advisor',
     'reset_epoch', 'runtime_env', 'session_activity', 'session_store', 'spawn_utils', 'structure_map', 'structure_map_ts',
-    'structure_replay', 'thrash_guard', 'token_estimate', 'tool_search_diagnostic', 'utf8_io', 'archive_window', 'checkpoint_state',
+    'structure_replay', 'subagent_result_cap', 'thrash_guard', 'token_estimate', 'tool_search_diagnostic', 'utf8_io', 'archive_window', 'checkpoint_state',
     'cursor_audit',
     'cursor_coach',
     'cursor_bridge_checkpoint', 'cursor_bridge_payload', 'cursor_bridge_rewrite', 'cursor_bridge_rollup',

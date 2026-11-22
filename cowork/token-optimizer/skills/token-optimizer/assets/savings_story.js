@@ -155,6 +155,8 @@ function savingsStoryHtml(data, extras) {
     var archive = (s.by_category || {}).tool_archive;
     var builtinGrep = (s.by_category || {}).builtin_grep;
     var builtinGlob = (s.by_category || {}).builtin_glob;
+    var bigRead = (s.by_category || {}).big_read_preview;
+    var bigReadLabel = ((s.category_labels || {}).big_read_preview) || 'Big non-code read previews';
     var bashExpand = (s.by_category || {}).bash_archive_reexpand;
     var bashNet = Object.keys(s.by_category || {}).reduce(function(n, k) {
       return n + ((/^bash_/.test(k) || /^cmd_/.test(k) || k === 'build_output_compress' || k === 'crossturn_dedup') ? num((s.by_category[k] || {}).cost_saved_usd) : 0);
@@ -200,6 +202,7 @@ function savingsStoryHtml(data, extras) {
       (archive ? '<p>Tool archive, net of re-expands: ' + usd(archive.cost_saved_usd) + ' once, before repeat-reads.</p>' : '') +
       (builtinGrep && num(builtinGrep.tokens_saved) > 0 ? '<p>' + esc(builtinGrep.label || 'Built-in Grep compression') + ': ' + tok(builtinGrep.tokens_saved) + ' tokens (' + usd(builtinGrep.cost_saved_usd) + ') across ' + count(builtinGrep.events) + ' calls, before repeat-reads.</p>' : '') +
       (builtinGlob && num(builtinGlob.tokens_saved) > 0 ? '<p>' + esc(builtinGlob.label || 'Built-in Glob compression') + ': ' + tok(builtinGlob.tokens_saved) + ' tokens (' + usd(builtinGlob.cost_saved_usd) + ') across ' + count(builtinGlob.events) + ' calls, before repeat-reads.</p>' : '') +
+      (bigRead && num(bigRead.events) > 0 ? '<p>' + esc(bigReadLabel) + ': ' + count(bigRead.events) + ' preview' + (num(bigRead.events) === 1 ? '' : 's') + ', ' + tok(bigRead.tokens_saved) + ' tokens (' + usd(bigRead.cost_saved_usd) + ' once, before repeat-reads).</p>' : '') +
       (bashExpand ? '<p>Bash compression, net of re-expands: ' + usd(bashNet) + ' once, before repeat-reads.</p>' : '') +
       (num((as.estimates_usd || {}).expand_overhead) ? '<p>Estimated expand-command overhead: ' + usd(as.estimates_usd.expand_overhead) + '.</p>' : '') +
       (num((as.estimates_usd || {}).handover_rerun) > 0 ? '<p>Continuity handovers, ' + usd(as.estimates_usd.handover_rerun) + ' (estimated): sessions resumed from a saved checkpoint re-read fewer stale files than sessions that started cold, and that gap is counted here.</p>' : '') +

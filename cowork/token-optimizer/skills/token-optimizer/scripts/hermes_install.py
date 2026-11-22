@@ -74,6 +74,7 @@ _ENGINE_SCRIPTS = (
     "archive_verify.py",
     "context_intel.py",
     "read_cache.py",
+    "big_noncode_read.py",
     "compact_markers.py",
     "session_store.py",
     "session_store_guard.py",

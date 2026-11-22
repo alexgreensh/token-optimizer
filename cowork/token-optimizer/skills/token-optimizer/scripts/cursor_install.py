@@ -49,6 +49,7 @@ _PAYLOAD_MODULES = (
     "structure_map.py",
     "structure_map_ts.py",
     "read_cache.py",
+    "big_noncode_read.py",
     "compact_markers.py",
     "cursor_state.py",
     "cursor_session.py",

@@ -46,18 +46,27 @@ def _sample_git_ls_files(n_files: int = 60) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _sample_gh_run_log(n_noise: int = 40, with_error: bool = True) -> str:
+def _sample_gh_run_log(n_noise: int = 20, with_error: bool = True) -> str:
     lines = [
         "test\tSet up job\t2026-11-22T10:00:01Z Current runner version: '2.320.0'",
         "test\tSet up job\t2026-11-22T10:00:01Z Operating System: Ubuntu 24.04.1 LTS",
-        "test\tRun actions/checkout@v4\t2026-11-22T10:00:02Z Syncing repository: org/repo",
-        "test\tRun actions/cache@v4\t2026-11-22T10:00:03Z Cache restored from key: pip-abc",
-        "test\tRun pytest\t2026-11-22T10:00:04Z ##[group]Run pytest -q",
+        "test\tSet up job\t2026-11-22T10:00:01Z Runner Image: ubuntu-24.04",
+        "test\tSet up job\t2026-11-22T10:00:01Z GITHUB_TOKEN Permissions: contents: read",
+        "test\tSet up job\t2026-11-22T10:00:01Z Prepare workflow directory",
+        "test\tSet up job\t2026-11-22T10:00:02Z Prepare all required actions",
+        "test\tSet up job\t2026-11-22T10:00:02Z Getting action download info",
+        "test\tSet up job\t2026-11-22T10:00:03Z Download action repository 'actions/checkout@v4'",
+        "test\tSet up job\t2026-11-22T10:00:03Z Complete job name: test",
     ]
     for i in range(n_noise):
-        lines.append(f"test\tRun pytest\t2026-11-22T10:00:{10 + (i % 49):02d}Z tests/test_mod_{i:02d}.py ......")
+        lines.append(
+            f"test\tRun actions/checkout@v4\t2026-11-22T10:00:{10 + (i % 49):02d}Z Syncing repository: org/repo chunk {i:02d}"
+        )
+    lines.append("test\tRun actions/cache@v4\t2026-11-22T10:00:58Z Cache restored from key: pip-abc")
     if with_error:
         lines.extend([
+            "test\tRun pytest\t2026-11-22T10:00:59Z def test_api_status():",
+            "test\tRun pytest\t2026-11-22T10:00:59Z     resp = client.get('/health')",
             "test\tRun pytest\t2026-11-22T10:01:00Z >       assert resp.status_code == 200",
             "test\tRun pytest\t2026-11-22T10:01:00Z E       AssertionError: assert 500 == 200",
             "test\tRun pytest\t2026-11-22T10:01:00Z tests/test_api.py:77: AssertionError",
@@ -216,13 +225,16 @@ def _sample_mypy_output() -> str:
 # ---------------------------------------------------------------------------
 
 class TestExtraCompressors:
-    def test_git_diff_stat_preserves_summary_and_top_files(self):
+    def test_git_diff_stat_preserves_summary_and_all_names(self):
         raw = _sample_git_diff_stat(45)
         out = bash_compress.compress("git diff --stat origin/main", raw, returncode=0)
         assert "45 files changed, 812 insertions(+), 204 deletions(-)" in out
-        assert "src/core/file_05.py" in out
-        assert "src/api/file_12.py" in out
-        assert len(out) < len(raw) * 0.65
+        # Every single basename must be preserved losslessly
+        for i in range(45):
+            assert f"file_{i:02d}.py" in out
+        assert "src/core/" in out
+        assert "src/api/" in out
+        assert len(out) < len(raw) * 0.75
 
     def test_git_grep_routes_to_search_results(self):
         assert bash_compress._detect_pattern("git grep -n handle_request") == "search_results"
@@ -233,20 +245,24 @@ class TestExtraCompressors:
         assert "src/mod_0.py" in out
         assert len(out) < len(raw) * 0.70
 
-    def test_git_ls_files_groups_by_directory(self):
+    def test_git_ls_files_groups_by_directory_losslessly(self):
         raw = _sample_git_ls_files(60)
         out = bash_compress.compress("git ls-files", raw, returncode=0)
         assert "62 paths total" in out
         assert "src/core/" in out
         assert "README.md" in out
-        assert len(out) < len(raw) * 0.45
+        # Every single basename must be preserved losslessly
+        for i in range(60):
+            assert f"module_{i:02d}.py" in out
+        assert len(out) < len(raw) * 0.75
 
     def test_gh_run_view_log_preserves_errors_and_context(self):
-        raw = _sample_gh_run_log(40, with_error=True)
+        raw = _sample_gh_run_log(20, with_error=True)
         out = bash_compress.compress("gh run view 12345 --log", raw, returncode=0)
         assert "tests/test_api.py:77: AssertionError" in out
         assert "##[error]Process completed with exit code 1." in out
         assert "assert resp.status_code == 200" in out
+        assert "def test_api_status():" in out
         assert len(out) < len(raw) * 0.55
 
     def test_gh_list_preserves_failed_rows_past_head(self):
@@ -313,7 +329,178 @@ class TestExtraCompressors:
         assert "Revealed type is" in out
         assert "Found 3 errors in 3 files" in out
         assert "Overload candidate 5" not in out
+        assert len(out) < len(raw) * 0.85
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for Round 2 review items (zero information loss)
+# ---------------------------------------------------------------------------
+
+class TestReviewRegressions:
+    def test_gh_run_view_log_keeps_entire_failing_step_body(self):
+        """Review item 1: keep every line of a failing step (assertions, E lines, test body)."""
+        lines = [
+            "ci\tSet up job\t2026-11-22T10:00:01Z Current runner version: '2.320.0'",
+            "ci\tSet up job\t2026-11-22T10:00:01Z Operating System: Ubuntu 24.04.1 LTS",
+            "ci\tSet up job\t2026-11-22T10:00:01Z Runner Image: ubuntu-24.04",
+            "ci\tSet up job\t2026-11-22T10:00:01Z GITHUB_TOKEN Permissions: contents: read",
+            "ci\tSet up job\t2026-11-22T10:00:01Z Prepare workflow directory",
+            "ci\tSet up job\t2026-11-22T10:00:02Z Prepare all required actions",
+            "ci\tSet up job\t2026-11-22T10:00:02Z Getting action download info",
+        ]
+        for i in range(25):
+            lines.append(
+                f"ci\tRun actions/checkout@v4\t2026-11-22T10:00:{10 + (i % 45):02d}Z Fetching the repository object {i:02d}"
+            )
+        lines.extend([
+            "ci\tRun actions/cache@v4\t2026-11-22T10:00:55Z Cache restored from key: pytest-cache-v1",
+            "ci\tRun pytest\t2026-11-22T10:01:00Z _______________ test_effective_window _______________",
+            "ci\tRun pytest\t2026-11-22T10:01:00Z def test_effective_window():",
+            "ci\tRun pytest\t2026-11-22T10:01:00Z     cfg = Config(default_window=3600, override=30)",
+            "ci\tRun pytest\t2026-11-22T10:01:00Z     store = Store(cfg)",
+            "ci\tRun pytest\t2026-11-22T10:01:00Z     store.refresh()",
+            "ci\tRun pytest\t2026-11-22T10:01:00Z >       assert store.effective_window() == 30",
+            "ci\tRun pytest\t2026-11-22T10:01:00Z E       assert 3600 == 30",
+            "ci\tRun pytest\t2026-11-22T10:01:00Z tests/test_store.py:412: AssertionError",
+            "ci\tRun pytest\t2026-11-22T10:01:01Z FAILED tests/test_store.py::test_effective_window",
+            "ci\tRun pytest\t2026-11-22T10:01:01Z ##[error]Process completed with exit code 1.",
+            "ci\tPost Run actions/checkout@v4\t2026-11-22T10:01:02Z Post job cleanup.",
+            "ci\tComplete job\t2026-11-22T10:01:03Z Cleaning up orphan processes",
+        ])
+        raw = "\n".join(lines) + "\n"
+        out = bash_compress.compress("gh run view 99999 --log-failed", raw, returncode=0)
+        assert "def test_effective_window():" in out
+        assert "cfg = Config(default_window=3600, override=30)" in out
+        assert ">       assert store.effective_window() == 30" in out
+        assert "E       assert 3600 == 30" in out
+        assert "tests/test_store.py:412: AssertionError" in out
+        assert "FAILED tests/test_store.py::test_effective_window" in out
+        assert "Process completed with exit code 1." in out
+        assert "Cache restored from key" not in out
         assert len(out) < len(raw) * 0.65
+
+    def test_gh_run_view_without_log_not_routed_and_keeps_x_rows(self):
+        """Review item 2: gh run view <id> without --log does not hit gh_run_log; ^X rows survive."""
+        assert extra.detect_pattern("gh run view 123456") is None
+        assert extra.detect_pattern("gh run view 123456 --log") == "gh_run_log"
+        assert extra.detect_pattern("gh run view 123456 --log-failed") == "gh_run_log"
+
+        lines = [
+            "X main CI · 123456",
+            "Triggered via push about 5 minutes ago",
+            "",
+            "JOBS",
+        ]
+        for i in range(60):
+            if i == 24:
+                lines.append("X linux-py312-unit-tests in 4m12s (ID 555024)")
+            elif i == 31:
+                lines.append("  X macos-arm64-integration in 6m01s (ID 555031)")
+            else:
+                lines.append(f"✓ job-matrix-shard-{i:02d}-ubuntu-latest in 1m{i % 60:02d}s (ID {555000 + i})")
+        raw = "\n".join(lines) + "\n"
+        out = bash_compress.compress("gh run view 123456", raw, returncode=0)
+        assert "X linux-py312-unit-tests in 4m12s (ID 555024)" in out
+        assert "X macos-arm64-integration in 6m01s (ID 555031)" in out
+
+    def test_gh_list_no_cap_on_failing_rows_and_exact_count(self):
+        """Review item 3: 33 failing rows past head -> all 33 emitted, marker says 33."""
+        lines = ["STATUS\tTITLE\tWORKFLOW\tBRANCH\tEVENT\tID\tELAPSED\tAGE"]
+        for i in range(11):
+            lines.append(f"completed\tsuccess\tPR #{i} ok\tCI\tmain\tpush\t{1000 + i}\t1m\t{i}h")
+        for i in range(33):
+            lines.append(f"completed\tfailure\tPR #{200 + i} broken\tCI\tmain\tpush\t{2000 + i}\t1m\t{i}h")
+        for i in range(40):
+            lines.append(f"completed\tsuccess\tPR #{300 + i} ok\tCI\tmain\tpush\t{3000 + i}\t1m\t{i}h")
+        raw = "\n".join(lines) + "\n"
+        out = bash_compress.compress("gh run list --limit 100", raw, returncode=0)
+        assert "[33 additional failing/flagged rows preserved]" in out
+        for i in range(33):
+            assert f"PR #{200 + i} broken" in out
+
+    def test_terraform_plan_never_drops_changed_attributes(self):
+        """Review item 4: never drop ->, forces replacement, or +/- attribute lines."""
+        lines = ["Acquiring state lock. This may take a few moments..."]
+        for i in range(20):
+            lines.append(f"aws_subnet.sub_{i:02d}: Refreshing state... [id=subnet-{i:04d}]")
+        lines.extend([
+            "",
+            "Terraform used the selected providers to generate the following execution plan.",
+            "",
+            "  # aws_db_instance.primary must be replaced",
+            '-/+ resource "aws_db_instance" "primary" {',
+        ])
+        for i in range(15):
+            lines.append(f'      ~ param_{i:02d} = "v1" -> "v2"')
+        lines.extend([
+            '      ~ engine_version = "14.9" -> "16.1" # forces replacement',
+            "      ~ storage_encrypted = true -> false",
+            '      + ingress_cidr = "0.0.0.0/0"',
+            '      - legacy_flag = "enabled"',
+        ])
+        for i in range(10):
+            lines.append(f"      + computed_{i:02d} = (known after apply)")
+        lines.extend([
+            "        # (18 unchanged attributes hidden)",
+            "    }",
+            "",
+            "Plan: 1 to add, 0 to change, 1 to destroy.",
+        ])
+        raw = "\n".join(lines) + "\n"
+        out = bash_compress.compress("terraform plan", raw, returncode=0)
+        assert 'engine_version = "14.9" -> "16.1" # forces replacement' in out
+        assert "storage_encrypted = true -> false" in out
+        assert '+ ingress_cidr = "0.0.0.0/0"' in out
+        assert '- legacy_flag = "enabled"' in out
+        for i in range(15):
+            assert f'param_{i:02d} = "v1" -> "v2"' in out
+        assert "computed_05 = (known after apply)" not in out
+        assert "Plan: 1 to add, 0 to change, 1 to destroy." in out
+
+    def test_mypy_keeps_expected_got_notes_collapses_overload_dumps(self):
+        """Review item 5: keep error-attached Expected/Got notes; collapse long overload dumps."""
+        lines = [
+            'src/auth.py:42: error: Argument 1 to "verify" has incompatible type "int"; expected "str"  [arg-type]',
+            'src/auth.py:42: note: Following member(s) of "int" have conflicts:',
+            'src/auth.py:42: note:     Expected:',
+            'src/auth.py:42: note:         def encode(self, encoding: str = ...) -> bytes',
+            'src/auth.py:42: note:     Got:',
+            'src/auth.py:42: note:         <nothing>',
+            'src/api.py:88: error: No overload variant of "get" matches  [call-overload]',
+            'src/api.py:88: note: Possible overload variants:',
+        ]
+        for i in range(10):
+            lines.append(f"src/api.py:88: note:     def get(self, key: T{i}) -> R{i}")
+        lines.append("Found 2 errors in 2 files (checked 10 source files)")
+        raw = "\n".join(lines) + "\n"
+        out = bash_compress.compress("mypy src/", raw, returncode=0)
+        assert 'Following member(s) of "int" have conflicts:' in out
+        assert "Expected:" in out
+        assert "def encode(self, encoding: str = ...) -> bytes" in out
+        assert "Got:" in out
+        assert "<nothing>" in out
+        assert "overload variant notes collapsed" in out
+        assert "def get(self, key: T5)" not in out
+
+    def test_git_ls_passes_through_when_savings_under_25_percent(self):
+        """Review item 6: pass through if lossless dir grouping saves < ~25%."""
+        # Root-level files have no repeated dir prefix to save bytes on.
+        raw = "\n".join(f"file_{i:02d}.py" for i in range(30)) + "\n"
+        assert extra.compress_git_ls(raw) is None
+
+    def test_kubectl_describe_preserves_secret_and_config_env_refs(self):
+        """Review item 7: never collapse Environment entries referencing secrets/config."""
+        raw = _sample_kubectl_describe().replace(
+            "      VAR_10: value_10\n      VAR_11: value_11\n      VAR_12: value_12",
+            "      DATABASE_URL: <set to the key 'url' in secret 'db-creds'>  Optional: false\n"
+            "      API_KEY: valueFrom secretKeyRef api-secrets/key\n"
+            "      APP_CFG: valueFrom configMapKeyRef app-cm/cfg",
+        )
+        out = bash_compress.compress("kubectl describe pod worker-6f8b9d", raw, returncode=0)
+        assert "DATABASE_URL:" in out
+        assert "API_KEY: valueFrom secretKeyRef" in out
+        assert "APP_CFG: valueFrom configMapKeyRef" in out
+        assert "VAR_14: value_14" not in out
 
 
 # ---------------------------------------------------------------------------

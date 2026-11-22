@@ -5,35 +5,38 @@ Stdlib-only helper module invoked lazily by ``bash_compress.py`` and
 ``build_output_compress.py`` to keep legacy modules under the file-size cap.
 
 Covered command families:
-  - ``git diff --stat`` / ``git show --stat`` (huge diffs): keeps top changed
-    files, directory-grouped summary of the rest, and the exact trailing
-    ``N files changed, ...`` summary line verbatim.
-  - ``git ls-files`` / ``git ls-tree``: directory-grouped path list.
+  - ``git diff --stat`` / ``git show --stat`` (huge diffs): lossless file
+    names grouped by directory (dir prefix once, every basename + churn),
+    plus the exact trailing ``N files changed, ...`` summary line verbatim.
+  - ``git ls-files`` / ``git ls-tree``: lossless directory-grouped path list
+    (dir prefix once, every basename preserved).
   - ``git grep``: routes to existing ``search_results`` handler.
-  - ``gh run view --log`` / ``--log-failed``: strips GitHub Actions setup/cache
-    boilerplate while keeping every ``##[error]``, ``##[warning]``, error/fail/
-    traceback line (with surrounding context), failing step headers, and tail.
-  - ``gh {run,pr,issue,workflow,release} list``: keeps header, top rows, every
-    failed/error row, and a compact summary of remaining entries.
+  - ``gh run view --log`` / ``--log-failed``: strips only known GitHub Actions
+    setup/checkout/cache/cleanup boilerplate while keeping every line of any
+    step/group that contains a failure.
+  - ``gh {run,pr,issue,workflow,release} list``: keeps header, top rows, EVERY
+    failed/flagged row (uncapped), and a compact summary of remaining entries.
   - ``terraform plan`` / ``tofu plan``: drops state-refresh/read chatter and
-    repetitive ``(known after apply)`` blocks while keeping every resource
-    action header, changed attributes, diagnostics, and ``Plan:`` summary.
+    repetitive ``(known after apply)`` / unchanged-attribute noise while
+    keeping every resource action header, every ``->`` / ``forces replacement``
+    / ``+`` / ``-`` / ``~`` attribute line, diagnostics, and ``Plan:`` summary.
   - ``kubectl describe``: keeps top metadata, container status, ``Conditions:``,
-    full ``Events:`` table, and error/warning lines; collapses huge
-    ``Annotations:``, ``Environment:``, ``Mounts:``, ``Volumes:``, and
-    ``Managed Fields:`` sections.
+    full ``Events:`` table, secret/config ``Environment:`` references, and
+    error/warning lines; collapses large non-sensitive blocks.
   - Package installers (``pip``/``pip3``/``uv pip``/``npm``/``pnpm``/``yarn``/
     ``brew`` install/upgrade/update): drops download/cache/pour progress noise
     while keeping every error, warning, deprecation, vulnerability, caveat,
     and final summary verbatim.
-  - ``mypy``: preserves every ``error:``, ``warning:``, ``Revealed type``, and
-    final summary line verbatim while collapsing verbose ``note:`` dumps.
+  - ``mypy``: preserves every ``error:``, ``warning:``, ``Revealed type``,
+    error-attached ``note:`` (including ``Expected:``/``Got:`` pairs), and
+    final summary line verbatim while collapsing only long overload dumps.
 
 Safety invariants (all handlers):
   - Fail-open: any unexpected input or exception returns ``None`` so the caller
     leaves the raw output untouched.
   - Short outputs (< 15-25 lines depending on handler) return ``None``.
-  - Never returns output longer than (or >= 90% of) the input.
+  - Never returns output longer than (or >= 85% of) the input; lossless path
+    groupers pass through unless savings >= ~25%.
   - Errors, warnings, file:line locations, stack frames, and summaries are
     always preserved verbatim. Credential re-injection is additionally enforced
     by the calling pipelines (``bash_compress`` / ``build_output_compress``).
@@ -42,7 +45,6 @@ from __future__ import annotations
 
 import re
 import shlex
-from collections import Counter
 
 # ---------------------------------------------------------------------------
 # Feature map for compression_events logging (measured tier)
@@ -73,6 +75,18 @@ _IMPORTANT_LINE_RE = re.compile(
     r"^\s*File \".+\", line \d+)",
     re.IGNORECASE,
 )
+# Case-sensitive failed-job row prefix (e.g. `gh run view <id>` summary rows).
+_GH_FAIL_ROW_RE = re.compile(r"^\s*[X✗✖]\s+")
+
+
+def _is_important_line(ln: str) -> bool:
+    """Return True if a line carries an error, warning, or failed-job marker."""
+    return bool(_IMPORTANT_LINE_RE.search(ln) or _GH_FAIL_ROW_RE.search(ln))
+
+
+def feature_for_pattern(pattern: str) -> str | None:
+    """Return the measured-tier feature name for an extra pattern."""
+    return FEATURE_MAP.get(pattern)
 
 
 def _extract_primary_tokens(command_str: str) -> list[str]:
@@ -125,7 +139,11 @@ def detect_pattern(command_str: str) -> str | None:
 
         if cmd == "gh":
             if sub == "run" and sub2 == "view":
-                return "gh_run_log"
+                # Only route to the log compressor when --log / --log-failed is passed;
+                # `gh run view <id>` without --log emits a job summary table.
+                if any(t in ("--log", "--log-failed") for t in tokens[3:]):
+                    return "gh_run_log"
+                return None
             if sub in GH_READ_ONLY_GROUPS and sub2 == "list":
                 return "gh_list"
             return None
@@ -153,18 +171,33 @@ def detect_pattern(command_str: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# 1. git diff --stat / git show --stat
+# 1. git diff --stat / git show --stat (LOSSLESS names, grouped by directory)
 # ---------------------------------------------------------------------------
 _DIFF_STAT_LINE_RE = re.compile(
-    r"^\s*(.+?)\s+\|\s+(?:(\d+)\s*[+-]*|Bin\s+\d+\s*->\s*\d+\s*bytes)\s*$"
+    r"^\s*(.+?)\s+\|\s+(?:(\d+)\s*[+-]*|(Bin\s+\d+\s*->\s*\d+\s*bytes))\s*$"
 )
 _DIFF_STAT_SUMMARY_RE = re.compile(
     r"^\s*\d+\s+files?\s+changed(?:,\s+\d+\s+insertions?\(\+\))?(?:,\s+\d+\s+deletions?\(-\))?\s*$"
 )
 
 
+def _split_stat_dir_base(path: str) -> tuple[str, str]:
+    """Split a diff-stat path into (dir_prefix, basename) without losing renames."""
+    if " => " in path:
+        brace_idx = path.find("{")
+        if brace_idx > 0:
+            slash_idx = path.rfind("/", 0, brace_idx)
+            if slash_idx >= 0:
+                return path[: slash_idx + 1], path[slash_idx + 1 :]
+        return "./", path
+    if "/" in path:
+        d, base = path.rsplit("/", 1)
+        return d + "/", base
+    return "./", path
+
+
 def compress_git_diff_stat(output: str) -> str | None:
-    """Compress huge ``git diff --stat`` output while preserving the summary."""
+    """Compress ``git diff --stat`` losslessly by grouping basenames under each dir."""
     try:
         lines = output.splitlines()
         if len(lines) < 25:
@@ -182,15 +215,16 @@ def compress_git_diff_stat(output: str) -> str | None:
             return None
 
         preamble: list[str] = []
-        stat_entries: list[tuple[int, str, int, str]] = []  # (idx, path, count, raw_line)
+        stat_entries: list[tuple[str, int, str | None]] = []  # (path, count, bin_info)
         extra_lines: list[str] = []
 
-        for i, ln in enumerate(lines[:summary_idx]):
+        for ln in lines[:summary_idx]:
             m = _DIFF_STAT_LINE_RE.match(ln)
             if m:
                 path = m.group(1).strip()
                 count = int(m.group(2)) if m.group(2) else 0
-                stat_entries.append((i, path, count, ln))
+                bin_info = m.group(3)
+                stat_entries.append((path, count, bin_info))
             elif not stat_entries:
                 preamble.append(ln)
             elif ln.strip():
@@ -199,58 +233,46 @@ def compress_git_diff_stat(output: str) -> str | None:
         if len(stat_entries) < 20:
             return None
 
-        # Keep the 12 highest-churn files verbatim (preserving original order)
-        top_k = 12
-        ranked = sorted(stat_entries, key=lambda e: (-e[2], e[0]))
-        top_indices = {e[0] for e in ranked[:top_k]}
-        kept_top = [e[3] for e in stat_entries if e[0] in top_indices]
-        omitted = [e for e in stat_entries if e[0] not in top_indices]
-
-        # Group omitted files by top-level directory
-        dir_groups: dict[str, list[tuple[str, int]]] = {}
-        for _, path, count, _ in omitted:
-            clean_p = path.split(" => ")[-1].strip("{}")
-            d = clean_p.rsplit("/", 1)[0] + "/" if "/" in clean_p else "./"
-            base = clean_p.rsplit("/", 1)[-1]
-            dir_groups.setdefault(d, []).append((base, count))
+        # Group ALL entries by directory; keep every basename and its churn count.
+        dir_groups: dict[str, list[tuple[str, int, str | None]]] = {}
+        for path, count, bin_info in stat_entries:
+            d, base = _split_stat_dir_base(path)
+            dir_groups.setdefault(d, []).append((base, count, bin_info))
 
         out: list[str] = []
         if preamble:
             out.extend(preamble[:10])
-        out.append(
-            f"[git diff --stat: {len(stat_entries)} files total; "
-            f"showing top {len(kept_top)} by churn + {len(omitted)} grouped by dir]"
-        )
-        out.extend(kept_top)
-        out.append("")
-        out.append(f"Remaining {len(omitted)} files by directory:")
-        for d, items in sorted(dir_groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-            total_churn = sum(c for _, c in items)
-            examples = ", ".join(name for name, _ in items[:3])
-            more = f" (+{len(items) - 3} more)" if len(items) > 3 else ""
-            out.append(f"  {d} ({len(items)} files, ~{total_churn} changes): {examples}{more}")
+        out.append(f"[git diff --stat: {len(stat_entries)} files, grouped by dir]")
+        for d in sorted(dir_groups):
+            items = dir_groups[d]
+            rendered = [
+                f"{base}({bin_info})" if bin_info else f"{base}({count})"
+                for base, count, bin_info in items
+            ]
+            out.append(f"  {d} " + ", ".join(rendered))
         if extra_lines:
             out.extend(extra_lines[:10])
         # Exact trailing summary line(s) verbatim
         out.extend(lines[summary_idx:])
 
         result = "\n".join(out)
-        return result if len(result) < len(output) * 0.85 else None
+        # Pass through if savings < ~25%
+        return result if len(result) < len(output) * 0.75 else None
     except Exception:
         return None
 
 
 # ---------------------------------------------------------------------------
-# 2. git ls-files / git ls-tree
+# 2. git ls-files / git ls-tree (LOSSLESS names, grouped by directory)
 # ---------------------------------------------------------------------------
 _LS_TREE_LINE_RE = re.compile(r"^\d{6}\s+(?:blob|tree|commit)\s+[0-9a-f]{40,64}\t(.+)$")
 
 
 def compress_git_ls(output: str, command_str: str = "") -> str | None:
-    """Compress large ``git ls-files`` or ``git ls-tree`` path listings."""
+    """Compress ``git ls-files`` or ``git ls-tree`` losslessly by directory prefix."""
     try:
         lines = [ln for ln in output.splitlines() if ln.strip()]
-        if len(lines) < 40 or len(lines) > 50_000:
+        if len(lines) < 25 or len(lines) > 50_000:
             return None
 
         paths: list[str] = []
@@ -275,26 +297,15 @@ def compress_git_ls(output: str, command_str: str = "") -> str | None:
                 root_files.append(p)
 
         label = "git ls-tree" if (is_tree or "ls-tree" in command_str) else "git ls-files"
-        out = [f"[{label}: {len(paths)} paths total, grouped by directory. Full output is recoverable.]"]
+        out = [f"[{label}: {len(paths)} paths total, grouped by directory]"]
         if root_files:
-            if len(root_files) <= 10:
-                out.append("./ " + " ".join(root_files))
-            else:
-                out.append(f"* ./ ({len(root_files)} entries) e.g. " + " ".join(root_files[:3]))
+            out.append("./ " + " ".join(root_files))
         for d in sorted(groups):
-            names = groups[d]
-            if len(names) <= 8:
-                out.append(d + " " + " ".join(names))
-            else:
-                exts = Counter(
-                    ("*" + n[n.rfind("."):]) if "." in n.lstrip(".") else "(no ext)"
-                    for n in names
-                )
-                top_ext = ", ".join(f"{e} x{c}" for e, c in exts.most_common(3))
-                out.append(f"* {d} ({len(names)} entries: {top_ext}) e.g. " + " ".join(names[:3]))
+            out.append(d + " " + " ".join(groups[d]))
 
         result = "\n".join(out)
-        return result if len(result) < len(output) * 0.85 else None
+        # Pass through if savings < ~25%
+        return result if len(result) < len(output) * 0.75 else None
     except Exception:
         return None
 
@@ -312,49 +323,84 @@ _GH_LOG_NOISE_RE = re.compile(
     r"Adding repository directory to the temporary git global config|"
     r"Checking out the ref|Post job cleanup|Cleaning up orphan processes|"
     r"Cache restored from key|Restoring cache|Saving cache|Post Cache|"
-    r"Set up job|Run actions/checkout|Run actions/setup-|Run actions/cache)",
+    r"Set up job|Run actions/checkout|Run actions/setup-|Run actions/cache|"
+    r"Post Run actions/|Complete job\b)",
     re.IGNORECASE,
+)
+_GH_TS_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s+")
+_GH_FAIL_BODY_RE = re.compile(
+    r"^\s*(?:E\s+|>\s+|FAILED\s+|___+\s+.+?\s+___+|===+\s+(?:FAILURES|ERRORS)\s+===+)"
 )
 
 
+def _gh_log_line_parts(ln: str) -> tuple[str | None, str]:
+    """Return (tab_step_key_or_None, message_body_without_timestamp)."""
+    parts = ln.split("\t", 2)
+    if len(parts) == 3:
+        step_key = f"{parts[0]}\t{parts[1]}"
+        body = _GH_TS_PREFIX_RE.sub("", parts[2])
+        return step_key, body
+    return None, _GH_TS_PREFIX_RE.sub("", ln)
+
+
 def compress_gh_run_log(output: str) -> str | None:
-    """Compress verbose ``gh run view --log`` CI logs while keeping all failures."""
+    """Compress ``gh run view --log`` by stripping known CI noise only.
+
+    Every line of any step or ``##[group]`` that contains a failure (assertion,
+    ``E`` lines, test body, traceback, error, non-zero exit) is preserved whole.
+    Non-noise lines outside failing steps are also preserved.
+    """
     try:
         lines = output.splitlines()
         if len(lines) < 25:
             return None
 
-        # Mark lines that MUST be kept: head, tail, errors/warnings + +/-2 context
-        n = len(lines)
-        keep = [False] * n
-        for i in range(min(5, n)):
-            keep[i] = True
-        for i in range(max(0, n - 10), n):
-            keep[i] = True
+        # Assign each line to its step (job\tstep) or ##[group]..##[endgroup] block.
+        keys: list[tuple[str, str | int]] = []
+        failing_keys: set[tuple[str, str | int]] = set()
+        group_id = 0
+        in_group = False
 
-        for i, ln in enumerate(lines):
-            if _IMPORTANT_LINE_RE.search(ln):
-                for j in range(max(0, i - 2), min(n, i + 3)):
-                    keep[j] = True
+        for idx, ln in enumerate(lines):
+            tab_key, body = _gh_log_line_parts(ln)
+            if tab_key is not None:
+                key: tuple[str, str | int] = ("step", tab_key)
+            else:
+                if "##[group]" in ln:
+                    group_id += 1
+                    in_group = True
+                    key = ("grp", group_id)
+                elif in_group:
+                    key = ("grp", group_id)
+                    if "##[endgroup]" in ln:
+                        in_group = False
+                else:
+                    key = ("line", idx)
+            keys.append(key)
+            if _is_important_line(ln) or _GH_FAIL_BODY_RE.search(body):
+                failing_keys.add(key)
 
-        # Emit kept runs separated by compact omission markers
         out: list[str] = []
         omitted = 0
         noise_dropped = 0
-        for i, ln in enumerate(lines):
-            if keep[i]:
+        for ln, key in zip(lines, keys):
+            if key in failing_keys:
                 if omitted:
-                    out.append(f"... [{omitted} CI log lines omitted] ...")
+                    out.append(f"... [{omitted} CI setup/boilerplate lines omitted] ...")
                     omitted = 0
                 out.append(ln)
-            else:
+            elif _GH_LOG_NOISE_RE.search(ln):
                 omitted += 1
-                if _GH_LOG_NOISE_RE.search(ln):
-                    noise_dropped += 1
+                noise_dropped += 1
+            else:
+                if omitted:
+                    out.append(f"... [{omitted} CI setup/boilerplate lines omitted] ...")
+                    omitted = 0
+                out.append(ln)
         if omitted:
-            out.append(f"... [{omitted} CI log lines omitted] ...")
+            out.append(f"... [{omitted} CI setup/boilerplate lines omitted] ...")
 
-        if len(out) >= n * 0.85 and noise_dropped < 5:
+        if noise_dropped < 5:
             return None
         result = "\n".join(out)
         return result if len(result) < len(output) * 0.85 else None
@@ -371,8 +417,12 @@ _GH_LIST_ALERT_RE = re.compile(
 )
 
 
+def _is_gh_list_alert(ln: str) -> bool:
+    return bool(_GH_LIST_ALERT_RE.search(ln) or _GH_FAIL_ROW_RE.search(ln))
+
+
 def compress_gh_list(output: str) -> str | None:
-    """Compress long ``gh run/pr/issue list`` tabular outputs."""
+    """Compress long ``gh run/pr/issue list`` tabular outputs without capping failures."""
     try:
         lines = [ln for ln in output.splitlines() if ln.strip()]
         if len(lines) < 20:
@@ -381,24 +431,27 @@ def compress_gh_list(output: str) -> str | None:
         keep_head = 12
         head = lines[:keep_head]
         rest = lines[keep_head:]
-        alert_rows = [ln for ln in rest if _GH_LIST_ALERT_RE.search(ln)]
-        other_count = len(rest) - len(alert_rows)
+        alert_rows: list[str] = []
+        other_rows: list[str] = []
+        for ln in rest:
+            if _is_gh_list_alert(ln):
+                alert_rows.append(ln)
+            else:
+                other_rows.append(ln)
 
         out = list(head)
         if alert_rows:
             out.append(f"... [{len(alert_rows)} additional failing/flagged rows preserved] ...")
-            out.extend(alert_rows[:20])
-        if other_count > 0:
-            # Keep first identifier column of dropped rows so items stay discoverable
+            out.extend(alert_rows)
+        if other_rows:
             ids = []
-            for ln in rest:
-                if ln not in alert_rows:
-                    cols = ln.split("\t") if "\t" in ln else ln.split()
-                    if cols:
-                        ids.append(cols[0].strip())
+            for ln in other_rows:
+                cols = ln.split("\t") if "\t" in ln else ln.split()
+                if cols:
+                    ids.append(cols[0].strip())
             sample = ", ".join(ids[:20])
             suffix = f", ... (+{len(ids) - 20} more)" if len(ids) > 20 else ""
-            out.append(f"... plus {other_count} more rows ({len(lines)} total): {sample}{suffix}")
+            out.append(f"... plus {len(other_rows)} more rows ({len(lines)} total): {sample}{suffix}")
 
         result = "\n".join(out)
         return result if len(result) < len(output) * 0.85 else None
@@ -429,7 +482,12 @@ _TF_DIAG_RE = re.compile(r"^[│╷╵]|\b(?:Warning|Error):|^\s*on\s+\S+\s+line
 
 
 def compress_terraform_plan(output: str) -> str | None:
-    """Compress verbose ``terraform plan`` / ``tofu plan`` output safely."""
+    """Compress verbose ``terraform plan`` / ``tofu plan`` output safely.
+
+    Never drops any ``->``, ``forces replacement``, or ``+``/``-``/``~``
+    attribute line inside a changed resource; collapses only state-refresh
+    chatter, ``(known after apply)`` lines, and unchanged-attribute noise.
+    """
     try:
         lines = output.splitlines()
         if len(lines) < 20:
@@ -440,21 +498,22 @@ def compress_terraform_plan(output: str) -> str | None:
         out: list[str] = []
         noise_dropped = 0
         in_resource = False
-        attr_kept = 0
-        attr_dropped = 0
+        resource_indent = 0
+        unchanged_kept = 0
+        unchanged_dropped = 0
         known_after_dropped = 0
         in_outputs = False
 
         def _flush_resource_omissions() -> None:
-            nonlocal attr_dropped, known_after_dropped
+            nonlocal unchanged_dropped, known_after_dropped
             parts = []
             if known_after_dropped:
                 parts.append(f"{known_after_dropped} '(known after apply)'")
-            if attr_dropped:
-                parts.append(f"{attr_dropped} other attributes")
+            if unchanged_dropped:
+                parts.append(f"{unchanged_dropped} unchanged attributes")
             if parts:
                 out.append(f"      # ... ({', '.join(parts)} collapsed)")
-            attr_dropped = 0
+            unchanged_dropped = 0
             known_after_dropped = 0
 
         for ln in lines:
@@ -462,7 +521,7 @@ def compress_terraform_plan(output: str) -> str | None:
                 noise_dropped += 1
                 continue
 
-            if _TF_DIAG_RE.search(ln) or _IMPORTANT_LINE_RE.search(ln):
+            if _TF_DIAG_RE.search(ln) or _is_important_line(ln):
                 _flush_resource_omissions()
                 out.append(ln)
                 continue
@@ -482,41 +541,54 @@ def compress_terraform_plan(output: str) -> str | None:
             if _TF_RESOURCE_HDR_RE.match(ln):
                 _flush_resource_omissions()
                 in_resource = True
-                attr_kept = 0
+                resource_indent = len(ln) - len(ln.lstrip(" "))
+                unchanged_kept = 0
                 out.append(ln)
                 continue
 
             if _TF_RESOURCE_BLOCK_RE.match(ln):
                 in_resource = True
-                attr_kept = 0
+                resource_indent = len(ln) - len(ln.lstrip(" "))
+                unchanged_kept = 0
                 out.append(ln)
                 continue
 
             if in_resource:
                 stripped = ln.strip()
+                indent = len(ln) - len(ln.lstrip(" "))
                 if stripped == "}":
                     _flush_resource_omissions()
                     out.append(ln)
-                    in_resource = False
+                    if indent <= resource_indent + 2:
+                        in_resource = False
                     continue
+                # Never drop `->` or `forces replacement` lines.
                 if "forces replacement" in ln or "->" in ln:
-                    if attr_kept < 12:
-                        out.append(ln)
-                        attr_kept += 1
-                    else:
-                        attr_dropped += 1
+                    _flush_resource_omissions()
+                    out.append(ln)
                     continue
+                # Collapse `(known after apply)` placeholder lines.
                 if "(known after apply)" in ln:
                     known_after_dropped += 1
                     continue
-                if attr_kept < 8:
+                # Never drop any `+`, `-`, or `~` attribute line inside a resource.
+                if stripped.startswith(("+", "-", "~")):
+                    _flush_resource_omissions()
                     out.append(ln)
-                    attr_kept += 1
+                    continue
+                # Keep structural block openers/closers and a few unchanged context lines.
+                if stripped.endswith("{") or not stripped:
+                    _flush_resource_omissions()
+                    out.append(ln)
+                    continue
+                if unchanged_kept < 4:
+                    _flush_resource_omissions()
+                    out.append(ln)
+                    unchanged_kept += 1
                 else:
-                    attr_dropped += 1
+                    unchanged_dropped += 1
                 continue
 
-            # Drop legend lines once we have real content, keep other context
             if ln.strip():
                 out.append(ln)
 
@@ -537,14 +609,15 @@ _K8S_DESC_COLLAPSE_SECTIONS = frozenset({
     "Annotations:", "Labels:", "Environment:", "Mounts:", "Volumes:",
     "Tolerations:", "Managed Fields:", "Args:", "Command:", "Data",
 })
-_K8S_DESC_KEEP_SECTIONS = frozenset({
-    "Events:", "Conditions:", "Containers:", "Init Containers:",
-    "Status:", "Volumes:",
-})
+_K8S_ENV_KEEP_RE = re.compile(
+    r"(?:valueFrom|secretKeyRef|configMapKeyRef|<set to the key\b|"
+    r"\b[A-Za-z0-9_]*_(?:URL|KEY|SECRET|TOKEN|PASSWORD|DSN)\b)",
+    re.IGNORECASE,
+)
 
 
 def compress_kubectl_describe(output: str) -> str | None:
-    """Compress verbose ``kubectl describe`` output while keeping Events & status."""
+    """Compress verbose ``kubectl describe`` output while keeping Events, status & secret env refs."""
     try:
         lines = output.splitlines()
         if len(lines) < 25:
@@ -575,7 +648,6 @@ def compress_kubectl_describe(output: str) -> str | None:
             # Check if this starts a collapsible block (e.g. Annotations:, Environment:, Mounts:)
             sec_key = stripped.split(":", 1)[0] + ":" if ":" in stripped else stripped
             if sec_key in _K8S_DESC_COLLAPSE_SECTIONS and sec_key != "Status:":
-                # Gather indented child lines
                 block = [ln]
                 j = i + 1
                 while j < n and lines[j].strip() and (len(lines[j]) - len(lines[j].lstrip(" "))) > indent:
@@ -585,8 +657,10 @@ def compress_kubectl_describe(output: str) -> str | None:
                     out.append(block[0])
                     kept_children = block[1:3]
                     out.extend(kept_children)
+                    is_env = sec_key == "Environment:"
                     important_children = [
-                        b for b in block[3:] if _IMPORTANT_LINE_RE.search(b)
+                        b for b in block[3:]
+                        if _is_important_line(b) or (is_env and _K8S_ENV_KEEP_RE.search(b))
                     ]
                     out.extend(important_children)
                     dropped = len(block) - 3 - len(important_children)
@@ -657,7 +731,7 @@ def compress_package_install(output: str) -> str | None:
                     kept.append(ln)
                     continue
 
-            if _IMPORTANT_LINE_RE.search(ln) or _PKG_SUMMARY_RE.search(ln):
+            if _is_important_line(ln) or _PKG_SUMMARY_RE.search(ln):
                 kept.append(ln)
                 continue
 
@@ -665,7 +739,6 @@ def compress_package_install(output: str) -> str | None:
                 dropped += 1
                 continue
 
-            # Keep short non-noise context lines
             kept.append(ln)
 
         if dropped < 8:
@@ -679,44 +752,67 @@ def compress_package_install(output: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# 8. mypy type checker (preserves EVERY error & file:line, collapses note dumps)
+# 8. mypy type checker (keeps error-attached notes; collapses long overload dumps)
 # ---------------------------------------------------------------------------
-_MYPY_NOTE_RE = re.compile(r"^.+?:\d+(?::\d+)?:\s+note:\s+(.*)$")
-_MYPY_SUMMARY_RE = re.compile(r"^(?:Found \d+ errors? in \d+ files?|Success: no issues found)")
+_MYPY_NOTE_RE = re.compile(r"^.+?:\d+(?::\d+)?:\s+note: (.*)$")
+_MYPY_OVERLOAD_HDR_RE = re.compile(r"^\s*Possible overload variants:\s*$", re.IGNORECASE)
+_MYPY_OVERLOAD_ITEM_RE = re.compile(r"^\s*Overload candidate\b", re.IGNORECASE)
 
 
 def compress_mypy(output: str) -> str | None:
-    """Compress verbose ``mypy`` output by collapsing repetitive ``note:`` blocks.
+    """Compress verbose ``mypy`` output by collapsing only long overload dumps.
 
-    NEVER drops any ``error:`` line, ``warning:`` line, ``Revealed type`` note,
-    or final summary line.
+    Preserves every ``error:``, ``warning:``, ``Revealed type``, summary, and
+    error-attached ``note:`` (including ``Expected:`` / ``Got:`` pairs).
     """
     try:
         lines = output.splitlines()
-        if len(lines) < 20:
+        if len(lines) < 15:
             return None
 
         out: list[str] = []
-        note_run = 0
         total_notes_dropped = 0
+        i = 0
+        n = len(lines)
 
-        def _flush_notes() -> None:
-            nonlocal note_run
-            if note_run > 0:
-                out.append(f"  ... ({note_run} mypy note lines collapsed)")
-                note_run = 0
+        while i < n:
+            m = _MYPY_NOTE_RE.match(lines[i])
+            if m:
+                body = m.group(1)
+                # Case A: "Possible overload variants:" followed by indented signature notes
+                if _MYPY_OVERLOAD_HDR_RE.match(body):
+                    j = i + 1
+                    while j < n:
+                        mj = _MYPY_NOTE_RE.match(lines[j])
+                        if mj and mj.group(1).startswith((" ", "\t")):
+                            j += 1
+                        else:
+                            break
+                    block_len = j - i
+                    if block_len >= 4:
+                        out.append(f"  ... ({block_len} mypy overload variant notes collapsed)")
+                        total_notes_dropped += block_len
+                        i = j
+                        continue
+                # Case B: contiguous "Overload candidate ..." notes
+                if _MYPY_OVERLOAD_ITEM_RE.match(body):
+                    j = i + 1
+                    while j < n:
+                        mj = _MYPY_NOTE_RE.match(lines[j])
+                        if mj and _MYPY_OVERLOAD_ITEM_RE.match(mj.group(1)):
+                            j += 1
+                        else:
+                            break
+                    block_len = j - i
+                    if block_len >= 4:
+                        out.append(f"  ... ({block_len} mypy overload variant notes collapsed)")
+                        total_notes_dropped += block_len
+                        i = j
+                        continue
+            out.append(lines[i])
+            i += 1
 
-        for ln in lines:
-            m = _MYPY_NOTE_RE.match(ln)
-            if m and "Revealed type" not in m.group(1):
-                note_run += 1
-                total_notes_dropped += 1
-                continue
-            _flush_notes()
-            out.append(ln)
-        _flush_notes()
-
-        if total_notes_dropped < 8:
+        if total_notes_dropped < 4:
             return None
         result = "\n".join(out)
         return result if len(result) < len(output) * 0.85 else None

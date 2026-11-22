@@ -174,7 +174,15 @@ _FOREIGN_ERROR_PATTERNS = [
     re.compile(r"\u05e9\u05d2\u05d9\u05d0\u05d4"),                                # Hebrew
     re.compile(r"\u062e\u0637\u0623"),                                            # Arabic
     re.compile(r"\u062e\u0637\u0627"),                                            # Persian
+    re.compile(r"^\s*[X✗✖]\s+"),                                                  # CI failed job rows (e.g. gh run view)
 ]
+
+def _call_extra(name, *args):
+    try:
+        import command_compress_extra as _ce
+        return getattr(_ce, name)(*args)
+    except Exception:
+        return None
 
 
 def _find_preserved_lines(text):
@@ -712,23 +720,21 @@ def _compress_find(output, command_str=None):
 
 def _compress_git_diff(output):
     """Compress git diff: keep file names and stats, truncate large diffs."""
-    try:
-        from command_compress_extra import compress_git_diff_stat
-        stat = compress_git_diff_stat(output)
-        if stat is not None:
-            return stat
-    except Exception:
-        pass
+    if (stat := _call_extra("compress_git_diff_stat", output)) is not None:
+        return stat
     lines = output.strip().splitlines()
     if len(lines) <= 50:
-        return output
+        return output  # small diff, keep full
+    # Extract summary stats
     additions = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
     deletions = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
     changed = [ln for ln in lines if ln.startswith("diff --git ")]
+    # Keep first 30 lines of actual diff content
     result_lines = lines[:30]
     if len(lines) > 30:
         result_lines.append(f"\n... ({len(lines) - 30} more lines, +{additions}/-{deletions} total)")
         if changed:
+            # Keep every changed FILENAME so "did file X change?" is answerable.
             names = [c.split(" b/")[-1] for c in changed]
             result_lines.append(f"All {len(names)} changed files: " + ", ".join(names))
     return "\n".join(result_lines)
@@ -833,13 +839,9 @@ def _compress_jest(output):
 
 def _compress_npm_install(output):
     """Compress npm/pip/pnpm/yarn/brew install: summary + warnings/errors."""
-    try:
-        from command_compress_extra import compress_package_install
-        res = compress_package_install(output)
-        if res is not None:
-            return res
-    except Exception:
-        pass
+    if (res := _call_extra("compress_package_install", output)) is not None:
+        return res
+    # Keep: added/removed/audited summary, vulnerability count, warnings
     kws = ("added", "removed", "audited", "packages", "vulnerabilit",
            "up to date", "successfully installed", "warn", "error", "fatal")
     result = [ln.strip() for ln in output.strip().splitlines()
@@ -1586,20 +1588,21 @@ def _detect_pattern(command_str):
     elif cmd in ("grep", "rg", "ag", "ack"):
         return "search_results"
 
-    try:
-        from command_compress_extra import detect_pattern as _extra_detect
-        extra_pat = _extra_detect(command_str)
-        if extra_pat is not None:
-            return extra_pat
-    except Exception:
-        pass
-    # U9: user TOML command filters (add only; exclude already ran at top).
+    if (extra_pat := _call_extra("detect_pattern", command_str)) is not None:
+        return extra_pat
+
+    # U9: user TOML command filters (add only — exclude already ran at the
+    # top). Built-in detection ran first, so user add only extends, never
+    # replaces a built-in handler for the same command. The _is_safe_add gate
+    # already ran in the loader, so add entries are read-only and
+    # handler-validated.
     try:
         add_entry = eff.find_user_add(command_str)
         if add_entry is not None:
             return add_entry.handler
     except Exception:
         pass
+
     return None
 
 
@@ -1851,13 +1854,8 @@ def _compress_k8s(output):
                 f"a name not listed has no matching resource): {', '.join(rest_names)}")
         result = "\n".join(result_lines)
         return result
-    try:
-        from command_compress_extra import compress_kubectl_describe
-        desc = compress_kubectl_describe(output)
-        if desc is not None:
-            return desc
-    except Exception:
-        pass
+    if (desc := _call_extra("compress_kubectl_describe", output)) is not None:
+        return desc
     return _compress_logs(output)
 
 
@@ -2198,8 +2196,7 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
         handler = _PATTERN_HANDLERS.get(pattern)
         try:
             if handler is None:
-                from command_compress_extra import compress_for_pattern
-                extra = compress_for_pattern(pattern, cleaned, command_str)
+                extra = _call_extra("compress_for_pattern", pattern, cleaned, command_str)
                 compressed = extra if extra is not None else cleaned
             elif pattern in ("find", "pytest"):
                 compressed = handler(cleaned, command_str)
@@ -2361,16 +2358,20 @@ def main():
                 _pattern = _detect_pattern(command_str)
                 _feature = _COMPRESS_FEATURE_MAP.get(_pattern or "")
                 if _feature is None and _pattern is not None:
-                    try:
-                        from command_compress_extra import FEATURE_MAP as _EXTRA_FMAP
-                        _feature = _EXTRA_FMAP.get(_pattern)
-                    except Exception:
-                        _feature = None
+                    _feature = _call_extra("feature_for_pattern", _pattern)
                 if _feature is None and _pattern is None:
                     _feature = "bash_generic"  # U4: unmatched-output coverage
                 if _feature:
                     from measure import _log_compression_event
-                    # C-2: redact command_pattern before truncating; skip if unavailable.
+                    # C-2: command_pattern is persisted to trends.db's
+                    # compression_events table. Redact BEFORE truncating so an
+                    # inline secret (Bearer token, mysql -pPASSWORD,
+                    # PGPASSWORD=... psql) never reaches disk in cleartext.
+                    # Mirrors the fix in bash_compress_hook._log_event. When the
+                    # redactor is unavailable or refuses (a broken custom
+                    # pattern file fails closed), skip the event entirely —
+                    # persisting the raw command would store what the configured
+                    # rules exist to keep off disk.
                     try:
                         from credential_patterns import redact_credentials as _redact
                         _safe_pattern = _redact(command_str)[:100]

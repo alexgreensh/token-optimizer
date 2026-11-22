@@ -43,12 +43,34 @@ def test_cloud_payload_refuses_missing_domain(tmp_path, missing):
 
 
 def test_runtime_manifest_and_hook_warmer_match():
+    import cloud_kit
+    import codex_doctor
+    import hermes_doctor
+    import hermes_install
     from _measure import RUNTIME_SOURCES
-    assert {'transcript_stream.py', 'checkpoint_direction.py', 'checkpoint_retention.py'} <= set(RUNTIME_SOURCES)
+    actual = {path.name for path in (SCRIPTS / '_measure').glob('*.py')}
+    assert set(RUNTIME_SOURCES) == actual, (
+        f'RUNTIME_SOURCES drift vs _measure/: missing={sorted(actual - set(RUNTIME_SOURCES))}, '
+        f'extra={sorted(set(RUNTIME_SOURCES) - actual)}'
+    )
+    assert len(RUNTIME_SOURCES) == len(set(RUNTIME_SOURCES))
+    assert {'transcript_stream.py', 'checkpoint_direction.py', 'checkpoint_retention.py', 'pt_resume_cues.py'} <= set(RUNTIME_SOURCES)
     spec = importlib.util.spec_from_file_location('split_gate_manifest', REPO / 'hooks/module_runner.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert tuple(module._MEASURE_PACKAGE_SOURCES) == RUNTIME_SOURCES
+    cloud_measure = {
+        rel.removeprefix('skills/token-optimizer/scripts/_measure/')
+        for rel in cloud_kit._REQUIRED
+        if rel.startswith('skills/token-optimizer/scripts/_measure/')
+    }
+    assert cloud_measure == actual
+    expected_prefixed = tuple('_measure/' + name for name in RUNTIME_SOURCES)
+    for mod in (codex_doctor, hermes_doctor, hermes_install):
+        assert mod._MEASURE_PACKAGE_FILES == expected_prefixed
+    for name in RUNTIME_SOURCES:
+        if name != '__init__.py':
+            importlib.import_module('_measure.' + Path(name).stem)
 
 
 def test_devin_closed_set_refuses_package_and_every_provider():

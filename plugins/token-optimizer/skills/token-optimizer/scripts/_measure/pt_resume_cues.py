@@ -10,12 +10,14 @@ import re
 # - Bare "continua"/"continuar" does NOT match.
 # - "continua/continuar (o|a|com|de)" is restricted to work nouns (sessao, conversa,
 #   tarefa, trabalho, projeto, discussao) or "de onde" / "daquilo" / "aquilo" /
-#   "trabalhando", so status reports ("continua o mesmo erro", "o build continua com
-#   erro", "o teste continua de pe", "continua a falhar") do not trigger resume intent.
-# - "retom(a|e|ar)" covers informal, formal imperative ("retome o trabalho"), and
-#   infinitive forms.
-# - "a gente estava" requires a prior-work verb or locative preposition so
-#   "a gente estava errado sobre o cache" does not trigger resume intent.
+#   "trabalhando (no|na|nos|nas|em|nisso|naquilo)", so status reports ("continua o mesmo
+#   erro", "o build continua com erro", "o teste continua de pe", "continua a falhar",
+#   "o worker continua trabalhando depois do timeout") do not trigger resume intent.
+# - "retom(a|e|ar)" requires a work noun after o/a, "aquilo", or "de onde", so
+#   "o servidor retoma a conexao sozinho" does not trigger resume intent.
+# - "a gente estava" requires a prior-work verb, "no meio do/da", or "no/na <work noun>",
+#   so "a gente estava errado sobre o cache", "a gente estava no escritorio ontem", and
+#   "a gente estava em duvida sobre o nome" do not trigger resume intent.
 # - Latin script WITH Unicode \w boundaries, safe to strip from the prompt residual
 #   in _resume_topic_score (unlike CJK, which stays detection-only).
 PT_RESUME_CUE_RE = re.compile(
@@ -25,10 +27,15 @@ PT_RESUME_CUE_RE = re.compile(
     r"continu(?:a|ar) (?:"
     r"(?:o|a|com(?: (?:o|a))?|de(?: (?:o|a))?|d[oa]) "
     r"(?:sess[ãa]o|conversa|tarefa|trabalho|projeto|discuss[ãa]o)|"
-    r"de onde(?: (?:paramos|parei))?|daquilo|aquilo|trabalhando)|"
-    r"retom(?:a|e|ar) (?:o|a|aquilo|de onde(?: (?:paramos|parei))?)|retomando|"
+    r"de onde(?: (?:paramos|parei))?|daquilo|aquilo|"
+    r"trabalhando (?:n[oa]s?|em|nisso|naquilo))|"
+    r"retom(?:a|e|ar) (?:"
+    r"(?:o|a) (?:sess[ãa]o|conversa|tarefa|trabalho|projeto|discuss[ãa]o)|"
+    r"aquilo|de onde(?: (?:paramos|parei))?)|retomando|"
     r"o que est[áa]vamos fazendo|no que est[áa]vamos trabalhando|"
-    r"ontem a gente|a gente estava (?:trabalhando|fazendo|vendo|mexendo|no|na|em)"
+    r"ontem a gente|a gente estava (?:"
+    r"trabalhando|fazendo|vendo|mexendo|no meio d[oa]|"
+    r"n[oa] (?:sess[ãa]o|conversa|tarefa|trabalho|projeto|discuss[ãa]o))"
     r")(?!\w)",
     re.IGNORECASE,
 )

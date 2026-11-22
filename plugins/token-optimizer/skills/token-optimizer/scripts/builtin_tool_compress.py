@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 BUILTIN_COMPRESS_TOOLS = frozenset({"Grep", "Glob"})
+BUILTIN_EVENT_TYPES = {"Grep": "builtin_grep", "Glob": "builtin_glob"}
 
 GREP_THRESHOLD = 4096
 GLOB_THRESHOLD = 4096
@@ -640,8 +641,9 @@ def maybe_emit_builtin_replacement(
         replacement_tokens = int(rep_field_chars / code_chars_per_token)
         tokens_saved = max(0, original_tokens - replacement_tokens)
         detail = f"replaced {tool_name} ({orig_field_chars:,} chars -> {rep_field_chars:,} chars)"
+        event_type = BUILTIN_EVENT_TYPES.get(tool_name, "tool_archive")
         if log_savings_event_fn is not None:
-            log_savings_event_fn("tool_archive", tokens_saved, session_id=session_id, detail=detail)
+            log_savings_event_fn(event_type, tokens_saved, session_id=session_id, detail=detail)
 
         try:
             import archive_verify  # noqa: PLC0415

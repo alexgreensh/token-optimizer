@@ -485,9 +485,68 @@ def test_end_to_end_archive_result_emits_updated_tool_output_and_logs_measured_s
     ).fetchall()
     conn.close()
     assert len(rows) == 1
-    assert rows[0][0] == "tool_archive"
+    assert rows[0][0] == "builtin_grep"
     assert rows[0][1] > 0
     assert f"replaced Grep ({len(grep_text):,} chars ->" in rows[0][2]
+
+
+def test_measured_features_appear_in_savings_json_labels_limits_and_dashboard(tmp_path, monkeypatch):
+    """ADDENDUM: builtin_grep & builtin_glob appear in savings JSON with human labels, limits, and dashboard."""
+    from datetime import datetime, timezone
+    import measure
+    from _measure import feature_health, savings
+
+    trends_db = tmp_path / "trends.db"
+    monkeypatch.setattr(measure, "SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(measure, "TRENDS_DB", trends_db)
+
+    conn = measure._init_trends_db()
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    try:
+        conn.execute(
+            "INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, detail, session_id, model) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (now_iso, "builtin_grep", 1200, 0.0036, "replaced Grep (10,000 chars -> 6,040 chars)", "real-sess-1", "claude-sonnet-4-6"),
+        )
+        conn.execute(
+            "INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, detail, session_id, model) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (now_iso, "builtin_glob", 900, 0.0027, "replaced Glob (7,000 chars -> 4,030 chars)", "real-sess-1", "claude-sonnet-4-6"),
+        )
+        conn.commit()
+
+        # Plan-limits headroom floor (_runway_saved_tokens) includes both measured features.
+        runway_tokens = savings._runway_saved_tokens(conn, "2020-01-01T00:00:00")
+        assert runway_tokens >= 2100
+    finally:
+        conn.close()
+
+    # Savings summary JSON (measure.py savings --json) includes both with human labels.
+    summary = measure._get_merged_savings(days=30)
+    by_cat = summary["by_category"]
+    assert "builtin_grep" in by_cat
+    assert "builtin_glob" in by_cat
+    assert by_cat["builtin_grep"]["label"] == "Built-in Grep compression"
+    assert by_cat["builtin_glob"]["label"] == "Built-in Glob compression"
+    assert by_cat["builtin_grep"]["tokens_saved"] == 1200
+    assert by_cat["builtin_glob"]["tokens_saved"] == 900
+    assert summary["total_tokens"] >= 2100
+
+    # Registered in counted event types, feature health, dashboard assets, and METHODOLOGY.md.
+    assert "builtin_grep" in measure._COUNTED_SE_EVENT_TYPES
+    assert "builtin_glob" in measure._COUNTED_SE_EVENT_TYPES
+    assert "builtin_grep" not in measure._RUNWAY_ESTIMATED_EVENT_TYPES
+    assert "builtin_glob" not in measure._RUNWAY_ESTIMATED_EVENT_TYPES
+    fh_keys = {f[0] for f in feature_health.FEATURES}
+    assert {"builtin_grep", "builtin_glob"}.issubset(fh_keys)
+
+    story_js = (REPO_ROOT / "skills" / "token-optimizer" / "assets" / "savings_story.js").read_text(encoding="utf-8")
+    dash_html = (REPO_ROOT / "skills" / "token-optimizer" / "assets" / "dashboard.html").read_text(encoding="utf-8")
+    methodology = (REPO_ROOT / "docs" / "METHODOLOGY.md").read_text(encoding="utf-8")
+    for text in (story_js, dash_html):
+        assert "builtin_grep" in text and "Built-in Grep compression" in text
+        assert "builtin_glob" in text and "Built-in Glob compression" in text
+    assert "builtin_grep" in methodology and "builtin_glob" in methodology
 
 
 def test_benchmark_builtin_tool_fixtures_all_pass():

@@ -41,6 +41,8 @@ FEATURES = (
     ("hint_followed", "Followed hints", "savings_events", "event_type", ("hint_followed",), False),
     ("first_read_skeleton", "First-read skeleton", "compression_events", "feature", ("first_read_skeleton",), False),
     ("tool_archive", "Tool output archive", "savings_events", "event_type", ("tool_archive",), False),
+    ("builtin_grep", "Built-in Grep compression", "savings_events", "event_type", ("builtin_grep",), False),
+    ("builtin_glob", "Built-in Glob compression", "savings_events", "event_type", ("builtin_glob",), False),
     # Per-command bash categories were folded into one pipeline over time;
     # grouping them keeps that rename from reading as an outage.
     ("bash_compression", "Bash compression", "compression_events", "feature", ("bash_compress_", "bash_generic"), True),

@@ -71,11 +71,25 @@ def test_hooks_config_uses_pre_tool_matcher_and_flat_lifecycle(ai, tmp_path):
 def test_hooks_config_skips_pre_tool_use_on_windows(ai, tmp_path, monkeypatch):
     """Issue #350: the PreToolUse bridge never rewrites on Windows, so it is
     not registered there (no per-command Python launch, nothing to deny)."""
-    monkeypatch.setattr(ai, "_is_windows", lambda: True)
+    monkeypatch.setattr(ai, "_is_windows", lambda: True, raising=False)
     h = ai._hooks_config(tmp_path / "bridge.py")["token-optimizer"]
     assert "PreToolUse" not in h
     assert h["PreInvocation"][0]["type"] == "command"
     assert h["Stop"][0]["type"] == "command"
+
+
+def test_reinstall_on_windows_removes_stale_pre_tool_use(ai, tmp_path, monkeypatch):
+    """Issue #350: an install made before the fix registered PreToolUse on
+    Windows; running antigravity-install again must drop that registration."""
+    monkeypatch.setattr(ai, "_is_windows", lambda: False, raising=False)
+    ai.install(home=tmp_path)
+    hooks = ai.plugin_dir(tmp_path) / "hooks.json"
+    assert "PreToolUse" in json.loads(hooks.read_text(encoding="utf-8"))["token-optimizer"]
+    monkeypatch.setattr(ai, "_is_windows", lambda: True, raising=False)
+    ai.install(home=tmp_path)
+    group = json.loads(hooks.read_text(encoding="utf-8"))["token-optimizer"]
+    assert "PreToolUse" not in group
+    assert {"PreInvocation", "Stop"} <= set(group)
 
 
 def test_hooks_config_pre_tool_timeout_bounded(ai, tmp_path):

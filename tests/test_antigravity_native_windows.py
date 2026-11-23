@@ -22,7 +22,7 @@ def _install_as_windows(tmp_path, monkeypatch):
     # is switched to Windows; install() itself has no Windows-specific branch.
     import adapter_hook_command
     monkeypatch.setattr(adapter_hook_command, "_is_windows", lambda _w: True)
-    monkeypatch.setattr(ai, "_is_windows", lambda: True)
+    monkeypatch.setattr(ai, "_is_windows", lambda: True, raising=False)
     ai.install(home=tmp_path)
     return ai
 

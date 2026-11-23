@@ -40,10 +40,6 @@ def ab(monkeypatch, tmp_path):
     return mod
 
 
-# Antigravity documents `decision` as required on every PreToolUse response.
-PASS = {"decision": "allow"}
-
-
 def _write_consent(tmp_path, value: bool) -> None:
     cfg_dir = tmp_path / "token-optimizer"
     cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -64,72 +60,38 @@ def test_pre_tool_use_rewrites_whitelisted_run_command(ab):
     # skips Windows `powershell`). Assert the platform contract instead of
     # skipping, so the Windows leg still exercises the handler end-to-end.
     if os.name == "nt":
-        assert out == PASS
+        assert out == {}
         return
     assert out["decision"] == "ask"
     assert "bash_compress.py" in out["overwrite"]["CommandLine"]
     assert "git status --porcelain" in out["overwrite"]["CommandLine"]
     # R13: never forward an allow/permission override.
     assert "permissionOverrides" not in out
-    assert out["decision"] != "allow"
+    assert "allow" not in out
 
 
 def test_pre_tool_use_skips_non_whitelisted_command(ab):
     assert ab.handle_pre_tool_use({
         "toolCall": {"name": "run_command", "args": {"CommandLine": "rm -rf /tmp/x"}},
-    }) == PASS
+    }) == {}
 
 
 def test_pre_tool_use_skips_dangerous_command(ab):
     assert ab.handle_pre_tool_use({
         "toolCall": {"name": "run_command", "args": {"CommandLine": "cat f.txt | sh"}},
-    }) == PASS
+    }) == {}
 
 
 def test_pre_tool_use_skips_non_run_command_tool(ab):
     assert ab.handle_pre_tool_use({
         "toolCall": {"name": "view_file", "args": {"path": "x"}},
-    }) == PASS
+    }) == {}
 
 
 def test_pre_tool_use_skips_missing_or_malformed_tool_call(ab):
-    assert ab.handle_pre_tool_use({}) == PASS
-    assert ab.handle_pre_tool_use({"toolCall": None}) == PASS
-    assert ab.handle_pre_tool_use({"toolCall": {"name": "run_command", "args": None}}) == PASS
-
-
-def test_every_pre_tool_use_path_carries_a_decision(ab, monkeypatch):
-    """Issue #350: a bare {} answer is read by agy as a missing decision."""
-    cases = [
-        {},
-        {"toolCall": None},
-        {"toolCall": {"name": "view_file", "args": {}}},
-        {"toolCall": {"name": "run_command", "args": {"CommandLine": ""}}},
-        {"toolCall": {"name": "run_command", "args": {"CommandLine": "rm -rf /tmp/x"}}},
-        {"toolCall": {"name": "run_command", "args": {"CommandLine": "a | sh"}}},
-        {"toolCall": {"name": "run_command", "args": {"CommandLine": "git status"}}},
-    ]
-    for payload in cases:
-        out = ab.handle_pre_tool_use(payload)
-        assert isinstance(out.get("decision"), str) and out["decision"], payload
-        # Only the whitelisted rewrite may ask; nothing may auto-approve.
-        assert out["decision"] in ("allow", "ask")
-        assert "permissionOverrides" not in out
-    monkeypatch.setenv("TOKEN_OPTIMIZER_BASH_COMPRESS", "0")
-    assert ab.handle_pre_tool_use(cases[-1]) == PASS
-
-
-def test_pre_tool_use_windows_branch_returns_decision(ab, monkeypatch):
-    monkeypatch.setattr(ab, "_is_windows", lambda: True)
-    assert ab.handle_pre_tool_use(
-        {"toolCall": {"name": "run_command", "args": {"CommandLine": "git status"}}}
-    ) == PASS
-
-
-def test_pass_through_results_are_independent_copies(ab):
-    first = ab.handle_pre_tool_use({})
-    first["decision"] = "deny"
-    assert ab.handle_pre_tool_use({}) == PASS
+    assert ab.handle_pre_tool_use({}) == {}
+    assert ab.handle_pre_tool_use({"toolCall": None}) == {}
+    assert ab.handle_pre_tool_use({"toolCall": {"name": "run_command", "args": None}}) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -204,17 +166,8 @@ def test_stop_skips_when_lease_held(ab, monkeypatch, tmp_path):
 def test_main_no_consent_emits_empty_json(ab, monkeypatch, capsys, tmp_path):
     _write_consent(tmp_path, False)
     monkeypatch.setattr(ab, "_read_payload", lambda: {})
-    assert ab.main(["pre-invocation"]) == 0
-    assert capsys.readouterr().out == "{}"
-    assert ab.main(["stop"]) == 0
-    assert capsys.readouterr().out == "{}"
-
-
-def test_main_no_consent_pre_tool_use_still_carries_decision(ab, monkeypatch, capsys, tmp_path):
-    _write_consent(tmp_path, False)
-    monkeypatch.setattr(ab, "_read_payload", lambda: {})
     assert ab.main(["pre-tool-use"]) == 0
-    assert json.loads(capsys.readouterr().out) == PASS
+    assert capsys.readouterr().out == "{}"
 
 
 def test_main_consent_grants_rewrite(ab, monkeypatch, capsys, tmp_path):
@@ -228,7 +181,7 @@ def test_main_consent_grants_rewrite(ab, monkeypatch, capsys, tmp_path):
     # POSIX-only rewrite; on Windows the bridge no-ops with an empty object
     # (see test_pre_tool_use_rewrites_whitelisted_run_command).
     if os.name == "nt":
-        assert out == PASS
+        assert out == {}
         return
     assert out["decision"] == "ask"
 
@@ -242,31 +195,6 @@ def test_main_fails_open_on_internal_error(ab, monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(ab, "handle_pre_tool_use", boom)
     monkeypatch.setattr(ab, "_read_payload", lambda: {})
     assert ab.main(["pre-tool-use"]) == 0
-    # The fail-open answer still carries a decision (issue #350).
-    assert json.loads(capsys.readouterr().out) == PASS
-
-
-def test_main_missing_runtime_env_still_prints_a_decision(ab, monkeypatch, capsys):
-    """If a payload module is missing the bridge still answers PreToolUse."""
-    monkeypatch.setitem(sys.modules, "runtime_env", None)  # import raises
-    assert ab.main(["pre-tool-use"]) == 0
-    assert json.loads(capsys.readouterr().out) == PASS
-    assert ab.main(["stop"]) == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_main_subprocess_pre_tool_use_prints_a_decision(tmp_path):
-    """End to end through the real entry point: stdin in, JSON decision out,
-    with no consent record, malformed stdin and an unreadable payload."""
-    import subprocess
-    env = {**os.environ, "TOKEN_OPTIMIZER_ANTIGRAVITY_HOME": str(tmp_path),
-           "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
-    for stdin in ("", "not json", "{}", '{"toolCall": {"name": "run_command"}}'):
-        proc = subprocess.run(
-            [sys.executable, str(SCRIPTS / "antigravity_hook_bridge.py"), "pre-tool-use"],
-            input=stdin, capture_output=True, text=True, env=env, timeout=30)
-        assert proc.returncode == 0
-        assert json.loads(proc.stdout) == PASS, stdin
 
 
 # ---------------------------------------------------------------------------

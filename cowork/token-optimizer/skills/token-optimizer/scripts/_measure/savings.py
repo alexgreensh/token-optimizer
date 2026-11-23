@@ -2386,7 +2386,8 @@ def runway_snapshot(days=None, now=None, token_headline=None):
                     merged_ctx = float(wm.get("total_cost_usd", 0.0) or 0.0)
                     rt = float((wm.get("model_routing") or {}).get("realized_cost_usd", 0.0) or 0.0)
                     repriced = bool(wm.get("repriced_to_session_mix"))
-                    est_add = max(0.0, float((wm.get("resume_lean_verified") or {}).get("cost_saved_usd") or 0.0))
+                    est_add = (max(0.0, float((wm.get("resume_lean_verified") or {}).get("cost_saved_usd") or 0.0))
+                               + float((wm.get("cold_guard_estimated") or {}).get("cost_saved_usd") or 0.0))
                 except Exception:
                     pass
                 try:
@@ -2418,11 +2419,9 @@ def runway_snapshot(days=None, now=None, token_headline=None):
                     pass
                 if not counted_window:
                     ctx = merged_ctx
-                # Fold the estimated-tier levers back into the shown dollar. This
-                # flips the tier to "estimated" (est_added below) -- honest: the
-                # trigger is counterfactual even though the magnitude is metered.
+                # A signed adjustment makes the window total an estimate.
                 ctx += est_add
-                est_added = est_add > 0.0
+                est_added = est_add != 0.0
                 # The full-workload figure replaces the metered sum only when it
                 # is larger: a flat or negative workload month must never hide
                 # savings that were actually measured this week.
@@ -5888,7 +5887,8 @@ def _action_savings_components(summary, reread=None):
     Observed hints replace the retrieval estimate as soon as a hint fires.
     Opportunity and the separate whole-workload comparison are not additive.
     """
-    _measure_facade = _compat.facade(); from . import mod_fresh_booking
+    from . import mod_fresh_booking, savings_story
+    _measure_facade = _compat.facade()
     estimates = {
         key: (0.0 if key in ("verbosity_steer", "verbosity_output_estimated", "resume_lean_estimated", "checkpoint_restore_estimated") else float((((summary.get("structural_detail") or {}).get("estimated") if key == "structural_estimated" else summary.get(key)) or {}).get("cost_saved_usd", 0) or 0))
         for key in (
@@ -5897,14 +5897,15 @@ def _action_savings_components(summary, reread=None):
             "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated", "keepwarm_estimated",
         )
     }
-    if summary.get("nudge_followed") is not None: estimates["nudge_followed"] = float((summary.get("nudge_followed") or {}).get("cost_saved_usd", 0) or 0)
+    for key in ("nudge_followed", "cold_guard_estimated"):
+        if summary.get(key) is not None:
+            estimates[key] = float(summary[key].get("cost_saved_usd") or 0)
     overhead = ((summary.get("session_effect") or {}).get("overhead") or {}); estimates["mod_fresh_estimated"] = mod_fresh_booking.additive(summary.get("mod_fresh_estimated"), summary.get("handover_rerun"))
     estimates["expand_overhead"] = -max(0.0, float(overhead.get("expand_usd") or 0))
     hints = summary.get("hint_followed") or {}
     avoided_source = "hint_followed" if int(hints.get("events") or 0) > 0 else "retrieval_serve"
     estimates[avoided_source] = float(
         (summary.get(avoided_source) or {}).get("cost_saved_usd", 0) or 0)
-    from . import savings_story
     logged = float(summary.get("total_cost_usd", 0) or 0) - savings_story.verbosity_logged(summary)
     routing_data = summary.get("model_routing") or {}
     routing = float(routing_data.get("realized_cost_usd", 0) or 0)
@@ -5954,19 +5955,17 @@ def _get_merged_savings(days=None, since=None):
     come from compression_events. If a key somehow appears in both, savings_events
     wins — compression_events rows are skipped for that key.
     """
+    from . import cold_guard
     _measure_facade = _compat.facade()
     since = since or savings_story.install_anchor()
     savings = _measure_facade._get_savings_summary(days=days, since=since)
     compression = _measure_facade._get_compression_summary(days=days, since=since)
-
     by_category = dict(savings.get("by_category", {}))
     total_tokens = int(savings.get("total_tokens", 0) or 0)
     total_cost = float(savings.get("total_cost_usd", 0.0) or 0.0)
     total_events = int(savings.get("total_events", 0) or 0)
 
-    # The compression summary prices each row using its model or session mix.
     fallback_cost_per_mtok = _measure_facade._estimate_compression_cost_per_mtok()
-
     _add_tok, _add_cost, _add_events = _measure_facade._merge_v5_compression(
         by_category, compression.get("by_feature", {}), fallback_cost_per_mtok)
     total_tokens += _add_tok
@@ -6093,6 +6092,7 @@ def _get_merged_savings(days=None, since=None):
         "progressive_disclosure": _measure_facade._progressive_disclosure_summary(days=days),
         # A1: one-time first-trim, surfaced separately, never in the realized total.
         "one_time_setup": savings.get("one_time_setup"), "keepwarm_estimated": savings.get("keepwarm_estimated"), "mod_fresh_estimated": savings.get("mod_fresh_estimated"), "mod_compaction_actions": savings.get("mod_compaction_actions"),
+        cold_guard.ESTIMATE_KEY: cold_guard.estimate(_measure_facade, days=days, since=since),
         # U-G: deterministically-triggered avoided-search from proactive hints
         # (observed hint->read), estimated magnitude. Estimated tier, never realized.
         "hint_followed": savings.get("hint_followed_estimated"), "nudge_followed": savings.get("nudge_followed"),
@@ -6159,7 +6159,7 @@ def _savings_since_install():
             float((full.get(k) or {}).get("cost_saved_usd", 0) or 0)
             for k in (
                 "behavioral_estimate", "uncaptured_runtime", "contamination_exit",
-                "handover_rerun", "resume_lean_verified", "keepwarm_estimated", "nudge_followed",
+                "handover_rerun", "resume_lean_verified", "keepwarm_estimated", "nudge_followed", "cold_guard_estimated",
             )
         ) + mod_fresh_booking.additive(full.get("mod_fresh_estimated"), full.get("handover_rerun"))
         # Avoided-search: prefer hint_followed once any hint has fired, else retrieval_serve.
@@ -6328,10 +6328,11 @@ def _reread_savings_for_window(days):
 
 def savings_report(days=None, as_json=None):
     """Display savings from logged actions and the counted repeat-read cohort."""
+    from . import cold_guard
     _measure_facade = _compat.facade()
     summary = _measure_facade._get_merged_savings(days=days)
-    # Use the same stored removal cohort as the dashboard. Its counted benefit
-    # survives transcript rotation and never needs another transcript walk.
+    cold_guard.on_savings_refresh(_measure_facade, summary)
+    # Use the dashboard's stored removal cohort, which survives transcript rotation.
     try:
         summary["counted_period"] = _measure_facade._counted_cumulative_summary(days=days)
     except Exception:
@@ -6341,7 +6342,6 @@ def savings_report(days=None, as_json=None):
     _measure_facade._apply_counted_oneshot_pricing(summary, summary["counted_period"])
     summary["action_savings"] = _measure_facade._action_savings_components(
         summary, summary["reread_avoided"])
-
     if as_json:
         print(_measure_facade.json.dumps(summary, indent=2))
         return
@@ -6713,7 +6713,7 @@ def savings_report(days=None, as_json=None):
             label = "retrieval"
         print(f"  + est. avoided search ({label}): ~${_money(_est_cents[avoided_source])}{per} "
               f"({detail}) [estimated]")
-
+    cold_guard.print_estimate(summary, _est_cents, _money, per)
     print(f"  = ALL IN: ~${all_in}{per} (measured + modeled + estimated)")
     if routing_pending:
         print("  i  ALL IN leaves out model routing; the assumption stays separate.")

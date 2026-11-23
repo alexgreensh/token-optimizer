@@ -377,6 +377,17 @@ def plan_limits_summary(facade, conn, days, summary=None, counted=None, default_
             saved_units = saved_lu["units"]
 
     share_pct = round(saved_units / denom_units * 100.0, 4) if denom_units > 0 else None
+    from . import cold_guard
+    guard = (summary or {}).get(cold_guard.ESTIMATE_KEY)
+    if guard is None:
+        guard = cold_guard.estimate(facade, days=days)
+    estimated = {}
+    units = guard.get("limit_units_saved")
+    if guard.get("events") and units is not None:
+        estimated[cold_guard.ESTIMATE_KEY] = {
+            "label": guard["label"], "saved_units": units,
+            "share_pct": round(units / denom_units * 100.0, 4) if denom_units > 0 else None,
+        }
     return {
         "label": LIMIT_UNITS_LABEL,
         "share_pct": share_pct,
@@ -386,6 +397,7 @@ def plan_limits_summary(facade, conn, days, summary=None, counted=None, default_
         "diagnostic_fresh_plus_output_tokens": diag_fresh_out,
         "by_class": {k: round(v, 2) for k, v in by_class.items()},
         "reference_model": ref_model,
+        "estimated_by_feature": estimated,
     }
 
 

@@ -4597,6 +4597,7 @@ var DB = (function() {
       { key: 'handover_rerun', label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
       { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'trigger observed, size estimated' : rs.confidence },
       { key: 'checkpoint_restore_estimated', label: 'checkpoint restores (working-set re-reads)', amt: mo(cr.cost_saved_usd), n: Number(cr.events) || 0, unit: 'restores' },
+      { key: 'cold_guard_estimated', label: 'Cold-session guard', amt: mo((s.cold_guard_estimated || {}).cost_saved_usd), n: Number((s.cold_guard_estimated || {}).events) || 0, unit: 'fresh starts', conf: (s.cold_guard_estimated || {}).events ? 'net of handover writes' : undefined },
       { key: 'verbosity_steer', label: 'concise output nudges', amt: mo(vs.cost_saved_usd), n: Number(vs.events) || 0, unit: 'nudges' },
       { key: 'verbosity_output_estimated', label: 'shorter replies and their re-reads (net of un-nudged replies)', amt: mo(vo.cost_saved_usd), n: Number(vo.events) || 0, unit: 'calibrated nudges',
         conf: vo.basis === 'no_reduction_net_of_control' ? 'no reduction net of the control' : (vo.basis === 'not_measured' && vo.events ? 'NOT MEASURED: no un-nudged control yet' : undefined) }

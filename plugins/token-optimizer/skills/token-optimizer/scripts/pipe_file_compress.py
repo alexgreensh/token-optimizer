@@ -547,7 +547,12 @@ def compress_pipe(
         if orig_tok <= 0 or (1.0 - comp_tok / orig_tok) < MIN_REDUCTION_RATIO:
             return None
 
-        return compressed
+        from emit_safety_gate import gate_or_none as _emit_gate_none
+        return _emit_gate_none(
+            cleaned, compressed, feature=FEATURE_PIPE_COMPRESS,
+            tool_name="Bash", command=command, exit_code=returncode,
+            require_expand=False,
+        )
     except Exception:
         return None
 
@@ -868,6 +873,17 @@ def hook_try_pipe_compress(
     if comp is None:
         return None
     wrapped = archive_and_wrap(command, stdout, comp)
+    if wrapped is None:
+        return None
+    try:
+        from emit_safety_gate import gate_or_none as _emit_gate_none
+        wrapped = _emit_gate_none(
+            stdout, wrapped, feature=FEATURE_PIPE_COMPRESS,
+            tool_name="Bash", command=command, exit_code=exit_code,
+            require_expand=True,
+        )
+    except Exception:
+        wrapped = None
     if wrapped is None:
         return None
     from bash_compress import _strip_ansi

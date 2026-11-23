@@ -285,6 +285,16 @@ def _run(payload: dict) -> None:
             _is_cat, _cat_out = _try_cat(command, stdout, payload, _cat_sid, exit_code, stderr)
             if _is_cat:
                 if _cat_out is not None:
+                    try:
+                        from emit_safety_gate import gate_or_none as _emit_gate_none
+                        _cat_out = _emit_gate_none(
+                            stdout, _cat_out, feature=FEATURE_BASH_REREAD,
+                            tool_name="Bash", command=command, exit_code=exit_code,
+                            require_expand=True,
+                        )
+                    except Exception:
+                        _cat_out = None
+                if _cat_out is not None:
                     _log_event(command, stdout, _cat_out, feature=FEATURE_BASH_REREAD)
                     _cov("compressed", FEATURE_BASH_REREAD, "cat", stdout, _removed_tokens(stdout, _cat_out))
                     _emit_updated_tool_output(_cat_out, stderr, nudge=_nudge)
@@ -526,6 +536,19 @@ def _run(payload: dict) -> None:
             compressed = _enforce_baseline_invariant(compressed, stdout, _archive_key)
         except Exception:
             pass
+
+        # Final pre-emit safety gate: verify (a) critical lines, (b) declared
+        # count/place, (c) working expand pointer; fail-closed to raw stdout.
+        if compressed != stdout:
+            try:
+                from emit_safety_gate import gate_or_raw as _emit_gate
+                compressed = _emit_gate(
+                    stdout, compressed, feature=_log_feature,
+                    tool_name="Bash", command=command, exit_code=exit_code,
+                    require_expand=True,
+                )
+            except Exception:
+                compressed = stdout
 
         # If archive failed or baseline guard fell back to raw stdout, do not
         # emit updatedToolOutput or log a bogus compression event.
@@ -853,6 +876,16 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
             _build_feature = _extra_feat(command, cleaned_stdout) or "build_output_compress"
         except Exception:
             pass
+        try:
+            from emit_safety_gate import gate_or_none as _emit_gate_none
+            compressed = _emit_gate_none(
+                stdout, compressed, feature=_build_feature,
+                tool_name="Bash", command=command, require_expand=True,
+            )
+        except Exception:
+            compressed = None
+        if compressed is None:
+            return None
         _log_event(command, cleaned_stdout, compressed, feature=_build_feature)
 
         return compressed

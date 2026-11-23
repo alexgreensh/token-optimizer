@@ -545,6 +545,13 @@ def handle_post_tool_use(
             compressed = _enforce_baseline_invariant(compressed, stdout, archive_key)
         except Exception:
             pass
+        from emit_safety_gate import gate_or_none as _emit_gate
+        compressed = _emit_gate(
+            stdout, compressed, feature=FEATURE_NAME,
+            tool_name="Bash", command=command, require_expand=True,
+        )
+        if compressed is None:
+            return None, ""
         return compressed, _strip_ansi(stdout)
     except Exception:
         return None, ""

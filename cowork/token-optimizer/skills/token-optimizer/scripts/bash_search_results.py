@@ -185,7 +185,7 @@ def render_search_results(files, no_file, command_str: str = ""):
         if result:
             result.append("")
         result.append(
-            f"[Folded noisy matches: {folded_total_matches} matches across "
+            f"[Folded noisy matches: {folded_total_matches} matches collapsed across "
             f"{folded_total_files} files in {len(folded)} folder(s) "
             f"(not explicitly targeted):]"
         )

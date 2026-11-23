@@ -918,19 +918,24 @@ def compress_mypy(output: str) -> str | None:
 def compress_for_pattern(pattern: str, output: str, command_str: str = "") -> str | None:
     """Dispatch an extra pattern name to its structured compressor."""
     try:
+        res: str | None = None
         if pattern == "git_ls":
-            return compress_git_ls(output, command_str)
-        if pattern == "gh_run_log":
-            return compress_gh_run_log(output)
-        if pattern == "gh_list":
-            return compress_gh_list(output)
-        if pattern == "terraform_plan":
-            return compress_terraform_plan(output)
-        if pattern == "pkg_install":
-            return compress_package_install(output)
-        if pattern == "mypy":
-            return compress_mypy(output)
-        return None
+            res = compress_git_ls(output, command_str)
+        elif pattern == "gh_run_log":
+            res = compress_gh_run_log(output)
+        elif pattern == "gh_list":
+            res = compress_gh_list(output)
+        elif pattern == "terraform_plan":
+            res = compress_terraform_plan(output)
+        elif pattern == "pkg_install":
+            res = compress_package_install(output)
+        elif pattern == "mypy":
+            res = compress_mypy(output)
+        if res is None:
+            return None
+        from emit_safety_gate import gate_or_none as _emit_gate
+        feat = feature_for_command(command_str, output) or pattern
+        return _emit_gate(output, res, feature=feat, tool_name="Bash", command=command_str, require_expand=False)
     except Exception:
         return None
 

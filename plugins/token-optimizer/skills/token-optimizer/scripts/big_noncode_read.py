@@ -597,7 +597,7 @@ def _preview_json_data(content: str, file_path: str, lines: list[str]) -> tuple[
             for i, item in enumerate(data[:3]):
                 out.append(f"  [{i}]: {_clip_line(json.dumps(item, ensure_ascii=False), 240)}")
             if len(data) > 5:
-                out.append(f"  ... ({len(data) - 5:,} items omitted) ...")
+                out.append(f"  ... ({len(data) - 5:,} items omitted in middle) ...")
                 out.append("Last items:")
                 for i in range(len(data) - 2, len(data)):
                     out.append(f"  [{i}]: {_clip_line(json.dumps(data[i], ensure_ascii=False), 240)}")
@@ -641,7 +641,7 @@ def _preview_minified(content: str, file_path: str, lines: list[str]) -> tuple[s
                 if sources:
                     sample = ", ".join(str(s) for s in sources[:15])
                     more = f" (+{len(sources) - 15:,} more)" if len(sources) > 15 else ""
-                    out.append(f"Sources: {sample}{more}")
+                    out.append(f"Sources in {Path(file_path).name}: {sample}{more}")
                 return "\n".join(out), 1
         except Exception:
             pass
@@ -800,6 +800,9 @@ def build_big_noncode_preview(
 
     if len(preview_text) > max_chars:
         # Never silently truncate away log/SARIF error lines; fail open instead.
+        return None
+    from emit_safety_gate import gate_or_none as _emit_gate
+    if _emit_gate(content, preview_text, feature=FEATURE_NAME, tool_name="Read", require_expand=bool(archive_key)) is None:
         return None
 
     reason = (

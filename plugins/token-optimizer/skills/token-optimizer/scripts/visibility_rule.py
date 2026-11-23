@@ -233,8 +233,7 @@ _ANY_DECLARED_HIDE_RE = re.compile(
     r"\b\d+\s+(?:more\s+)?(?:lines?|matches?|files?|items?|entries)\s+(?:omitted|hidden|archived|truncated)\b|"
     r"\[Folded noisy matches:\s*\d+|"
     r"\[large_output_policy:\s*\d+\s+of\s+\d+\s+lines\s+hidden|"
-    r"plus\s+\d+\s+more\s+files\s+with\s+matches|"
-    r"omitted body lines"
+    r"plus\s+\d+\s+more\s+files\s+with\s+matches"
     r")"
 )
 _ARCHIVE_POINTER_START = "\n\n[Full result archived ("

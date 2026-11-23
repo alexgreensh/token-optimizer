@@ -363,7 +363,7 @@ def test_v3_repo_name_policy_covers_current_sources_and_dependencies():
                 # pipeline analyzer and compression log sit inside try/except and degrade to no-ops.
                 # bash_compress.py: the go/cargo/node test compressor is optional; on ImportError the
                 # generic pytest-style summary path runs instead.
-                lazy={'bash_compress.py':{'archive_result','measure','go_cargo_test_compress','command_compress_extra','visibility_rule'},
+                lazy={'bash_compress.py':{'archive_result','measure','go_cargo_test_compress','command_compress_extra','visibility_rule','emit_safety_gate'},
                       'bash_search_results.py':{'visibility_rule'},
                       'preserved_reinject.py':{'visibility_rule'},
                       'post_run_classify.py':{'build_output_compress','pipeline_analyzer','compression_log'}}

@@ -61,6 +61,7 @@ _PAYLOAD_MODULES = (
     "bash_search_results.py",
     "command_compress_extra.py",
     "visibility_rule.py",
+    "emit_safety_gate.py",
     # Dependency-free whitelist gate shared by bash_hook + bash_compress.
     # Without it, `import bash_hook` fails in the installed path, the bridge
     # sets _bash_hook = None, and the entire PreToolUse bash compression

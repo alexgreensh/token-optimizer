@@ -539,6 +539,12 @@ def build_builtin_updated_output(
             rep_field_chars = len(new_content)
             if not _passes_savings_gate(orig_field_chars, rep_field_chars, min_ratio=min_ratio):
                 return None
+            try:
+                from emit_safety_gate import gate_or_none as _emit_gate
+                if _emit_gate(safe_content, new_content, feature="builtin_grep", tool_name="Grep", require_expand=True) is None:
+                    return None
+            except Exception:
+                return None
             updated = dict(raw_response)
             updated["content"] = new_content
             return updated, orig_field_chars, rep_field_chars
@@ -557,6 +563,12 @@ def build_builtin_updated_output(
             orig_field_chars = sum(len(str(f)) + 1 for f in filenames)
             rep_field_chars = sum(len(ln) + 1 for ln in new_filenames)
             if not _passes_savings_gate(orig_field_chars, rep_field_chars, min_ratio=MIN_GLOB_SAVINGS_RATIO):
+                return None
+            try:
+                from emit_safety_gate import gate_or_none as _emit_gate
+                if _emit_gate("\n".join(safe_names), "\n".join(new_filenames), feature="builtin_grep", tool_name="Grep", require_expand=True) is None:
+                    return None
+            except Exception:
                 return None
             updated = dict(raw_response)
             updated["filenames"] = new_filenames
@@ -586,6 +598,12 @@ def build_builtin_updated_output(
         orig_field_chars = sum(len(str(f)) + 1 for f in filenames)
         rep_field_chars = sum(len(ln) + 1 for ln in new_filenames)
         if not _passes_savings_gate(orig_field_chars, rep_field_chars, min_ratio=MIN_GLOB_SAVINGS_RATIO):
+            return None
+        try:
+            from emit_safety_gate import gate_or_none as _emit_gate
+            if _emit_gate("\n".join(safe_names), "\n".join(new_filenames), feature="builtin_glob", tool_name="Glob", require_expand=True) is None:
+                return None
+        except Exception:
             return None
         updated = dict(raw_response)
         updated["filenames"] = new_filenames

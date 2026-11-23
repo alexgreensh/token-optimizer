@@ -70,6 +70,7 @@ _ENGINE_SCRIPTS = (
     "bash_compress_hook.py",
     "command_compress_extra.py",
     "visibility_rule.py",
+    "emit_safety_gate.py",
     "bash_rerun_dedupe.py",
     "pipe_file_compress.py",
     "large_output_policy.py",

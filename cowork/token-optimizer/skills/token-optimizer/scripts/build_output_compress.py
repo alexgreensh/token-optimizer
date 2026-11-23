@@ -797,7 +797,8 @@ def compress(command: str, output: str) -> str | None:
             # the input, which defeats the purpose of compression. Prefer
             # the original (return None) in that case.
             if result != output and len(result) < len(output):
-                return result
+                from emit_safety_gate import gate_or_none as _emit_gate
+                return _emit_gate(output, result, feature="build_output_compress", tool_name="Bash", command=command, require_expand=False)
             return None
 
         # --- assemble the compressed output ---
@@ -844,6 +845,7 @@ def compress(command: str, output: str) -> str | None:
         if len(compressed) >= len(output):
             return None
 
-        return compressed
+        from emit_safety_gate import gate_or_none as _emit_gate
+        return _emit_gate(output, compressed, feature="build_output_compress", tool_name="Bash", command=command, require_expand=False)
     except Exception:
         return None

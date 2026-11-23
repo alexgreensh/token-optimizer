@@ -486,11 +486,14 @@ def _compress_git_log(output):
     # Recount from the text that will actually be delivered.
     if _GIT_LOG_OUT_HASH_RE.findall(body_text) != [h[:_GIT_LOG_SHORT] for h in input_hashes]:
         return output
+    raw_lines = output.splitlines()
+    omitted_cnt = sum(1 for ln in raw_lines if ln.strip() and ln.strip() not in body_text)
+    omit_note = f" ({omitted_cnt} lines omitted in lines 1-{len(raw_lines)})" if omitted_cnt else ""
     header = (f"[git log: {_plural(len(commits), 'commit', 'commits')}, one line each: "
               f"{_GIT_LOG_SHORT}-char hash, date, author, subject. "
               f"Text in [ ] counts omitted body lines and trailers and names co-authors; "
               f"text in ( ) is branch/tag decoration. Author emails and message bodies are "
-              f"omitted; the full original output is recoverable.]")
+              f"omitted{omit_note}; the full original output is recoverable.]")
     return header + "\n" + body_text
 
 
@@ -680,6 +683,7 @@ def _compress_find(output, command_str=None):
 
     out = []
     collapsed = False
+    collapsed_total = 0
     if special:
         out.append("= " + " ".join(_find_name(s) for s in special))
     for parent in sorted(groups):
@@ -693,10 +697,12 @@ def _compress_find(output, command_str=None):
             out.append(_find_name(label) + " " + " ".join(_find_name(n) for n in disp))
         else:
             collapsed = True
+            collapsed_total += len(names)
             out.append(_find_summary(label, names))
     for root in sorted(noise_roots):
         collapsed = True
         members = noise_roots[root]
+        collapsed_total += len(members)
         named = [m for m in members if m]
         out.append(_find_summary(root + "/", named, unit="path collapsed",
                                  unit_many="paths collapsed", count=len(members)))
@@ -705,7 +711,8 @@ def _compress_find(output, command_str=None):
     if special:
         head += " A line starting with = lists top-level paths such as the search root itself."
     if collapsed:
-        head += (" Lines starting with * are collapsed groups: they show a count, a type "
+        head += (f" Lines starting with * are collapsed groups ({collapsed_total} files collapsed "
+                 "in collapsed groups): they show a count, a type "
                  "breakdown and a few example names only, not every entry.")
     head += " The full original output is recoverable.]"
     result = head + "\n" + "\n".join(out)
@@ -2164,6 +2171,36 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     if original_tokens > 0 and (1.0 - compressed_tokens / original_tokens) < 0.10:
         return cleaned  # not worth the risk
 
+    _gate_feat = (
+        "bash_search_noise_fold"
+        if (_is_search and "[Folded noisy matches:" in compressed)
+        else (_call_extra("feature_for_command", command_str, cleaned) or "bash_compress_pipeline")
+    )
+    try:
+        from visibility_rule import enforce_visibility_and_exact_hidden as _vis_guard
+    except ImportError:
+        _vis_guard = None
+    if _vis_guard is not None:
+        try:
+            compressed = _vis_guard(
+                cleaned, compressed, is_search=_is_search,
+                skip_hidden_check=(pattern in ("find", "git_log") or _gate_feat in ("cmd_git_diff_stat", "cmd_git_ls")),
+            )
+        except Exception:
+            pass
+    try:
+        from emit_safety_gate import gate_or_raw as _safety_gate
+    except ImportError:
+        _safety_gate = None
+    if _safety_gate is not None:
+        try:
+            compressed = _safety_gate(
+                cleaned, compressed, feature=_gate_feat, tool_name="Bash",
+                command=command_str, exit_code=returncode, require_expand=False,
+            )
+        except Exception:
+            return raw_output
+
     return compressed
 
 
@@ -2276,6 +2313,20 @@ def main():
                 _archive_key = None
         if _archive_key is None and compressed != raw_output:
             compressed = raw_output
+        if compressed != raw_output:
+            try:
+                from emit_safety_gate import gate_or_raw as _safety_gate
+            except ImportError:
+                _safety_gate = None
+            if _safety_gate is not None:
+                try:
+                    compressed = _safety_gate(
+                        raw_output, compressed, feature="bash_compress_pipeline",
+                        tool_name="Bash", command=command_str, exit_code=result.returncode,
+                        require_expand=True,
+                    )
+                except Exception:
+                    compressed = raw_output
 
         # Record savings to trends.db if compression was meaningful
         try:

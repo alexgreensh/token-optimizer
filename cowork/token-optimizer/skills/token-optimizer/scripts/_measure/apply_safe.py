@@ -266,7 +266,7 @@ def apply(facade, plan, selected_ids, token):
                     row['trim_id'] = trim['id']
             elif kind == 'autocompact_window':
                 result = autocompact_advice.apply_item(facade, item)
-                row.update(ok=bool(result.get('ok')), undo_action='restore_window', before=result.get('before'), after=result.get('after'), setting=result)
+                row.update(ok=bool(result.get('ok')), undo_action='restore_window', before=result.get('before'), after=result.get('after'), setting=result, main_model=item.get('model'), previous_window=item.get('current'), applied_at=datetime.now().isoformat())
             elif kind in ('cold_guard', 'keepwarm_auto'):
                 from importlib import import_module
                 module = import_module('.' + kind, __package__)

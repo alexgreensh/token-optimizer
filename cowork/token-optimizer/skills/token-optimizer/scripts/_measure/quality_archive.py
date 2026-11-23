@@ -2919,13 +2919,13 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name=None,
         tokens = _measure_facade._estimate_tokens(fresh_text)
         if tokens <= 0:
             return
-        # The tool name lets the counted views treat a media re-expansion the
-        # same way as its media archive row.
+        # Record media-aware tool name and debit next-request expand_round_trip if on record.
         name = _measure_facade.re.sub(r"[^A-Za-z0-9_.:-]", "", str(tool_name or ""))[:120]
         detail = f"{tool_use_id} ({name})" if name else tool_use_id
         if requested_bounded or debited != wanted:
             detail += " chars " + ",".join(f"{s}-{e}" for s, e in debited)
         _measure_facade._log_savings_event("tool_archive_reexpand", tokens, session_id=sid, detail=detail)
+        from . import limit_units as _lu; _lu.log_expand_round_trip(_measure_facade, sid, tool_use_id, feature=name or "tool_archive")
     except Exception:
         pass
 
@@ -6826,10 +6826,10 @@ def run_verbosity_steer(transcript_path=None, quiet=None, session_id=None):
     Suppressed when a concise outputStyle is active. Cooldown: max 3 nudges/session, 5 min apart.
     """
     _measure_facade = _compat.facade()
+    if _measure_facade.os.environ.get("TOKEN_OPTIMIZER_VERBOSITY_STEER", "").strip() != "1": return ""
     try:
         from . import subscription_audits as _sub_audits
-        if _sub_audits.is_concise_output_style_active(_measure_facade):
-            return ""
+        if _sub_audits.is_concise_output_style_active(_measure_facade): return ""
         filepath = None
         # Whether this transcript was told to us or inferred. _find_current_session_jsonl()
         # returns the most recently active transcript, which on a brand-new session

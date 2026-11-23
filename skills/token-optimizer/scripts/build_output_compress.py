@@ -536,7 +536,7 @@ def _collapse_identical_runs(lines: list[str]) -> list[str]:
         while i + run < len(lines) and lines[i + run] == current:
             run += 1
         if run > 1:
-            result.append(f"{current}  [{run} identical lines collapsed (lines {i + 1}-{i + run})]")
+            result.append(f"{current}  [{run} identical lines collapsed]")
         else:
             result.append(current)
         i += run
@@ -800,6 +800,8 @@ def compress(command: str, output: str) -> str | None:
             # the input, which defeats the purpose of compression. Prefer
             # the original (return None) in that case.
             if result != output and len(result) < len(output):
+                if "identical lines collapsed]" in result and "(lines " not in result:
+                    result = f"[build output: identical lines collapsed (lines 1-{len(lines)})]\n" + result
                 from emit_safety_gate import gate_or_none as _emit_gate
                 return _emit_gate(output, result, feature="build_output_compress", tool_name="Bash", command=command, require_expand=False)
             return None
@@ -856,6 +858,8 @@ def compress(command: str, output: str) -> str | None:
             parts.insert(0, f"[build output: {noise_dropped} progress lines collapsed (lines {noise_first}-{noise_last})]")
 
         compressed = "\n".join(parts)
+        if "identical lines collapsed]" in compressed and "(lines " not in compressed:
+            compressed = f"[build output: identical lines collapsed (lines 1-{len(lines)})]\n" + compressed
 
         # Only return if we actually shrank the output
         if len(compressed) >= len(output):

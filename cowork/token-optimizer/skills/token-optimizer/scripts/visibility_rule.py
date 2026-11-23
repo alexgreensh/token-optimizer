@@ -60,7 +60,7 @@ _EXCEPTION_NAME_RE = re.compile(
 _NONZERO_EXIT_RE = re.compile(
     r"(?i)(?:"
     r"\bexit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*[1-9]\d*\b|"
-    r"\breturn(?:ed)?(?:\s+(?:code|status))?\s*[:=]?\s*[1-9]\d*\b|"
+    r"\breturn(?:ed)?\s+(?:exit\s+)?(?:code|status)\s*[:=]?\s*[1-9]\d*\b|"
     r"\bexit[_-]?(?:code|status)\s*[:=]\s*[1-9]\d*\b|"
     r"\bprocess\s+completed\s+with\s+exit\s+code\s+[1-9]\d*\b"
     r")"

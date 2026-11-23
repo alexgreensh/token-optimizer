@@ -103,6 +103,10 @@ _DECL_COUNT_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\b(\d[\d,]*)\s+of\s+(\d[\d,]*)\s+(?:lines?|matches?|rows?|records?|files?)\b",
         re.I,
     ),
+    re.compile(
+        r"\[lines\s+\d+-\d+\s+hidden:\s*(\d[\d,]*)\s+lines\s+matching\b",
+        re.I,
+    ),
 )
 _DECL_PLACE_RE = re.compile(
     r"\b(?:in\s+[\w./@+-]+|lines?\s+\d+(?:\s*[-–]\s*\d+)?|rows?\s+\d+(?:\s*[-–]\s*\d+)?|"
@@ -215,7 +219,9 @@ def _line_is_visible(
                     if any(body_key in cand for cand in comp_index["lineno_lines"][lineno]):
                         return True
         if (
-            _PLAIN_PATH_LINE_RE.match(line) or (is_search and "/" in line and " " not in line)
+            _PLAIN_PATH_LINE_RE.match(line)
+            or (is_search and "/" in line and " " not in line)
+            or feature == "cmd_git_ls"
         ) and line.rsplit("/", 1)[-1] in tokens:
             return True
         if feature == "cmd_git_diff_stat" and "|" in line:
@@ -337,7 +343,7 @@ def _check_declaration(
     else:
         single = _SINGLE_LINE_OMIT_RE.findall(comp_clean)
         has_breakdown = any(
-            k in comp_clean.lower() for k in ("more matches", "more files", "folded noisy")
+            k in comp_clean.lower() for k in ("more matches", "more files", "folded noisy", "[git log:")
         )
         if len(single) == 1 and not has_breakdown and len(declared_counts) == 1:
             claimed = int(single[0].replace(",", ""))
@@ -358,6 +364,7 @@ def classify_output(
     command: str = "",
     exit_code: int | None = None,
     require_expand: bool = True,
+    budget=None,
 ) -> tuple[str, list[str]]:
     """Classify ``compressed`` against ``original`` using replay v2 rules."""
     if not original or not compressed:
@@ -391,7 +398,9 @@ def classify_output(
     crit_reasons: set[str] = set()
     hidden_nonempty = 0
     orig_lines = original.splitlines()
-    for raw_line in orig_lines:
+    for _idx, raw_line in enumerate(orig_lines):
+        if budget is not None:
+            budget.check(_idx, stride=64)
         line = (_ANSI_RE.sub("", raw_line) if has_ansi else raw_line).strip()
         if not line or _line_is_visible(
             line, comp_clean, comp_low, is_search=is_search, feature=feature, comp_index=comp_index

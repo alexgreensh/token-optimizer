@@ -687,6 +687,33 @@ def main() -> int:
     except Exception:
         pass
 
+    # POSIX fast path (SPEC-hook-fastpath): run PostToolUse and PreToolUse(Read)
+    # in-process under a SIGALRM watchdog (host timeout 10s - 0.5s = 9.5s) to
+    # eliminate the ~80 ms second-interpreter spawn. Keep subprocess on Windows
+    # and for entries that import measure.py / SessionEnd flush workers.
+    if (
+        os.name != "nt"
+        and script_rel in ("hooks/posttooluse_runner.py", "skills/token-optimizer/scripts/read_cache.py")
+        and not os.environ.get("TOKEN_OPTIMIZER_FORCE_SUBPROCESS")
+    ):
+        import runpy
+        os.environ.update(child_env)
+        if str(script_path.parent) not in sys.path:
+            sys.path.insert(0, str(script_path.parent))
+        sys.argv = [str(script_path), *script_args]
+        _prev_alrm = signal.signal(signal.SIGALRM, lambda *_: os._exit(0))
+        signal.setitimer(signal.ITIMER_REAL, 9.5)
+        try:
+            runpy.run_path(str(script_path), run_name="__main__")
+        except SystemExit:
+            pass
+        except Exception:
+            pass
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, _prev_alrm)
+        return 0
+
     proc = None
     global _child_proc
     # Install SIGTERM/SIGINT handlers BEFORE spawning the child so an external

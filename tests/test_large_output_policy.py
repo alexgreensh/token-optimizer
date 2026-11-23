@@ -103,6 +103,8 @@ def test_condition6_non_repetitive_output_passes_raw():
 def test_condition7_and_8_repetitive_16kb_compresses_deterministically_with_exact_expand(tmp_path, monkeypatch):
     monkeypatch.setenv("TOKEN_OPTIMIZER_LARGE_OUTPUT", "1")
     monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path))
+    import archive_result
+    monkeypatch.setattr(archive_result, "SNAPSHOT_DIR", tmp_path)
     raw = _repetitive_output(360)
     assert len(raw.encode()) >= 16384
 

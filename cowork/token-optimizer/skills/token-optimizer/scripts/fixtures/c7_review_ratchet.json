@@ -1,0 +1,52 @@
+[
+  {
+    "name": "c7_review1_fatal_inside_search_hit",
+    "category": "search",
+    "compressor": "bash_compress",
+    "command": "grep -rn 2026-11-22 logs",
+    "raw_output": "logs/app.log:1:2026-11-22 INFO ok request=1\nlogs/app.log:2:2026-11-22 INFO ok request=2\nlogs/app.log:3:2026-11-22 INFO ok request=3\nlogs/app.log:4:2026-11-22 INFO ok request=4\nlogs/app.log:5:2026-11-22 INFO ok request=5\nlogs/app.log:6:2026-11-22 INFO ok request=6\nlogs/app.log:7:2026-11-22 INFO ok request=7\nlogs/app.log:8:2026-11-22 INFO ok request=8\nlogs/app.log:9:2026-11-22 INFO ok request=9\nlogs/app.log:10:2026-11-22 INFO ok request=10\nlogs/app.log:11:2026-11-22 INFO ok request=11\nlogs/app.log:12:2026-11-22 INFO ok request=12\nlogs/app.log:13:2026-11-22 INFO ok request=13\nlogs/app.log:14:2026-11-22 INFO ok request=14\nlogs/app.log:15:2026-11-22 INFO ok request=15\nlogs/app.log:16:2026-11-22 INFO ok request=16\nlogs/app.log:17:2026-11-22 INFO ok request=17\nlogs/app.log:18:2026-11-22 INFO ok request=18\nlogs/app.log:19:2026-11-22 INFO ok request=19\nlogs/app.log:20:2026-11-22 INFO ok request=20\nlogs/app.log:21:2026-11-22 INFO ok request=21\nlogs/app.log:22:2026-11-22 FATAL database down: exit code 137\nlogs/app.log:23:2026-11-22 INFO ok request=23\nlogs/app.log:24:2026-11-22 INFO ok request=24\nlogs/app.log:25:2026-11-22 INFO ok request=25\nlogs/app.log:26:2026-11-22 INFO ok request=26\nlogs/app.log:27:2026-11-22 INFO ok request=27\nlogs/app.log:28:2026-11-22 INFO ok request=28\nlogs/app.log:29:2026-11-22 INFO ok request=29\nlogs/app.log:30:2026-11-22 INFO ok request=30\nlogs/app.log:31:2026-11-22 INFO ok request=31\nlogs/app.log:32:2026-11-22 INFO ok request=32\nlogs/app.log:33:2026-11-22 INFO ok request=33\nlogs/app.log:34:2026-11-22 INFO ok request=34\nlogs/app.log:35:2026-11-22 INFO ok request=35\nlogs/app.log:36:2026-11-22 INFO ok request=36\nlogs/app.log:37:2026-11-22 INFO ok request=37\nlogs/app.log:38:2026-11-22 INFO ok request=38\nlogs/app.log:39:2026-11-22 INFO ok request=39\nlogs/app.log:40:2026-11-22 INFO ok request=40",
+    "must_preserve": ["FATAL database down: exit code 137"],
+    "must_not_contain": [],
+    "min_compression": 0.0
+  },
+  {
+    "name": "c7_review3_non_error_word_failures_preserved",
+    "category": "shell",
+    "compressor": "bash_compress",
+    "command": "for d in a b; do ./sync.sh; done",
+    "raw_output": "sync step 1 ok\nsync step 2 ok\nsync step 3 ok\nsync step 4 ok\nsync step 5 ok\nsync step 6 ok\nsync step 7 ok\nsync step 8 ok\nsync step 9 ok\nsync step 10 ok\nbash: line 3: jqq: command not found\ncat: config/prod.yaml: No such file or directory\nCONFLICT (content): Merge conflict in src/app.py\n ! [rejected]        main -> main (non-fast-forward)\nKilled\nsync step 16 ok\nsync step 17 ok\nsync step 18 ok\nsync step 19 ok\nsync step 20 ok",
+    "must_preserve": ["command not found", "No such file or directory", "CONFLICT (content)", "[rejected]", "Killed"],
+    "must_not_contain": [],
+    "min_compression": 0.0
+  },
+  {
+    "name": "c7_review4_test_assertion_evidence_preserved",
+    "category": "test",
+    "compressor": "bash_compress",
+    "command": "npm test",
+    "raw_output": "PASS src/a.test.ts\nPASS src/b.test.ts\nPASS src/c.test.ts\nPASS src/d.test.ts\nPASS src/e.test.ts\nFAIL src/calc.test.ts\n  ● adds numbers\n    Expected: 42\n    Received: 41\n      > 13 | expect(t).toBe(42);\nTest Suites: 1 failed, 5 passed, 6 total",
+    "must_preserve": ["FAIL src/calc.test.ts", "Expected: 42", "Received: 41", "expect(t).toBe(42)"],
+    "must_not_contain": [],
+    "min_compression": 0.0
+  },
+  {
+    "name": "c7_review5_deliberate_cat_read_untouched",
+    "category": "file_read",
+    "compressor": "bash_compress",
+    "command": "cat src/handlers.py",
+    "raw_output": "def handler_0(req):\n    return {'id': 0}\ndef handler_1(req):\n    return {'id': 1}\ndef handler_2(req):\n    return {'id': 2}\ndef handler_3(req):\n    return {'id': 3}\ndef handler_4(req):\n    return {'id': 4}\ndef handler_5(req):\n    return {'id': 5}\ndef handler_6(req):\n    return {'id': 6}\ndef handler_7(req):\n    return {'id': 7}\ndef handler_8(req):\n    return {'id': 8}\ndef handler_9(req):\n    return {'id': 9}",
+    "must_preserve": ["def handler_0(req):", "def handler_5(req):", "def handler_9(req):"],
+    "must_not_contain": ["lines omitted"],
+    "min_compression": 0.0
+  },
+  {
+    "name": "c7_review6_nonzero_exit_preserved",
+    "category": "build",
+    "compressor": "bash_compress",
+    "command": "cargo test",
+    "raw_output": "running 10 tests\ntest a ... ok\ntest b ... ok\ntest c ... ok\ntest d ... ok\ntest e ... ok\ntest f ... FAILED\n  --> src/main.rs:57:18\nthread 'f' panicked at src/main.rs:57:18: assertion failed\ntest result: FAILED. 5 passed; 1 failed; exit code 101",
+    "must_preserve": ["FAILED", "--> src/main.rs:57:18", "panicked at", "exit code 101"],
+    "must_not_contain": [],
+    "min_compression": 0.0
+  }
+]

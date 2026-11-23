@@ -1,9 +1,7 @@
-"""The one savings headline shared by the band, the status line and the dashboard.
+"""The rolling 30-day savings headline for older clients.
 
-Computes the contract object (briefs/ux-contract.md) from the same summary the
-dashboard Savings hero reads: ``action_savings.total_usd`` plus the model
-routing figure, and ``token_headline.total_tokens``. Every surface prints this
-one object so they can never quote different dollars for the same window.
+Uses the action savings total and the token headline for the same window.
+The stable since-install headline lives in counted_headline.
 
 usd_week stays null: there is no honest weekly figure yet and 30 days are never
 prorated into one. display is null whenever no threshold is met, which is how
@@ -67,8 +65,8 @@ def _display(usd_30d, usd_week, tokens_30d, url):
         kind = "30d"
         amount = _usd_text(usd_30d)
         tok = _token_text(tokens_30d)
-        short = "Saved {}/30d".format(amount)
-        long = "{} saved in 30 days".format(amount)
+        short = "Saved {} in the last 30 days".format(amount)
+        long = "{} saved in the last 30 days".format(amount)
         if tokens_30d > 0:
             short += " · {} kept out".format(tok)
             long += " · {} tokens kept out of context".format(tok)
@@ -86,8 +84,7 @@ def build(summary, dashboard_url=DASHBOARD_SAVINGS_URL):
     """The savings_headline contract object for one savings summary.
 
     `summary` is the dashboard's savings payload (or the status-bar headline
-    built from the same inputs): action_savings, model_routing and
-    token_headline. Missing pieces read as zero, which lands on display null.
+    built from the same inputs): action_savings and token_headline. Missing pieces read as zero, which lands on display null.
     Never raises.
     """
     try:
@@ -95,9 +92,6 @@ def build(summary, dashboard_url=DASHBOARD_SAVINGS_URL):
         action = s.get("action_savings") or {}
         if not isinstance(action, dict):
             action = {}
-        routing = s.get("model_routing") or {}
-        if not isinstance(routing, dict):
-            routing = {}
         headline = s.get("token_headline") or {}
         if not isinstance(headline, dict):
             headline = {}
@@ -109,22 +103,16 @@ def build(summary, dashboard_url=DASHBOARD_SAVINGS_URL):
                 if isinstance(nested, dict):
                     headline = nested
 
-        total = _usd(action.get("total_usd")) or 0.0
-        # The hero adds the routing estimate on top of the action total; the
-        # same figure sits in model_routing.realized_cost_usd (action_savings'
-        # routing_usd is copied from it).
-        routing_usd = _usd(routing.get("realized_cost_usd"))
-        if routing_usd is None:
-            routing_usd = _usd(action.get("routing_usd"))
-        usd_30d = total + max(0.0, routing_usd or 0.0)
+        usd_30d = _usd(action.get("total_usd")) or 0.0
         tokens_30d = _count(headline.get("total_tokens"))
         usd_week = None
         url = dashboard_url if isinstance(dashboard_url, str) and dashboard_url else DASHBOARD_SAVINGS_URL
         return {
+            "label": "last 30 days",
             "usd_30d": usd_30d,
             "usd_week": usd_week,
             "tokens_30d": tokens_30d,
             "display": _display(usd_30d, usd_week, tokens_30d, url),
         }
     except Exception:
-        return {"usd_30d": 0.0, "usd_week": None, "tokens_30d": 0, "display": None}
+        return {"label": "last 30 days", "usd_30d": 0.0, "usd_week": None, "tokens_30d": 0, "display": None}

@@ -29,6 +29,7 @@ section 1 are enforced by tests; a rule without a test is a wish.
 | R13 | **Upgrades re-measure all history once, then say so.** Until it finishes, affected figures carry "so far" and a sessions-left count. | `test_upgrade_drain_and_remeasure.py` |
 | R14 | **History is never deleted.** Ledger rows stay; views decide what counts. | `test_counted_pricing_integrity.py`, `test_counted_cumulative.py` |
 | R15 | **This document lists every part.** Every headline part and estimate key in the code is named below. | `test_savings_invariants.py` |
+| R16 | **The counted total never falls without a named correction.** | `test_counted_closes.py` |
 
 ---
 
@@ -51,7 +52,9 @@ section 1 are enforced by tests; a rule without a test is a wish.
 ## 3. The monthly headline (all-in)
 
 Built by `_action_savings_components` for a window of N days (30 by default). Shown in
-the CLI as `ALL IN` and on the dashboard as the hero number.
+the CLI and dashboard under `Last 30 days` for the default window. The dashboard
+shows its period routing estimate in the fold and includes it in the displayed
+period amount. The legacy status headline uses the action total.
 
 ### 3.1 Logged actions (measured)
 
@@ -198,14 +201,18 @@ nudge stays within 160 characters and does not claim a checkpoint was saved.
 
 ## 4. Since install (all-time)
 
-`_savings_since_install` runs the headline recipe (section 3) over the window from the
-install date to today (R4). The install date is the first baseline snapshot, or the first
-recorded session.
+`_savings_since_install` applies the action recipe over the window from the first
+baseline snapshot or the first recorded session to today. The dashboard leads
+with the stored **saved since install** total, which includes measured savings,
+eligible estimates and the supported routing estimate. The CLI, status bar and
+limits use the same stored balance. The fold shows the latest breakdown,
+including the counted context subtotal (initial removals and repeat reads).
 
-- The dashboard card reads "Saved since <date>" and lists the same four parts.
-- The context-only subtotal (initial removals + repeat reads, `counted_cumulative`) is
-  shown inside its breakdown. It is never labelled as all-time savings.
-- While older sessions are re-measured, the card says "so far" with a sessions-left count.
+A savings refresh records the current lifetime balance by day. Lifetime estimates
+depend on the mix across the whole window, so each close is a cumulative balance.
+The headline reads the latest one. Rises apply on refresh. Lower readings are
+held during a recheck and can replace the stored balance through a named
+correction. Plan-window figures still use their own reset boundaries.
 
 ---
 
@@ -408,7 +415,19 @@ Recovery evidence remains provisional and its public panel remains observational
 
 ## 11. POC savings features
 ### 11.1 Counted total since install (lane A)
-To be written by lane X.
+
+The counted subtotal adds the initial removals and their later repeat reads by
+removal day using the same cohort as section 3.3. Each day has a durable close
+in `counted_day_close`. The lifetime subtotal sums those closes across all
+history and retains the days covered by source retention.
+
+A lower reading stays on hold for seven days. A completed pricing update can
+correct it immediately. A newly observed day with net costs records a debit
+correction when first booked. Each decrease records the previous value, the
+revised value and the reason. The headline shows the most recent correction
+for 14 days, and `measure.py counted-total` lists counted corrections for 90
+days. The subtotal and the all-in balance have separate correction histories.
+
 ### 11.2 Apply safe savings and compact-window advice (lane B)
 To be written by lane X.
 ### 11.3 Cold-session guard (lane C)

@@ -1,7 +1,7 @@
-"""savings_headline: the one headline the band, status line and dashboard share.
+"""savings_headline: the rolling action figure for older clients.
 
-Covers the ux-contract object (usd_30d = action_savings.total_usd + the
-model-routing figure, usd_week always null, tokens_30d from token_headline,
+Covers the rolling contract (usd_30d = action_savings.total_usd, usd_week
+always null, tokens_30d from token_headline,
 display thresholds and wording), the status-bar/dashboard equality gate, and
 the statusline.js savings segment (green, OSC 8 when supported, omitted when
 display is null, appended to row 1 in slim mode).
@@ -43,18 +43,19 @@ def _summary(usd_action=0.0, routing=0.0, tokens=0):
 # Contract object
 # --------------------------------------------------------------------------
 
-def test_usd_30d_is_action_total_plus_routing():
+def test_usd_30d_is_action_total():
     h = savings_headline.build(_summary(usd_action=100.0, routing=7.5, tokens=5))
-    assert h["usd_30d"] == pytest.approx(107.5)
+    assert h["usd_30d"] == pytest.approx(100.0)
     assert h["usd_week"] is None
+    assert h["label"] == "last 30 days"
     assert h["tokens_30d"] == 5
 
 
-def test_routing_falls_back_to_action_routing_usd():
+def test_action_routing_usd_is_also_excluded():
     s = _summary(usd_action=100.0, routing=7.5)
     s["model_routing"] = {}
     h = savings_headline.build(s)
-    assert h["usd_30d"] == pytest.approx(107.5)
+    assert h["usd_30d"] == pytest.approx(100.0)
 
 
 def test_missing_inputs_read_as_zero_and_hide_display():
@@ -71,8 +72,8 @@ def test_display_30d_at_threshold():
     h = savings_headline.build(_summary(usd_action=60.0, tokens=602_700_000))
     d = h["display"]
     assert d["kind"] == "30d"
-    assert d["short"] == "Saved $60/30d · 602.7M kept out"
-    assert d["long"] == "$60 saved in 30 days · 602.7M tokens kept out of context"
+    assert d["short"] == "Saved $60 in the last 30 days · 602.7M kept out"
+    assert d["long"] == "$60 saved in the last 30 days · 602.7M tokens kept out of context"
     assert d["url"] == URL
 
 
@@ -108,9 +109,9 @@ def test_usd_week_never_prorates():
 
 def test_dollar_format_thousands_separator_and_whole_dollars():
     h = savings_headline.build(_summary(usd_action=1234.4, tokens=0))
-    assert h["display"]["short"].startswith("Saved $1,234/30d")
+    assert h["display"]["short"].startswith("Saved $1,234 in the last 30 days")
     h = savings_headline.build(_summary(usd_action=999.6, tokens=0))
-    assert h["display"]["short"].startswith("Saved $1,000/30d")
+    assert h["display"]["short"].startswith("Saved $1,000 in the last 30 days")
 
 
 def test_token_format_one_decimal_k_m_b():
@@ -122,8 +123,8 @@ def test_token_format_one_decimal_k_m_b():
 
 def test_30d_short_omits_tokens_when_zero():
     h = savings_headline.build(_summary(usd_action=100.0, tokens=0))
-    assert h["display"]["short"] == "Saved $100/30d"
-    assert h["display"]["long"] == "$100 saved in 30 days"
+    assert h["display"]["short"] == "Saved $100 in the last 30 days"
+    assert h["display"]["long"] == "$100 saved in the last 30 days"
 
 
 def test_negative_and_junk_values_never_raise():
@@ -182,7 +183,7 @@ def _seed_usd(sb):
         conn.close()
 
 
-def test_status_bar_usd_30d_equals_dashboard_hero_sum(sb):
+def test_status_bar_usd_30d_equals_dashboard_action_total(sb):
     _seed_usd(sb)
     sav, reason = sb._status_bar_savings_or_reason(SID)
     assert reason is None and sav is not None
@@ -193,11 +194,7 @@ def test_status_bar_usd_30d_equals_dashboard_hero_sum(sb):
     hero = dash["savings_headline"]
     assert hero is not None
 
-    # The contract: action_savings.total_usd + the routing figure the hero adds.
-    routing = dash["model_routing"].get("realized_cost_usd")
-    if routing is None:
-        routing = (dash.get("action_savings") or {}).get("routing_usd", 0.0)
-    expected = dash["action_savings"]["total_usd"] + max(0.0, float(routing or 0.0))
+    expected = dash["action_savings"]["total_usd"]
     assert bar["usd_30d"] == pytest.approx(expected)
     assert hero["usd_30d"] == pytest.approx(expected)
     assert bar["usd_30d"] == pytest.approx(hero["usd_30d"])

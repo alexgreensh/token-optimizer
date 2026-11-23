@@ -545,29 +545,6 @@ def _cowork_copy_should_stand_down() -> bool:
         return False
 
 
-def _run_posttooluse_in_process(cmd, env) -> int:
-    """Keep the module runner's hook deadline without another interpreter."""
-    import runpy
-
-    original_argv = sys.argv
-    try:
-        os.environ.update(env)
-        for stream in (sys.stdin, sys.stdout, sys.stderr):
-            reconfigure = getattr(stream, "reconfigure", None)
-            if reconfigure is not None:
-                try:
-                    reconfigure(encoding="utf-8", errors=stream.errors)
-                except (OSError, ValueError):
-                    pass
-        sys.argv = cmd[1:]
-        runpy.run_path(sys.argv[0], run_name="__main__")
-    except (Exception, SystemExit):
-        pass  # Keep the dispatcher fail-open on hook errors.
-    finally:
-        sys.argv = original_argv
-    return 0
-
-
 def main() -> int:
     if len(sys.argv) < 2:
         return 0
@@ -713,9 +690,6 @@ def main() -> int:
             child_env["TOKEN_OPTIMIZER_RUNTIME"] = _runtime_env.detect_runtime()
     except Exception:
         pass
-
-    if os.name == "nt" and rel_path == Path("hooks/posttooluse_runner.py"):
-        return _run_posttooluse_in_process(cmd, child_env)
 
     proc = None
     global _child_proc

@@ -74,7 +74,7 @@ persisted. See `PRIVACY.md`.
 | Context fill + quality grade | 🟢 green | 3-signal subset, like Hermes/Copilot |
 | Trends DB + dashboard (port 24847) | 🟢 green | `platform=antigravity`, keyed per surface |
 | Continuity restore | 🟢 green | `PreInvocation #1` injects a capped, R22-filtered summary |
-| Bash output compression | 🟢 green | `PreToolUse` `run_command` rewrite, wrapper re-validates its argv (R13a) |
+| Bash output compression | 🟢 green (macOS/Linux) | `PreToolUse` `run_command` rewrite, wrapper re-validates its argv (R13a). Not registered on native Windows. Every `PreToolUse` answer carries a `decision` (`allow` when there is nothing to rewrite), because Antigravity requires one |
 | Stop-time rollup | 🟢 green | detached, 60s budget, lease-debounced |
 | Doctor / install / uninstall | 🟢 green | |
 | Context-growth nudges | 🟡 partial | derived from the live conversation's last decoded generation, not hook payload |

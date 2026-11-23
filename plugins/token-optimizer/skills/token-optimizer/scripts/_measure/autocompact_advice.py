@@ -379,50 +379,61 @@ def plan_item(facade, advice=None):
                 undo='measure.py apply-safe --undo <receipt_id>')
 
 
-def apply_item(facade, item):
+def apply_item(facade, item, before_write=None):
     """Write the approved window at the setting that currently takes precedence."""
     if getattr(facade, '_is_foreign_runtime', lambda: False)():
         return {'ok': False}
     target, model = item.get('target'), item.get('model')
     if target not in (400000, 450000, 500000) or not isinstance(model, str) or not model:
         return {'ok': False}
-    settings, ok = facade._read_settings_for_write()
-    if not ok or not isinstance(settings, dict):
-        return {'ok': False}
-    models = settings.get('modelSettings')
-    model_settings = models.get(model) if isinstance(models, dict) else None
-    per_model = isinstance(model_settings, dict) and 'autoCompactWindow' in model_settings
-    container = model_settings if per_model else settings
-    previous = container.get('autoCompactWindow')
-    existed = 'autoCompactWindow' in container
-    container['autoCompactWindow'] = target
-    if not facade._write_settings_atomic(settings, user_initiated=True):
-        return {'ok': False}
-    return {'ok': True, 'before': previous, 'before_exists': existed, 'after': target,
-            'model': model if per_model else None}
+    with facade._settings_lock(user_initiated=True) as acquired:
+        if not acquired:
+            return {'ok': False}
+        identity = getattr(facade, '_settings_file_identity', lambda: None)()
+        settings, ok = facade._read_settings_for_write()
+        if not ok or not isinstance(settings, dict):
+            return {'ok': False}
+        models = settings.get('modelSettings')
+        model_settings = models.get(model) if isinstance(models, dict) else None
+        per_model = isinstance(model_settings, dict) and 'autoCompactWindow' in model_settings
+        container = model_settings if per_model else settings
+        previous = container.get('autoCompactWindow')
+        existed = 'autoCompactWindow' in container
+        receipt = {'ok': True, 'before': previous, 'before_exists': existed, 'after': target,
+                   'model': model if per_model else None}
+        if before_write is not None:
+            before_write(receipt)
+        container['autoCompactWindow'] = target
+        if not facade._write_settings_atomic_locked(settings, expect_identity=identity):
+            return {'ok': False}
+        return receipt
 
 
 def undo_item(facade, receipt):
     """Restore only this setting, refusing to overwrite a later edit."""
     if getattr(facade, '_is_foreign_runtime', lambda: False)():
         return False
-    settings, ok = facade._read_settings_for_write()
-    if not ok or not isinstance(settings, dict):
-        return False
-    model = receipt.get('model')
-    if model is not None:
-        models = settings.get('modelSettings')
-        container = models.get(model) if isinstance(models, dict) else None
-    else:
-        container = settings
-    if not isinstance(container, dict) or container.get('autoCompactWindow') != receipt.get('after'):
-        return False
-    if receipt.get('before_exists'):
-        container['autoCompactWindow'] = receipt['before']
-    else:
-        container.pop('autoCompactWindow', None)
-    allow = {'autoCompactWindow'} if model is None and not receipt.get('before_exists') else None
-    return bool(facade._write_settings_atomic(settings, allow_removing_keys=allow, user_initiated=True))
+    with facade._settings_lock(user_initiated=True) as acquired:
+        if not acquired:
+            return False
+        identity = getattr(facade, '_settings_file_identity', lambda: None)()
+        settings, ok = facade._read_settings_for_write()
+        if not ok or not isinstance(settings, dict):
+            return False
+        model = receipt.get('model')
+        if model is not None:
+            models = settings.get('modelSettings')
+            container = models.get(model) if isinstance(models, dict) else None
+        else:
+            container = settings
+        if not isinstance(container, dict) or container.get('autoCompactWindow') != receipt.get('after'):
+            return False
+        if receipt.get('before_exists'):
+            container['autoCompactWindow'] = receipt['before']
+        else:
+            container.pop('autoCompactWindow', None)
+        allow = {'autoCompactWindow'} if model is None and not receipt.get('before_exists') else None
+        return bool(facade._write_settings_atomic_locked(settings, allow_removing_keys=allow, expect_identity=identity))
 
 
 def main(facade, args):

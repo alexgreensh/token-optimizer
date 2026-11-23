@@ -113,8 +113,9 @@ def _number(value):
         return None
 
 
-def _build(facade, summary, as_of, show_all):
-    plan = _call('apply_safe', 'build_plan', facade)
+def _build(facade, summary, as_of, show_all, plan=None):
+    if plan is None:
+        plan = _call('apply_safe', 'build_plan', facade)
     plan = plan if isinstance(plan, dict) else {}
     items = plan.get('items') if isinstance(plan.get('items'), list) else []
     pool = _call('cold_guard', 'pool', facade)
@@ -211,7 +212,20 @@ def on_savings_refresh(facade, summary):
     if not isinstance(summary, dict) or summary.get('period_days', 30) != 30:
         return
     now = _now()
-    result = _build(facade, summary, now.isoformat(), True)
+    cache_path = Path(facade.SNAPSHOT_DIR) / 'next_apply_plan.json'
+    cached = _read(cache_path)
+    try:
+        age = (now - datetime.fromisoformat(cached['computed_at'])).total_seconds()
+        plan = cached['plan'] if 0 <= age < 3600 and isinstance(cached['plan'], dict) else None
+    except (KeyError, TypeError, ValueError):
+        plan = None
+    if plan is None:
+        plan = _call('apply_safe', 'build_plan', facade)
+        if isinstance(plan, dict):
+            _write(cache_path, {'computed_at': now.isoformat(), 'plan': plan})
+        else:
+            plan = {}
+    result = _build(facade, summary, now.isoformat(), True, plan=plan)
     action = next((item for item in result['actions'] if item['bound'] == 'firm'), None)
     directory = Path(facade.SNAPSHOT_DIR)
     history_path = directory / 'next_action_history.json'

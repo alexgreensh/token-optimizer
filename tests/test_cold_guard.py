@@ -303,7 +303,7 @@ def test_config_cli_and_plan_item(guard, monkeypatch, capsys):
     item = cold_guard.plan_item(facade)
     assert item["id"] == "cold_guard:ask" and item["net_usd_month"] is None
     assert item["basis"] == "4 cold resumes cost $5.25 in your last 30 days; the saving depends on what you choose each time"
-    assert cold_guard.apply_item(facade, item) == "warn"
+    assert cold_guard.apply_item(facade, item) == {'ok': True, 'before': 'warn', 'after': 'ask'}
     assert cold_guard.plan_item(facade) is None
     assert cold_guard.main(facade, ["set", "off"]) == 0
     assert facade._read_config_flag("cold_guard_mode") == "off"

@@ -339,7 +339,16 @@ def _set_flag(facade, enabled):
 def apply_item(facade, item):
     if item.get('id') != 'keepwarm_auto:on':
         raise ValueError('Invalid keep-warm approval')
-    return _set_flag(facade, True)
+    previous = _set_flag(facade, True)
+    return {'ok': True, 'before': previous, 'after': True}
+
+
+def undo_item(facade, receipt):
+    before = receipt.get('before')
+    if not isinstance(before, bool) or facade._read_config_flag('keepwarm_auto', False) is not receipt.get('after'):
+        return False
+    _set_flag(facade, before)
+    return True
 
 
 def health_block(facade):

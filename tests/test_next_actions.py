@@ -263,3 +263,28 @@ class NextActionsTest(unittest.TestCase):
         with patch.dict(os.environ, {'HOME': str(home)}), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(next_actions.main(self.f, ['--json']), 0)
         self.assertEqual(before, {p.relative_to(home): p.read_bytes() for p in home.rglob('*') if p.is_file()})
+
+
+def test_refresh_seeds_the_saved_total_for_an_upgraded_install(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from _measure import next_actions as module
+    calls = []
+    results = {'build_overall': None, '_savings_since_install': {'all_in': {'total_usd': 9}},
+               'build_plan': {}, 'pool': {}}
+
+    def fake_call(name, function, *args):
+        calls.append(function)
+        if function == 'on_savings_refresh':
+            calls.append(args[1]['since_install'])
+        return results.get(function)
+
+    monkeypatch.setattr(module, '_compute_summary', lambda facade: {})
+    monkeypatch.setattr(module, '_call', fake_call)
+    monkeypatch.setattr(module, '_report', lambda *args: {'schema': 1, 'candidates': []})
+    assert module._refresh(SimpleNamespace(SNAPSHOT_DIR=tmp_path)) == 0
+    assert {'all_in': {'total_usd': 9}} in calls
+
+    calls.clear()
+    results['build_overall'] = {'display': {'short': 'Saved $9 since install'}}
+    assert module._refresh(SimpleNamespace(SNAPSHOT_DIR=tmp_path)) == 0
+    assert 'on_savings_refresh' not in calls

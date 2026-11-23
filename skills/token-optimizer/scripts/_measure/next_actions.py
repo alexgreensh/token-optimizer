@@ -249,6 +249,11 @@ def _refresh(facade):
     summary = _compute_summary(facade)
     if summary is None:
         return 1
+    # An upgraded install has no stored total until a dashboard refresh, so seed it here.
+    if _call('counted_headline', 'build_overall', facade) is None:
+        if not summary.get('since_install'):
+            summary['since_install'] = _call('savings', '_savings_since_install')
+        _call('counted_closes', 'on_savings_refresh', facade, summary)
     plan = _call('apply_safe', 'build_plan', facade)
     if not isinstance(plan, dict):
         return 1
@@ -323,7 +328,7 @@ def main(facade, args):
         print(json.dumps(result, indent=2))
         return 0
     display = (result.get('counted') or {}).get('display') or {}
-    print(display.get('short') or 'Saved since install is unavailable.')
+    print(display.get('short') or ('Your saved total is being calculated.' if result['preparing'] else 'Saved since install is unavailable.'))
     if result.get('cached'):
         print('as of {}'.format(result['as_of']))
     if result['preparing']:

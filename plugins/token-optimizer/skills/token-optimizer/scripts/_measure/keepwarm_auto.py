@@ -331,7 +331,7 @@ def plan_item(facade):
 def _set_flag(facade, enabled):
     previous = facade._read_config_flag('keepwarm_auto', False)
     facade._write_config_flag('keepwarm_auto', enabled)
-    if facade._read_config_flag('keepwarm_auto', False) is not enabled:
+    if facade._read_config_flag('keepwarm_auto', None) is not enabled:
         raise OSError('Keep-warm preference could not be saved')
     return previous
 
@@ -344,10 +344,10 @@ def apply_item(facade, item):
 
 
 def undo_item(facade, receipt):
-    before = receipt.get('before')
-    if not isinstance(before, bool) or facade._read_config_flag('keepwarm_auto', False) is not receipt.get('after'):
+    if receipt.get('ok') is not True or facade._read_config_flag('keepwarm_auto', False) is not receipt.get('after'):
         return False
-    _set_flag(facade, before)
+    before = receipt.get('before')
+    _set_flag(facade, before if isinstance(before, bool) else False)
     return True
 
 
@@ -417,7 +417,15 @@ def _parse_args(args):
 def main(facade, args):
     if args in (['set', 'on'], ['set', 'off']):
         _set_flag(facade, args[1] == 'on')
-        print('In-session automatic keep-warm is ' + args[1] + '.')
+        print('In-session automatic keep-warm is on.' if args[1] == 'on'
+              else 'Automatic keep-warm is off in session and headless.')
+    elif args == ['reset-headless-proof']:
+        from . import keepwarm_safety
+        reason = keepwarm_safety.reset_headless_proof(facade)
+        if reason:
+            print(f'Headless keep-warm proof reset failed ({reason}).')
+            return 1
+        print('Headless keep-warm proof stop cleared.')
     elif args in (['status'], ['status', '--json']):
         result = health_block(facade)
         if '--json' in args:
@@ -426,6 +434,7 @@ def main(facade, args):
             print(f"Automatic keep-warm is {result['state']} in session and {result.get('headless_state', 'unknown')} headless.")
             if result.get('headless_reason') == 'headless-proof':
                 print(HEADLESS_STOP)
+                print('Run measure.py keepwarm-decide reset-headless-proof to clear the installation stop.')
             print(f"Last 7 days: {result['pings_7d']} pings, {result['proof_failed_7d']} failed proofs.")
             net = result['net_usd_7d']
             print(f"Estimated net at API rates: ${net:.2f}." if net is not None else 'Estimated net is unavailable.')

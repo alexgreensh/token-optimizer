@@ -113,8 +113,9 @@ def owner_eligible(pid):
         return False
 
 
-def find_owner(pid=None, lookup=process_info, eligibility=owner_eligible):
+def _find_claude_process(pid=None, lookup=None):
     pid = os.getppid() if pid is None else pid
+    lookup = process_info if lookup is None else lookup
     for _ in range(16):
         if pid <= 1:
             break
@@ -122,9 +123,14 @@ def find_owner(pid=None, lookup=process_info, eligibility=owner_eligible):
         if not info:
             break
         if is_claude_command(info['command']):
-            return {'pid': pid, 'start': info['start']} if eligibility(pid) else None
+            return {'pid': pid, 'start': info['start']}
         pid = info['ppid']
     return None
+
+
+def find_owner(pid=None, lookup=process_info, eligibility=owner_eligible):
+    process = _find_claude_process(pid, lookup)
+    return process if process and eligibility(process['pid']) else None
 
 
 _NO_OWNER_TTL = 300.0
@@ -136,7 +142,7 @@ def _owner_cache_path(directory, session_id):
 
 
 def _pid_exists(pid):
-    """Subprocess-free liveness; the tick re-verifies identity with owner_alive."""
+    """Check whether a process may still be running."""
     if os.name != 'posix':
         return False
     try:
@@ -149,37 +155,32 @@ def _pid_exists(pid):
 
 
 def session_owner(directory, session_id, now=None):
-    """find_owner once per session, not once per Stop hook.
-
-    The owning Claude process is constant for a session, but find_owner walks the
-    process table with several `ps`/`lsof` children. A positive answer is reused
-    while the pid still exists; a negative one for _NO_OWNER_TTL seconds, so an
-    ineligible session does not re-run the walk on every turn. Fail closed: any
-    cache problem falls through to a fresh lookup.
-    """
+    """Reuse terminal eligibility only for the current hook's Claude process."""
+    process = _find_claude_process()
+    if process is None:
+        return None
     now = time.time() if now is None else now
     path = _owner_cache_path(directory, session_id) if session_id else None
     if path is not None:
         try:
             cached = json.loads(path.read_text(encoding='utf-8'))
-            owner = cached.get('owner')
-            if isinstance(owner, dict) and owner.get('pid') and owner.get('start'):
-                if _pid_exists(owner['pid']):
-                    return owner
-            elif owner is None and 0 <= now - float(cached.get('ts')) < _NO_OWNER_TTL:
-                return None
+            if cached.get('process') == process:
+                if cached.get('eligible') is True:
+                    return process
+                if cached.get('eligible') is False and 0 <= now - float(cached.get('ts')) < _NO_OWNER_TTL:
+                    return None
         except (OSError, ValueError, TypeError, AttributeError):
             pass
-    owner = find_owner()
+    eligible = owner_eligible(process['pid'])
     if path is not None:
         try:
             Path(directory).mkdir(parents=True, exist_ok=True)
             fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0), 0o600)
             with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                json.dump({'owner': owner, 'ts': now}, stream)
+                json.dump({'process': process, 'eligible': eligible, 'ts': now}, stream)
         except OSError:
             pass
-    return owner
+    return process if eligible else None
 
 
 def owner_alive(owner, lookup=process_info, eligibility=owner_eligible):
@@ -264,29 +265,60 @@ def _headless_latch(facade):
     return facade.SNAPSHOT_DIR / 'keepwarm-headless-unproved'
 
 
-def headless_disabled(facade, env=None):
-    """Flags, legacy opt-out and install-wide proof latch, without reading transcripts."""
+def _headless_preference_disabled(facade, env):
     from . import keepwarm_auto
-    env = facade.os.environ if env is None else env
+
     if env.get(facade._KEEPWARM_PING_ENV):
         return 'ping-process'
     if facade._keepwarm_llm_ping_disabled(env):
         return 'kill-switch'
-    if str(env.get('TOKEN_OPTIMIZER_KEEPWARM_HEADLESS', 'on')).strip().lower() in keepwarm_auto.OFF:
+    if (str(env.get('TOKEN_OPTIMIZER_KEEPWARM_HEADLESS', 'on')).strip().lower() in keepwarm_auto.OFF
+            or facade._read_config_flag('keepwarm_auto', None) is False):
         return 'settings-disabled'
     if facade.keepwarm_consent() == 'declined':
         return 'consent-declined'
+
+
+def _headless_latch_reason(facade):
     try:
         path = _headless_latch(facade)
         if path.is_symlink():
             return 'headless-proof'
         with path.open(encoding='utf-8') as stream:
-            state = stream.read(128)
-        if state.startswith('pending ') and 0 <= facade.time.time() - path.stat().st_mtime < 200:
-            return 'headless-busy'
+            state = stream.read(128).split()
+        if state and state[0] == 'pending':
+            if len(state) == 3 and state[2].isdecimal() and int(state[2]) > 1 and _pid_exists(state[2]):
+                return 'headless-busy'
+            if 0 <= facade.time.time() - path.stat().st_mtime < 200:
+                return 'headless-busy'
         return 'headless-proof'
     except FileNotFoundError:
         return None
+    except OSError:
+        return 'accounting-unavailable'
+    except UnicodeError:
+        return 'headless-proof'
+
+
+def headless_disabled(facade, env=None):
+    """Flags, opt-out and install-wide proof latch, without reading transcripts."""
+    env = facade.os.environ if env is None else env
+    return _headless_preference_disabled(facade, env) or _headless_latch_reason(facade)
+
+
+def reset_headless_proof(facade):
+    """Clear an install-wide proof stop after the active attempt has finished."""
+    from .mod_action_booking import _lock
+
+    try:
+        with _lock(facade) as held:
+            if not held:
+                return 'ledger-locked'
+            reason = _headless_latch_reason(facade)
+            if reason == 'headless-proof':
+                _headless_latch(facade).unlink(missing_ok=True)
+                return None
+            return reason
     except OSError:
         return 'accounting-unavailable'
 
@@ -314,7 +346,12 @@ def _run_ping(facade, runner, command, cwd, env, context, fallback_cost):
                                       stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                       encoding='utf-8', errors='replace')
         output = runner(command, cwd, env, facade._KEEPWARM_PING_TIMEOUT_SECONDS)
-        data = json.loads(output.stdout)
+        try:
+            data = json.loads(output.stdout)
+        except (ValueError, TypeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
         reported = data.get('total_cost_usd')
         if type(reported) in (float, int) and math.isfinite(reported) and reported > 0:
             row['cost_usd'] = reported
@@ -325,6 +362,15 @@ def _run_ping(facade, runner, command, cwd, env, context, fallback_cost):
             row.update(status='ok', reason='proved',
                        cache_read=usage['cache_read_input_tokens'],
                        cache_write=usage['cache_creation_input_tokens'])
+        elif output.returncode != 0 or data.get('is_error') is True:
+            cache_used = isinstance(usage, dict) and any(
+                type(usage.get(key)) is int and usage[key] > 0
+                for key in ('cache_read_input_tokens', 'cache_creation_input_tokens'))
+            error_fields = (data.get('errors'), data.get('result'), data.get('error'), getattr(output, 'stderr', ''))
+            if not cache_used and any(re.search(
+                    r'\b(?:rate[ _-]limit(?:ed|[ _-]error)?|(?:http|api error:?)\s+429|too many requests)\b',
+                    str(field)[:4096], re.IGNORECASE) for field in error_fields):
+                row['reason'] = 'rate-limited'
     except subprocess.TimeoutExpired:
         row.update(status='timeout', reason='timeout')
     except (OSError, ValueError, AttributeError, TypeError):
@@ -358,6 +404,7 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
         meters = _headless_meters(facade, now)
     if env is None:
         env = facade.os.environ
+    latch = _headless_latch(facade)
     with _lock(facade) as held:
         if not held:
             return {'fired': False, 'reason': 'ledger-locked'}
@@ -384,39 +431,50 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
                         '--permission-prompts', 'none', '--settings', settings,
                         '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'])
         try:
-            fd = os.open(str(_headless_latch(facade)), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, 'w') as stream:
-                stream.write('pending ' + action_id)
+            fd = os.open(str(latch), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except OSError:
             return {'fired': False, 'reason': 'headless-proof'}
-        _append(facade._keepwarm_ledger_path(), {**common, 'status': 'firing',
-                'ts': now, 'est_cost_usd': fallback})
-    if not live():
-        with _lock(facade) as held:
-            if held:
+        try:
+            with os.fdopen(fd, 'w') as stream:
+                stream.write(f'pending {action_id} {os.getpid()}')
+            _append(facade._keepwarm_ledger_path(), {**common, 'status': 'firing',
+                    'ts': now, 'est_cost_usd': fallback})
+            reason = _headless_preference_disabled(facade, env) if live() else 'session-changed'
+            if reason:
                 _append(facade._keepwarm_ledger_path(), {**common, 'status': 'cancelled', 'ts': now})
-                _headless_latch(facade).unlink()
-        return {'fired': False, 'reason': 'session-changed'}
+                latch.unlink()
+                return {'fired': False, 'reason': reason}
+        except OSError:
+            latch.unlink(missing_ok=True)
+            return {'fired': False, 'reason': 'accounting-unavailable'}
     child_env = dict(env)
     child_env.pop('CLAUDECODE', None)
     child_env[facade._KEEPWARM_PING_ENV] = '1'
     child_env.update(DISABLE_TELEMETRY='1', DISABLE_ERROR_REPORTING='1')
     child_env['PATH'] = os.path.dirname(binary) + os.pathsep + child_env.get('PATH', os.defpath)
     outcome = _run_ping(facade, runner, command, cwd, child_env, context, fallback)
-    with _lock(facade) as held:
-        if not held:
-            return {'fired': True, 'proof': False, 'status': 'error', 'reason': 'ledger-locked'}
-        _append(facade._keepwarm_ledger_path(), {**common, **outcome, 'ts': max(now, facade.time.time())})
-        if outcome['proof']:
-            _headless_latch(facade).unlink()
-            # A user can resume while the request is in flight. Credit is still
-            # decided by the real return and must occur after this ping started.
-            _track_proven_ping(facade, record, now)
+    recorded = False
+    try:
+        for _ in range(2):
+            with _lock(facade) as held:
+                if not held:
+                    continue
+                _append(facade._keepwarm_ledger_path(), {**common, **outcome, 'ts': max(now, facade.time.time())})
+                recorded = True
+                if outcome['proof']:
+                    _track_proven_ping(facade, record, now)
+                break
+    finally:
+        # The pending marker excludes other headless pings until we settle it.
+        # If the ledger stays locked, the reservation still counts at fallback cost.
+        if outcome['proof'] or outcome['reason'] in ('timeout', 'rate-limited'):
+            latch.unlink(missing_ok=True)
         else:
-            # Keep the crash latch and replace the pending state under the ledger lock.
-            fd = os.open(str(_headless_latch(facade)), os.O_WRONLY | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0))
+            fd = os.open(str(latch), os.O_WRONLY | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0))
             with os.fdopen(fd, 'w') as stream:
                 stream.write('failed ' + action_id)
+    if not recorded:
+        outcome['reason'] = 'ledger-locked'
     return {'fired': True, **outcome}
 
 
@@ -435,7 +493,8 @@ def _track_proven_ping(facade, record, now):
 
 def _headless_meters(facade, now):
     data = facade._keepwarm_read_meters(now=now)
-    if data['age_s'] is None or data['age_s'] > 3600:
+    age = data['age_s']
+    if age is None or not 0 <= age <= 5 * 60:
         return None, None
     return data['five_hour_pct'], data['seven_day_pct']
 

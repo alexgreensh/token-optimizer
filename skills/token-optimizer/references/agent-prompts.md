@@ -402,6 +402,7 @@ Output file: {COORD_PATH}/audit/advanced.md
 9. **settings.json env block audit**:
    - Read ~/.claude/settings.json and check env block for token-relevant vars:
      - CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (report value; documented — % of the compact window used when compaction fires, lower compacts earlier)
+     - autoCompactWindow (recommended from your own sessions, applied only with your approval)
      - CLAUDE_CODE_MAX_THINKING_TOKENS (report value)
      - CLAUDE_CODE_MAX_OUTPUT_TOKENS (report value)
      - MAX_MCP_OUTPUT_TOKENS (report value)
@@ -513,6 +514,7 @@ Output file: {COORD_PATH}/audit/advanced.md
    | Variable | Value | Default | Note |
    |----------|-------|---------|------|
    | CLAUDE_AUTOCOMPACT_PCT_OVERRIDE | [value or not set] | not set | Documented; reported if set, never removed |
+   | autoCompactWindow | [value or not set] | automatic | Recommended from your own sessions, applied only with your approval |
    | CLAUDE_CODE_MAX_THINKING_TOKENS | [value or not set] | 10,000 | |
    | CLAUDE_CODE_MAX_OUTPUT_TOKENS | [value or not set] | 16,384 | |
    | MAX_MCP_OUTPUT_TOKENS | [value or not set] | 25,000 | |

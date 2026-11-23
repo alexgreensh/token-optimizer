@@ -42,9 +42,12 @@ def test_each_command_imports_and_has_callable_main():
         assert callable(getattr(module, "main", None)), command
 
 
-def test_run_stub_returns_2_and_prints_one_line(capsys):
-    assert poc_commands.run(None, ["next"]) == 2
-    assert capsys.readouterr().out == "Not available in this build.\n"
+def test_run_dispatches_to_the_built_command(monkeypatch):
+    module = importlib.import_module(".next_actions", poc_commands.__package__)
+    seen = []
+    monkeypatch.setattr(module, "main", lambda facade, args: seen.append(list(args)) or 0)
+    assert poc_commands.run(None, ["next", "--json"]) == 0
+    assert seen == [["--json"]]
 
 
 def test_run_returns_1_and_never_raises_when_main_raises(monkeypatch, capsys):

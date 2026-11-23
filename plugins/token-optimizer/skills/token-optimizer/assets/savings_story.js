@@ -91,8 +91,9 @@ function savingsStoryBands(data) {
     { key: 'output_reread', label: 'Shorter answers, not re-read', usd: outputInEst, tok: orr.tokens_saved,
       on: outputInEst > 0,
       why: orr.control_net == null && orr.available ? 'Not yet compared against sessions without the nudge.' : '' },
-    { key: 'other', label: 'Other estimates', usd: num(as.estimated_usd) - outputInEst - trimInEst, tok: reloadTok,
-      on: Math.abs(num(as.estimated_usd) - outputInEst - trimInEst) > 0,
+    { key: 'autocompact_window_estimated', label: 'Earlier auto-compact', usd: num(est.autocompact_window_estimated), tok: num((s.autocompact_window_estimated || {}).tokens_saved), on: num(est.autocompact_window_estimated) !== 0 },
+    { key: 'other', label: 'Other estimates', usd: num(as.estimated_usd) - outputInEst - trimInEst - num(est.autocompact_window_estimated), tok: reloadTok,
+      on: Math.abs(num(as.estimated_usd) - outputInEst - trimInEst - num(est.autocompact_window_estimated)) > 0,
       why: 'Loops stopped, sub-agent output, handovers and restores.' }
   ];
   function live(rows) {

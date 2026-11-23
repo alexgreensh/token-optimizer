@@ -497,4 +497,23 @@ the headless receipt is missing its cost, the ledger reserves the cost of a
 full rewrite. Status, Savings and Limits reuse that net. The Limits view
 labels it in API-rate dollars because it has no measured quota conversion.
 ### 11.5 Next actions and the status-bar action (lane E)
-To be written by lane X.
+
+`measure.py next` uses the user's last 30 days and reports each action separately.
+Each source already includes its own costs. Pools can overlap and none of the
+figures printed by `next` is part of a savings total.
+
+| Action | Source | Bound |
+|---|---|---|
+| Apply safe savings | Safe plan's net total | Firm |
+| Trim the skill list | Available skill listing budget | Firm |
+| Start fresh after a cold pause | Cold-session pool | Upper bound |
+| Use targeted edits | Output waste opportunity | Upper bound |
+| Avoid stale re-reads | Reclaimable stale-read opportunity | Upper bound |
+| Review routing | Routing opportunity | Upper bound |
+
+Firm actions precede upper bounds, with each group sorted by value. Declined
+and non-positive actions are hidden. Routing is hidden when disabled; the cold
+action is hidden when the safe plan already contains a cold or keep-warm item.
+The status bar shows only a firm action worth at least $5 per month, and pauses
+it for 30 days after seven days unless its value doubles. The command changes no
+settings; decline and restore only update the optimizer's own data directory.

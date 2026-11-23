@@ -494,11 +494,13 @@ function savingsLimitWindows(rw, ratio, versus) {
 function savingsLimitsHtml(data) {
   var f = savingsStoryFmt(), num = f.num;
   var rw = (data && data.runway) || null;
-  if (!rw || typeof rw !== 'object') return '';
+  var warm = typeof keepwarmNetHtml === 'function' ? keepwarmNetHtml(data) : '';
+  var warmCard = warm ? '<div class="card st-card"><h2 class="st-h">Keep-warm and your limits</h2>' + warm + '</div>' : '';
+  if (!rw || typeof rw !== 'object') return warmCard;
   var ba = ((data && data.savings) || {}).before_after || {};
   var actual = num(ba.actual_monthly_usd), before = num(ba.counterfactual_monthly_usd);
   var ratio = ba.transformation_state === 'ok' && actual > 0 && before > actual ? before / actual : 0;
-  if (!(ratio > 1)) return '';
+  if (!(ratio > 1)) return warmCard;
   var pctGain = Math.round((ratio - 1) * 100);
   // Weekly window first; the 5-hour window is the fallback when no weekly
   // reading exists. Live meter readings beat the last stored one.
@@ -551,7 +553,7 @@ function savingsLimitsHtml(data) {
       '<p class="st-lead">more work fits in your weekly limit</p>' +
     '</div>' +
     '<div class="st-limits__body">' +
-      bars +
+      bars + warm +
       '<p class="st-sub">' + esc(basis) + '</p>' +
       (win && !live.length ? '<p class="st-sub">Last reading from your meter history.</p>' : '') +
       f.fold('How this is calculated', method) +

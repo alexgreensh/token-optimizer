@@ -414,6 +414,48 @@ To be written by lane X.
 ### 11.3 Cold-session guard (lane C)
 To be written by lane X.
 ### 11.4 Automatic keep-warm (lane D)
-To be written by lane X.
+
+Open desktop sessions can use an in-session fork after you enable it with
+`measure.py keepwarm-decide set on` or approve it in the savings plan. This
+setting defaults off. Headless warm-ups default on for live terminal sessions
+and for desktop sessions using the headless fallback. The timer runs against
+the open session's paused transcript and forks without saving the fork.
+`TOKEN_OPTIMIZER_KEEPWARM_HEADLESS=off` disables headless warm-ups.
+`TOKEN_OPTIMIZER_KEEPWARM=off` disables both automatic paths. Headless also
+honors an existing keep-warm opt-out.
+
+At the cache warning, a local decision evaluates these checks in order:
+
+1. The selected warm-up path is enabled.
+2. The tripwire allows it. At least five pings and a negative verified net over
+   the last seven days stop automatic warm-ups.
+3. The session has a measured one-hour cache.
+4. The prefix holds at least 100,000 tokens.
+5. The model has a known price.
+6. Usage is below 80% of the five-hour limit and 90% of the weekly limit.
+   Subscription warm-ups require both readings.
+7. The shared ledger allows another ping. The caps are two per pause, four per
+   session in 24 hours and eight across the installation in 24 hours. Reservations
+   take a slot before any request can spend tokens.
+8. The session has no failed automatic proof in the last 24 hours.
+9. The return-history cache is at most seven days old. The nearest of the
+   55-, 115- and 175-minute buckets needs at least 20 observable pauses.
+10. The probability of a return, calculated as returns divided by observations
+    plus ten, times the avoided write premium is at least three times the ping
+    cost. The history refresh uses 30 days of local timings and stores counts.
+
+A ping proves its cache read from reported usage. It must read at least 90% of
+the prefix and write at most 5%. Missing proof or a failed threshold stops
+automatic warm-ups for that session. For headless warm-ups it also stops
+headless for the installation. The headless fork uses one turn, disables
+hooks and blocks permission prompts so a model reply cannot act on the
+project. A changed headless prefix can still fail the proof.
+
+`keepwarm_estimated` reports the signed net at API rates. A later, proven warm
+return after the original deadline can earn one avoided rewrite per pause.
+Every warm-up cost is deducted once, including failed or unused pings. When
+the headless receipt is missing its cost, the ledger reserves the cost of a
+full rewrite. Status, Savings and Limits reuse that net. The Limits view
+labels it in API-rate dollars because it has no measured quota conversion.
 ### 11.5 Next actions and the status-bar action (lane E)
 To be written by lane X.

@@ -22,6 +22,8 @@ export type StatusBar = {
   savingsReason: string | null
   lastRequestEpoch: number | null
   cacheLifetime: CacheLifetime | null
+  cacheModel?: string
+  keepwarmNote?: string
   /** The user's own compact window (settings, /autocompact, env) as Token Optimizer resolved it; null when there is none. */
   compactWindow: number | null
   checkpointEpoch: number | null
@@ -257,6 +259,8 @@ export function parseStatusBar(json: unknown): StatusBar | null {
     savingsReason: text(out.savings_reason),
     lastRequestEpoch: lastRequest !== null && lastRequest > 0 ? lastRequest : null,
     cacheLifetime: lifetime,
+    ...(text(out.cache_model) ? { cacheModel: text(out.cache_model)! } : {}),
+    ...(text(toRecord(out.savings)?.keepwarm_note) ? { keepwarmNote: text(toRecord(out.savings)?.keepwarm_note)! } : {}),
     compactWindow: (() => {
       const n = num(toRecord(out.compactWindow)?.tokens)
       return n !== null && n > 0 ? Math.floor(n) : null

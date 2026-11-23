@@ -526,10 +526,10 @@ def _keepwarm_last_usage(filepath):
         # writer must use the SAME definition of a usage turn. Arming off a
         # non-assistant usage record would spend pings on a session whose resume
         # turn the booker can never read -- structurally-impossible payback.
-        if record.get("type") != "assistant":
+        if record.get("type") != "assistant" or record.get("isSidechain") or record.get("agentId"):
             continue
         msg = record.get("message", {})
-        if not isinstance(msg, dict):
+        if not isinstance(msg, dict) or msg.get("model") == "<synthetic>":
             continue
         usage = msg.get("usage", {})
         if isinstance(usage, dict) and usage:
@@ -569,19 +569,7 @@ def _keepwarm_iso_to_epoch(ts):
 
 
 def write_keepwarm_arm_record(session_id, transcript_path, now=None):
-    """Append one keep-warm arm record. Dumb + fast; safe to call from the Stop hook.
-
-    Derives prefix_proxy (last-turn cache_read + cache_creation), model, and
-    ttl_kind from the transcript tail, then appends a single JSON line to the
-    keepwarm_state.jsonl sidecar under flock with an atomic-equivalent append.
-    Returns the record dict on success, or None when it wrote nothing (missing
-    session_id/transcript, unreadable transcript, or no usage-bearing turn).
-
-    NEVER raises into the hook chain: all errors are swallowed -> return None
-    (a hook failure must not break the user's session). Eligibility (api
-    billing, prefix >=10k, etc.) is deliberately NOT evaluated here — that is the
-    tick loop's job (the hook stays dumb).
-    """
+    """Arm a live terminal snapshot and start its detached, token-free idle watcher."""
     _measure_facade = _compat.facade()
     try:
         if not session_id or not transcript_path:
@@ -604,6 +592,8 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
         except Exception:
             pass
         from . import keepwarm_safety
+        if keepwarm_safety.headless_disabled(_measure_facade) not in (None, "headless-busy"):
+            return None
         owner = keepwarm_safety.session_owner(_measure_facade.SNAPSHOT_DIR, session_id)
         if owner is None:
             return None
@@ -613,6 +603,10 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
             return None
         prefix_proxy = _measure_facade._keepwarm_prefix_proxy(usage)
         ttl_kind = _measure_facade._keepwarm_ttl_kind(usage)
+        if ttl_kind == "unknown" and prefix_proxy >= 100000:
+            _, measured, last_model = _measure_facade._status_bar_transcript_state(tp)
+            if measured and last_model == model:
+                ttl_kind = measured
         if now is None:
             now = _measure_facade.time.time()
         try:
@@ -699,6 +693,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
                     return None
         except Exception:
             return None
+        keepwarm_safety.schedule_terminal(_measure_facade, record)
         return record
     except Exception:
         # Absolute backstop: nothing in the arm path may propagate to the hook.
@@ -798,8 +793,10 @@ def classify_keepwarm_record(rec, now=None):
         armed_mtime = 0.0
 
     from . import keepwarm_safety
-    if not keepwarm_safety.owner_alive(rec.get("owner")) or keepwarm_safety.ended_since(
-            _measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts):
+    owner = rec.get("owner")
+    mod_receipt = owner is None and rec.get("pings_fired") and (rec.get("manual_action_id") or rec.get("auto_warm"))
+    if ((not mod_receipt and not keepwarm_safety.owner_alive(owner)) or keepwarm_safety.ended_since(
+            _measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts)):
         return "gone"
     try:
         armed_size = int(rec["byte_size"])
@@ -842,7 +839,9 @@ def compact_keepwarm_sidecar(path=None, now=None):
             dropped += max(0, raw_lines - len(records))
         except OSError:
             pass
-        for rec in records:
+        latest = {(rec.get("session_id"), rec.get("ts")): rec for rec in records}
+        dropped += len(records) - len(latest)
+        for rec in latest.values():
             verdict = _measure_facade.classify_keepwarm_record(rec, now=now)
             if verdict == "still_paused":
                 kept.append(rec)
@@ -1664,7 +1663,8 @@ def keepwarm_scheduler_install(gate=None, quiet=None):
     A refused gate leaves scheduler configuration untouched.
     """
     _measure_facade = _compat.facade(); from . import keepwarm_linux
-    gate_fn = gate or _measure_facade.keepwarm_gate
+    from .keepwarm_safety import scheduler_gate
+    gate_fn = gate or (lambda: scheduler_gate(_measure_facade))
     allowed, reason = gate_fn()
     if not allowed:
         return (False, (
@@ -1738,7 +1738,8 @@ def keepwarm_scheduler_status(gate=None):
     files + the gate, never installs. `gate` injectable for tests.
     """
     _measure_facade = _compat.facade(); from . import keepwarm_linux
-    gate_fn = gate or _measure_facade.keepwarm_gate
+    from .keepwarm_safety import scheduler_gate
+    gate_fn = gate or (lambda: scheduler_gate(_measure_facade))
     if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.status(_measure_facade, gate_fn)
     plist_path = _measure_facade._keepwarm_scheduler_plist_path()
     marker = _measure_facade._keepwarm_read_scheduler_marker()
@@ -1780,10 +1781,12 @@ def keepwarm_scheduler_repair(gate=None):
     _measure_facade = _compat.facade(); from . import keepwarm_linux
     if _measure_facade._remote_lean_profile():
         return "noop-remote"
-    if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.repair(_measure_facade, gate or _measure_facade.keepwarm_gate)
-    # Cheapest gate first: marker existence (one stat) before any gate read.
+    from .keepwarm_safety import scheduler_gate
+    gate_fn = gate or (lambda: scheduler_gate(_measure_facade))
+    if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.repair(_measure_facade, gate_fn)
     marker = _measure_facade._keepwarm_read_scheduler_marker()
-    gate_fn = gate or _measure_facade.keepwarm_gate
+    if gate is None and marker is None:
+        return "noop-no-marker"
     allowed, _reason = gate_fn()
     if not allowed:
         return "noop-gate"
@@ -2370,35 +2373,15 @@ def _keepwarm_tick_singleton():
 
 def keepwarm_tick(now=None, dry_run=None, env=None, runner=None,
                   gate=None, tripwire_state=None, history_stats=None):
-    """One keep-warm tick: gate -> load -> classify -> decide -> fire.
-
-    Order (every step fail-closed; one record's failure never blocks the rest):
-      1. keepwarm_gate() FIRST -- if not allowed (subscription / not consented /
-         ping-process), return immediately with the gate reason; NOTHING fires.
-      2. Single-instance tick lock -- if another tick is live, skip quietly.
-      3a. keepwarm_detect_realized() -- BEFORE compaction, because
-          compaction drops resumed records. Books realized/loss rows off the
-          resumed turn's REAL usage, never off the 'resumed' classification.
-      3b. evaluate_keepwarm_tripwire() -- refresh the rolling-7d
-          ratio + sticky demotion ladder from the ledger.
-      3c. compact_keepwarm_sidecar() -- drop resumed/gone/expired records (the
-          disarm path). The tick writes ONLY ping spend + outcome rows here.
-      4. For each surviving still_paused record: policy decision; on 'ping' fire
-         (unless dry_run) and append the ping ts to the record's pings_fired,
-         then rewrite the sidecar with the updated records.
-
-    Returns a summary dict {allowed, reason, decisions:[...], fired:int,
-    skipped:int}. dry_run prints/returns decisions without firing anything.
-    `gate`/`runner` are injectable for tests; defaults use the real gate and
-    subprocess.
-    """
+    """Run the production scheduler or replay the legacy policy with an injected gate."""
     _measure_facade = _compat.facade(); from . import keepwarm_economics
     if now is None:
         now = _measure_facade.time.time()
     if env is None:
         env = _measure_facade.os.environ
     if gate is None:
-        gate = _measure_facade.keepwarm_gate
+        from .keepwarm_safety import scheduler_tick
+        return scheduler_tick(_measure_facade, now, dry_run, env, runner)
     summary = {"allowed": False, "reason": "", "decisions": [],
                "fired": 0, "skipped": 0}
 
@@ -3141,7 +3124,7 @@ def keepwarm_backfill_run(days=None, now=None, write_fence=None, files=None,
             "decision": decision, "wrote_fence": wrote}
 
 
-def keepwarm_forecast(days=None, now=None, files=None, parse_fn=None):
+def keepwarm_forecast(days=None, now=None, files=None, parse_fn=None, *, automatic=False):
     """PERSONALIZED projected savings, computed from the user's OWN history.
 
     The opt-in problem: nobody enables a token-SPENDING
@@ -3163,6 +3146,9 @@ def keepwarm_forecast(days=None, now=None, files=None, parse_fn=None):
     if now is None:
         now = _measure_facade.time.time()
     try:
+        if automatic:
+            from .keepwarm_auto import capped_forecast
+            return capped_forecast(_measure_facade, days, now, files, parse_fn)
         result = _measure_facade.keepwarm_backfill(days=days, now=now, files=files,
                                    parse_fn=parse_fn)
         probe = result.get("modes", {}).get("probe-only", {})
@@ -3472,7 +3458,7 @@ def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
         booked = _measure_facade._keepwarm_booked_pause_keys()
     except Exception:
         booked = set()
-    for rec in records:
+    for rec in {(r.get("session_id"), r.get("ts")): r for r in records}.values():
         try:
             pings = rec.get("pings_fired")
             n_pings = len(pings) if isinstance(pings, list) else 0
@@ -3505,7 +3491,8 @@ def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
             resume_ts = _measure_facade._keepwarm_iso_to_epoch(turn.get("timestamp"))
             last_activity = rec.get("last_turn_ts") or arm_ts
             ttl_seconds = 3600 if rec.get("ttl_kind") == "1h" else 300
-            if resume_ts is None or resume_ts - float(last_activity) <= ttl_seconds:
+            if (resume_ts is None or resume_ts - float(last_activity) <= ttl_seconds
+                    or (rec.get("auto_warm") and not any(ping <= resume_ts <= ping + ttl_seconds for ping in pings))):
                 out["skipped"] += 1
                 continue
             prefix = rec.get("prefix_proxy")
@@ -3643,6 +3630,8 @@ def keepwarm_spend_summary(days=None, now=None, rows=None):
                 c = _measure_facade._keepwarm_ping_cost_est(r["prefix_proxy"], r.get("model"))
             spend += c
             pings += 1
+            if r.get("proof") is False:
+                loss_count += 1
             if st == "ok":
                 ok_count += 1
             elif st == "error":

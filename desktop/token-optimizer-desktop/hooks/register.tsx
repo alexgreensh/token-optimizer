@@ -10,7 +10,7 @@
 // reload keeps it; the pose reducer also runs from a module copy so streaming
 // chunks do not write on every piece.
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 import type { TokenOptimizerDesktopSession } from '../types/index.d.ts'
 import {
   BUSY_TIMEOUT_MS,
@@ -28,7 +28,6 @@ import {
   canOpenDashboard,
   cleanUpOutcome,
   dashboardFailed,
-  dashboardStatus,
   handoffFate,
   initialUi,
   isArmed,
@@ -47,18 +46,19 @@ import {
   type UiState,
 } from '../src/actions.ts'
 import { canKeepWarm, initialClock, reduceClock, view, type ClockEvent, type ClockState } from '../src/clock.ts'
-import { LIGHT, clawdSvg, type Gaze, type Palette } from '../src/clawd.ts'
-import type { Snapshot } from '../src/contracts.ts'
-import { savingsRetryNote } from '../src/format.ts'
-import { ICONS, ICON_ALT, iconSvg, type IconName } from '../src/icons.ts'
-import { QUALITY_FLOOR, moodOf, sentence, type ActionId, type Run } from '../src/ladder.ts'
-import { cards, marks, row, savingsPill, type Card, type Mark, type MarkTone, type SavingsPill } from '../src/marks.ts'
-import { envSize, slimSide, storedSize, type BandSize } from '../src/size.ts'
+import { LIGHT, clawdSvg } from '../src/clawd.ts'
+import type { CacheView, Snapshot } from '../src/contracts.ts'
+import { drawBand, drawSlim, tonesFor, type Model, type Handlers, type ClawdLayer } from '../src/band.tsx'
+import { allowsHeadlessFallback, decideArgs, liveMeters, parseDecision, parseHeadlessResult, proofOk, shouldAsk,
+  HEADLESS_STOP, HEADLESS_TIMEOUT_MS, PROOF_STOP } from '../src/autowarm.ts'
+import { moodOf, type ActionId } from '../src/ladder.ts'
+import { envSize, storedSize, type BandSize } from '../src/size.ts'
 import { switchedOff, timeOptions } from '../src/switches.ts'
 import { DEBOUNCE_MS, initialPose, reducePose, type PoseEvent, type PoseState } from '../src/pose.ts'
 import {
   QUALITY_REFRESH_MS,
   STATUS_AFTER_TURN_MS,
+  STATUS_TIMEOUT_MS,
   TICK_IDLE_MS,
   TICK_WARNING_MS,
   cleanId,
@@ -78,14 +78,6 @@ const poseAtom = atom({ plugin: 'token-optimizer', key: 'pose' } as const, null)
 const engineCallAtom = atom({ plugin: 'token-optimizer', key: 'engineCall' } as const, null)
 const uiAtom = atom({ plugin: 'token-optimizer', key: 'ui' } as const, null)
 const frameAtom = atom({ plugin: 'token-optimizer', key: 'frame' } as const, 0)
-
-type Desktop = Elements['desktop']
-type Tones = { good: string; caution: string; bad: string; cold: string; ink: string; track: string; card: string; line: string; goodSoft: string }
-
-/** The design page's tone colours (light; each picture follows dark mode itself, see DARK_STYLE). */
-function tonesFor(p: Palette): Tones {
-  return { good: '#2f9e55', goodSoft: '#e2f3e9', caution: '#c98a1b', bad: p.bad, cold: p.cold, ink: p.ink, track: '#d9d6cd', card: p.card, line: '#e2dfd6' }
-}
 
 // ---- module state: plain variables, rebuilt from the atoms after a reload ----
 
@@ -113,6 +105,11 @@ function transcriptFor(sid: string): string | undefined {
   return transcript !== null && sid !== '' && transcript.sessionId === sid ? transcript.path : undefined
 }
 let warmInFlight = false
+let lastAutoAsk: { sid: string; anchor: number | null } | null = null
+const autoStopped = new Set<string>()
+let compactedAt = 0
+let autoCompacting = false
+let autoTurnRunning = false
 /**
  * Which session the band is serving: bumped when one starts, is cleared or is
  * swapped in. Work begun under one generation drops its result in the next.
@@ -342,6 +339,7 @@ async function tick($: EngineInterface): Promise<void> {
     const session = await read($, sessionAtom)
     const ui = (await read($, uiAtom)) ?? initialUi()
     const v = view(clock, now, planDefault(session))
+    void attempt(() => maybeAutoWarm($, clock, v, session, now), undefined)
     const cold = v.state === 'cold'
     if (cold !== lastCold) {
       lastCold = cold
@@ -645,7 +643,7 @@ async function runCompact($: EngineInterface, since: number, kind: 'clean' | 'cl
   $.clock.after(0, () => void attempt(() => refresh($), undefined))
 }
 
-/** Keep warm: guarded at press time, one fork, never on a timer. */
+/** Manual Keep warm uses the same fork and booking path as the timer. */
 async function keepWarm($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   await disarm($)
@@ -688,40 +686,137 @@ function forkWithin($: EngineInterface, ms: number, receipt: (reply: ForkReply) 
   })
 }
 
-async function runWarm($: EngineInterface, known: number | null, gen: number): Promise<void> {
+type AutoWarm = { sid: string; anchor: number; headless: boolean; args: string[] }
+
+async function autoStillIdle($: EngineInterface, auto: AutoWarm, gen: number, started = false): Promise<boolean> {
+  const clock = await read($, clockAtom)
+  const now = await $.clock.now()
+  const sid = cleanId(await $.session.id())
+  return gen === sessionGen && sid === auto.sid && clock?.anchor === auto.anchor
+    && auto.anchor > compactedAt && !autoTurnRunning && !autoCompacting && !poseLive?.working && !poseLive?.compacting
+    && canKeepWarm({ ...clock, warming: started ? false : clock.warming }, now)
+}
+
+async function maybeAutoWarm($: EngineInterface, clock: ClockState, cache: CacheView,
+                             session: TokenOptimizerDesktopSession | null, now: number): Promise<void> {
+  if (!active || warmInFlight || autoTurnRunning || autoCompacting
+      || poseLive?.working || poseLive?.compacting || !session?.sessionId
+      || !session.cacheModel || !session.lastRequestEpoch || clock.anchor === null || clock.anchor <= compactedAt
+      || !clock.contextTokens || autoStopped.has(session.sessionId)
+      || !shouldAsk(clock, cache, now, lastAutoAsk?.sid === session.sessionId ? lastAutoAsk.anchor : null)) return
+  lastAutoAsk = { sid: session.sessionId, anchor: clock.anchor }
+  const gen = sessionGen
+  const io = dataIo($)
+  const root = await findTokenOptimizerRoot(io, await readHome(io))
+  if (!root) return
+  const args = decideArgs(session.sessionId, clock.contextTokens, (now / 1000) - session.lastRequestEpoch,
+    session.cacheModel, cache.lifetime, liveMeters(await $.session.usage()))
+  const auto = { sid: session.sessionId, anchor: clock.anchor, headless: false, args }
+  if (!await autoStillIdle($, auto, gen) || warmInFlight) return
+  const decision = await runMeasure(io, root, args, { timeoutMs: STATUS_TIMEOUT_MS })
+  if (decision.exitCode !== 0) return
+  auto.headless = allowsHeadlessFallback(decision.stdout)
+  if (!auto.headless && parseDecision(decision.stdout) !== 'ping') return
+  if (!await autoStillIdle($, auto, gen) || warmInFlight) return
+  warmInFlight = true
+  await feedClock($, { type: 'warm-start' }, await $.clock.now())
+  await runWarm($, clock.contextTokens, gen, auto)
+}
+
+function stopAutoWarm($: EngineInterface, sid: string, gen: number, headless = false): void {
+  if (autoStopped.has(sid)) return
+  autoStopped.add(sid)
+  if (gen === sessionGen) toast($, headless ? HEADLESS_STOP : PROOF_STOP)
+}
+
+async function runHeadlessWarm($: EngineInterface, auto: AutoWarm, gen: number,
+                               contextTokens: number, snapshot: Record<string, unknown>): Promise<void> {
+  const io = dataIo($)
+  const root = await findTokenOptimizerRoot(io, await readHome(io))
+  if (!root || !await autoStillIdle($, auto, gen, true)) return
+  const [, ...args] = auto.args
+  const result = await runMeasure(io, root, ['keepwarm-decide', 'headless', ...args],
+    { timeoutMs: HEADLESS_TIMEOUT_MS, stdin: JSON.stringify(snapshot) })
+  const { fired, proof, cacheRead } = parseHeadlessResult(result.stdout)
+  if (!fired) return
+  if (!proof) stopAutoWarm($, auto.sid, gen, true)
+  else if (gen === sessionGen) {
+    await feedClock($, { type: 'warm-done', at: await $.clock.now(), cacheReadTokens: cacheRead, contextTokens })
+    $.clock.after(0, () => void attempt(() => refresh($, { savings: true }), undefined))
+  }
+}
+
+async function runWarm($: EngineInterface, known: number | null, gen: number, auto?: AutoWarm): Promise<void> {
   try {
-    const session = await attempt(() => read($, sessionAtom), null); const sid = cleanId(await attempt(() => $.session.id(), '')); const path = transcriptFor(sid); const snapshot = path ? await attempt(() => $.fs.stat(path), null) : null; const actionId = `${sid}-${await $.clock.now()}-${Math.random().toString(36).slice(2)}`
-    // A recorded 0 is no size at all: fall back to the session's own.
-    const contextTokens = known || session?.contextTokens || 0; let receiptFailed = false; if (!await bookModAction(dataIo($), { action: 'warm-prepare', action_id: actionId, session_id: sid, timestamp: (await $.clock.now()) / 1000, transcript_path: path, byte_size: snapshot?.size, transcript_mtime: snapshot ? snapshot.mtimeMs / 1000 : null })) { await feedClock($, { type: 'warm-failed' }); toast($, 'Keep warm did not run: its cost could not be reserved.'); return }
-    const reply = await forkWithin($, BUSY_TIMEOUT_MS, async answer => { if (!answer.isAnswered && answer.reason === 'nothing-to-fork') { await bookModAction(dataIo($), { action: 'warm-cancel', action_id: actionId, session_id: sid, timestamp: (await $.clock.now()) / 1000 }); return } if (!('usage' in answer) || !answer.usage || !Object.values(answer.usage).some(n => typeof n === 'number' && n > 0)) { await logForkFailure(dataIo($), 'fork returned no usage'); return } const booked = await bookModAction(dataIo($), { action: 'warm', answered: answer.isAnswered, action_id: actionId, session_id: sid, timestamp: (await $.clock.now()) / 1000, transcript_path: path, byte_size: snapshot?.size, transcript_mtime: snapshot ? snapshot.mtimeMs / 1000 : null, usage: answer.usage }); receiptFailed = !booked; if (!booked) toast($, 'Warm-up cost could not be recorded in Token Optimizer.') })
-    // Cleared meanwhile: this warm-up says nothing about the new session.
-    if (gen !== sessionGen) return
+    const session = await attempt(() => read($, sessionAtom), null)
+    const sid = cleanId(await attempt(() => $.session.id(), ''))
+    const path = transcriptFor(sid)
+    const stat = path ? await attempt(() => $.fs.stat(path), null) : null
     const at = await $.clock.now()
-    if (reply === null) {
-      await feedClock($, { type: 'warm-failed' })
-      toast($, warmToast({ ok: false, reason: 'the request failed' }))
-    } else if (reply.isAnswered) {
-      await feedClock($, { type: 'warm-done', at, cacheReadTokens: reply.usage.cache_read_input_tokens, contextTokens })
+    const snapshot = { action_id: `${sid}-${at}-${Math.random().toString(36).slice(2)}`, session_id: sid,
+      transcript_path: path, byte_size: stat?.size, transcript_mtime: stat ? stat.mtimeMs / 1000 : null }
+    const contextTokens = known || session?.contextTokens || 0
+    if (auto && !await autoStillIdle($, auto, gen, true)) return
+    if (auto?.headless) return await runHeadlessWarm($, auto, gen, contextTokens, snapshot)
+    const io = dataIo($)
+    const flags = auto ? { auto: true } : {}
+    const booking = async (action: string, fields: Record<string, unknown> = {}) =>
+      bookModAction(io, { ...snapshot, ...flags, ...fields, action, timestamp: (await $.clock.now()) / 1000 })
+    const prepare = auto ? { ...liveMeters(await $.session.usage()), context_tokens: contextTokens } : {}
+    if (!await booking('warm-prepare', prepare)) {
+      if (!auto) toast($, 'Keep warm did not run: its cost could not be reserved.')
+      return
+    }
+    if (gen !== sessionGen || (auto && !await autoStillIdle($, auto, gen, true))) {
+      await booking('warm-cancel')
+      return
+    }
+    let receiptFailed = false
+    const markUnproved = async () => {
+      if (!auto) return
+      stopAutoWarm($, sid, gen)
+      await booking('warm-unproved', { proof: false })
+    }
+    const reply = await forkWithin($, BUSY_TIMEOUT_MS, async answer => {
+      if (!answer.isAnswered && answer.reason === 'nothing-to-fork') {
+        if (auto) stopAutoWarm($, sid, gen)
+        await booking('warm-cancel', auto ? { proof: false } : {})
+        return
+      }
+      if (!('usage' in answer) || !answer.usage || !Object.values(answer.usage).some(n => typeof n === 'number' && n > 0)) {
+        await markUnproved()
+        await logForkFailure(io, 'fork returned no usage')
+        return
+      }
+      const proved = answer.isAnswered && proofOk(answer.usage, contextTokens)
+      if (auto && !proved) stopAutoWarm($, sid, gen)
+      const booked = await booking('warm', { answered: answer.isAnswered, usage: answer.usage,
+        ...(auto ? { proof: proved } : {}) })
+      receiptFailed = !booked
+      if (!booked && !auto) toast($, 'Warm-up cost could not be recorded in Token Optimizer.')
+      if (!booked && auto) await markUnproved()
+    }).catch(() => null)
+    if (reply === null) await markUnproved()
+    if (gen !== sessionGen) return
+    const finished = await $.clock.now()
+    if (reply?.isAnswered && (!auto || (!autoStopped.has(sid) && !receiptFailed))) {
+      await feedClock($, { type: 'warm-done', at: finished, cacheReadTokens: reply.usage.cache_read_input_tokens, contextTokens })
+      if (auto) {
+        $.clock.after(0, () => void attempt(() => refresh($, { savings: true }), undefined))
+        return
+      }
       const after = await attempt(() => read($, clockAtom), null)
       const line = warmToast({
-        ok: true,
-        lapsed: Boolean(after?.lapsed),
-        contextTokens,
-        cacheRead: reply.usage.cache_read_input_tokens,
-        lifetimeS: view(after ?? initialClock(), at, planDefault(session)).lifetime,
+        ok: true, lapsed: Boolean(after?.lapsed), contextTokens, cacheRead: reply.usage.cache_read_input_tokens,
+        lifetimeS: view(after ?? initialClock(), finished, planDefault(session)).lifetime,
       }) + (receiptFailed ? ' Cost could not be recorded in Token Optimizer.' : '')
       toast($, line)
-      // Also in the sentence for a few seconds, where the eye already is.
-      await setUi($, u => withNote(u, line, at))
-    } else {
-      await feedClock($, { type: 'warm-failed' })
-      toast($, warmToast({ ok: false, reason: reply.reason }))
+      await setUi($, u => withNote(u, line, finished))
+    } else if (!auto) {
+      toast($, warmToast({ ok: false, reason: reply && !reply.isAnswered ? reply.reason : 'the request failed' }))
     }
-  } catch {
-    if (gen !== sessionGen) return
-    await feedClock($, { type: 'warm-failed' })
-    toast($, warmToast({ ok: false, reason: 'the request failed' }))
   } finally {
+    if (gen === sessionGen) await feedClock($, { type: 'warm-failed' })
     warmInFlight = false
   }
 }
@@ -980,76 +1075,6 @@ async function act($: EngineInterface, id: ActionId | 'dashboard'): Promise<void
   }
 }
 
-// ---- drawing ----
-
-const ring = (p: number, color: string, track: string, cold: boolean): string => {
-  const c = 2 * Math.PI * 7
-  const bg = cold ? `stroke="${color}" stroke-dasharray="2.2 2.2"` : `class="t" stroke="${track}"`
-  return (
-    `<circle cx="10" cy="10" r="7" fill="none" stroke-width="3.2" ${bg}/>` +
-    (p > 0 ? `<circle cx="10" cy="10" r="7" fill="none" stroke-width="3.2" stroke="${color}" stroke-linecap="round" stroke-dasharray="${((c * p) / 100).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 10 10)"/>` : '')
-  )
-}
-
-/**
- * The desktop gives the band no light/dark signal (the config's theme is the
- * terminal's), so the marks and icons follow the app's own appearance through their
- * colour-scheme query; the drawn colours are the light ones, the fallback.
- * Classes: k = ink stroke, kf = ink fill, t = track stroke, tf = track fill.
- */
-const DARK_STYLE = '<style>@media (prefers-color-scheme: dark){.k{stroke:#f3f1ea}.kf{fill:#f3f1ea}.t{stroke:#4b4a46}.tf{fill:#4b4a46}}</style>'
-
-function themed(svg: string, rootClass?: string): string {
-  const open = svg.indexOf('>') + 1
-  const head = rootClass ? svg.slice(0, open - 1).replace('<svg ', `<svg class="${rootClass}" `) + '>' : svg.slice(0, open)
-  return head + DARK_STYLE + svg.slice(open)
-}
-
-const esc = (v: string): string => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-
-/** A mark's ring or grade badge, as the artifact draws it: the colour lives here, the text stays ink. */
-function markSvg(mark: Mark, t: Tones): string {
-  const color = toneColor(mark.tone, t)
-  const right =
-    mark.badge !== undefined
-      ? `<rect x="1" y="1" width="18" height="18" rx="5"${mark.tone === 'none' ? ' class="tf"' : ''} fill="${mark.tone === 'none' ? t.track : color}"/>` +
-        `<text x="10" y="14" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11.5" font-weight="700" fill="${t.card}">${esc(mark.badge)}</text>`
-      : ring(mark.ringPercent ?? 0, color, t.track, mark.tone === 'cold')
-  return themed(`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" role="img" aria-label="${esc(mark.alt)}"><title>${esc(mark.alt)}</title>${right}</svg>`)
-}
-
-function toneColor(tone: MarkTone, t: Tones): string {
-  return tone === 'none' ? t.track : t[tone]
-}
-
-function runsOf(D: Desktop, runs: Run[], t: Tones) {
-  const { Text } = D
-  return runs.map(r => (r.lose ? <Text bold color={t.bad}>{r.text}</Text> : r.strong ? <Text bold>{r.text}</Text> : r.text))
-}
-
-function icon(D: Desktop, name: IconName, color: string, alt?: string) {
-  const { Svg } = D
-  const label = alt ?? ICON_ALT[name]
-  const svg = iconSvg(name, color, { alt: label })
-  return <Svg source={color === LIGHT.ink ? themed(svg, 'k') : svg} alt={label} width={16} height={16} />
-}
-
-type Model = {
-  snap: Snapshot
-  tones: Tones
-  sheetOpen: boolean
-  savingsReason: string | null
-  savingsComputedAt: number | null
-  savingsRefreshFailed: boolean
-  /** Keep warm can run now (the one guard): only then does the row offer it. */
-  canWarm: boolean
-  /** Clawd's pictures, bottom first: the previous pose stays beneath a new one while it fades in. */
-  clawd: ClawdLayer[]
-  /** While watching: one picture per look, each shown while the pointer is over its part of the band. */
-  gazes: (ClawdLayer & { gaze: Gaze })[]
-}
-
-type ClawdLayer = { key: string; source: string; alt: string }
 const UNDERLAY_MS = 900
 let clawdTop: ClawdLayer | null = null
 let clawdUnder: (ClawdLayer & { until: number }) | null = null
@@ -1069,254 +1094,6 @@ function clawdLayers($: EngineInterface, layer: ClawdLayer, now: number): ClawdL
   return clawdUnder !== null ? [clawdUnder, layer] : [layer]
 }
 
-type Handlers = { act: (id: ActionId) => void; dashboard: () => void; details: () => void; size: () => void }
-
-/** The green savings chip right after the sentence: the shared headline's own words, a press opens the dashboard like `Dashboard ↗` does. */
-function savingsChip(D: Desktop, pill: SavingsPill, t: Tones, on: Handlers) {
-  const { Box, Button } = D
-  return (
-    <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} paddingX={1} borderStyle="round" borderColor={t.good} backgroundColor={t.goodSoft}>
-      {icon(D, 'saved', t.good)}
-      <Button key="savings-pill" plain label={`${pill.text} ↗`} onPress={() => on.dashboard()} />
-    </Box>
-  )
-}
-
-/** The five marks with their hover cards: one line, never wrapped, in both sizes. `Dashboard ↗` caps the row; `status` is the slim band's dashboard progress, which has no sentence line to carry it. */
-function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: Handlers, status: string | null = null) {
-  const { Box, Text, Svg, Button } = D
-  return (
-    <Box flexDirection="row" flexWrap="nowrap" columnGap={3}>
-      {markList.map((mark, i) => (
-        <Box key={`mark-${mark.id}`} position="relative" flexDirection="row" alignItems="center" columnGap={1}>
-          <Svg source={markSvg(mark, t)} alt={mark.alt} width={20} height={20} />
-          <Text bold>{mark.value}</Text>
-          {/* Always labelled: without the word, nobody knows which number is which. */}
-          <Text>{mark.label}</Text>
-          {(() => {
-            // Matched by id, not position: a missing limit never shifts a card under the wrong mark.
-            const card = cardList.find(c => c.id === mark.id)
-            return card ? cardBox(D, card, i, t, on) : ''
-          })()}
-        </Box>
-      ))}
-      <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-        {status !== null ? (
-          <Box key="dashboard-status">
-            <Text>{status}</Text>
-          </Box>
-        ) : (
-          ''
-        )}
-        <Button key="dashboard" plain label="Dashboard ↗" onPress={() => on.dashboard()} />
-      </Box>
-    </Box>
-  )
-}
-
-function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) {
-  const { Box, Text, Button } = D
-  const side = index < 2 ? { left: 0 } : { right: 0 }
-  return (
-    <Box
-      position="absolute"
-      bottom={1}
-      {...side}
-      display="none"
-      hover={{ display: 'flex' }}
-      flexDirection="column"
-      width={44}
-      paddingX={1}
-      borderStyle="round"
-      borderColor={t.line}
-      backgroundColor={t.card}
-    >
-      <Text bold>{card.title}</Text>
-      <Text wrap="wrap">
-        <Text bold>What it means: </Text>
-        {runsOf(D, card.means, t)}
-      </Text>
-      <Text wrap="wrap">
-        <Text bold>What to do: </Text>
-        {runsOf(D, card.todo, t)}
-      </Text>
-      {card.actions.length > 0 ? (
-        <Box flexDirection="row" columnGap={1} marginTop={1}>
-          {card.actions.map(a => (
-            <Button key={`card-${card.id}-${a.id}`} label={a.label} onPress={() => on.act(a.id)} />
-          ))}
-        </Box>
-      ) : (
-        ''
-      )}
-    </Box>
-  )
-}
-
-/** The unfolded row, shared by both sizes: the facts and any card action the moment calls for. Savings live on the title-row chip; behind the arrow only an unavailable reason remains. */
-function detailRow(D: Desktop, m: Model, on: Handlers) {
-  const { Box, Text, Button } = D
-  const { snap, tones: t } = m
-  const say = sentence(snap, timeOpts)
-  const cardList = cards(snap, timeOpts)
-  const detail = row(snap)
-  // A card action joins the row only when the moment calls for it (quality sagging, the cache
-  // about to drop) and the sentence's own button is not already offering it.
-  const q = snap.quality
-  const sagging = q !== null && (q.score < QUALITY_FLOOR || q.recoveryStatus === 'needs_attention')
-  const rowActions = [
-    ...(sagging ? cardList.find(c => c.id === 'quality')?.actions ?? [] : []),
-    ...(m.canWarm && snap.cache.state === 'warning' ? [{ id: 'warm' as const, label: 'Keep warm' }] : []),
-  ].filter(a => a.id !== say.action?.id && !(a.id === 'clean' && say.action?.id === 'clean-first'))
-
-  const savingsNote =
-    detail.savings.state === 'unavailable' || (snap.savingsLoading && !snap.savings) ? (
-      <Box flexDirection="row" alignItems="center" columnGap={1}>
-        {icon(D, 'saved', t.ink)}
-        <Text>{m.savingsReason ?? (snap.savingsLoading ? 'Still counting savings.' : detail.savings.reason) ?? 'Savings appear once Token Optimizer has measured some.'}</Text>
-      </Box>
-    ) : savingsRetryNote(m.savingsRefreshFailed, m.savingsComputedAt, snap.now) ? <Text>{savingsRetryNote(m.savingsRefreshFailed, m.savingsComputedAt, snap.now)}</Text> : ''
-
-  return (
-    <Box key="row" flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
-      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>
-        {detail.facts.map(f => (
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
-            {icon(D, f.icon, t.ink)}
-            <Text>{runsOf(D, f.runs, t)}</Text>
-          </Box>
-        ))}
-        {rowActions.length > 0 ? (
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
-            {rowActions.map(a => (
-              <Button key={`row-${a.id}`} label={a.label} onPress={() => on.act(a.id)} />
-            ))}
-          </Box>
-        ) : (
-          ''
-        )}
-      </Box>
-      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>{savingsNote}</Box>
-    </Box>
-  )
-}
-
-function drawBand(D: Desktop, m: Model, on: Handlers) {
-  const { Box, Text, Button, Svg } = D
-  const { snap, tones: t } = m
-  const say = sentence(snap, timeOpts)
-  const markList = marks(snap, timeOpts)
-  const cardList = cards(snap, timeOpts)
-  const pill = savingsPill(snap, say, 'full')
-  // The artifact's layout: Clawd and his arrow beside the sentence and the marks; the
-  // unfolded row under all of it, from Clawd's left edge.
-  return (
-    // Keyed: the whole band is one hover zone (the desktop reveals within a keyed Box,
-    // not across separate hover groups), so a pointer anywhere on it wakes Clawd to look.
-    <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
-      <Box flexDirection="row" alignItems="center" columnGap={2}>
-        <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-          {/* Box sizes count text cells on desktop, so the bottom picture sizes the stack and the new one sits over it.
-              Only a Button can be pressed, and its label is text, so the arrow beside him opens the row. */}
-          {/* No hover on this Box: the desktop rebuilds a hover box's pictures on every redraw (Clawd blanked once a second). */}
-          <Box position="relative">
-            {m.clawd.map((c, i) => (
-              <Box key={c.key} {...(i === 0 ? {} : { position: 'absolute' as const, top: 0, left: 0 })}>
-                {/* Not isInteractive: the desktop reloads an interactive picture on every redraw (a blank frame); a plain one keeps its animation. */}
-                <Svg source={c.source} alt={c.alt} width={72} height={57} />
-              </Box>
-            ))}
-            {/* Hover can reveal but not move: his look toward the band is its own picture, drawn hidden over him. */}
-            {m.gazes.map(g => (
-              // No key of its own: a keyed Box drawn hidden is a hover zone nobody can point at.
-              <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>
-                <Svg source={g.source} alt={g.alt} width={72} height={57} />
-              </Box>
-            ))}
-          </Box>
-          <Box flexDirection="row" columnGap={1}>
-            {/* A native button, not a bare glyph: its frame says "press me". */}
-            <Button
-              key="details"
-              label={m.sheetOpen ? '▴' : '▾'}
-              onPress={() => on.details()}
-            />
-            {/* One line instead of the band: vertical space is at a premium. */}
-            <Button key="size" label="–" onPress={() => on.size()} />
-          </Box>
-        </Box>
-        <Box flexDirection="column" flexGrow={1} flexShrink={1} rowGap={1}>
-          <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2}>
-            <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={1}>
-              <Text bold>Token Optimizer</Text>
-              {icon(D, say.icon, toneColor(say.tone, t))}
-              <Text wrap="wrap">{runsOf(D, say.runs, t)}</Text>
-              {pill !== null ? savingsChip(D, pill, t, on) : ''}
-            </Box>
-            {say.action ? <Button key="action" variant="primary" label={say.action.label} onPress={() => on.act(say.action!.id)} /> : ''}
-          </Box>
-          {/* One line, never wrapped: a wrapped mark's card would open over the marks above it. */}
-          {markRow(D, markList, cardList, t, on)}
-        </Box>
-      </Box>
-      {m.sheetOpen ? detailRow(D, m, on) : ''}
-    </Box>
-  )
-}
-
-/** The slim band: one line, plus the unfolded row when open. Tiny Clawd, the arrow and + buttons, the five marks, and what the sentence earns on the right. */
-function drawSlim(D: Desktop, m: Model, on: Handlers) {
-  const { Box, Text, Button, Svg } = D
-  const { snap, tones: t } = m
-  const say = sentence(snap, timeOpts)
-  const side = slimSide(say)
-  const pill = side.kind === 'none' ? savingsPill(snap, say, 'slim') : null
-  return (
-    // Keyed like the full band: the same one hover zone, so pointing still wakes Clawd's look.
-    <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
-    <Box flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={2}>
-      {/* The same layered pictures as the full band (same poses, fades, gaze layers), just small. */}
-      <Box position="relative" flexShrink={0}>
-        {m.clawd.map((c, i) => (
-          <Box key={c.key} {...(i === 0 ? {} : { position: 'absolute' as const, top: 0, left: 0 })}>
-            <Svg source={c.source} alt={c.alt} width={24} height={19} />
-          </Box>
-        ))}
-        {m.gazes.map(g => (
-          <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>
-            <Svg source={g.source} alt={g.alt} width={24} height={19} />
-          </Box>
-        ))}
-      </Box>
-      <Box flexDirection="row" columnGap={1} flexShrink={0}>
-        {/* The same arrow as the full band: the unfolded row is where the detail lives. */}
-        <Button key="details" label={m.sheetOpen ? '▴' : '▾'} onPress={() => on.details()} />
-        <Button key="size" label="+" onPress={() => on.size()} />
-      </Box>
-      <Box flexGrow={1} flexShrink={1}>
-        {markRow(D, marks(snap, timeOpts), cards(snap, timeOpts), t, on, dashboardStatus(snap.busy, snap.note))}
-      </Box>
-      {side.kind === 'action' ? (
-        <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-          {icon(D, side.icon, toneColor(side.tone, t))}
-          <Button key="action" variant="primary" label={side.action.label} onPress={() => on.act(side.action!.id)} />
-        </Box>
-      ) : side.kind === 'warn' ? (
-        <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-          {icon(D, side.icon, toneColor(side.tone, t))}
-          <Text>{runsOf(D, side.runs, t)}</Text>
-        </Box>
-      ) : pill !== null ? (
-        savingsChip(D, pill, t, on)
-      ) : (
-        ''
-      )}
-    </Box>
-    {m.sheetOpen ? detailRow(D, m, on) : ''}
-    </Box>
-  )
-}
-
 /** The band's side of a finished turn: Clawd, the clock, and the refreshes after it. */
 async function endTurn($: EngineInterface, reason: Extract<PoseEvent, { type: 'turn-complete' }>['reason'], agentId: string | undefined): Promise<void> {
   try {
@@ -1327,6 +1104,7 @@ async function endTurn($: EngineInterface, reason: Extract<PoseEvent, { type: 't
     await closeAsks($)
     await flushTools($)
     await feedClock($, { type: 'working-changed', working: false })
+    autoTurnRunning = false
     await feedPose($, { type: 'turn-complete', reason })
     await feedPose($, { type: 'working-changed', working: false })
     // Quality after each turn now; savings and the clock facts a little later.
@@ -1392,6 +1170,7 @@ export const register: Register = on => {
     if (!active || e.source !== 'clear') return result
     // Work begun in the old session drops its result from here on.
     sessionGen += 1
+    autoTurnRunning = false
     toolsPending = 0
     const sid = cleanId(e.session_id)
     // The new conversation's own start, never this event's arrival; unknown
@@ -1447,6 +1226,7 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     if (active) {
+      autoTurnRunning = true
       await feedClock($, { type: 'working-changed', working: true })
       await feedPose($, { type: 'turn-start' })
       await feedPose($, { type: 'working-changed', working: true })
@@ -1514,12 +1294,16 @@ export const register: Register = on => {
 
   on('session.compact', async ($, e, next) => {
     if (!active || e.trigger === 'precompute' || e.agentId !== undefined) return next(e)
-    await feedPose($, { type: 'compact-start' })
-    const before = await attempt(async () => {
-      const cur = await read($, sessionAtom)
-      return Math.max(cur?.compactionsSeen ?? 0, cur?.quality?.compactions ?? 0)
-    }, 0)
+    autoCompacting = true
+    sessionGen += 1
     try {
+      compactedAt = await $.clock.now()
+      await feedClock($, { type: 'warm-failed' })
+      await feedPose($, { type: 'compact-start' })
+      const before = await attempt(async () => {
+        const cur = await read($, sessionAtom)
+        return Math.max(cur?.compactionsSeen ?? 0, cur?.quality?.compactions ?? 0)
+      }, 0)
       const result = await next(e)
       // The band watched this one land: count it now, before Claude Code writes its
       // marker to the transcript (it does so late) and before Token Optimizer re-reads.
@@ -1542,6 +1326,7 @@ export const register: Register = on => {
       return result
     } finally {
       await feedPose($, { type: 'compact-end' })
+      autoCompacting = false
       // Any compaction (button, typed /compact, automatic): Token Optimizer saved a checkpoint
       // before it, so re-read everything now and again once its after-compact hooks have written.
       $.clock.after(0, () => void attempt(() => refresh($, { savings: true }), undefined))
@@ -1640,6 +1425,7 @@ export const register: Register = on => {
       tones: tonesFor(palette),
       sheetOpen: s?.sheetOpen ?? false,
       savingsReason: s?.savingsReason ?? null,
+      keepwarmNote: s?.keepwarmNote ?? null,
       savingsComputedAt: s?.savingsComputedAt ?? null,
       savingsRefreshFailed: s?.savingsRefreshFailed ?? false,
       canWarm: canKeepWarm({ ...shownClock, working }, now),
@@ -1660,7 +1446,7 @@ export const register: Register = on => {
       size: () => void toggleSize($),
     }
     const D = $.ui.resolve(e)
-    const band = bandSize() === 'slim' ? drawSlim(D, model, handlers) : drawBand(D, model, handlers)
+    const band = bandSize() === 'slim' ? drawSlim(D, model, handlers, timeOpts) : drawBand(D, model, handlers, timeOpts)
     // The band shares AbovePrompt (#263): the bands of mods later in the chain go beneath
     // ours. Nothing beneath (the engine's own empty band) draws ours alone, as before; a
     // mod beneath that throws costs its own band, never ours.

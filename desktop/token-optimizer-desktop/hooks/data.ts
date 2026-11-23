@@ -498,6 +498,8 @@ export async function gather(
     savingsReason: base?.savingsReason ?? null,
     lastRequestEpoch: newer(base?.lastRequestEpoch ?? null, transcriptState?.lastRequestEpoch ?? null),
     cacheLifetime: transcriptState?.cacheLifetime ?? base?.cacheLifetime ?? null,
+    ...(base?.cacheModel ? { cacheModel: base.cacheModel } : {}),
+    ...(base?.keepwarmNote ? { keepwarmNote: base.keepwarmNote } : {}),
     compactWindow: base?.compactWindow ?? null,
     checkpointEpoch: base?.checkpointEpoch ?? null,
     earlierCheckpoint: base?.earlierCheckpoint ?? null,
@@ -524,6 +526,8 @@ export async function gather(
           savingsReason: status.savings || kept.savings ? null : status.savingsReason,
           lastRequestEpoch: newer(status.lastRequestEpoch, kept.lastRequestEpoch),
           cacheLifetime: status.cacheLifetime ?? kept.cacheLifetime,
+          cacheModel: status.cacheModel,
+          keepwarmNote: status.keepwarmNote,
           // An answer with no window means the user has none now: a kept one must not linger.
           compactWindow: status.compactWindow,
           checkpointEpoch: status.checkpointEpoch,
@@ -606,6 +610,8 @@ export function mergeStored(
           savingsReason: current.savingsReason,
           earlierCheckpoint: current.earlierCheckpoint,
           cacheLifetime: current.cacheLifetime ?? fresh.cacheLifetime,
+          ...(current.cacheModel ? { cacheModel: current.cacheModel } : {}),
+          ...(current.keepwarmNote ? { keepwarmNote: current.keepwarmNote } : {}),
           lastRequestEpoch: newer(current.lastRequestEpoch, fresh.lastRequestEpoch),
           checkpointEpoch: newer(current.checkpointEpoch, fresh.checkpointEpoch),
           compactions:

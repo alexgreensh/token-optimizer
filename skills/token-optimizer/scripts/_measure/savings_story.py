@@ -173,8 +173,11 @@ def full_bash_fetch_totals(conn, cutoff, legacy_rows, is_fixture, snapshot_dir=N
 
 
 def keepwarm_reload_value(facade, record):
-    model = facade._keepwarm_model_norm(record.get('model'))
     prefix = max(0, int(record.get('prefix_proxy') or 0))
+    if record.get('auto_warm') and record.get('ttl_kind') == '1h':
+        from .keepwarm_auto import avoided_reload
+        return max(0.0, avoided_reload(facade, prefix, record.get('model')))
+    model = facade._keepwarm_model_norm(record.get('model'))
     ttl = record.get('ttl_kind') or 'unknown'
     write = facade._KEEPWARM_INPUT_USD_PER_TOKEN[model] * facade._KEEPWARM_WRITE_PREMIUM.get(ttl, facade._KEEPWARM_WRITE_PREMIUM['unknown'])
     return prefix * max(0.0, write - facade._KEEPWARM_CACHE_READ_USD_PER_TOKEN[model])
@@ -184,8 +187,12 @@ def keepwarm_pause_net(facade, record, now, rows):
     """Value a warm resume, net of actual ping costs in this pause."""
     sid = str(record.get('session_id') or '')
     start = float(record.get('ts') or 0)
+    pause_key = None
+    if record.get('auto_warm'):
+        pause_key = record.get('pause_key') or facade._keepwarm_pause_key(sid, start)
     outcomes = [row for row in rows if str(row.get('session_id') or '') == sid
                 and row.get('status') in ('ok', 'error', 'timeout')
+                and (pause_key is None or row.get('pause_key') == pause_key)
                 and start <= float(row.get('ts') or 0) <= now]
     if len(outcomes) < len(record.get('pings_fired') or []):
         return None

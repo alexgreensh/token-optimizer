@@ -114,7 +114,6 @@ import re
 import signal
 import sys
 import time
-import traceback
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 
@@ -433,6 +432,7 @@ def _run_safely(name: str, fn, *args, **kwargs):
     except (Exception, SystemExit):
         try:
             sys.stderr.write(f"[Token Optimizer] {name} failed, continuing\n")
+            import traceback  # lazy: error path only (~10 ms import on the hot path)
             traceback.print_exc(file=sys.stderr)
             sys.stderr.flush()
         except (OSError, ValueError):

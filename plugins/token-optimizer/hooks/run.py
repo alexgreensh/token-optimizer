@@ -34,7 +34,6 @@ import os
 import signal
 import subprocess
 import sys
-import traceback
 from pathlib import Path
 
 # Defense in depth: the launcher script already filters interpreters, but
@@ -365,6 +364,7 @@ def _check_consent(plugin_root: Path | None = None) -> bool:
         try:
             buf = io.StringIO()
             buf.write("[Token Optimizer] _check_consent unexpected error, failing open\n")
+            import traceback  # lazy: error path only (~10 ms import on the hot path)
             traceback.print_exc(file=buf)
             _consent_log_diagnostics(buf.getvalue())
         except Exception:

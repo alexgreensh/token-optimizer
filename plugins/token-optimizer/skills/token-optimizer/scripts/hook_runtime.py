@@ -11,8 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import random
-import secrets
 import threading
 import time
 from contextlib import contextmanager
@@ -275,6 +273,8 @@ class LeaseLock:
         # herd the reservation exists to absorb) may take a RELEASED lease at
         # once; a lease still held is never taken early.
         self.reclaim_released = bool(reclaim_released)
+        import secrets  # lazy: lease paths only
+
         self.nonce = secrets.token_hex(16)
         self._owner_path = self.path.with_name(
             f".{self.path.name}.candidate-{self.nonce}"
@@ -402,6 +402,8 @@ class LeaseLock:
             # Rename to a unique name instead of unlinking the pathname: a
             # successor linked after the check above would be moved, not
             # deleted, and is put back below.
+            import secrets  # lazy: lease paths only
+
             victim = self.path.with_name(
                 f".{self.path.name}.stale-{secrets.token_hex(8)}"
             )
@@ -547,6 +549,8 @@ class LeaseLock:
             if time.monotonic() >= stop:
                 return False
             remaining = stop - time.monotonic()
+            import random  # lazy: contention back-off only
+
             time.sleep(min(remaining, random.uniform(0.004, 0.012)))
 
     def release(self):

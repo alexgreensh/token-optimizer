@@ -1,6 +1,6 @@
-"""savings_headline: the rolling action figure for older clients.
+"""savings_headline: the rolling savings figure for older clients.
 
-Covers the rolling contract (usd_30d = action_savings.total_usd, usd_week
+Covers the rolling contract (usd_30d includes actions and realized routing, usd_week
 always null, tokens_30d from token_headline,
 display thresholds and wording), the status-bar/dashboard equality gate, and
 the statusline.js savings segment (green, OSC 8 when supported, omitted when
@@ -43,19 +43,47 @@ def _summary(usd_action=0.0, routing=0.0, tokens=0):
 # Contract object
 # --------------------------------------------------------------------------
 
-def test_usd_30d_is_action_total():
+def test_usd_30d_adds_realized_routing_once():
     h = savings_headline.build(_summary(usd_action=100.0, routing=7.5, tokens=5))
-    assert h["usd_30d"] == pytest.approx(100.0)
+    assert h["usd_30d"] == pytest.approx(107.5)
     assert h["usd_week"] is None
     assert h["label"] == "last 30 days"
     assert h["tokens_30d"] == 5
 
 
-def test_action_routing_usd_is_also_excluded():
+def test_action_routing_is_the_fallback_for_older_payloads():
     s = _summary(usd_action=100.0, routing=7.5)
     s["model_routing"] = {}
     h = savings_headline.build(s)
-    assert h["usd_30d"] == pytest.approx(100.0)
+    assert h["usd_30d"] == pytest.approx(107.5)
+
+
+def test_invalid_realized_routing_uses_the_dashboard_fallback():
+    s = _summary(usd_action=100.0, routing=7.5)
+    s["model_routing"]["realized_cost_usd"] = float("nan")
+    assert savings_headline.build(s)["usd_30d"] == pytest.approx(107.5)
+
+
+@pytest.mark.parametrize("routing", [0.0, -4.0])
+def test_explicit_nonpositive_routing_does_not_use_a_stale_fallback(routing):
+    s = _summary(usd_action=55.0, routing=100.0)
+    s["model_routing"]["realized_cost_usd"] = routing
+    assert savings_headline.build(s)["usd_30d"] == 55.0
+    assert savings_headline.build(s)["display"] is None
+
+
+def test_routing_can_make_the_30d_display_visible():
+    h = savings_headline.build(_summary(usd_action=50.0, routing=12.0))
+    assert h["display"]["short"] == "Saved $62 in the last 30 days"
+
+
+@pytest.mark.parametrize(("action_net", "expected"), [(-30.0, 70.0), (-130.0, 0.0)])
+def test_routing_offsets_action_costs_before_the_headline_floor(action_net, expected):
+    s = _summary(routing=100.0)
+    s["action_savings"]["net_total_usd"] = action_net
+    h = savings_headline.build(s)
+    assert h["usd_30d"] == expected
+    assert (h["display"] is not None) == (expected >= 60)
 
 
 def test_missing_inputs_read_as_zero_and_hide_display():
@@ -183,8 +211,14 @@ def _seed_usd(sb):
         conn.close()
 
 
-def test_status_bar_usd_30d_equals_dashboard_action_total(sb):
+@pytest.mark.parametrize("routing", [0.0, 12.5])
+def test_status_bar_usd_30d_equals_dashboard_total(sb, monkeypatch, routing):
     _seed_usd(sb)
+    if routing:
+        monkeypatch.setattr(sb, "_compute_model_routing_savings", lambda **_: {
+            "realized_cost_usd": routing, "evidence": "measured",
+            "baseline_source": "frozen_baseline", "baseline_opus_share": 0.85,
+        })
     sav, reason = sb._status_bar_savings_or_reason(SID)
     assert reason is None and sav is not None
     bar = sav["savings_headline"]
@@ -194,7 +228,7 @@ def test_status_bar_usd_30d_equals_dashboard_action_total(sb):
     hero = dash["savings_headline"]
     assert hero is not None
 
-    expected = dash["action_savings"]["total_usd"]
+    expected = dash["action_savings"]["total_usd"] + routing
     assert bar["usd_30d"] == pytest.approx(expected)
     assert hero["usd_30d"] == pytest.approx(expected)
     assert bar["usd_30d"] == pytest.approx(hero["usd_30d"])

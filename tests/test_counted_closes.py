@@ -111,8 +111,28 @@ def test_pruning_keeps_closed_days_and_corrections(ledger, monkeypatch):
     measure._prune_trends_db()
     assert ledger.execute("SELECT COUNT(*) FROM counted_reread").fetchone() == (0,)
     assert ledger.execute("SELECT COUNT(*) FROM counted_corrections").fetchone() == (1,)
-    held = closes.refresh(measure, ledger, now)
-    assert held["usd"] == 40 and held["held_days"] == 1 and held["corrections_written"] == 0
+    for days in (0, 8, 40):
+        result = closes.refresh(measure, ledger, now + timedelta(days=days))
+        assert result == {"usd": 40, "tokens": 2000, "since": "2020-03-24",
+                          "held_days": 0, "corrections_written": 0}
+    assert ledger.execute("SELECT reason_code FROM counted_corrections").fetchall() == [("manual",)]
+
+
+def test_missing_day_clears_an_old_hold_without_repricing(ledger, monkeypatch):
+    now = datetime.now(timezone.utc)
+    add(ledger, "mk:a", "2026-03-24", 50)
+    closes.refresh(measure, ledger, now)
+    with ledger:
+        ledger.execute("UPDATE counted_reread SET oneshot_usd=25")
+    assert closes.refresh(measure, ledger, now)["held_days"] == 1
+    with ledger:
+        ledger.execute("DELETE FROM counted_reread")
+    monkeypatch.setattr(measure, "_COUNTED_PRICING_VERSION", "new")
+    result = closes.refresh(measure, ledger, now + timedelta(days=8))
+    assert (result["usd"], result["held_days"], result["corrections_written"]) == (50, 0, 0)
+    add(ledger, "mk:a", "2026-03-24", 35)
+    assert closes.refresh(measure, ledger, now + timedelta(days=9))["usd"] == 35
+    assert ledger.execute("SELECT reason_code FROM counted_corrections").fetchall() == [("repricing",)]
 
 
 def test_readonly_and_timeout_cache(ledger):
@@ -126,12 +146,12 @@ def test_readonly_and_timeout_cache(ledger):
     assert payload["counted_headline"]["display"]["long"] == "$40 counted since Mar 24, 2026"
 
 
-def test_rolling_display_is_labeled_and_excludes_routing():
+def test_rolling_display_is_labeled_and_counts_one_routing_estimate():
     payload = savings_headline.build({
         "action_savings": {"total_usd": 80, "routing_usd": 70},
         "model_routing": {"realized_cost_usd": 90},
     })
-    assert payload["usd_30d"] == 80
+    assert payload["usd_30d"] == 170
     assert "30 days" in payload["label"] and "30 days" in payload["display"]["short"]
 
 
@@ -151,6 +171,123 @@ def test_all_in_snapshot_is_shared_and_only_falls_with_a_correction(ledger, monk
     assert headline.cache_value(measure, "fixture-session")["usd"] == 140
     assert closes.total_overall(ledger)["last_correction"]["delta_usd"] == -30
     assert closes.total(ledger)["usd"] == 30
+
+
+@pytest.mark.parametrize("source", ["keepwarm", "autocompact"])
+def test_all_in_books_new_net_cost_without_waiting(ledger, monkeypatch, tmp_path, source):
+    now = datetime.now(timezone.utc)
+    install = (now - timedelta(days=90)).date().isoformat()
+    monkeypatch.setattr(measure, "_install_date", lambda: install)
+    ping_log = tmp_path / "keepwarm-spend.jsonl"
+    monkeypatch.setattr(measure, "_keepwarm_ledger_path", lambda: ping_log)
+    with ledger:
+        ledger.execute("ALTER TABLE savings_events ADD COLUMN pause_key TEXT")
+        ledger.execute("INSERT INTO savings_events(timestamp, event_type, tokens_saved, cost_saved_usd) "
+                       "VALUES (?, 'tool_archive', 40000, 50.0)", (now.isoformat(),))
+    before = measure._savings_since_install()
+    assert before["all_in"]["total_usd"] == 50
+    closes.refresh(measure, ledger, now, since_install=before)
+    if source == "keepwarm":
+        ping_log.write_text(json.dumps({"status": "ok", "ts": now.timestamp(), "cost_usd": 8.50,
+                                        "session_id": "warm-session", "proof": False}) + "\n")
+    else:
+        with ledger:
+            ledger.execute("INSERT INTO savings_events(timestamp, event_type, tokens_saved, cost_saved_usd) "
+                           "VALUES (?, 'autocompact_window_estimated', -12000, -8.50)", (now.isoformat(),))
+    after = measure._savings_since_install()
+    assert after["all_in"]["total_usd"] == 41.50
+
+    for day in (1, 2, 9):
+        closes.refresh(measure, ledger, now + timedelta(days=day), since_install=after)
+        balance = closes.total_overall(ledger)
+        assert (balance["usd"], balance["held_days"]) == (41.50, 0)
+        assert balance["last_correction"]["delta_usd"] == -8.50
+    assert ledger.execute("SELECT reason_code, from_usd, to_usd FROM overall_corrections").fetchall() == [
+        ("net_debit", 50, 41.50)]
+
+
+def test_all_in_keeps_verified_lean_saving_after_transcript_cleanup(ledger, monkeypatch, tmp_path):
+    now = datetime.now(timezone.utc)
+    event = (now - timedelta(days=45)).replace(microsecond=0)
+    install = (now - timedelta(days=90)).date().isoformat()
+    monkeypatch.setattr(measure, "_install_date", lambda: install)
+    monkeypatch.setattr(measure, "CLAUDE_DIR", tmp_path / "claude")
+    project = measure.CLAUDE_DIR / "projects" / "-fixture"
+    project.mkdir(parents=True)
+    target = "abcd1234-1111-2222-3333-444455556666"
+    receiver = "efab5678-1111-2222-3333-444455556666"
+
+    def turn(seconds, request):
+        return {"type": "assistant", "timestamp": (event + timedelta(seconds=seconds)).isoformat(),
+                "requestId": request, "message": {"model": "claude-opus-5", "usage": {
+                    "input_tokens": 2, "cache_read_input_tokens": 50000,
+                    "cache_creation_input_tokens": 100, "output_tokens": 10}}}
+
+    old, new = (project / f"{sid}.jsonl" for sid in (target, receiver))
+    old.write_text(json.dumps(turn(-600, "old-request")) + "\n")
+    delivery = {"type": "attachment", "timestamp": event.isoformat(), "attachment": {
+        "type": "hook_additional_context", "content": "[Token Optimizer] Cold-resume lean (session abcd1234, restored)"}}
+    new.write_text("\n".join(map(json.dumps, (delivery, turn(5, "new-request")))) + "\n")
+    with ledger:
+        ledger.executemany("INSERT INTO session_log(session_uuid, jsonl_path, date) VALUES (?, ?, ?)",
+                           ((sid, str(path), event.date().isoformat()) for sid, path in ((target, old), (receiver, new))))
+        ledger.execute("INSERT INTO savings_events(timestamp, event_type, tokens_saved, cost_saved_usd) "
+                       "VALUES (?, 'tool_archive', 40000, 50.0)", (now.isoformat(),))
+        ledger.execute("INSERT INTO savings_events(timestamp, event_type, tokens_saved, detail, session_id, session_uuid) "
+                       "VALUES (?, 'resume_lean', 40000, ?, ?, ?)",
+                       (event.isoformat(), f"warm cache-read receiver={receiver}", target, target))
+    before = measure._savings_since_install()
+    assert before["all_in"]["estimated_usd"] > 0
+    closes.refresh(measure, ledger, now, since_install=before)
+
+    new.unlink()
+    after = measure._savings_since_install()
+    assert after["all_in"]["estimated_usd"] == 0
+    for days in (1, 9, 40):
+        closes.refresh(measure, ledger, now + timedelta(days=days), since_install=after)
+        assert closes.total_overall(ledger)["usd"] == before["all_in"]["total_usd"]
+    assert ledger.execute("SELECT COUNT(*) FROM overall_corrections").fetchone() == (0,)
+
+    with ledger:
+        ledger.execute("INSERT INTO savings_events(timestamp, event_type, tokens_saved, cost_saved_usd) "
+                       "VALUES (?, 'autocompact_window_estimated', -12000, -8.50)", (now.isoformat(),))
+    closes.refresh(measure, ledger, now + timedelta(days=41), since_install=measure._savings_since_install())
+    assert closes.total_overall(ledger)["usd"] == pytest.approx(before["all_in"]["total_usd"] - 8.50)
+    assert ledger.execute("SELECT reason_code FROM overall_corrections").fetchall() == [("net_debit",)]
+
+
+def test_net_debit_does_not_release_an_unexplained_decrease(ledger):
+    now = datetime.now(timezone.utc)
+    install = (now - timedelta(days=90)).date().isoformat()
+    summary = {"install_date": install, "all_in": {"total_usd": 50}}
+    closes.refresh(measure, ledger, now, since_install=summary)
+    with ledger:
+        ledger.execute("INSERT INTO savings_events(timestamp, event_type, tokens_saved, cost_saved_usd) "
+                       "VALUES (?, 'autocompact_window_estimated', -12000, -8.5)", (now.isoformat(),))
+    summary["all_in"]["total_usd"] = 34.50
+    closes.refresh(measure, ledger, now + timedelta(days=1), since_install=summary)
+    balance = closes.total_overall(ledger)
+    assert (balance["usd"], balance["held_days"]) == (41.50, 1)
+    closes.refresh(measure, ledger, now + timedelta(days=8), since_install=summary)
+    assert closes.total_overall(ledger)["usd"] == 34.50
+    assert ledger.execute("SELECT reason_code, from_usd, to_usd FROM overall_corrections ORDER BY id").fetchall() == [
+        ("net_debit", 50, 41.50), ("recount", 41.50, 34.50)]
+
+
+def test_subcent_costs_apply_when_the_running_cost_reaches_a_cent(ledger):
+    now = datetime.now(timezone.utc)
+    install = (now - timedelta(days=90)).date().isoformat()
+    summary = {"install_date": install, "all_in": {"total_usd": 50}}
+    closes.refresh(measure, ledger, now, since_install=summary)
+    for day in (1, 2):
+        stamp = (now + timedelta(days=day)).isoformat()
+        with ledger:
+            ledger.execute("INSERT INTO savings_events(timestamp, event_type, tokens_saved, cost_saved_usd) "
+                           "VALUES (?, 'autocompact_window_estimated', -100, -0.003)", (stamp,))
+        summary["all_in"]["total_usd"] = round(50 - day * 0.003, 2)
+        closes.refresh(measure, ledger, now + timedelta(days=day), since_install=summary)
+    assert closes.total_overall(ledger)["usd"] == 49.99
+    assert ledger.execute("SELECT reason_code FROM overall_corrections").fetchall() == [("net_debit",)]
 
 
 def test_200_sequences_fall_only_by_written_corrections(ledger):

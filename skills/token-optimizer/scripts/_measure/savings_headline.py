@@ -1,6 +1,6 @@
 """The rolling 30-day savings headline for older clients.
 
-Uses the action savings total and the token headline for the same window.
+Uses action savings, realized routing, and the token headline for the same window.
 The stable since-install headline lives in counted_headline.
 
 usd_week stays null: there is no honest weekly figure yet and 30 days are never
@@ -84,7 +84,7 @@ def build(summary, dashboard_url=DASHBOARD_SAVINGS_URL):
     """The savings_headline contract object for one savings summary.
 
     `summary` is the dashboard's savings payload (or the status-bar headline
-    built from the same inputs): action_savings and token_headline. Missing pieces read as zero, which lands on display null.
+    built from the same inputs). Missing pieces read as zero, which lands on display null.
     Never raises.
     """
     try:
@@ -103,7 +103,15 @@ def build(summary, dashboard_url=DASHBOARD_SAVINGS_URL):
                 if isinstance(nested, dict):
                     headline = nested
 
+        routing = s.get("model_routing")
+        realized = _usd(routing.get("realized_cost_usd")) if isinstance(routing, dict) else None
+        if realized is None:
+            realized = _usd(action.get("routing_usd"))
         usd_30d = _usd(action.get("total_usd")) or 0.0
+        if realized is not None and realized > 0:
+            # Apply the headline floor after routing offsets any action costs.
+            action_net = _usd(action.get("net_total_usd"))
+            usd_30d = max(0.0, (usd_30d if action_net is None else action_net) + realized)
         tokens_30d = _count(headline.get("total_tokens"))
         usd_week = None
         url = dashboard_url if isinstance(dashboard_url, str) and dashboard_url else DASHBOARD_SAVINGS_URL

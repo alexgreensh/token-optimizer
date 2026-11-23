@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,6 +56,100 @@ class NextActionsTest(unittest.TestCase):
             self.assertIn({'id': 'routing', 'why': 'routing-off'}, next_actions.build(self.f)['hidden'])
         self.assertEqual(before, {p.name: p.read_bytes() for p in Path(self.temp.name).iterdir()})
 
+    def test_cli_missing_cache_prints_stored_total_and_preparing(self):
+        from _measure import apply_safe, counted_headline
+
+        headline = {'display': {'short': 'Saved $42 since install'}}
+        out = io.StringIO()
+        self.f._get_merged_savings = lambda days: self.fail('CLI must not compute a summary')
+        with patch.object(counted_headline, 'build_overall', return_value=headline), \
+             patch.object(apply_safe, 'build_plan', side_effect=AssertionError('CLI built a plan')), \
+             contextlib.redirect_stdout(out):
+            self.assertEqual(next_actions.main(self.f, []), 0)
+        self.assertEqual(out.getvalue().splitlines()[0], headline['display']['short'])
+        self.assertIn('The full list is being prepared', out.getvalue())
+        self.assertNotIn('Nothing to do', out.getvalue())
+
+    def test_apply_line_covers_skill_and_cold_savings_once(self):
+        from _measure import apply_safe, cold_guard
+
+        plan = {'items': [{'kind': 'unused_skill'}, {'kind': 'keepwarm_auto'}],
+                'total_net_usd_month': 11}
+        with patch.object(apply_safe, 'build_plan', return_value=plan), \
+             patch.object(cold_guard, 'pool', return_value={'cost_saved_usd': 50}):
+            result = next_actions.build(self.f, show_all=True)
+        self.assertEqual([action['id'] for action in result['actions']],
+                         ['apply_safe', 'writes', 'stale_reads', 'routing'])
+        self.assertIn('/token-optimizer:apply-safe', result['actions'][0]['how'])
+
+    def test_cli_without_full_report_can_show_a_ready_apply_plan(self):
+        from _measure import apply_safe
+
+        plan = {'items': [{'kind': 'cold_guard'}], 'total_net_usd_month': 0}
+        (self.f.SNAPSHOT_DIR / next_actions.PLAN_NAME).write_text(json.dumps({
+            'computed_at': next_actions._now().isoformat(), 'plan': plan,
+        }))
+        out = io.StringIO()
+        with patch.object(apply_safe, 'build_plan', side_effect=AssertionError('CLI built a plan')), \
+             contextlib.redirect_stdout(out):
+            self.assertEqual(next_actions.main(self.f, []), 0)
+        self.assertIn('Apply safe savings (1 change, one approval)', out.getvalue())
+        self.assertIn('Run /token-optimizer:apply-safe.', out.getvalue())
+        self.assertIn('The full list is being prepared', out.getvalue())
+
+    def test_cached_cli_honors_current_routing_decline_and_prints_as_of(self):
+        from _measure import apply_safe, cold_guard
+
+        with patch.object(apply_safe, 'build_plan', return_value={'items': []}), \
+             patch.object(cold_guard, 'pool', return_value={}):
+            self.assertEqual(next_actions.main(self.f, ['--refresh-cache']), 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(next_actions.main(self.f, ['decline', 'routing']), 0)
+        out = io.StringIO()
+        with patch.object(next_actions, '_compute_summary', side_effect=AssertionError('CLI repriced summary')), \
+             contextlib.redirect_stdout(out):
+            self.assertEqual(next_actions.main(self.f, ['--all', '--json']), 0)
+        result = json.loads(out.getvalue())
+        self.assertTrue(result['cached'])
+        self.assertTrue(result['as_of'])
+        self.assertFalse(result['preparing'])
+        self.assertIn({'id': 'routing', 'why': 'declined'}, result['hidden'])
+        self.assertNotIn('routing', [action['id'] for action in result['actions']])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX lock handoff')
+    def test_detached_worker_keeps_lock_after_parent_handoff(self):
+        script = self.f.SNAPSHOT_DIR / 'worker.py'
+        ready = self.f.SNAPSHOT_DIR / 'worker.ready'
+        release = self.f.SNAPSHOT_DIR / 'worker.release'
+        script.write_text('import time\nfrom pathlib import Path\n'
+                          f'Path({str(ready)!r}).touch()\n'
+                          'deadline = time.monotonic() + 10\n'
+                          f'while not Path({str(release)!r}).exists() and time.monotonic() < deadline:\n'
+                          '    time.sleep(0.01)\n')
+        self.f.__file__ = str(script)
+        children = []
+        spawn = next_actions.spawn_detached
+
+        def track_spawn(*args, **kwargs):
+            child = spawn(*args, **kwargs)
+            children.append(child)
+            return child
+
+        try:
+            with patch.object(next_actions, 'spawn_detached', side_effect=track_spawn):
+                next_actions._start_refresh(self.f)
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists())
+                next_actions._start_refresh(self.f)
+                self.assertEqual(len(children), 1)
+        finally:
+            release.touch()
+            for child in children:
+                if child is not None:
+                    self.assertEqual(child.wait(timeout=5), 0)
+
     def test_status_threshold_and_no_nudges(self):
         self.summary['skill_listing_budget']['cost_usd'] = 4.99
         self.summary['nudge'] = 'MODEL FACING SECRET NUDGE'
@@ -72,7 +167,7 @@ class NextActionsTest(unittest.TestCase):
         plan = {'items': [{'kind': 'cold_guard'}], 'total_net_usd_month': 41.2}
         with patch.object(apply_safe, 'build_plan', return_value=plan, create=True), \
              patch.object(cold_guard, 'pool', return_value={'cost_saved_usd': 596}, create=True), \
-             patch.object(counted_headline, 'build', return_value={'display': {'short': 'Saved $1,083 since Mar 2026'}}, create=True):
+             patch.object(counted_headline, 'build_overall', return_value={'display': {'short': 'Saved $1,083 since Mar 2026'}}):
             result = next_actions.build(self.f, True)
             self.assertEqual([a['id'] for a in result['actions']], ['apply_safe', 'skill_list', 'writes', 'stale_reads', 'routing'])
             self.assertIn({'id': 'cold_fresh', 'why': 'overlap'}, result['hidden'])
@@ -90,7 +185,7 @@ class NextActionsTest(unittest.TestCase):
         from _measure import apply_safe, cold_guard, counted_headline
         with patch.object(apply_safe, 'build_plan', side_effect=RuntimeError, create=True), \
              patch.object(cold_guard, 'pool', side_effect=RuntimeError, create=True), \
-             patch.object(counted_headline, 'build', side_effect=RuntimeError, create=True):
+             patch.object(counted_headline, 'build_overall', side_effect=RuntimeError):
             self.assertEqual([x['id'] for x in next_actions.build(self.f, True)['actions']],
                              ['skill_list', 'writes', 'stale_reads', 'routing'])
             self.assertIsNone(next_actions.build(self.f)['counted'])

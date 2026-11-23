@@ -88,7 +88,8 @@ Works on the AI coding tools below, with a [Devin output-filter beta](https://gi
 - 🩺 `/token-optimizer`: full audit with guided fixes
 - 📈 `/token-coach`: 30-day trend analysis with specific fixes
 - ⚡ `quick`: 10-second health check
-- `next`: savings actions ranked from your last 30 days
+- `/token-optimizer:next` shows savings actions ranked from your last 30 days
+- `/token-optimizer:apply-safe` previews safe changes for your approval
 - 🎯 `route`: the model and effort this task actually needs, before you spend
 - 🔧 `doctor`: installation check
 - 💰 `savings`: dollar savings report
@@ -792,7 +793,8 @@ Resolves the latest GitHub Release tag, checks out that tag, fetches CHECKSUMS.s
 |---|---|---|
 | `/token-optimizer` | Full audit with 6 parallel agents, guided fixes | [→](https://alexgreensh.github.io/token-optimizer/start/quickstart/) |
 | `/token-coach` | 30-day trend analysis, prioritized fixes | [→](https://alexgreensh.github.io/token-optimizer/features/token-coach/) |
-| `next` | Ranked savings actions | [→](https://alexgreensh.github.io/token-optimizer/reference/cli/) |
+| `/token-optimizer:next` | Ranked savings actions | [→](https://alexgreensh.github.io/token-optimizer/reference/cli/) |
+| `/token-optimizer:apply-safe` | Preview and approve safe savings changes | [→](https://alexgreensh.github.io/token-optimizer/reference/cli/) |
 | `quick` | 10-second health check | [→](https://alexgreensh.github.io/token-optimizer/reference/cli/) |
 | `doctor` | Installation check, score out of 10 | [→](https://alexgreensh.github.io/token-optimizer/reference/cli/) |
 | `dashboard` | Open the HTML dashboard | [→](https://alexgreensh.github.io/token-optimizer/features/dashboard/) |

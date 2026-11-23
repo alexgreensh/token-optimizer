@@ -1697,12 +1697,10 @@ _generate_foreign_auto_recommendations = _measure_compat.bind(_measure_providers
 # unused-skill / archive recommendations regardless of invocation history: an
 # audit tool you never explicitly "invoke" is not the same as an unused skill.
 _OWN_TOOL_SKILLS = frozenset({
-    "token-optimizer", "token-coach", "token-dashboard", "fleet-auditor",
-    "resume-checkpoint",
+    "token-optimizer", "token-coach", "token-dashboard", "fleet-auditor", "resume-checkpoint",
     "token-optimizer:token-optimizer", "token-optimizer:token-coach",
-    "token-optimizer:token-dashboard", "token-optimizer:fleet-auditor",
-    "token-optimizer:resume-checkpoint",
-    "token-optimizer:health", "token-optimizer:quick",
+    "token-optimizer:token-dashboard", "token-optimizer:fleet-auditor", "token-optimizer:resume-checkpoint",
+    "token-optimizer:health", "token-optimizer:next", "token-optimizer:quick", "token-optimizer:apply-safe",
 })
 
 

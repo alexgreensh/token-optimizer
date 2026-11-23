@@ -20,6 +20,7 @@ def test_own_skills_are_recognized():
     for name in (
         "token-optimizer", "token-coach", "token-dashboard", "fleet-auditor",
         "token-optimizer:token-coach", "token-optimizer:quick",
+        "token-optimizer:next", "token-optimizer:apply-safe",
         "TOKEN-OPTIMIZER",
     ):
         assert measure._is_own_tool_skill(name), name

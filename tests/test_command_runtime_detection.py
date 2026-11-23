@@ -25,9 +25,13 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 
 # Markdown files that carry the runtime-detection preamble.
-PREAMBLE_FILES = [
+COMMAND_FILES = [
     "commands/quick.md",
     "commands/health.md",
+    "commands/next.md",
+    "commands/apply-safe.md",
+]
+PREAMBLE_FILES = COMMAND_FILES + [
     "skills/token-coach/SKILL.md",
     "skills/fleet-auditor/SKILL.md",
     "skills/token-dashboard/SKILL.md",
@@ -76,14 +80,13 @@ def test_search_loop_has_opencode_path(rel):
     )
 
 
-@pytest.mark.parametrize("rel", ["commands/quick.md", "commands/health.md"])
+@pytest.mark.parametrize("rel", COMMAND_FILES)
 def test_primary_run_uses_resolved_runtime_not_hardcoded_codex(rel):
     """The primary run instruction must invoke with TOKEN_OPTIMIZER_RUNTIME="$RUNTIME",
     never a hardcoded =codex (which is what forced Guy's OpenCode session to run as
     codex against ~/.claude)."""
     text = _read(rel)
-    # The quick/health verbs are the primary invocation for these two commands.
-    verb = "quick" if "quick" in rel else "health"
+    verb = Path(rel).stem
     # No line should hardcode `TOKEN_OPTIMIZER_RUNTIME=codex python3 ... <verb>`.
     bad = re.search(
         r'TOKEN_OPTIMIZER_RUNTIME=codex\s+python3\s+"?\$MEASURE_PY"?\s+' + verb,

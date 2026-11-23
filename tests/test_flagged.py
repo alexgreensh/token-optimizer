@@ -257,12 +257,16 @@ def test_opencode_dashboard_write_is_atomic():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("doc", ["health.md", "quick.md"])
+@pytest.mark.parametrize("doc", ["health.md", "quick.md", "next.md", "apply-safe.md"])
 def test_command_doc_routes_non_claude_python_through_launcher(doc):
     text = (REPO / "commands" / doc).read_text(encoding="utf-8")
     assert 'TO_LAUNCHER="$_root/hooks/python-launcher.sh"' in text, (
         f"{doc} must resolve the launcher beside the selected measure.py"
     )
+    if doc in ("next.md", "apply-safe.md"):
+        block = text.split("```bash", 1)[1].split("```", 1)[0]
+        assert 'bash "$TO_LAUNCHER" "$MEASURE_PY"' in block
+        return
     run_lines = [l for l in text.splitlines() if "Codex / OpenCode / standalone" in l]
     assert run_lines, f"{doc} lost its Codex/OpenCode invocation line"
     for line in run_lines:
@@ -273,7 +277,7 @@ def test_command_doc_routes_non_claude_python_through_launcher(doc):
 
 
 @requires_bash
-@pytest.mark.parametrize("doc", ["health.md", "quick.md"])
+@pytest.mark.parametrize("doc", ["health.md", "quick.md", "next.md", "apply-safe.md"])
 def test_command_doc_resolver_block_is_valid_bash(doc):
     """The fenced resolver block must stay parseable shell."""
     text = (REPO / "commands" / doc).read_text(encoding="utf-8")

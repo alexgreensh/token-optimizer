@@ -163,6 +163,8 @@ def test_committed_dir_is_self_contained():
     assert (COMMITTED / "hooks" / "hooks.json").exists()
     assert (COMMITTED / "skills" / "token-optimizer" / "scripts" / "measure.py").exists()
     assert (COMMITTED / "commands").is_dir()
+    assert (COMMITTED / "commands" / "apply-safe.md").read_bytes() == (
+        REPO / "commands" / "apply-safe.md").read_bytes()
 
 
 # --------------------------------------------------------------------------- #

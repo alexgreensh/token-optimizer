@@ -73,6 +73,8 @@ The core read commands. Run `report` (or no command) for the full picture.
 | `quick` | Fast scan: overhead total, degradation risk, top offenders | `--json` |
 | `trends` | Per-session usage trends from history (quality, cache hit rate, cost per session) | `--days N`, `--json` |
 | `savings` | Measured token and dollar savings from active compression, split into realized, estimated, and opportunity tiers | `--days N`, `--json` |
+| `next` | Show saved since install and ranked actions from the last 30 days. Updates the action list in the background. | `--json`, `--all`, `decline ACTION`, `restore ACTION` |
+| `apply-safe` | Preview safe changes, apply the approved plan, or undo a receipt | `--json`, `--yes --token TOKEN`, `--only ITEM_IDS`, `--undo RECEIPT_ID`, `--list` |
 | `conversation` | Per-API-call breakdown for a session (input, output, cache read/write, cost, model, tools) | `[SESSION_ID]`, `--json` |
 | `session-cost` | What a session cost, looked up in your own words, by id, or by date; read-only | `[WORDS...]`, `--id UUID`, `--date DATE`, `--days N`, `--limit N`, `--json` |
 | `compression-stats` | Per-feature compression event counts, tokens saved, average ratio, quality-preserved percentage | `--days N`, `--json` |

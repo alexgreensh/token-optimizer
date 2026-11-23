@@ -597,8 +597,7 @@ def test_context_fill_uses_the_users_compact_window(machine, host_name, case):
 # of two `[ -n ...` snippets. These run the block.
 
 PREAMBLE_FILES = (
-    "commands/quick.md",
-    "commands/health.md",
+    *(f"commands/{name}.md" for name in ("quick", "health", "next", "apply-safe")),
     "skills/token-coach/SKILL.md",
     "skills/fleet-auditor/SKILL.md",
     "skills/token-dashboard/SKILL.md",

@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import time
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -44,10 +45,11 @@ def _append(path, *records):
             stream.write(json.dumps(row) + "\n")
 
 
-def _user(ts):
+def _user(ts, text="Start the fixture", **metadata):
     return {
         "type": "user", "timestamp": _stamp(ts),
-        "message": {"role": "user", "content": "Start the fixture"},
+        "message": {"role": "user", "content": text},
+        **metadata,
     }
 
 
@@ -113,6 +115,30 @@ def test_ineligible_prompts_pass(guard, case, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
     assert not marker.exists()
     assert len(calls) == 6
+
+
+@pytest.mark.parametrize("case", ["off", "warm", "small", "repeated"])
+def test_windows_skips_worker_for_ineligible_prompts(guard, case, monkeypatch):
+    _, facade, cold_guard, hook_input, transcript, _, _ = guard
+    now = time.time()
+    if case == "off":
+        monkeypatch.setenv("TOKEN_OPTIMIZER_COLD_GUARD", "off")
+    elif case == "warm":
+        _append(transcript, _usage(now - 3000))
+    elif case == "small":
+        _append(transcript, _usage(now - 5000, context=250_000))
+    else:
+        assert cold_guard.evaluate(facade, hook_input, now)["kind"] == "warn"
+
+    calls = []
+    def unexpected_worker(*args, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess([], 0, '{"kind":"pass"}')
+
+    monkeypatch.delattr(cold_guard.signal, "setitimer", raising=False)
+    monkeypatch.setattr(subprocess, "run", unexpected_worker)
+    assert cold_guard.bounded_evaluate(facade, hook_input, now, 2.0) == {"kind": "pass"}
+    assert calls == []
 
 
 def test_warn_once_with_bookkeeping(guard, capsys):
@@ -218,6 +244,42 @@ def test_ask_falls_back_to_warn(guard, case, monkeypatch, capsys):
     assert len(calls) == 6
 
 
+def test_checkpoint_timeout_warns_and_preserves_other_hooks(guard, monkeypatch, capsys):
+    runner, facade, cold_guard, _, _, marker, calls = guard
+    if not hasattr(cold_guard.signal, "setitimer"):
+        pytest.skip("Requires an in-process interval timer")
+    monkeypatch.setenv("TOKEN_OPTIMIZER_COLD_GUARD", "ask")
+    monkeypatch.setattr(facade, "compact_capture", lambda **kw: time.sleep(3))
+    monkeypatch.setattr(facade, "_log_compression_event", lambda *a, **kw: time.sleep(3))
+    assert runner.main() == 0
+    out = json.loads(capsys.readouterr().out or "{}")
+    assert list(out) == ["systemMessage"]
+    assert "cache went cold" in out["systemMessage"]
+    assert json.loads(marker.read_text())["kind"] == "warn"
+    assert len(calls) == 6
+    assert runner.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_windows_checkpoint_timeout_warns(guard, monkeypatch):
+    _, facade, cold_guard, hook_input, _, marker, _ = guard
+    monkeypatch.setenv("TOKEN_OPTIMIZER_COLD_GUARD", "ask")
+    monkeypatch.delattr(cold_guard.signal, "setitimer", raising=False)
+    worker_calls = []
+
+    def timeout(args, **kwargs):
+        assert 0 < kwargs["timeout"] < 2.0
+        assert hook_input["prompt"] not in kwargs["input"]
+        worker_calls.append(kwargs)
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    result = cold_guard.bounded_evaluate(facade, hook_input, time.time(), 2.0)
+    assert len(worker_calls) == 1
+    assert result["kind"] == "warn"
+    assert json.loads(marker.read_text())["kind"] == "warn"
+
+
 @pytest.mark.parametrize("case", ["exception", "overrun"])
 def test_guard_failure_leaves_other_hooks_running(guard, case, monkeypatch, capsys):
     runner, _, cold_guard, _, _, marker, calls = guard
@@ -263,7 +325,9 @@ def test_resolve_and_value_only_fresh_outcomes(guard, monkeypatch, choice, credi
         _append(transcript, _usage(now + 90))
     elif choice == "fresh":
         fresh = transcript.with_name(f"{FRESH_SESSION}.jsonl")
-        _append(fresh, _user(now + 30), _usage(now + 38, FRESH_SESSION, context=31_000, write=30_000))
+        _append(fresh, _user(now + 30, [{"type": "text", "text": hook_input["prompt"]}]),
+                _usage(now + 38, FRESH_SESSION, context=31_000, write=30_000))
+        _append(transcript.with_name(f"{uuid4()}.jsonl"), _user(now + 45, "Parallel task"))
     if credited:
         with facade._init_trends_db() as conn:
             conn.execute("INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id) "
@@ -278,6 +342,73 @@ def test_resolve_and_value_only_fresh_outcomes(guard, monkeypatch, choice, credi
     if choice == "fresh" and not credited:
         assert pool["gross_usd"] == pytest.approx(4.10, abs=0.0001)
         assert pool["handover_cost_usd"] == pytest.approx(0.30)
+
+
+@pytest.mark.parametrize("case", ["parallel", "delegated", "legacy", "late_continuation"])
+def test_fresh_requires_held_prompt_and_rechecks_source(guard, case, monkeypatch):
+    _, facade, cold_guard, hook_input, transcript, marker, _ = guard
+    now = time.time() - 670
+    monkeypatch.setenv("TOKEN_OPTIMIZER_COLD_GUARD", "ask")
+    assert cold_guard.evaluate(facade, hook_input, now)["kind"] == "block"
+    fresh = transcript.with_name(f"{FRESH_SESSION}.jsonl")
+    text = "Review a separate change" if case == "parallel" else hook_input["prompt"]
+    metadata = {"agentId": "delegated-1"} if case == "delegated" else {}
+    _append(fresh, _user(now + 30, text, **metadata),
+            _usage(now + 38, FRESH_SESSION, context=31_000, write=30_000))
+    if case == "legacy":
+        marker.write_text(json.dumps({
+            "schema": "legacy-fixture", "kind": "block", "session_id": OLD_SESSION,
+            "project_id": hashlib.sha256(transcript.parent.name.encode()).hexdigest(),
+            "told_at": now, "gap_key": _stamp(now - 7400), "context": 412_000,
+            "model": MODEL, "ttl": "1h", "choice": "fresh", "fresh_session_id": FRESH_SESSION,
+            "handover": {"model": MODEL, "context": 31_000, "write_1h": 30_000,
+                         "write_5m": 0, "write_unknown": 0},
+        }))
+    cold_guard.resolve(facade, now + 601)
+    if case == "late_continuation":
+        assert json.loads(marker.read_text())["choice"] == "fresh"
+        _append(transcript, _usage(now + 45))
+        cold_guard.resolve(facade, now + 670)
+    state = json.loads(marker.read_text())
+    assert state["choice"] == ("continue" if case == "late_continuation" else "unknown")
+    assert "fresh_session_id" not in state
+    assert cold_guard.estimate(facade, now=now + 670)["cost_saved_usd"] == 0
+    assert hook_input["prompt"] not in marker.read_text()
+
+
+@pytest.mark.parametrize("overlap", ["mod", "handover"])
+@pytest.mark.parametrize("same_session", [True, False])
+def test_savings_refresh_excludes_only_overlapping_credit(guard, monkeypatch, overlap, same_session):
+    _, facade, cold_guard, hook_input, transcript, _, _ = guard
+    now = time.time() - 670
+    monkeypatch.setenv("TOKEN_OPTIMIZER_COLD_GUARD", "ask")
+    assert cold_guard.evaluate(facade, hook_input, now)["kind"] == "block"
+    fresh = transcript.with_name(f"{FRESH_SESSION}.jsonl")
+    _append(fresh, _user(now + 30, hook_input["prompt"]),
+            _usage(now + 38, FRESH_SESSION, context=31_000, write=30_000))
+    unrelated = "a7eb9b0b-3f7b-4879-b526-2ef258f5f320"
+    summary = {"period_days": 30}
+    with facade._init_trends_db() as conn:
+        if overlap == "mod":
+            conn.execute("CREATE TABLE mod_fresh_receipts (session_uuid TEXT, timestamp TEXT, estimated_usd REAL)")
+            conn.execute("INSERT INTO mod_fresh_receipts VALUES (?, ?, 1.25)",
+                         (OLD_SESSION if same_session else unrelated, datetime.fromtimestamp(now + 30).isoformat()))
+            summary["mod_fresh_estimated"] = {"cost_saved_usd": 1.25}
+        else:
+            recipient = FRESH_SESSION if same_session else unrelated
+            conn.execute("INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id) "
+                         "VALUES (?, 'checkpoint_restore', 1000, 1.25, ?)",
+                         (datetime.now().isoformat(), recipient))
+            conn.execute("INSERT INTO session_log (jsonl_path, date) VALUES (?, ?)",
+                         (str(fresh.with_stem(recipient)), datetime.now().date().isoformat()))
+            summary["handover_rerun"] = {"cost_saved_usd": 1.25}
+    cold_guard.on_savings_refresh(facade, summary)
+    estimate = summary["cold_guard_estimated"]
+    assert estimate["events"] == (0 if same_session else 1)
+    assert estimate["cost_saved_usd"] == pytest.approx(0 if same_session else 3.614)
+    assert estimate["limit_units_saved"] == pytest.approx(0 if same_session else 722_800)
+    if overlap == "mod":
+        assert facade._get_merged_savings(days=30)["cold_guard_estimated"] == estimate
 
 
 def test_unknown_model_omits_price_and_pruning_stops_at_50(guard, capsys):
@@ -343,7 +474,7 @@ def test_signed_mixed_handover_increases_no_measured_limit_savings(guard, monkey
     reply["message"]["usage"]["cache_creation"] = {
         "ephemeral_1h_input_tokens": 400_000, "ephemeral_5m_input_tokens": 100_000,
     }
-    _append(fresh, _user(now + 30), reply)
+    _append(fresh, _user(now + 30, hook_input["prompt"]), reply)
     summary = {"period_days": 30, "total_tokens": 0}
     cold_guard.on_savings_refresh(facade, summary)
     estimate = summary["cold_guard_estimated"]

@@ -6084,7 +6084,7 @@ def _get_merged_savings(days=None, since=None):
         "progressive_disclosure": _measure_facade._progressive_disclosure_summary(days=days),
         # A1: one-time first-trim, surfaced separately, never in the realized total.
         "one_time_setup": savings.get("one_time_setup"), "keepwarm_estimated": savings.get("keepwarm_estimated"), "autocompact_window_estimated": savings.get("autocompact_window_estimated"), "mod_fresh_estimated": savings.get("mod_fresh_estimated"), "mod_compaction_actions": savings.get("mod_compaction_actions"),
-        cold_guard.ESTIMATE_KEY: cold_guard.estimate(_measure_facade, days=days, since=since),
+        cold_guard.ESTIMATE_KEY: cold_guard.estimate(_measure_facade, days=days, since=since, handover=handover_rerun, mod_fresh=savings.get("mod_fresh_estimated")),
         # U-G: deterministically-triggered avoided-search from proactive hints
         # (observed hint->read), estimated magnitude. Estimated tier, never realized.
         "hint_followed": savings.get("hint_followed_estimated"), "nudge_followed": savings.get("nudge_followed"),

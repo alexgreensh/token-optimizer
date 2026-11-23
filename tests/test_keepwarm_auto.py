@@ -268,6 +268,8 @@ def test_scheduler_proves_receipt_charges_once_and_latches_failure(m, monkeypatc
         assert argv[:5] == ['/fixture/claude', '--resume', SID, '--fork-session', '-p']
         assert '--no-session-persistence' in argv and env['TOKEN_OPTIMIZER_KEEPWARM_PING'] == '1'
         assert json.loads(argv[argv.index('--settings') + 1])['disableAllHooks']
+        # A different telemetry setting changes the prompt prefix and misses the cache.
+        assert env.get('DISABLE_TELEMETRY') == facade.os.environ.get('DISABLE_TELEMETRY')
         assert facade._keepwarm_load_ledger_rows()[0]['status'] == 'firing'
         return SimpleNamespace(returncode=0, stdout=json.dumps({
             'total_cost_usd': .12, 'usage': {'cache_read_input_tokens': read,

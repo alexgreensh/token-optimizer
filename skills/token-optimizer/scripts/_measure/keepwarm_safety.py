@@ -505,7 +505,7 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
     child_env = dict(env)
     child_env.pop('CLAUDECODE', None)
     child_env[facade._KEEPWARM_PING_ENV] = '1'
-    child_env.update(DISABLE_TELEMETRY='1', DISABLE_ERROR_REPORTING='1')
+    # Keep the live session's environment: DISABLE_TELEMETRY alone changed the prompt prefix and rewrote 63% of the cache.
     child_env['PATH'] = os.path.dirname(binary) + os.pathsep + child_env.get('PATH', os.defpath)
     outcome = _run_ping(facade, runner, command, cwd, child_env, context, fallback)
     recorded = False

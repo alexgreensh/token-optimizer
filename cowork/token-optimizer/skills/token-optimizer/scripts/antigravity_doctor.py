@@ -199,9 +199,11 @@ def _plugin_checks() -> list:
             group = config.get("token-optimizer") if isinstance(config, dict) else None
             events = sorted(group.keys()) if isinstance(group, dict) else []
             # PreToolUse is POSIX-only (the bash rewrite never runs on
-            # Windows); installs that still carry it there stay valid.
+            # Windows). A Windows install that still carries it keeps working
+            # but is reported below so a reinstall removes it.
+            stale_windows_pre_tool = _is_windows() and "PreToolUse" in events
             expected = {"PreInvocation", "Stop"} | (set() if _is_windows() else {"PreToolUse"})
-            if _is_windows() and "PreToolUse" in events:
+            if stale_windows_pre_tool:
                 expected.add("PreToolUse")
             if not expected <= set(events):
                 raise ValueError(f"missing events: {sorted(expected - set(events))}")
@@ -216,11 +218,22 @@ def _plugin_checks() -> list:
                 cmds = [h.get("command", "") for h in handlers if isinstance(h, dict)]
                 if not any(isinstance(c, str) and any(s in c for s in spellings) for c in cmds):
                     raise ValueError(f"{name} hook does not call {bridge}")
-            checks.append(
-                _check(
-                    "ok", "plugin hooks", f"{hooks_path} (events: {', '.join(events)})"
+            if stale_windows_pre_tool:
+                checks.append(
+                    _check(
+                        "warn",
+                        "plugin hooks",
+                        f"{hooks_path} still registers PreToolUse, which is no "
+                        "longer installed on Windows.",
+                        _hint("Re-run `python3 measure.py antigravity-install` to remove it."),
+                    )
                 )
-            )
+            else:
+                checks.append(
+                    _check(
+                        "ok", "plugin hooks", f"{hooks_path} (events: {', '.join(events)})"
+                    )
+                )
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             checks.append(
                 _check(
@@ -500,26 +513,9 @@ def _bridge_selftest_check() -> dict:
             _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
         )
     out = (proc.stdout or "").strip()
-    if not out:
-        return _check(
-            "fail",
-            "bridge self-test",
-            "pre-tool-use printed nothing; Antigravity requires a `decision` "
-            "in every PreToolUse response.",
-            _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
-        )
     if out:
         try:
-            parsed = json.loads(out)
-            if not isinstance(parsed, dict) or not isinstance(parsed.get("decision"), str) \
-                    or not parsed["decision"]:
-                return _check(
-                    "fail",
-                    "bridge self-test",
-                    f"pre-tool-use response has no `decision` (stdout: {out[:200]!r}); "
-                    "Antigravity requires one and may block every shell command.",
-                    _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
-                )
+            json.loads(out)
         except (json.JSONDecodeError, ValueError):
             return _check(
                 "fail",

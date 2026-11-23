@@ -145,8 +145,17 @@ def test_fable2_verifier_linear_time_on_1mb_grep_and_find():
     assert dt_vfind < 1.5, f"1MB find verifier alone too slow: {dt_vfind:.2f}s"
 
 
-def test_fable3_non_error_word_failures_preserved_and_gated():
-    """Fable #3: failure lines with no 'error' word stay visible in large_output_policy and gate."""
+def _delivered_by_large_output_policy(command: str, raw: str) -> str:
+    """What the model receives from large_output_policy with the feature ON."""
+    compressed, _ = lop.handle_post_tool_use(command, raw, session_id="fable-sess", tool_use_id="tu_fable")
+    return raw if compressed is None else compressed
+
+
+def test_fable3_non_error_word_failures_preserved_and_gated(monkeypatch):
+    """Fable #3: output with failure lines that carry no 'error' word reaches the
+    model byte-for-byte raw (SPEC-large-output-narrow condition 5), and the gate
+    still calls hiding any of those lines CRITICAL_HIDDEN."""
+    monkeypatch.setenv("TOKEN_OPTIMIZER_LARGE_OUTPUT", "1")
     failures = {
         60: "bash: line 3: jqq: command not found",
         90: "cat: config/prod.yaml: No such file or directory",
@@ -155,14 +164,16 @@ def test_fable3_non_error_word_failures_preserved_and_gated():
         180: "Killed",
         210: "deployment \"web\" exceeded its progress deadline",
     }
-    lines = [
-        failures.get(i, f"syncing directory item={i:04d} status=ok payload=abcdef{i:06d}")
-        for i in range(1, 307)
-    ]
+    benign = [f"syncing directory item={i:04d} status=ok payload=abcdef{i:06d}" for i in range(1, 307)]
+    lines = [failures.get(i, benign[i - 1]) for i in range(1, 307)]
     raw = "\n".join(lines)
-    ev = lop.evaluate("for d in a b; do (cd $d && ./sync.sh) 2>&1; done", raw, archive_key="fable30000000001")
-    assert ev is not None
-    out = ev["preview_with_pointer"]
+    command = "for d in a b; do (cd $d && ./sync.sh) 2>&1; done"
+    # Control: without the failure lines the same shape IS compressed, so the
+    # raw pass-through below is caused by the failures, not by another gate.
+    assert lop.evaluate(command, "\n".join(benign), archive_key="fable30000000001") is not None
+    assert lop.evaluate(command, raw, archive_key="fable30000000001") is None
+    out = _delivered_by_large_output_policy(command, raw)
+    assert out == raw, "failure-bearing output must reach the model byte-for-byte"
     for msg in failures.values():
         assert msg in out, f"Hidden non-error-word failure: {msg}"
         assert vr.is_error_or_failure_line(msg)
@@ -176,11 +187,15 @@ def test_fable3_non_error_word_failures_preserved_and_gated():
         assert st == esg.CRITICAL_HIDDEN
 
 
-def test_fable4_critical_context_keeps_expected_received_source_and_test_name():
-    """Fable #4: keep context around each critical line (Expected/Received, code frame, test name)."""
-    lines = [f"step {i:03d}: building workspace package module_{i:03d} ok" for i in range(1, 240)]
+def test_fable4_critical_context_keeps_expected_received_source_and_test_name(monkeypatch):
+    """Fable #4: Jest / rustc failure blocks (Expected/Received, code frame, test
+    name) reach the model byte-for-byte raw, context included."""
+    monkeypatch.setenv("TOKEN_OPTIMIZER_LARGE_OUTPUT", "1")
+    # 399 lines (> 16 KB) so the size floor is not why the output passes raw.
+    benign = [f"step {i:03d}: building workspace package module_{i:03d} ok" for i in range(1, 400)]
+    lines = list(benign)
     # Jest failure block around line 80
-    lines[78] = "  ● BillingCalculator › computes prorated invoice"
+    lines[78] = "  \u25cf BillingCalculator \u203a computes prorated invoice"
     lines[79] = "    expect(received).toBe(expected) // Object.is equality"
     lines[80] = "    AssertionError: value mismatch"
     lines[81] = "    Expected: 42"
@@ -192,10 +207,11 @@ def test_fable4_critical_context_keeps_expected_received_source_and_test_name():
     lines[141] = "  |"
     lines[142] = "57 |     let x: u32 = \"hello\";"
     raw = "\n".join(lines)
-
-    ev = lop.evaluate("npm run build && npm test 2>&1; echo done", raw, archive_key="fable40000000001")
-    assert ev is not None
-    out = ev["preview_with_pointer"]
+    command = "npm run build && npm test 2>&1; echo done"
+    assert lop.evaluate(command, "\n".join(benign), archive_key="fable40000000001") is not None
+    assert lop.evaluate(command, raw, archive_key="fable40000000001") is None
+    out = _delivered_by_large_output_policy(command, raw)
+    assert out == raw, "failure-bearing output must reach the model byte-for-byte"
     for must_keep in (
         "BillingCalculator",
         "Expected: 42",

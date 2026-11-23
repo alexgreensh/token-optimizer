@@ -116,18 +116,35 @@ def _run_hook_once(payload: dict, home: Path) -> tuple[float, int, str]:
 
 
 def test_early_exit_and_monotonic_budget(tmp_path):
+    # Edit and Bash always run real handlers (context_intel activity row; Edit
+    # also read_cache --invalidate), so they are never a provable no-op.
     assert hf.can_early_exit_posttooluse({
         "tool_name": "Edit",
         "tool_input": {"file_path": "/tmp/nope.py"},
         "session_id": "s1",
-    }, snapshot_dir=tmp_path) is True
+    }, snapshot_dir=tmp_path) is False
 
     assert hf.can_early_exit_posttooluse({
         "tool_name": "Bash",
         "tool_input": {"command": "git status"},
         "tool_response": {"stdout": "M a.py\n", "stderr": "", "exit_code": 0},
         "session_id": "s1",
-    }, snapshot_dir=tmp_path) is True
+    }, snapshot_dir=tmp_path) is False
+
+    # The only safe early exit: the quality throttle is the sole matching
+    # handler and no tick is due (no cache file yet, or a fresh one).
+    throttle_only = {"tool_name": "TodoWrite", "session_id": "s1"}
+    assert hf.can_early_exit_posttooluse(throttle_only, snapshot_dir=tmp_path, only_throttle_matches=True) is True
+    qfile = tmp_path / "quality-cache-s1.json"
+    qfile.write_text("{}")
+    assert hf.can_early_exit_posttooluse(throttle_only, snapshot_dir=tmp_path, only_throttle_matches=True) is True
+    stale = time.time() - 3600
+    os.utime(qfile, (stale, stale))
+    assert hf.can_early_exit_posttooluse(throttle_only, snapshot_dir=tmp_path, only_throttle_matches=True) is False
+    assert hf.can_early_exit_posttooluse(
+        {**throttle_only, "hook_event_name": "PostToolUseFailure"},
+        snapshot_dir=tmp_path, only_throttle_matches=True,
+    ) is False
 
     # Non-zero exit must NOT early-exit
     assert hf.can_early_exit_posttooluse({

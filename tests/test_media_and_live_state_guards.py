@@ -198,29 +198,58 @@ def test_twin_dispatch_is_not_called_identical(dedup):
     assert dedup._crossturn_dedup("cat log", OUT, "toolu_same") is None  # install A
     assert dedup._crossturn_dedup("cat log", OUT, "toolu_same") is None  # install B, same call
 
-def test_old_store_without_the_column_migrates(dedup, tmp_path):
-    # A session DB created before this fix has command_outputs without
-    # last_tool_use_id; opening it must add the column, keep the old row, and
-    # still dedup a real re-run against it.
+def test_old_store_without_the_column_migrates(dedup, tmp_path, capsys):
+    # Upgrade path for a user whose session DB predates last_tool_use_id and
+    # still holds rows from the removed cross-turn dedupe (DECISION row 12).
+    # Opening it must add the column, keep the old row intact (no crash, no
+    # data loss), never serve a "same as before" reference from that row, and
+    # /clear must still wipe it.
+    import json
     import sqlite3
     from session_store import SessionStore
     store = SessionStore("twin-session")
     path = Path(store.db_path)
     store.close()
+    path.unlink(missing_ok=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("""CREATE TABLE command_outputs (
         command_hash TEXT PRIMARY KEY, command_text TEXT NOT NULL,
         output_hash TEXT NOT NULL, output_chars INTEGER NOT NULL,
         compressed_output TEXT, timestamp REAL NOT NULL)""")
+    conn.execute("INSERT INTO command_outputs VALUES ('h1', 'ls -la', 'o1', 900, NULL, 1.0)")
     conn.commit()
     conn.close()
-    assert dedup._crossturn_dedup("cat log", OUT, "toolu_a") is None
-    assert "identical" in dedup._crossturn_dedup("cat log", OUT, "toolu_b").lower()
+
+    store = SessionStore("twin-session")
+    store._connect()
+    store.close()
     conn = sqlite3.connect(path)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(command_outputs)")}
+    rows = conn.execute("SELECT command_hash, command_text, last_tool_use_id FROM command_outputs").fetchall()
     conn.close()
     assert "last_tool_use_id" in cols
+    assert rows == [("h1", "ls -la", "")]
+
+    # The old row can never surface as a dedup reference any more.
+    assert dedup._crossturn_dedup("ls -la", OUT, "toolu_a") is None
+    assert dedup._crossturn_dedup("ls -la", OUT, "toolu_b") is None
+    listing = "\n".join(f"-rw-r--r--  1 user staff {1000 + i:5d} Nov 23 10:{i % 60:02d} file_{i:03d}.txt"
+                        for i in range(60)) + "\n"
+    for tid in ("toolu_c", "toolu_d"):
+        dedup._run({"tool_name": "Bash", "session_id": "twin-session", "tool_use_id": tid,
+                    "tool_input": {"command": "ls -la"},
+                    "tool_response": {"stdout": listing, "stderr": "", "exit_code": 0}})
+        out = capsys.readouterr().out
+        delivered = json.loads(out)["hookSpecificOutput"]["updatedToolOutput"]["stdout"] if out.strip() else listing
+        assert "identical" not in delivered.lower() and "unchanged since" not in delivered.lower()
+
+    store = SessionStore("twin-session")
+    store.reset_context_state()
+    store.close()
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT COUNT(*) FROM command_outputs").fetchone()[0] == 0
+    conn.close()
 
 
 def test_pre_fix_twin_without_tool_use_id_is_recognised(dedup, monkeypatch):

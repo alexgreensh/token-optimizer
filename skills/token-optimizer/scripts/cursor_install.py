@@ -62,7 +62,6 @@ _PAYLOAD_MODULES = (
     "visibility_rule.py",
     "emit_safety_gate.py",
     "command_compress_extra.py",
-    "bash_rerun_dedupe.py",
     # Dependency-free whitelist gate shared by bash_hook + bash_compress.
     "bash_whitelist.py",
     # command_filters + _tomli: user [filters.*] TOML config consulted by

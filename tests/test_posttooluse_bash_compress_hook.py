@@ -771,19 +771,3 @@ class TestSearchRecovery334:
             bc.main()
         assert exited.value.code == 0
         assert capsys.readouterr().out == raw
-
-    def test_short_non_search_repeat_still_deduplicates(self, monkeypatch, capsys, tmp_path):
-        import bash_compress_hook as hook
-        monkeypatch.setenv('CLAUDE_SESSION_ID', 'repeat-small-status')
-        monkeypatch.setenv('TOKEN_OPTIMIZER_SNAPSHOT_DIR', str(tmp_path))
-        raw = '\n'.join(['On branch main', 'Your branch is up to date.', '',
-                         'Changes not staged for commit:'] +
-                        [f'\tmodified:   src/module_{i:02d}.py' for i in range(11)] +
-                        ['', 'no changes added, only modified files here']) + '\n'
-        assert 200 < len(raw) <= 500
-        hook._run(json.loads(_payload('git status', raw, tool_use_id='status-first')))
-        capsys.readouterr()
-        hook._run(json.loads(_payload('git status', raw, tool_use_id='status-second')))
-        out = json.loads(capsys.readouterr().out)['hookSpecificOutput']['updatedToolOutput']['stdout']
-        assert 'identical' in out.lower()
-        assert len(out) < len(raw)

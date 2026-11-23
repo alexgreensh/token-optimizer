@@ -6826,10 +6826,10 @@ def run_verbosity_steer(transcript_path=None, quiet=None, session_id=None):
     Suppressed when a concise outputStyle is active. Cooldown: max 3 nudges/session, 5 min apart.
     """
     _measure_facade = _compat.facade()
+    if _measure_facade.os.environ.get("TOKEN_OPTIMIZER_VERBOSITY_STEER", "").strip() != "1": return ""
     try:
         from . import subscription_audits as _sub_audits
-        if _sub_audits.is_concise_output_style_active(_measure_facade):
-            return ""
+        if _sub_audits.is_concise_output_style_active(_measure_facade): return ""
         filepath = None
         # Whether this transcript was told to us or inferred. _find_current_session_jsonl()
         # returns the most recently active transcript, which on a brand-new session

@@ -359,29 +359,6 @@ class TestBuiltinToolCompressVisibility:
 
 
 # ---------------------------------------------------------------------------
-# 7. crossturn_dedup (bash_rerun_dedupe)
-# ---------------------------------------------------------------------------
-
-class TestBashRerunDedupeVisibility:
-    def test_a_b_d_rerun_dedupe(self, monkeypatch, tmp_path):
-        import archive_result
-        import bash_rerun_dedupe
-
-        monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path / "snap"))
-        monkeypatch.setattr(archive_result, "SNAPSHOT_DIR", tmp_path / "snap")
-        raw = "\n".join([f"status line {i}: healthy" for i in range(1, 40)] + ["ValueError: stale cache entry"]) + "\n"
-
-        # First run records, returns None
-        first = bash_rerun_dedupe.dedupe_rerun("my-check", raw, session_id="s1", store_id="s1", tool_use_id="t1")
-        assert first is None
-        # Second identical run preserves ValueError line verbatim + states exact hidden count & place
-        second = bash_rerun_dedupe.dedupe_rerun("my-check", raw, session_id="s1", store_id="s1", tool_use_id="t2")
-        assert second is not None
-        assert "ValueError: stale cache entry" in second
-        assert "39 lines (lines 1-40) hidden" in second
-
-
-# ---------------------------------------------------------------------------
 # 8. build_output_compress
 # ---------------------------------------------------------------------------
 

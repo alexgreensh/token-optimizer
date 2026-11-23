@@ -474,18 +474,11 @@ def _run(payload: dict) -> None:
             orig_tokens == 0 or (1.0 - _est(compressed) / orig_tokens) >= 0.10)
         best = compressed if comp_helped else cleaned_stdout
 
-        # Cross-turn dedup: if this command's output repeats a recent same-session
-        # run, emit a compact delta reference instead. Always compare against the
-        # full ANSI-stripped stdout (never a lossy preview) so changed-line diffs
-        # are exact; prefer dedup only when it beats single-output compression.
-        deduped = _crossturn_dedup(command, cleaned_stdout, str(payload.get("tool_use_id", "") or ""))
+        # Cross-turn / rerun dedupe removed per DECISION row 12.
         _log_feature = "bash_compress_pipeline"
         if comp_helped and "[Folded noisy matches:" in best:
             _log_feature = "bash_search_noise_fold"
-        if deduped is not None and len(deduped) < len(best):
-            best, comp_helped = deduped, True
-            _log_feature = "crossturn_dedup"
-        elif _log_feature != "bash_search_noise_fold":
+        else:
             try:
                 from command_compress_extra import feature_for_command as _extra_feat
                 _log_feature = _extra_feat(compress_command, cleaned_stdout) or "bash_compress_pipeline"
@@ -683,38 +676,8 @@ def _dedup_store_id(session_id: str, agent_id: str) -> str:
 
 
 def _crossturn_dedup(command: str, output: str, tool_use_id: str = ""):
-    """Return a compact delta-reference when this command's output repeats a
-    recent same-session run, else None.
-
-    Delegates to ``bash_rerun_dedupe.dedupe_rerun`` so normalization, bounded
-    storage, exact-diff checks, and redaction live in a dedicated module.
-    Never raises (fail-open): any trouble returns None and normal output stands.
-    """
-    try:
-        session_id = os.environ.get("CLAUDE_SESSION_ID", "")
-        if not session_id:
-            return None
-        agent_id = os.environ.get(_DEDUP_AGENT_ENV, _MAIN_AGENT_SENTINEL)
-        store_id = _dedup_store_id(session_id, agent_id)
-        from bash_rerun_dedupe import dedupe_rerun
-        return dedupe_rerun(
-            command,
-            output,
-            session_id=session_id,
-            store_id=store_id,
-            tool_use_id=tool_use_id,
-            legacy_twin_seconds=_LEGACY_TWIN_SECONDS,
-        )
-    except Exception as exc:
-        try:
-            sys.stderr.write(
-                f"[Token Optimizer] crossturn dedup failed: "
-                f"{type(exc).__name__}\n"
-            )
-            sys.stderr.flush()
-        except (OSError, ValueError):
-            pass
-        return None
+    """Removed per DECISION row 12 (rerun / cross-output dedupe cut)."""
+    return None
 
 
 def _holdout_control() -> bool:

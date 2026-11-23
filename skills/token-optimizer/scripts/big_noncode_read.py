@@ -181,11 +181,11 @@ _ERROR_KEY_RE = re.compile(r"^(?:error|errors|err|warning|warnings|warn|failure|
 
 
 def is_big_noncode_read_enabled() -> bool:
-    """Feature flag: default ON. Opt out via TOKEN_OPTIMIZER_BIG_NONCODE_READ=0."""
+    """Feature flag: default OFF (DECISION row 9). Opt in via TOKEN_OPTIMIZER_BIG_NONCODE_READ=1."""
     return is_v5_flag_enabled(
         "v5_big_noncode_read",
         "TOKEN_OPTIMIZER_BIG_NONCODE_READ",
-        default=True,
+        default=False,
     )
 
 

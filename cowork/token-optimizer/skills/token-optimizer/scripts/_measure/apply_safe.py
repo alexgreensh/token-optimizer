@@ -199,7 +199,8 @@ def _append_receipt(facade, receipt):
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0)
     fd = os.open(path, flags, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, 'fchmod'):
+            os.fchmod(fd, 0o600)
         data = (json.dumps(receipt, sort_keys=True) + '\n').encode()
         if os.write(fd, data) != len(data):
             raise OSError('incomplete receipt')
@@ -358,11 +359,11 @@ def _restore_settings_format(facade, backup):
         current = path.read_bytes()
         if json.loads(current) != original_data:
             return True
-        stat = path.stat()
         fd, temp = tempfile.mkstemp(prefix='.apply-safe-', dir=path.parent)
         try:
             with os.fdopen(fd, 'wb') as out:
-                os.fchmod(out.fileno(), stat.st_mode & 0o777)
+                if hasattr(os, 'fchmod'):
+                    os.fchmod(out.fileno(), path.stat().st_mode & 0o777)
                 out.write(original)
                 out.flush()
                 os.fsync(out.fileno())

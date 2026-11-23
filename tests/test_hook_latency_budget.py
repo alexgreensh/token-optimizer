@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -159,6 +161,29 @@ def test_early_exit_and_monotonic_budget(tmp_path):
     b.deadline = time.monotonic() - 1.0
     with pytest.raises(hf.BudgetExceeded):
         b.check(0, stride=1)
+
+
+def test_windows_posttooluse_dispatches_without_a_second_interpreter(monkeypatch):
+    from test_userpromptsubmit_runner import _load_run_py
+
+    run = _load_run_py()
+    monkeypatch.setattr(run, "os", Mock(wraps=os, name="windows_os"))
+    run.os.name = "nt"
+    monkeypatch.setattr(run, "_plugin_disabled_by_host", lambda: False)
+    monkeypatch.setattr(run, "_cowork_copy_should_stand_down", lambda: False)
+    monkeypatch.setattr(run, "_check_consent", lambda root: True)
+    monkeypatch.setattr(run, "_bytecode_prefix_for", lambda root: None)
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO))
+    monkeypatch.setenv("TOKEN_OPTIMIZER_RUNTIME", "claude")
+    run.os.environ = os.environ.copy()
+    monkeypatch.setattr(sys, "argv", [str(REPO / "hooks" / "run.py"), "hooks/posttooluse_runner.py"])
+    seen = []
+    monkeypatch.setattr(runpy, "run_path", lambda path, *, run_name: seen.append((path, run_name, sys.argv[1:])))
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail(f"PostToolUse spawned {a}"))
+
+    assert run.main() == 0
+    assert seen == [(str(REPO / "hooks" / "module_runner.py"), "__main__",
+                     [str(REPO / "hooks"), "posttooluse_runner"])]
 
 
 def test_hook_latency_budget_and_linear_scaling(tmp_path):

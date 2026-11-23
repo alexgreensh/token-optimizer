@@ -327,6 +327,40 @@ def test_bridge_selftest_ok_after_install(doctor, tmp_path):
     assert check["status"] == "ok", check["detail"]
 
 
+def test_bridge_selftest_fails_when_pre_tool_use_has_no_decision(doctor, tmp_path):
+    """Issue #350: valid JSON without a `decision` passed the old self-test."""
+    _install(doctor, tmp_path)
+    bridge = tmp_path / "config" / "plugins" / "token-optimizer" / "antigravity_hook_bridge.py"
+    for body in ("print('{}')", "pass", "print('[]')", "print('{\"decision\": \"\"}')"):
+        bridge.write_text(body + "\n", encoding="utf-8")
+        check = doctor._bridge_selftest_check()
+        assert check["status"] == "fail", body
+        assert "decision" in check["detail"], body
+
+
+def test_plugin_hooks_check_accepts_windows_install_without_pre_tool_use(doctor, tmp_path, monkeypatch):
+    """A Windows install registers no PreToolUse hook; that must not FAIL."""
+    _install(doctor, tmp_path)
+    hooks = tmp_path / "config" / "plugins" / "token-optimizer" / "hooks.json"
+    cfg = json.loads(hooks.read_text(encoding="utf-8"))
+    cfg["token-optimizer"].pop("PreToolUse")
+    hooks.write_text(json.dumps(cfg), encoding="utf-8")
+    monkeypatch.setattr(doctor, "_is_windows", lambda: True)
+    checks = [c for c in doctor.run_checks() if c["name"] == "plugin hooks"]
+    assert checks and checks[0]["status"] == "ok", checks
+
+
+def test_plugin_hooks_check_still_requires_pre_tool_use_on_posix(doctor, tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "_is_windows", lambda: False)
+    _install(doctor, tmp_path)
+    hooks = tmp_path / "config" / "plugins" / "token-optimizer" / "hooks.json"
+    cfg = json.loads(hooks.read_text(encoding="utf-8"))
+    cfg["token-optimizer"].pop("PreToolUse")
+    hooks.write_text(json.dumps(cfg), encoding="utf-8")
+    checks = [c for c in doctor.run_checks() if c["name"] == "plugin hooks"]
+    assert checks and checks[0]["status"] == "fail", checks
+
+
 def test_bridge_selftest_fails_on_broken_payload(doctor, tmp_path, monkeypatch):
     """A stale payload (bridge crashes on start) must surface as fail, not ok."""
     _install(doctor, tmp_path)

@@ -68,6 +68,16 @@ def test_hooks_config_uses_pre_tool_matcher_and_flat_lifecycle(ai, tmp_path):
     assert "pre-invocation" in cmd
 
 
+def test_hooks_config_skips_pre_tool_use_on_windows(ai, tmp_path, monkeypatch):
+    """Issue #350: the PreToolUse bridge never rewrites on Windows, so it is
+    not registered there (no per-command Python launch, nothing to deny)."""
+    monkeypatch.setattr(ai, "_is_windows", lambda: True)
+    h = ai._hooks_config(tmp_path / "bridge.py")["token-optimizer"]
+    assert "PreToolUse" not in h
+    assert h["PreInvocation"][0]["type"] == "command"
+    assert h["Stop"][0]["type"] == "command"
+
+
 def test_hooks_config_pre_tool_timeout_bounded(ai, tmp_path):
     h = ai._hooks_config(tmp_path / "bridge.py")["token-optimizer"]
     assert h["PreToolUse"][0]["hooks"][0]["timeout"] == ai.PRE_TIMEOUT_SEC

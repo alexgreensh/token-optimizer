@@ -77,6 +77,15 @@ def test_routing_can_make_the_30d_display_visible():
     assert h["display"]["short"] == "Saved $62 in the last 30 days"
 
 
+@pytest.mark.parametrize(("action_net", "expected"), [(-30.0, 70.0), (-130.0, 0.0)])
+def test_routing_offsets_action_costs_before_the_headline_floor(action_net, expected):
+    s = _summary(routing=100.0)
+    s["action_savings"]["net_total_usd"] = action_net
+    h = savings_headline.build(s)
+    assert h["usd_30d"] == expected
+    assert (h["display"] is not None) == (expected >= 60)
+
+
 def test_missing_inputs_read_as_zero_and_hide_display():
     h = savings_headline.build({})
     assert h["usd_30d"] == 0.0

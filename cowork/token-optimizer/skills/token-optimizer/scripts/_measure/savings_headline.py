@@ -107,8 +107,11 @@ def build(summary, dashboard_url=DASHBOARD_SAVINGS_URL):
         realized = _usd(routing.get("realized_cost_usd")) if isinstance(routing, dict) else None
         if realized is None:
             realized = _usd(action.get("routing_usd"))
-        # Match the dashboard: add the positive realized routing estimate once.
-        usd_30d = (_usd(action.get("total_usd")) or 0.0) + max(0.0, realized or 0.0)
+        usd_30d = _usd(action.get("total_usd")) or 0.0
+        if realized is not None and realized > 0:
+            # Apply the headline floor after routing offsets any action costs.
+            action_net = _usd(action.get("net_total_usd"))
+            usd_30d = max(0.0, (usd_30d if action_net is None else action_net) + realized)
         tokens_30d = _count(headline.get("total_tokens"))
         usd_week = None
         url = dashboard_url if isinstance(dashboard_url, str) and dashboard_url else DASHBOARD_SAVINGS_URL

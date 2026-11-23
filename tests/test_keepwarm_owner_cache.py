@@ -1,8 +1,7 @@
-"""The Stop hook resolves the owning Claude process once per session, not per turn."""
+"""The Stop hook caches terminal eligibility for the current Claude process."""
 import os
 import sys
 
-import pytest
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'
@@ -11,16 +10,19 @@ sys.path.insert(0, str(SCRIPTS))
 from _measure import keepwarm_safety  # noqa: E402
 
 
-def _counting_finder(monkeypatch, result):
+def _counting_eligibility(monkeypatch, process, eligible=True):
     calls = []
-    monkeypatch.setattr(keepwarm_safety, 'find_owner', lambda: calls.append(1) or result)
+    monkeypatch.setattr(keepwarm_safety.os, 'getppid', lambda: process['pid'])
+    monkeypatch.setattr(keepwarm_safety, 'process_info', lambda pid: {
+        'ppid': 1, 'command': 'claude', 'start': process['start'],
+    } if pid == process['pid'] else None)
+    monkeypatch.setattr(keepwarm_safety, 'owner_eligible', lambda pid: calls.append(pid) or eligible)
     return calls
 
 
-@pytest.mark.skipif(os.name != 'posix', reason='keep-warm is POSIX-only: _pid_exists is False off POSIX, so no cached owner is ever reused')
-def test_live_owner_is_found_once_per_session(tmp_path, monkeypatch):
+def test_live_owner_eligibility_is_checked_once_per_session(tmp_path, monkeypatch):
     owner = {'pid': os.getpid(), 'start': 'fixture-start'}
-    calls = _counting_finder(monkeypatch, owner)
+    calls = _counting_eligibility(monkeypatch, owner)
     assert keepwarm_safety.session_owner(tmp_path, 'sess-a') == owner
     assert keepwarm_safety.session_owner(tmp_path, 'sess-a') == owner
     assert len(calls) == 1
@@ -29,15 +31,17 @@ def test_live_owner_is_found_once_per_session(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-def test_dead_owner_is_looked_up_again(tmp_path, monkeypatch):
-    calls = _counting_finder(monkeypatch, {'pid': 2 ** 22 + 12345, 'start': 'gone'})
-    keepwarm_safety.session_owner(tmp_path, 'sess')
-    keepwarm_safety.session_owner(tmp_path, 'sess')
+def test_reused_owner_pid_is_looked_up_again(tmp_path, monkeypatch):
+    owner = {'pid': os.getpid(), 'start': 'first-start'}
+    calls = _counting_eligibility(monkeypatch, owner)
+    assert keepwarm_safety.session_owner(tmp_path, 'sess') == owner
+    owner['start'] = 'later-start'
+    assert keepwarm_safety.session_owner(tmp_path, 'sess') == owner
     assert len(calls) == 2
 
 
 def test_no_owner_is_cached_briefly_then_retried(tmp_path, monkeypatch):
-    calls = _counting_finder(monkeypatch, None)
+    calls = _counting_eligibility(monkeypatch, {'pid': os.getpid(), 'start': 'headless'}, eligible=False)
     assert keepwarm_safety.session_owner(tmp_path, 'sess', now=1000.0) is None
     assert keepwarm_safety.session_owner(tmp_path, 'sess', now=1100.0) is None
     assert len(calls) == 1
@@ -47,14 +51,30 @@ def test_no_owner_is_cached_briefly_then_retried(tmp_path, monkeypatch):
 
 def test_corrupt_cache_falls_back_to_a_fresh_lookup(tmp_path, monkeypatch):
     owner = {'pid': os.getpid(), 'start': 's'}
-    calls = _counting_finder(monkeypatch, owner)
+    calls = _counting_eligibility(monkeypatch, owner)
     keepwarm_safety._owner_cache_path(tmp_path, 'sess').write_text('{not json')
     assert keepwarm_safety.session_owner(tmp_path, 'sess') == owner
     assert len(calls) == 1
 
 
+def test_resumed_print_process_cannot_borrow_live_interactive_owner(tmp_path, monkeypatch):
+    interactive_pid, print_pid = os.getpid(), os.getpid() + 1
+    processes = {
+        interactive_pid: {'ppid': 1, 'start': 'interactive-start', 'command': 'claude'},
+        print_pid: {'ppid': 1, 'start': 'print-start', 'command': 'claude'},
+    }
+    monkeypatch.setattr(keepwarm_safety, 'process_info', processes.get)
+    monkeypatch.setattr(keepwarm_safety, 'owner_eligible', lambda pid: pid == interactive_pid)
+    monkeypatch.setattr(keepwarm_safety.os, 'getppid', lambda: interactive_pid)
+    assert keepwarm_safety.session_owner(tmp_path, 'resumed') == {
+        'pid': interactive_pid, 'start': 'interactive-start'}
+
+    monkeypatch.setattr(keepwarm_safety.os, 'getppid', lambda: print_pid)
+    assert keepwarm_safety.session_owner(tmp_path, 'resumed') is None
+
+
 def test_missing_session_id_never_caches(tmp_path, monkeypatch):
-    calls = _counting_finder(monkeypatch, None)
+    calls = _counting_eligibility(monkeypatch, {'pid': os.getpid(), 'start': 'headless'}, eligible=False)
     keepwarm_safety.session_owner(tmp_path, None)
     keepwarm_safety.session_owner(tmp_path, None)
     assert len(calls) == 2 and not list(tmp_path.iterdir())

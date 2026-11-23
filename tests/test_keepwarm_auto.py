@@ -3,6 +3,7 @@ from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
+import subprocess
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -209,7 +210,7 @@ def test_approval_requires_mod_activity_and_positive_capped_replay(policy, monke
     item = auto.plan_item(policy)
     assert item['basis'].endswith('1 returns within the hour, 3 pings')
     assert item['net_usd_month'] == 1 and item['own_cost_usd_month'] == 2
-    assert auto.apply_item(policy, item) is False
+    assert auto.apply_item(policy, item) == {'ok': True, 'before': False, 'after': True}
     assert auto.plan_item(policy) is None
 
 
@@ -223,6 +224,20 @@ def test_default_headless_and_explicit_kill_switches(policy):
     assert safety.headless_disabled(policy) == 'consent-declined'
 
 
+def test_unset_preference_defaults_headless_on_and_in_session_off(policy):
+    policy._read_config_flag = lambda key, default: default
+    assert safety.headless_disabled(policy) is None
+    assert decide(policy, headless=True)['action'] == 'ping'
+    assert decide(policy)['reason'] == 'off'
+
+
+def test_keepwarm_off_requires_an_explicit_saved_preference(policy):
+    policy._read_config_flag = lambda key, default: default
+    policy._write_config_flag = lambda key, value: None
+    with pytest.raises(OSError, match='preference could not be saved'):
+        auto.main(policy, ['set', 'off'])
+
+
 def ready_install(m, monkeypatch):
     facade, tmp = m
     now = time.time()
@@ -234,7 +249,7 @@ def ready_install(m, monkeypatch):
     monkeypatch.setattr(facade, '_keepwarm_extract_cwd', lambda path: str(tmp))
     monkeypatch.setattr(facade, 'classify_keepwarm_record', lambda *a, **kw: 'still_paused')
     monkeypatch.setattr(facade, '_keepwarm_read_meters', lambda **kw: {
-        'age_s': 3300, 'five_hour_pct': 20, 'seven_day_pct': 30})
+        'age_s': 30, 'five_hour_pct': 20, 'seven_day_pct': 30})
     record = {'session_id': SID, 'model': MODEL, 'prefix_proxy': TOKENS, 'ttl_kind': '1h',
               'last_turn_ts': now - IDLE - 10, 'ts': now - IDLE, 'owner': {'pid': 123},
               'transcript_path': str(tmp / (SID + '.jsonl')), 'transcript_mtime': now - IDLE,
@@ -284,6 +299,149 @@ def test_headless_missing_usage_is_a_priced_failure(m, monkeypatch):
     assert result['fired'] and result['proof'] is False
     assert result['cost_usd'] > 0
     assert safety.headless_disabled(facade) == 'headless-proof'
+
+
+def test_headless_result_is_recorded_after_transient_ledger_lock_miss(m, monkeypatch):
+    from _measure import mod_action_booking
+
+    facade, now, record = ready_install(m, monkeypatch)
+    locks = iter((True, False, True))
+    monkeypatch.setattr(mod_action_booking, '_lock', lambda _: nullcontext(next(locks)))
+    result = safety.fire_headless(facade, record, now=now, runner=lambda *a: SimpleNamespace(
+        returncode=0, stdout='{"usage":{"cache_read_input_tokens":120000,"cache_creation_input_tokens":0}}'))
+    assert result['fired'] and result['proof']
+    rows = facade._keepwarm_load_ledger_rows()
+    assert [row['status'] for row in rows] == ['firing', 'ok']
+    assert rows[0]['action_id'] == rows[1]['action_id']
+    assert safety.headless_disabled(facade) is None
+
+
+@pytest.mark.parametrize('proved', [True, False])
+def test_headless_latch_reflects_known_outcome_when_ledger_stays_locked(m, monkeypatch, proved):
+    from _measure import mod_action_booking
+
+    facade, now, record = ready_install(m, monkeypatch)
+    locks = iter((True, False, False))
+    monkeypatch.setattr(mod_action_booking, '_lock', lambda _: nullcontext(next(locks)))
+    usage = {'cache_read_input_tokens': TOKENS, 'cache_creation_input_tokens': 0} if proved else {}
+    result = safety.fire_headless(facade, record, now=now, runner=lambda *a: SimpleNamespace(
+        returncode=0, stdout=json.dumps({'usage': usage})))
+    assert result['fired'] and result['proof'] is proved
+    assert result['reason'] == 'ledger-locked'
+    rows = facade._keepwarm_load_ledger_rows()
+    assert [row['status'] for row in rows] == ['firing']
+    assert facade.keepwarm_spend_summary(rows=rows, now=now + 601)['orphan_firing_count'] == 1
+    assert safety.headless_disabled(facade) == (None if proved else 'headless-proof')
+
+
+@pytest.mark.parametrize('error,status', [('timeout', 'timeout'), ('json', 'error'), ('stderr', 'error')])
+def test_transient_headless_error_keeps_receipt_without_stopping_install(m, monkeypatch, error, status):
+    facade, now, record = ready_install(m, monkeypatch)
+
+    def runner(argv, cwd, env, timeout):
+        if error == 'timeout':
+            raise subprocess.TimeoutExpired(argv, timeout)
+        if error == 'stderr':
+            return SimpleNamespace(returncode=1, stdout='', stderr='HTTP 429: Too Many Requests')
+        return SimpleNamespace(returncode=1, stdout=json.dumps({
+            'type': 'result', 'subtype': 'error_during_execution', 'is_error': True,
+            'errors': ['API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}'],
+        }))
+
+    result = safety.fire_headless(facade, record, now=now, runner=runner)
+    assert result['fired'] and result['proof'] is False
+    assert (result['reason'], result['status']) == ('timeout' if error == 'timeout' else 'rate-limited', status)
+    rows = facade._keepwarm_load_ledger_rows()
+    assert [row['status'] for row in rows] == ['firing', status]
+    assert rows[-1]['cost_usd'] > 0
+    assert decide(facade, now=now + 1, headless=True, rows=rows)['reason'] == 'failed-proof'
+    assert safety.headless_disabled(facade) is None
+
+
+def test_headless_proof_reset_leaves_fresh_reservations_and_ledger_intact(m, monkeypatch):
+    facade, now, record = ready_install(m, monkeypatch)
+
+    def runner(*args):
+        assert safety.headless_disabled(facade) == 'headless-busy'
+        assert auto.main(facade, ['reset-headless-proof']) == 1
+        return SimpleNamespace(returncode=0, stdout='{"usage":{}}')
+
+    assert safety.fire_headless(facade, record, now=now, runner=runner)['proof'] is False
+    rows = facade._keepwarm_load_ledger_rows()
+    assert safety.headless_disabled(facade) == 'headless-proof'
+    assert auto.main(facade, ['reset-headless-proof']) == 0
+    assert safety.headless_disabled(facade) is None
+    assert facade._keepwarm_load_ledger_rows() == rows
+
+
+def test_headless_proof_reset_recovers_abandoned_legacy_reservation(m, monkeypatch):
+    facade, now, _ = ready_install(m, monkeypatch)
+    latch = safety._headless_latch(facade)
+    latch.write_text('pending headless-legacy-attempt', encoding='utf-8')
+    os.utime(latch, (now - 210, now - 210))
+    assert safety.headless_disabled(facade) == 'headless-proof'
+    assert auto.main(facade, ['reset-headless-proof']) == 0
+    assert safety.headless_disabled(facade) is None
+
+
+@pytest.mark.parametrize('age', [301, 3599])
+def test_stale_headless_meters_block_subscription_pings(m, monkeypatch, age):
+    facade, now, _ = ready_install(m, monkeypatch)
+    monkeypatch.setattr(facade, '_keepwarm_read_meters', lambda **kw: {
+        'age_s': age, 'five_hour_pct': 20, 'seven_day_pct': 30})
+    runner = lambda *a: pytest.fail('A stale quota reading reached the model runner')
+    tick = facade.keepwarm_tick(now=now, runner=runner)
+    assert tick['fired'] == 0 and tick['errors'] == 0
+    assert tick['decisions'][0]['reason'] == 'meters-unknown'
+    assert facade._keepwarm_load_ledger_rows() == []
+
+
+def test_keepwarm_decide_off_stops_existing_headless_arms(m, monkeypatch):
+    facade, now, record = ready_install(m, monkeypatch)
+    assert safety.headless_disabled(facade) is None
+    assert auto.main(facade, ['set', 'off']) == 0
+    runner = lambda *a: pytest.fail('An opted-out session reached the model runner')
+    assert not facade.keepwarm_tick(now=now, runner=runner)['allowed']
+    assert safety.fire_headless(facade, record, now=now, runner=runner) == {
+        'fired': False, 'reason': 'settings-disabled'}
+    assert facade._keepwarm_load_ledger_rows() == []
+
+
+def test_keepwarm_off_after_reservation_cancels_without_spend(m, monkeypatch):
+    facade, now, record = ready_install(m, monkeypatch)
+
+    def live():
+        if facade._keepwarm_load_ledger_rows():
+            assert auto.main(facade, ['set', 'off']) == 0
+        return True
+
+    runner = lambda *a: pytest.fail('An opted-out reservation reached the model runner')
+    assert safety.fire_headless(facade, record, now=now, live=live, runner=runner) == {
+        'fired': False, 'reason': 'settings-disabled'}
+    rows = facade._keepwarm_load_ledger_rows()
+    assert [row['status'] for row in rows] == ['firing', 'cancelled']
+    assert facade.keepwarm_spend_summary(rows=rows)['pings'] == 0
+
+
+def test_apply_undo_stops_headless_for_a_user_who_had_no_preference(m, monkeypatch):
+    from _measure import apply_safe
+
+    facade, now, record = ready_install(m, monkeypatch)
+    facade.SETTINGS_PATH.write_text('{}', encoding='utf-8')
+    item = {'id': 'keepwarm_auto:on', 'kind': 'keepwarm_auto', 'net_usd_month': 1,
+            'tokens_per_request': None, 'own_cost_usd_month': 0.1}
+    plan = {'items': [item]}
+    monkeypatch.setattr(apply_safe, 'build_plan', lambda _: plan)
+    assert facade._read_config_flag('keepwarm_auto', None) is None
+    assert safety.headless_disabled(facade) is None
+    applied = apply_safe.apply(facade, plan, [item['id']], apply_safe.plan_token([item]))
+    assert applied['receipt']['items'][0]['ok'], applied
+    assert facade._read_config_flag('keepwarm_auto') is True
+    undone = apply_safe.undo(facade, applied['receipt']['receipt_id'])
+    assert undone['ok'] and undone['items'] == [{'id': item['id'], 'ok': True}]
+    runner = lambda *a: pytest.fail('An undone approval reached the model runner')
+    assert safety.fire_headless(facade, record, now=now, runner=runner) == {
+        'fired': False, 'reason': 'settings-disabled'}
 
 
 def test_status_bar_keeps_signed_amount_even_below_headline_threshold(policy):

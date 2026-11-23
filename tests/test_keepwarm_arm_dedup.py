@@ -57,7 +57,7 @@ def m(monkeypatch, tmp_path):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.setenv("TOKEN_OPTIMIZER_RUNTIME", "claude")
     from _measure import keepwarm_safety
-    monkeypatch.setattr(keepwarm_safety, "find_owner", lambda: {"pid": 123, "start": "fixture"})
+    monkeypatch.setattr(keepwarm_safety, "session_owner", lambda *args: {"pid": 123, "start": "fixture"})
     monkeypatch.setattr(keepwarm_safety, "owner_alive", lambda owner: bool(owner))
     # The LLM ping is dogfood-gated; the duplicate-fire path only exists when
     # the escape hatch is explicitly on.

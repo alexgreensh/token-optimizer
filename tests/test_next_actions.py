@@ -164,7 +164,9 @@ class NextActionsTest(unittest.TestCase):
              patch.object(next_actions, 'process_start', side_effect=starts.get, create=True), \
              patch.object(next_actions, 'spawn_detached', return_value=SimpleNamespace(pid=124)) as spawn:
             next_actions._start_refresh(self.f)
-            self.assertEqual(json.loads(marker.read_text()), {'pid': 124, 'start': 'new-worker'})
+            written = json.loads(marker.read_text())
+            self.assertEqual((written['pid'], written['start']), (124, 'new-worker'))
+            self.assertIsInstance(written['spawned_at'], float)
             next_actions._start_refresh(self.f)
             self.assertEqual(spawn.call_count, 1)
 

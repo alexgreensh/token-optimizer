@@ -238,12 +238,14 @@ def _start_refresh(facade):
                 spawned_at = _number(pending.get('spawned_at'))
                 now = time.time()
                 # A worker that dies before taking the lock can leave a marker behind.
+                start = pending.get('start')
                 in_handoff = (spawned_at is not None and 0 <= now - spawned_at < WINDOWS_HANDOFF_SECONDS
-                              and pid and facade._pid_is_running(pid))
+                              and pid and start and facade._pid_is_running(pid)
+                              and process_start(pid) == start)
                 if not in_handoff:
                     child = spawn_detached(argv, **stdio)
                     if child is not None:
-                        _write(marker, {'pid': child.pid, 'spawned_at': now})
+                        _write(marker, {'pid': child.pid, 'start': process_start(child.pid), 'spawned_at': now})
         return
     fd = _acquire(lock, timeout=0)
     if fd is not None:

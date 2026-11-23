@@ -40,6 +40,10 @@ DAEMON_PORT = 24847
 _VERSION_TIMEOUT_SECONDS = 5
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _check(status: str, name: str, detail: str, hint: str = "") -> dict:
     out = {"status": status, "name": name, "detail": detail}
     if hint:
@@ -194,7 +198,11 @@ def _plugin_checks() -> list:
             config = json.loads(hooks_path.read_text(encoding="utf-8"))
             group = config.get("token-optimizer") if isinstance(config, dict) else None
             events = sorted(group.keys()) if isinstance(group, dict) else []
-            expected = {"PreInvocation", "PreToolUse", "Stop"}
+            # PreToolUse is POSIX-only (the bash rewrite never runs on
+            # Windows); installs that still carry it there stay valid.
+            expected = {"PreInvocation", "Stop"} | (set() if _is_windows() else {"PreToolUse"})
+            if _is_windows() and "PreToolUse" in events:
+                expected.add("PreToolUse")
             if not expected <= set(events):
                 raise ValueError(f"missing events: {sorted(expected - set(events))}")
             # Every hook must call the bridge inside this plugin dir. Installs
@@ -492,9 +500,26 @@ def _bridge_selftest_check() -> dict:
             _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
         )
     out = (proc.stdout or "").strip()
+    if not out:
+        return _check(
+            "fail",
+            "bridge self-test",
+            "pre-tool-use printed nothing; Antigravity requires a `decision` "
+            "in every PreToolUse response.",
+            _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
+        )
     if out:
         try:
-            json.loads(out)
+            parsed = json.loads(out)
+            if not isinstance(parsed, dict) or not isinstance(parsed.get("decision"), str) \
+                    or not parsed["decision"]:
+                return _check(
+                    "fail",
+                    "bridge self-test",
+                    f"pre-tool-use response has no `decision` (stdout: {out[:200]!r}); "
+                    "Antigravity requires one and may block every shell command.",
+                    _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
+                )
         except (json.JSONDecodeError, ValueError):
             return _check(
                 "fail",

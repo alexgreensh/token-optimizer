@@ -483,6 +483,17 @@ def _run(payload: dict) -> None:
             return  # nothing shrank the output -> pass through raw
         compressed = best
 
+        # Enforce visibility rule (a)+(b)+(c): never hide critical lines and
+        # declare exact hidden count + line range before attaching the pointer.
+        try:
+            from visibility_rule import enforce_visibility_and_exact_hidden as _vis_guard
+            compressed = _vis_guard(
+                cleaned_stdout, compressed, is_search=_is_search_cmd,
+                skip_hidden_check=(_log_feature in ("crossturn_dedup", "cmd_git_diff_stat", "cmd_git_ls")),
+            )
+        except Exception:
+            pass
+
         # --- archive raw stdout + attach a retrieval pointer ---
         # Rule (d): every compressed output must have a verified archive entry
         # and exact runnable expand command; if storage write fails or entry was
@@ -510,11 +521,19 @@ def _run(payload: dict) -> None:
 
         # --- enforce the baseline-size invariant ---
         # If our compressed preview + archive pointer would exceed what
-        # Claude Code would show as a baseline stub, shrink to fit.
+        # Claude Code would show as a baseline stub, shrink to fit or pass raw.
         try:
             compressed = _enforce_baseline_invariant(compressed, stdout, _archive_key)
         except Exception:
             pass
+
+        # If archive failed or baseline guard fell back to raw stdout, do not
+        # emit updatedToolOutput or log a bogus compression event.
+        if compressed == stdout:
+            _cov("under_10pct", "read_only", _detect_pattern(command), stdout)
+            if _nudge:
+                _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
+            return
 
         # Log compression event to trends.db
         _log_event(command, cleaned_stdout, compressed, feature=_log_feature)

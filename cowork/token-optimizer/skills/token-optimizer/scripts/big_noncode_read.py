@@ -283,7 +283,8 @@ def _format_head_tail(
         return out
     out.append(f"Head (lines 1-{head_n}):")
     for idx in range(head_n):
-        out.append(f"  L{idx + 1}: {_clip_line(lines[idx], line_cap)}")
+        ln = lines[idx]
+        out.append(f"  L{idx + 1}: {ln if _is_error_line(ln) else _clip_line(ln, line_cap)}")
     mid_start = head_n + 1
     mid_end = total - tail_n
     preserved_middle: list[tuple[int, str]] = []
@@ -301,7 +302,8 @@ def _format_head_tail(
         out.append(f"  ... ({omitted:,} lines omitted{place_note}, lines {mid_start}-{mid_end}) ...")
     out.append(f"Tail (lines {total - tail_n + 1}-{total}):")
     for idx in range(total - tail_n, total):
-        out.append(f"  L{idx + 1}: {_clip_line(lines[idx], line_cap)}")
+        ln = lines[idx]
+        out.append(f"  L{idx + 1}: {ln if _is_error_line(ln) else _clip_line(ln, line_cap)}")
     return out
 
 
@@ -778,6 +780,16 @@ def build_big_noncode_preview(
         f'To load the entire file as-is, call Read(file_path="{file_path}") again.'
     )
     preview_text = f"{header}\n{body}\n\n{ranged_hint}"
+
+    # Visibility rule (a): never hide any critical error/exception/traceback line.
+    try:
+        from visibility_rule import find_missing_critical_lines
+        missing_crit = find_missing_critical_lines(content, preview_text)
+        if missing_crit:
+            crit_block = "\n".join(f"  L{lno}: {txt}" for lno, txt in missing_crit)
+            preview_text = f"{header}\n{body}\nPreserved critical lines ({len(missing_crit)}):\n{crit_block}\n\n{ranged_hint}"
+    except Exception:
+        pass
 
     if archive_key:
         try:

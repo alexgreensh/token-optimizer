@@ -3584,7 +3584,7 @@ _session_model_reprice = _measure_compat.bind(_measure_providers['pricing']._ses
 #   * verbosity_* -- output reductions are estimated, not counted removals.
 _COUNTED_SE_EVENT_TYPES = (
     "tool_archive", "tool_archive_reexpand", "tool_archive_refetch_block",
-    "structure_map", "delta_read", "codemap_outline", "builtin_grep", "builtin_glob", "big_read_preview", "subagent_cap",
+    "structure_map", "delta_read", "codemap_outline", "builtin_grep", "builtin_glob", "big_read_preview",
 )
 # compression_events features that are bookkeeping, not removals.
 _COUNTED_CE_EXCLUDED_FEATURES = (
@@ -6770,7 +6770,7 @@ _LEGACY_SAVINGS_LABELS = {
     # the full transcript cold. Counterfactual trigger -> estimated tier
     # (popped from the measured total in _get_savings_summary).
     "resume_lean": "Lean resumes",
-    "tool_archive": "Tool replacements", "subagent_cap": "Subagent result cap", "bash_archive_reexpand": "Bash output re-expanded", "builtin_grep": "Built-in Grep compression", "builtin_glob": "Built-in Glob compression",
+    "tool_archive": "Tool replacements", "bash_archive_reexpand": "Bash output re-expanded", "builtin_grep": "Built-in Grep compression", "builtin_glob": "Built-in Glob compression",
     "structure_map": "Structure maps", "codemap_outline": "Code map re-read outlines", "codemap_lookup": "Code map lookups [est]", "big_read_preview": "Big non-code read previews",
     # mcp_cap: ESTIMATED (not measured). Claude Code truncates MCP output
     # before PostToolUse fires, so the true pre-cap size is invisible to TO.

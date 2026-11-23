@@ -124,7 +124,8 @@ def feature_for_command(command_str: str, output: str = "") -> str | None:
                 j += 2 if tokens[j] in ("-C", "-c", "--git-dir", "--work-tree") else 1
             gsub = tokens[j] if j < len(tokens) else ""
             if gsub in ("diff", "show") and any(t == "--stat" or t.startswith("--stat=") for t in tokens[j + 1 :]):
-                return "cmd_git_diff_stat"
+                if not output or not any(ln.startswith("diff --git ") for ln in output.splitlines()[:40]):
+                    return "cmd_git_diff_stat"
         if cmd == "kubectl" and sub == "describe":
             return "cmd_kubectl_describe"
         if cmd == "npm" and sub in ("install", "ci"):
@@ -259,11 +260,11 @@ def compress_git_diff_stat(output: str) -> str | None:
         if summary_idx < 0:
             return None
 
-        preamble: list[str] = []
+        preamble: list[tuple[int, str]] = []
         stat_entries: list[tuple[str, int, str | None]] = []  # (path, count, bin_info)
-        extra_lines: list[str] = []
+        extra_lines: list[tuple[int, str]] = []
 
-        for ln in lines[:summary_idx]:
+        for lno, ln in enumerate(lines[:summary_idx], 1):
             m = _DIFF_STAT_LINE_RE.match(ln)
             if m:
                 path = m.group(1).strip()
@@ -271,9 +272,9 @@ def compress_git_diff_stat(output: str) -> str | None:
                 bin_info = m.group(3)
                 stat_entries.append((path, count, bin_info))
             elif not stat_entries:
-                preamble.append(ln)
+                preamble.append((lno, ln))
             elif ln.strip():
-                extra_lines.append(ln)
+                extra_lines.append((lno, ln))
 
         if len(stat_entries) < 20:
             return None
@@ -286,7 +287,13 @@ def compress_git_diff_stat(output: str) -> str | None:
 
         out: list[str] = []
         if preamble:
-            out.extend(preamble[:10])
+            out.extend(ln for _, ln in preamble[:10])
+            if len(preamble) > 10:
+                kept_pre = [(n, ln) for n, ln in preamble[10:] if _is_important_line(ln)]
+                omitted_pre = [n for n, ln in preamble[10:] if not _is_important_line(ln) and ln.strip()]
+                out.extend(ln for _, ln in kept_pre)
+                if omitted_pre:
+                    out.append(f"... {len(omitted_pre)} preamble lines omitted (lines {omitted_pre[0]}-{omitted_pre[-1]}) ...")
         out.append(f"[git diff --stat: {len(stat_entries)} files, grouped by dir]")
         for d in sorted(dir_groups):
             items = dir_groups[d]
@@ -296,7 +303,13 @@ def compress_git_diff_stat(output: str) -> str | None:
             ]
             out.append(f"  {d} " + ", ".join(rendered))
         if extra_lines:
-            out.extend(extra_lines[:10])
+            out.extend(ln for _, ln in extra_lines[:10])
+            if len(extra_lines) > 10:
+                kept_ex = [(n, ln) for n, ln in extra_lines[10:] if _is_important_line(ln)]
+                omitted_ex = [n for n, ln in extra_lines[10:] if not _is_important_line(ln)]
+                out.extend(ln for _, ln in kept_ex)
+                if omitted_ex:
+                    out.append(f"... {len(omitted_ex)} extra lines omitted (lines {omitted_ex[0]}-{omitted_ex[-1]}) ...")
         # Exact trailing summary line(s) verbatim
         out.extend(lines[summary_idx:])
 

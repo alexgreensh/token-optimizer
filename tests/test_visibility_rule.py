@@ -325,46 +325,6 @@ class TestBigReadPreviewVisibility:
 
 
 # ---------------------------------------------------------------------------
-# 5. subagent_cap
-# ---------------------------------------------------------------------------
-
-class TestSubagentCapVisibility:
-    def test_a_b_c_d_subagent_cap(self):
-        import subagent_result_cap as cap
-
-        body_lines = [f"Regular exploration note line {i}: " + ("a" * 80) for i in range(1, 200)]
-        body_lines[90] = "Encountered ValueError while parsing manifest"
-        body_lines[110] = "Worker hit TimeoutException after 30s (exit code 1)"
-        text = "\n".join(body_lines)
-
-        # (a) + (b) + (c)
-        out = cap.cap_subagent_result(text, expand_instruction="python3 measure.py expand toolu_sub1")
-        assert out is not None
-        assert "Encountered ValueError while parsing manifest" in out
-        assert "Worker hit TimeoutException after 30s (exit code 1)" in out
-        assert "middle lines archived (lines " in out
-        assert "python3 measure.py expand toolu_sub1" in out
-
-        # (d): entry_exists=False (write failed or pruned) -> returns False (original stands)
-        emitted = cap.emit_if_capped(
-            tool_name="Task",
-            raw_response=text,
-            safe_response=text,
-            original_char_count=len(text),
-            tool_use_id="toolu_sub1",
-            raw_tool_use_id="toolu_sub1",
-            session_id="sid",
-            entry_exists=False,
-            expand_instruction="python3 measure.py expand toolu_sub1",
-            chars_per_token=3.3,
-            trends_db=Path("/nonexistent"),
-            transcript_path=None,
-            log_savings_fn=lambda *a, **k: None,
-        )
-        assert emitted is False
-
-
-# ---------------------------------------------------------------------------
 # 6. builtin_grep / builtin_glob
 # ---------------------------------------------------------------------------
 
@@ -449,3 +409,93 @@ class TestBuildOutputCompressVisibility:
         monkeypatch.setattr(archive_result, "archive_original", lambda *a, **k: None)
         out_fail = _run_bash_hook(monkeypatch, tmp_path, "cargo build", raw)
         assert out_fail is None or out_fail == raw
+
+
+# ---------------------------------------------------------------------------
+# 9. Replay v2 ship-gate regressions (C4 fix round)
+# ---------------------------------------------------------------------------
+
+class TestReplayV2ShipGateRegressions:
+    def test_subagent_cap_removed_everywhere(self):
+        import devin_source
+        import hermes_install
+        import measure
+
+        assert not (SCRIPTS / "subagent_result_cap.py").exists()
+        assert "subagent_result_cap" not in devin_source.REPO_MODULES
+        assert "subagent_result_cap.py" not in hermes_install._ENGINE_SCRIPTS
+        assert "subagent_cap" not in measure._SAVINGS_CATEGORY_LABELS
+
+    def test_bash_compress_pipeline_critical_lines_and_exact_hidden_count(self):
+        import bash_compress
+        import visibility_rule as vr
+
+        # Repeated identical lines in the middle + critical error/traceback/exit code.
+        lines = [f"head line {i}: ordinary output" for i in range(1, 21)]
+        lines += ["identical middle noise line"] * 40
+        lines.append("Traceback (most recent call last):")
+        lines.append('  File "src/app.py", line 77, in run')
+        lines.append("ValueError: critical middle failure")
+        lines.append("Process exited with exit code 2")
+        lines += ["more middle noise line"] * 30
+        lines += [f"tail line {i}: ordinary output" for i in range(1, 21)]
+        raw = "\n".join(lines)
+
+        comp = bash_compress._compress_generic(raw)
+        assert "Traceback (most recent call last):" in comp
+        assert 'File "src/app.py", line 77, in run' in comp
+        assert "ValueError: critical middle failure" in comp
+        assert "Process exited with exit code 2" in comp
+        # Exact raw hidden lines: 40 + 30 = 70 (NOT 2 collapsed runs!)
+        assert "... 70 lines omitted (" in comp
+
+        # Post-render guard fixes drifted count and missing hidden declaration.
+        drifted = "head line 1: ordinary output\n... 5 lines omitted ...\ntail line 20: ordinary output"
+        fixed = vr.enforce_visibility_and_exact_hidden(raw, drifted)
+        assert "ValueError: critical middle failure" in fixed
+        assert "Process exited with exit code 2" in fixed
+        assert "... 5 lines omitted ..." not in fixed
+        assert "lines omitted (" in fixed
+
+        # Baseline invariant on >30KB output never chops critical lines mid-line.
+        huge = "\n".join([f"line {i:05d}: " + ("x" * 70) for i in range(1, 500)] + ["ValueError: tail boom"])
+        assert len(huge) > 30_000
+        guarded = vr.enforce_baseline_safe(
+            "\n".join(huge.splitlines()[:200]) + "\n\n[Full result archived (40,000 chars) — saved to disk, not lost.\nRun: python3 measure.py expand deadbeef12345678\n]",
+            huge,
+            "deadbeef12345678",
+        )
+        assert "ValueError: tail boom" in guarded
+
+    def test_big_read_preview_preserves_middle_json_array_error(self):
+        import big_noncode_read as bnr
+
+        items = [{"id": i, "status": "ok", "payload": "x" * 240} for i in range(300)]
+        items[150] = {"id": 150, "status": "failed", "error": "TimeoutException: upstream 504"}
+        raw = json.dumps(items, indent=2)
+        assert len(raw.encode("utf-8")) > bnr.JSON_DATA_MIN_BYTES
+
+        res = bnr.build_big_noncode_preview("/tmp/events.json", raw, archive_key=None)
+        # Either preserved verbatim or failed open (None) — never hidden!
+        if res is not None:
+            assert "TimeoutException: upstream 504" in res["context"]
+
+    def test_cmd_git_diff_stat_declares_omitted_preamble_and_preserves_critical(self):
+        import command_compress_extra as extra
+
+        preamble = [f"commit header line {i}" for i in range(1, 16)]
+        preamble[12] = "ERROR: merge conflict marker noted in commit body"
+        stats = [f" src/pkg_{i // 5}/module_{i:02d}.py | {i + 1} +++---" for i in range(25)]
+        summary = [" 25 files changed, 120 insertions(+), 45 deletions(-)"]
+        raw = "\n".join(preamble + stats + summary)
+
+        comp = extra.compress_git_diff_stat(raw)
+        assert comp is not None
+        assert "ERROR: merge conflict marker noted in commit body" in comp
+        assert "4 preamble lines omitted (lines 11-15)" in comp
+
+    def test_short_search_with_pointer_larger_than_raw_passes_through_verbatim(self, monkeypatch, tmp_path):
+        # Regression for test_hermes_search_recovery[True]: 40 tiny lines (342 chars).
+        raw = "".join(f"./{f}:{i}:q\n" for f in ("a", "b") for i in range(1, 21))
+        out = _run_bash_hook(monkeypatch, tmp_path, "grep -rn needle .", raw)
+        assert out is None or out == raw

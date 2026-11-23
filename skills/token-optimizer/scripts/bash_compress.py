@@ -728,7 +728,7 @@ def _compress_git_diff(output):
     # Keep first 30 lines of actual diff content
     result_lines = lines[:30]
     if len(lines) > 30:
-        result_lines.append(f"\n... ({len(lines) - 30} more lines, +{additions}/-{deletions} total)")
+        result_lines.append(f"\n... ({len(lines) - 30} more lines, lines 31-{len(lines)}, +{additions}/-{deletions} total)")
         if changed:
             # Keep every changed FILENAME so "did file X change?" is answerable.
             names = [c.split(" b/")[-1] for c in changed]
@@ -2011,53 +2011,24 @@ _GENERIC_IMPORTANT = re.compile(
 
 
 def _compress_generic(text):
-    """Generic structural/log compression for output matching no known pattern.
-
-    Collapses consecutive duplicate lines, keeps head + tail, and preserves
-    every error/warning line anywhere in the body. Deterministic, fail-open
-    (caller wraps in try/except), and credential lines are independently
-    re-injected by the PRE-compression scan in compress().
-    """
+    """Generic structural/log compression for output matching no known pattern."""
+    try:
+        from visibility_rule import compress_generic_exact
+        return compress_generic_exact(text, head_n=_GENERIC_HEAD, tail_n=_GENERIC_TAIL)
+    except Exception:
+        pass
     lines = text.splitlines()
-
-    # Collapse runs of identical consecutive lines into "<line>  (xN)".
-    collapsed: list[str] = []
-    run_val = None
-    run_count = 0
-
-    def _flush_run():
-        if run_val is None:
-            return
-        if run_count > 1:
-            collapsed.append(f"{run_val}  (x{run_count})")
-        else:
-            collapsed.append(run_val)
-
-    for ln in lines:
-        if ln == run_val:
-            run_count += 1
-        else:
-            _flush_run()
-            run_val = ln
-            run_count = 1
-    _flush_run()
-
-    if len(collapsed) <= _GENERIC_HEAD + _GENERIC_TAIL:
-        return "\n".join(collapsed)
-
-    head = collapsed[:_GENERIC_HEAD]
-    tail = collapsed[len(collapsed) - _GENERIC_TAIL:]
-    middle = collapsed[_GENERIC_HEAD:len(collapsed) - _GENERIC_TAIL]
-    _IMPORTANT_CAP = _GENERIC_HEAD * 10
-    important = [ln for ln in middle if _GENERIC_IMPORTANT.search(ln)][:_IMPORTANT_CAP]
+    if len(lines) <= _GENERIC_HEAD + _GENERIC_TAIL:
+        return "\n".join(lines)
+    head = lines[:_GENERIC_HEAD]
+    tail = lines[len(lines) - _GENERIC_TAIL:]
+    middle = lines[_GENERIC_HEAD:len(lines) - _GENERIC_TAIL]
+    important = [ln for ln in middle if _GENERIC_IMPORTANT.search(ln)]
     omitted = len(middle) - len(important)
-
-    out: list[str] = list(head)
-    if important:
-        out.append(f"... {omitted} lines omitted (kept {len(important)} error/warning lines) ...")
-        out.extend(important)
-    else:
-        out.append(f"... {omitted} lines omitted ...")
+    out = list(head)
+    if omitted > 0:
+        out.append(f"... {omitted} lines omitted (lines {_GENERIC_HEAD + 1}-{len(lines) - _GENERIC_TAIL}) ...")
+    out.extend(important)
     out.extend(tail)
     return "\n".join(out)
 
@@ -2097,41 +2068,22 @@ def _unicode_safe_head(text, limit):
 
 
 def _enforce_baseline_invariant(text, raw_output, archive_key):
-    """Never show the model MORE chars than the CC baseline would.
-
-    Claude Code 2.1.247 already truncates any tool result larger than
-    ~30KB down to a ~2.2KB "<persisted-output>" stub on its own, so the
-    baseline the model sees for such outputs is only the stub -- NOT the
-    raw result. When our compressed preview + archive pointer would exceed
-    that baseline, shrink the preview to fit UNDER the stub while keeping
-    the pointer intact, so the full original stays retrievable via
-    `expand <key>` and CC does not re-stub (and thereby swallow) our output.
-
-    Three branches:
-      * text already <= baseline -> unchanged (the common case).
-      * text IS the raw output -> left untouched: CC truncates raw output
-        at its own layer to the same stub it would show without Token
-        Optimizer, i.e. exactly the baseline (defer, fail-open, no data
-        loss beyond what CC itself does).
-      * lossy preview (pointer failed to build) -> keep the most useful
-        head of the preview, capped at the baseline.
-    """
+    """Never show the model MORE chars than the CC baseline would, without
+    chopping critical lines or hidden-count declarations mid-line."""
+    try:
+        from visibility_rule import enforce_baseline_safe
+        return enforce_baseline_safe(
+            text, raw_output, archive_key,
+            threshold_chars=CC_PERSISTED_OUTPUT_THRESHOLD_CHARS,
+            stub_chars=CC_PERSISTED_OUTPUT_STUB_CHARS,
+        )
+    except Exception:
+        pass
     cap = _baseline_visible_chars(len(raw_output))
-    if len(text) <= cap:
+    if len(text) <= cap or text == raw_output:
         return text
-    if text == raw_output:
-        return text  # CC stubs raw output itself; that IS the baseline
-    if archive_key:
-        try:
-            from archive_result import build_archive_pointer
-            pointer = build_archive_pointer("", len(raw_output), archive_key)
-            if pointer and len(pointer) <= cap:
-                # text is preview + "\n\n" + pointer; text > cap guarantees
-                # text[:cap - len(pointer)] cuts inside the preview, never
-                # into the pointer region, so no duplicated pointer bytes.
-                return _unicode_safe_head(text, cap - len(pointer)) + pointer
-        except Exception:
-            pass  # fall through to plain head-cap
+    if len(raw_output) <= CC_PERSISTED_OUTPUT_THRESHOLD_CHARS:
+        return raw_output
     return _unicode_safe_head(text, cap)
 
 

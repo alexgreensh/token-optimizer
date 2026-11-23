@@ -179,3 +179,277 @@ def format_line_range(line_numbers: list[int]) -> str:
     if lo == hi:
         return f"line {lo}"
     return f"lines {lo}-{hi}"
+
+
+def format_line_ranges(line_numbers: list[int]) -> str:
+    """Format sorted 1-based line numbers into exact contiguous ranges."""
+    if not line_numbers:
+        return ""
+    nums = sorted(set(line_numbers))
+    runs: list[tuple[int, int]] = []
+    start = prev = nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+        else:
+            runs.append((start, prev))
+            start = prev = n
+    runs.append((start, prev))
+    return ", ".join(f"line {a}" if a == b else f"lines {a}-{b}" for a, b in runs)
+
+
+def find_missing_critical_lines(
+    raw_text: str,
+    compressed_text: str,
+    *,
+    is_search: bool = False,
+    strict_exception_only: bool = False,
+) -> list[tuple[int, str]]:
+    """Return ``(1-based line_no, line)`` for every critical line in ``raw_text``
+    that is not visible verbatim in ``compressed_text``."""
+    if not raw_text:
+        return []
+    missing: list[tuple[int, str]] = []
+    for idx, line in enumerate(raw_text.splitlines(), 1):
+        if not line.strip():
+            continue
+        if is_search and is_search_match_line(line):
+            continue
+        if is_error_or_failure_line(line, strict_exception_only=strict_exception_only):
+            if line not in compressed_text and line.strip() not in compressed_text:
+                missing.append((idx, line))
+    return missing
+
+
+_GENERIC_OMIT_LINE_RE = re.compile(
+    r"(?m)^\.\.\.\s+(\d+)\s+lines?\s+omitted(?:\s*\([^)]*\))?\s*\.\.\.$"
+)
+_DIFF_MORE_LINE_RE = re.compile(
+    r"(?m)^\.\.\.\s+\((\d+)\s+more\s+lines,\s+([^)]+)\)$"
+)
+_ANY_DECLARED_HIDE_RE = re.compile(
+    r"(?i)(?:"
+    r"\.\.\.\s*\(?\d+\s+(?:more\s+)?(?:lines?|matches?|files?|items?|entries|stack frames|non-file lines|preamble lines|extra lines)\b|"
+    r"\b\d+\s+(?:more\s+)?(?:lines?|matches?|files?|items?|entries)\s+(?:omitted|hidden|archived|truncated)\b|"
+    r"\[Folded noisy matches:\s*\d+|"
+    r"\[large_output_policy:\s*\d+\s+of\s+\d+\s+lines\s+hidden|"
+    r"plus\s+\d+\s+more\s+files\s+with\s+matches|"
+    r"omitted body lines"
+    r")"
+)
+_ARCHIVE_POINTER_START = "\n\n[Full result archived ("
+
+
+def compress_generic_exact(text: str, *, head_n: int = 20, tail_n: int = 20) -> str:
+    """Generic structural/log compression with exact raw-line omission counts
+    and zero dropped critical lines."""
+    lines = text.splitlines()
+    # Collapse consecutive identical lines while tracking exact raw line spans.
+    collapsed: list[tuple[str, int, int, int]] = []  # (rendered, start_lno, end_lno, raw_count)
+    run_val: str | None = None
+    run_start = 1
+    run_count = 0
+
+    def _flush(end_lno: int) -> None:
+        if run_val is None:
+            return
+        rendered = f"{run_val}  (x{run_count})" if run_count > 1 else run_val
+        collapsed.append((rendered, run_start, end_lno, run_count))
+
+    for idx, ln in enumerate(lines, 1):
+        if ln == run_val:
+            run_count += 1
+        else:
+            _flush(idx - 1)
+            run_val = ln
+            run_start = idx
+            run_count = 1
+    _flush(len(lines))
+
+    if len(collapsed) <= head_n + tail_n:
+        return "\n".join(item[0] for item in collapsed)
+
+    head = collapsed[:head_n]
+    tail = collapsed[len(collapsed) - tail_n:]
+    middle = collapsed[head_n:len(collapsed) - tail_n]
+
+    kept_middle: list[str] = []
+    omitted_raw_lines: list[int] = []
+    for rendered, s_lno, e_lno, _cnt in middle:
+        if is_error_or_failure_line(rendered) or re.search(r"(?i)\bwarn(?:ing)?s?\b", rendered):
+            kept_middle.append(rendered)
+        else:
+            omitted_raw_lines.extend(range(s_lno, e_lno + 1))
+
+    out = [item[0] for item in head]
+    if omitted_raw_lines:
+        ranges = format_line_ranges(omitted_raw_lines)
+        if kept_middle:
+            out.append(
+                f"... {len(omitted_raw_lines)} lines omitted ({ranges}; "
+                f"kept {len(kept_middle)} error/warning lines) ..."
+            )
+            out.extend(kept_middle)
+        else:
+            out.append(f"... {len(omitted_raw_lines)} lines omitted ({ranges}) ...")
+    elif kept_middle:
+        out.extend(kept_middle)
+    out.extend(item[0] for item in tail)
+    return "\n".join(out)
+
+
+def enforce_visibility_and_exact_hidden(
+    raw_text: str,
+    compressed_text: str,
+    *,
+    is_search: bool = False,
+    skip_hidden_check: bool = False,
+) -> str:
+    """Enforce zero hidden critical lines and accurate hidden-line declaration.
+
+    Called on compressed Bash output before attaching the archive pointer.
+    Deterministic and fail-open.
+    """
+    if not raw_text or not compressed_text or compressed_text == raw_text:
+        return compressed_text
+
+    result = compressed_text
+
+    # 1. Guarantee every critical line in raw_text is visible verbatim.
+    missing_crit = find_missing_critical_lines(raw_text, result, is_search=is_search)
+    if missing_crit:
+        result = result + "\n" + "\n".join(ln for _, ln in missing_crit)
+
+    if skip_hidden_check:
+        return result
+
+    # 2. Compute exact hidden raw lines (non-empty lines absent from result).
+    raw_lines = raw_text.splitlines()
+    hidden_nos = [
+        idx for idx, ln in enumerate(raw_lines, 1)
+        if ln.strip() and ln not in result and ln.strip() not in result
+    ]
+    if not hidden_nos:
+        return result
+
+    exact_count = len(hidden_nos)
+    exact_ranges = format_line_ranges(hidden_nos)
+
+    # Fix up known generic/diff omission markers if their count drifted (e.g. after reinject).
+    m_gen = _GENERIC_OMIT_LINE_RE.search(result)
+    if m_gen:
+        declared = int(m_gen.group(1))
+        if declared != exact_count or "line" not in m_gen.group(0).split("omitted", 1)[-1]:
+            replacement = f"... {exact_count} lines omitted ({exact_ranges}) ..."
+            result = result[:m_gen.start()] + replacement + result[m_gen.end():]
+        return result
+
+    m_diff = _DIFF_MORE_LINE_RE.search(result)
+    if m_diff:
+        declared = int(m_diff.group(1))
+        stats_tail = m_diff.group(2)
+        if declared != exact_count or "lines " not in stats_tail:
+            replacement = f"... ({exact_count} more lines, {exact_ranges}, {stats_tail})"
+            result = result[:m_diff.start()] + replacement + result[m_diff.end():]
+        return result
+
+    # If no hidden-count declaration exists at all, append an exact one.
+    if not _ANY_DECLARED_HIDE_RE.search(result):
+        result = result + f"\n... {exact_count} lines omitted ({exact_ranges}) ..."
+
+    return result
+
+
+def enforce_baseline_safe(
+    text: str,
+    raw_output: str,
+    archive_key: str | None,
+    *,
+    threshold_chars: int = 30_000,
+    stub_chars: int = 2200,
+    is_search: bool = False,
+) -> str:
+    """Line-boundary, visibility-preserving baseline-size invariant.
+
+    - For raw outputs <= threshold_chars (30 KB), if compressed+pointer would
+      exceed raw_output, return raw_output untouched rather than slicing the
+      preview mid-sentence and dropping matches/critical lines/hidden counts.
+    - For raw outputs > threshold_chars, if compressed+pointer exceeds stub_chars,
+      trim cleanly on line boundaries while keeping every critical line and an
+      exact hidden-line declaration + archive pointer; if even those exceed
+      stub_chars, return raw_output untouched (fail-open).
+    """
+    cap = len(raw_output) if len(raw_output) <= threshold_chars else stub_chars
+    if len(text) <= cap or text == raw_output:
+        return text
+
+    # Short output: compressed + pointer is larger than raw -> serve raw verbatim.
+    if len(raw_output) <= threshold_chars:
+        return raw_output
+
+    if not archive_key:
+        return raw_output
+
+    try:
+        from archive_result import build_archive_pointer
+        pointer = build_archive_pointer("", len(raw_output), archive_key)
+    except Exception:
+        return raw_output
+
+    if not pointer or len(pointer) >= cap:
+        return raw_output
+
+    # Strip existing pointer suffix before trimming body on line boundaries.
+    body = text
+    ptr_pos = body.find(_ARCHIVE_POINTER_START)
+    if ptr_pos >= 0:
+        body = body[:ptr_pos]
+
+    raw_lines = raw_output.splitlines()
+    crit_lines: list[tuple[int, str]] = []
+    for idx, ln in enumerate(raw_lines, 1):
+        if not ln.strip():
+            continue
+        if is_search and is_search_match_line(ln):
+            continue
+        if is_error_or_failure_line(ln):
+            crit_lines.append((idx, ln))
+
+    budget = cap - len(pointer)
+    # Reserve space for critical lines and an exact omission footer.
+    crit_block = "\n".join(ln for _, ln in crit_lines)
+    reserve_footer = 96
+    head_budget = budget - (len(crit_block) + 1 if crit_block else 0) - reserve_footer
+    if head_budget < 80:
+        return raw_output
+
+    kept_lines: list[str] = []
+    used = 0
+    for ln in body.splitlines():
+        add_len = len(ln) + (1 if kept_lines else 0)
+        if used + add_len > head_budget:
+            break
+        kept_lines.append(ln)
+        used += add_len
+
+    if not kept_lines and not crit_lines:
+        return raw_output
+
+    preview = "\n".join(kept_lines)
+    if crit_lines:
+        missing = [ln for _, ln in crit_lines if ln not in preview and ln.strip() not in preview]
+        if missing:
+            preview = (preview + "\n" if preview else "") + "\n".join(missing)
+
+    hidden_nos = [
+        idx for idx, ln in enumerate(raw_lines, 1)
+        if ln.strip() and ln not in preview and ln.strip() not in preview
+    ]
+    if hidden_nos:
+        footer = f"... {len(hidden_nos)} lines omitted ({format_line_range(hidden_nos)}) ..."
+        preview = (preview + "\n" if preview else "") + footer
+
+    candidate = preview + pointer
+    if len(candidate) > cap:
+        return raw_output
+    return candidate

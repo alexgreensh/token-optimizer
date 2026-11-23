@@ -1671,13 +1671,8 @@ def archive_result(quiet: bool = False) -> None:
             print(f"[Tool Archive] {tool_name} is allowlisted; serving full result (archived for expand).", file=sys.stderr)
         return
 
-    # MCP tools emit updatedMCPToolOutput; oversized Agent/Task results emit updatedToolOutput.
+    # MCP tools emit updatedMCPToolOutput.
     if not entry_exists:
-        return
-
-    if tool_name in _AGENT_RESULT_TOOL_NAMES:
-        from subagent_result_cap import emit_if_capped
-        emit_if_capped(tool_name=tool_name, raw_response=raw_response, safe_response=safe_response, original_char_count=original_char_count, tool_use_id=tool_use_id, raw_tool_use_id=raw_tool_use_id, session_id=session_id, entry_exists=entry_exists, expand_instruction=_expand_instruction(tool_use_id, tool_name), chars_per_token=CODE_CHARS_PER_TOKEN, trends_db=TRENDS_DB, transcript_path=hook_input.get("transcript_path"), log_savings_fn=_log_savings_event)
         return
 
     if "__" in tool_name:

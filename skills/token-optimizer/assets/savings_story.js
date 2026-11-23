@@ -164,7 +164,6 @@ function savingsStoryHtml(data, extras) {
     var catFallback = {
       crossturn_dedup: 'Cross-turn dedup',
       bash_search_noise_fold: 'Bash search noise folding',
-      subagent_cap: 'Subagent result cap',
       tool_archive: 'Tool replacements',
       bash_compress_pipeline: 'Bash compress (pipelines)',
       bash_compress_search: 'Bash compress (search results)',

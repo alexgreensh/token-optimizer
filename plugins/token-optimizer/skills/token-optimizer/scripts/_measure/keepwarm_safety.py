@@ -6,19 +6,20 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
 
 
 def process_info(pid):
-    # Keep-warm watches a terminal Claude through `ps`/`lsof`; Windows has neither, so there is no
-    # owner to find. Answering here keeps the Stop hook from spawning a `ps` that cannot exist.
+    # Terminal owner checks use ps and lsof, which are unavailable on Windows.
     if os.name != 'posix':
         return None
     try:
         proc = subprocess.run(['ps', '-p', str(int(pid)), '-o', 'ppid=', '-o', 'lstart=', '-o', 'comm='],
-                              capture_output=True, text=True, timeout=1, check=True)
+                              capture_output=True, text=True, timeout=1, check=True,
+                              env={**os.environ, 'LC_ALL': 'C'})
         parts = proc.stdout.strip().split(None, 6)
         if len(parts) != 7:
             return None
@@ -154,12 +155,21 @@ def _pid_exists(pid):
     return True
 
 
-def session_owner(directory, session_id, now=None):
+def session_owner(directory, session_id, now=None, *, parent_pid=None):
     """Reuse terminal eligibility only for the current hook's Claude process."""
-    process = _find_claude_process()
+    process = _find_claude_process(parent_pid)
     if process is None:
         return None
     now = time.time() if now is None else now
+    if parent_pid is not None:
+        try:
+            started = time.mktime(time.strptime(process['start'], '%a %b %d %H:%M:%S %Y'))
+        except (ValueError, OverflowError, OSError):
+            return None
+        # ps reports whole seconds. A start in the hook's own second is
+        # ambiguous if the original parent exited and its PID was reused.
+        if started >= int(now):
+            return None
     path = _owner_cache_path(directory, session_id) if session_id else None
     if path is not None:
         try:
@@ -593,32 +603,80 @@ def desktop_headless_main(facade, args):
     return 0
 
 
-def schedule_terminal(facade, record):
-    """Start one POSIX idle watcher per armed terminal, without installing a job."""
-    from .keepwarm_auto import MIN_CONTEXT
-    if (os.name != 'posix' or facade._daemon_snapshot_sandboxed()
-            or record['prefix_proxy'] < MIN_CONTEXT or record['ttl_kind'] != '1h'
-            or headless_disabled(facade)):
-        return
+HOOK_PARENT_PID_ENV = 'TOKEN_OPTIMIZER_HOOK_PARENT_PID'
+
+
+def stop_flush_args(facade, args, hook_input):
+    """Forward the hook payload and opt the existing worker into eligible arms."""
+    args = list(args)
+    sid, transcript = hook_input.get('session_id'), hook_input.get('transcript_path')
+    for flag, value in (('--session-id', sid), ('--transcript-path', transcript)):
+        if isinstance(value, str) and value and len(value) <= 4096 and '\x00' not in value:
+            args += [flag, value]
+    try:
+        now = time.time()
+        if (os.name != 'posix' or '--no-defer' in args or facade._remote_lean_profile()
+                or os.environ.get('TOKEN_OPTIMIZER_RUNTIME') != 'claude'
+                or 'agent_id' in hook_input or 'agent_type' in hook_input
+                or str(hook_input.get('hook_event_name', 'Stop')).lower() != 'stop'
+                or not facade._keepwarm_valid_arg(sid)
+                or '--transcript-path' not in args
+                or headless_disabled(facade) not in (None, 'headless-busy')):
+            return args
+        parent_pid = int(os.environ.get(HOOK_PARENT_PID_ENV, '0'))
+        path = Path(transcript)
+        if parent_pid <= 1 or 'subagents' in path.parts or not stat.S_ISREG(path.stat().st_mode):
+            return args
+        from .cold_guard import _bounded_last_usage
+        from .keepwarm_auto import MIN_CONTEXT
+
+        usage, _, _ = _bounded_last_usage(path)
+        if usage and facade._keepwarm_prefix_proxy(usage) >= MIN_CONTEXT:
+            args += ['--keepwarm-parent-pid', str(parent_pid), '--keepwarm-stop-at', str(now)]
+    except Exception:
+        pass
+    return args
+
+
+def run_flush_worker(facade, args):
+    """Arm before the refresh throttle and watch after releasing the flush lock."""
+    record = None
+    try:
+        def value(flag):
+            return next(v for k, v in reversed(list(zip(args, args[1:]))) if k == flag)
+
+        if (os.name == 'posix' and '--keepwarm-parent-pid' in args
+                and value('--trigger') == 'stop' and not facade._remote_lean_profile()):
+            parent_pid = int(value('--keepwarm-parent-pid'))
+            if parent_pid > 1:
+                record = facade.write_keepwarm_arm_record(
+                    value('--session-id'), value('--transcript-path'),
+                    now=float(value('--keepwarm-stop-at')), parent_pid=parent_pid,
+                )
+    except Exception:
+        pass
+    facade._run_session_end_flush_worker(args)
+    if (record and not facade._daemon_snapshot_sandboxed() and record['ttl_kind'] == '1h'
+            and not headless_disabled(facade) and facade._is_priced_model(record['model'])):
+        try:
+            watch_armed_terminal(facade, record['session_id'])
+        except OSError:
+            pass
+
+
+def watch_armed_terminal(facade, sid):
+    """Reuse the flush process, with one watcher per terminal session."""
     import fcntl
-    sid = record['session_id']
-    if not facade._keepwarm_valid_arg(sid) or not facade._is_priced_model(record['model']):
-        return
     filename = hashlib.sha256(sid.encode('utf-8')).hexdigest()
     path = facade.SNAPSHOT_DIR / ('keepwarm-owner-watch-' + filename)
     fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         os.utime(fd)
-        facade.spawn_detached([sys.executable, str(facade.__file__), 'keepwarm-decide',
-                               'watch', sid, str(fd)], pass_fds=(fd,),
-                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    finally:
-        # The child holds the same open file description until it exits.
+    except BaseException:
         os.close(fd)
+        raise
+    watch_terminal(facade, sid, fd)
 
 
 def watch_terminal(facade, sid, fd):

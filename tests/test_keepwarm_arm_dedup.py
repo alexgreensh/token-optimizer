@@ -109,6 +109,53 @@ def _sidecar_records(mod):
     return mod.load_keepwarm_records()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="terminal keep-warm requires POSIX")
+@pytest.mark.parametrize("case", ["eligible", "small", "subagent", "ended", "unknown-owner"])
+def test_stop_worker_arms_and_watches_only_eligible_sessions(m, tmp_path, monkeypatch, case):
+    from _measure import keepwarm_safety
+
+    mod, _ = m
+    sid, parent = "abc123", 456
+    transcript = _write_transcript(tmp_path, 100)
+    turn = json.loads(transcript.read_text())
+    turn["message"]["usage"].update(
+        cache_read_input_tokens=50_000 if case == "small" else 100_000,
+        cache_creation={"ephemeral_1h_input_tokens": 1000},
+    )
+    transcript.write_text(json.dumps(turn) + "\n")
+    monkeypatch.setenv(keepwarm_safety.HOOK_PARENT_PID_ENV, str(parent))
+    payload = {"session_id": sid, "transcript_path": str(transcript), "hook_event_name": "Stop"}
+    if case == "subagent":
+        payload["agent_id"] = "agent-1"
+
+    calls = []
+
+    def lookup(directory, session_id, now, *, parent_pid):
+        calls.append(("owner", session_id, parent_pid))
+        return None if case == "unknown-owner" else {"pid": parent, "start": "fixture"}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("keep-warm must use the existing worker")
+
+    monkeypatch.setattr(keepwarm_safety, "session_owner", lookup)
+    monkeypatch.setattr(keepwarm_safety.subprocess, "Popen", forbidden)
+    monkeypatch.setattr(mod, "spawn_detached", forbidden)
+    monkeypatch.setattr(mod, "_run_session_end_flush_worker", lambda args: calls.append("flush"))
+    monkeypatch.setattr(mod, "_daemon_snapshot_sandboxed", lambda: False)
+    monkeypatch.setattr(keepwarm_safety, "watch_terminal", lambda facade, sid, fd: (calls.append("watch"), os.close(fd)))
+    args = keepwarm_safety.stop_flush_args(mod, ["session-end-flush-worker", "--trigger", "stop"], payload)
+    assert calls == [], "owner lookup must never run during the Stop preflight"
+    assert ("--keepwarm-parent-pid" in args) is (case not in {"small", "subagent"})
+    if case == "ended":
+        assert keepwarm_safety.mark_ended(mod.SNAPSHOT_DIR, sid)
+
+    keepwarm_safety.run_flush_worker(mod, args)
+
+    expected = [("owner", sid, parent)] if case in {"eligible", "unknown-owner"} else []
+    assert calls == [*expected, "flush", *(["watch"] if case == "eligible" else [])]
+    assert bool(_sidecar_records(mod)) is (case == "eligible")
+
+
 def test_arm_is_idempotent_for_an_unchanged_snapshot(m, tmp_path):
     """Two arms of the same unchanged transcript keep ONE record.
 

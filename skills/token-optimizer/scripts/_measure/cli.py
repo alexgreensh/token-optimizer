@@ -821,10 +821,19 @@ def main():
         # such fossil non-blocking the moment the scripts update, with no
         # settings.json surgery. --no-defer keeps the synchronous path for
         # manual refresh / tests; `--defer` stays accepted (now redundant).
-        _measure_facade._dispatch_session_end_flush(_measure_facade.args)
+        from . import keepwarm_safety
+        args = _measure_facade.args
+        if _measure_facade.os.name == "posix" and _measure_facade.os.environ.get(keepwarm_safety.HOOK_PARENT_PID_ENV):
+            payload = _measure_facade._read_stdin_hook_input()
+            if str(payload.get("hook_event_name", "")).lower() == "sessionend":
+                keepwarm_safety.mark_ended(_measure_facade.SNAPSHOT_DIR, payload.get("session_id"))
+            elif args[1:3] == ["--trigger", "stop"]:
+                args = keepwarm_safety.stop_flush_args(_measure_facade, args, payload)
+        _measure_facade._dispatch_session_end_flush(args)
         _measure_facade.sys.exit(0)
     elif _measure_facade.args[0] == "session-end-flush-worker":
-        _measure_facade._run_session_end_flush_worker(_measure_facade.args)
+        from . import keepwarm_safety
+        keepwarm_safety.run_flush_worker(_measure_facade, _measure_facade.args)
         _measure_facade.sys.exit(0)
     elif _measure_facade.args[0] == "daemon-status":
         # Cross-platform identity probe of 127.0.0.1:24842. A bare TCP
@@ -1114,27 +1123,9 @@ def main():
         finally:
             _measure_facade._clear_hook_budget(_measure_facade._tok_hook_old_sig)
     elif _measure_facade.args[0] == "keepwarm-arm":
-        # Called by the Stop hook (additive). Appends one arm record to the
-        # ping. Dumb + fast: a SIGALRM budget plus the writer's own fail-open
-        # backstop keep it well inside the hook hot path; any failure is silent so
-        # the hook chain is never broken. NO eligibility/policy here.
-        # Arming is token-FREE (it just records that a session paused, so the
-        # watcher can measure cache/cash drops). It stays ON. The LLM ping is the
-        # only token-spending step and is gated at the fire point.
-        _measure_facade._tok_hook_old_sig = _measure_facade._install_hook_budget(2)
-        try:
-            _measure_facade.hook_input = _measure_facade._read_stdin_hook_input()
-            _measure_facade.sid = _measure_facade.hook_input.get("session_id")
-            _measure_facade.transcript = _measure_facade.hook_input.get("transcript_path")
-            _measure_facade.rec = _measure_facade.write_keepwarm_arm_record(_measure_facade.sid, _measure_facade.transcript)
-            if _measure_facade.rec and "--quiet" not in _measure_facade.args:
-                print(f"[Token Optimizer] keep-warm armed: {_measure_facade.rec.get('session_id')}")
-        except _measure_facade._HookTimeout:
-            _measure_facade.sys.exit(0)
-        except Exception:
-            _measure_facade.sys.exit(0)
-        finally:
-            _measure_facade._clear_hook_budget(_measure_facade._tok_hook_old_sig)
+        # Old hook registrations may still call this entry. Their existing
+        # Stop flush owns arming now, just like the consolidated runner.
+        _measure_facade.sys.exit(0)
     elif _measure_facade.args[0] in ("keepwarm-enable", "mod-action"):
         if _measure_facade.args[0] == "mod-action": from . import mod_action_booking; _measure_facade.sys.exit(mod_action_booking.main(_measure_facade))
         # Explicit opt-in. Refuses on subscription billing with the honest

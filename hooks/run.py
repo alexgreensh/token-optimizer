@@ -654,6 +654,10 @@ def main() -> int:
     # never crash a hook with UnicodeDecode/EncodeError. PYTHONUTF8 also makes the
     # child's default open() encoding UTF-8; PYTHONIOENCODING covers its std streams.
     child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    if script_path.stem == "stop_runner" or script_args[:1] == ["session-end-flush"]:
+        # module_runner's parent is this short-lived dispatcher. The detached
+        # flush worker must start its lookup above it, at the hook's parent.
+        child_env["TOKEN_OPTIMIZER_HOOK_PARENT_PID"] = str(os.getppid())
     if stale_plugin_root:
         # The handler and everything it imports resolve paths from this too.
         child_env["CLAUDE_PLUGIN_ROOT"] = str(root_resolved)

@@ -1,6 +1,7 @@
 """The Stop hook caches terminal eligibility for the current Claude process."""
 import os
 import sys
+import time
 
 from pathlib import Path
 
@@ -71,6 +72,26 @@ def test_resumed_print_process_cannot_borrow_live_interactive_owner(tmp_path, mo
 
     monkeypatch.setattr(keepwarm_safety.os, 'getppid', lambda: print_pid)
     assert keepwarm_safety.session_owner(tmp_path, 'resumed') is None
+
+
+def test_deferred_lookup_uses_hook_parent_and_rejects_pid_reuse_after_stop(tmp_path, monkeypatch):
+    before_stop = 1_700_000_000
+    process = {'pid': os.getpid(), 'start': time.ctime(before_stop)}
+    calls = _counting_eligibility(monkeypatch, process)
+    monkeypatch.setattr(keepwarm_safety.os, 'getppid', lambda: 1)
+    args = (tmp_path, 'sess', before_stop + 10)
+
+    assert keepwarm_safety.session_owner(*args, parent_pid=process['pid']) == process
+    assert keepwarm_safety.session_owner(*args, parent_pid=process['pid']) == process
+    assert calls == [process['pid']]
+
+    process['start'] = time.ctime(before_stop + 5)
+    assert keepwarm_safety.session_owner(*args, parent_pid=process['pid']) == process
+    assert calls == [process['pid']] * 2
+
+    process['start'] = time.ctime(before_stop + 11)
+    assert keepwarm_safety.session_owner(*args, parent_pid=process['pid']) is None
+    assert calls == [process['pid']] * 2
 
 
 def test_missing_session_id_never_caches(tmp_path, monkeypatch):

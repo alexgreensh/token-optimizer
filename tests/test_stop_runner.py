@@ -4,8 +4,8 @@
 The three former Stop hooks.json commands (compact-capture --trigger stop,
 session-end-flush --trigger stop --quiet --defer, keepwarm-arm --quiet) are
 collapsed into ONE that runs ``hooks/stop_runner.py``, which imports
-``measure.py`` once and runs all three subcommands in-process with
-per-subcommand failure isolation under ONE shared deadline. The SessionEnd
+``measure.py`` once and uses the existing flush worker for keep-warm.
+The runner isolates both subcommands under ONE shared deadline. The SessionEnd
 entry (session-end-flush --trigger end --defer) joins the same runner, branching
 on ``hook_event_name`` so the trigger value ``end`` is preserved exactly.
 
@@ -222,11 +222,12 @@ def _install_fake_deadline(monkeypatch, runner, total=13.0):
 
 
 def _install_call_recorder(monkeypatch, runner):
-    """Stub the three Stop subcommand entrypoints + side-effect helpers to
+    """Stub the Stop entrypoints and keep-warm preflight to
     record calls. Returns a dict of call logs keyed by subcommand."""
     calls = {
         "compact_capture": [],
         "session_end_flush": [],
+        "keepwarm_preflight": [],
         "keepwarm_arm": [],
     }
 
@@ -236,19 +237,23 @@ def _install_call_recorder(monkeypatch, runner):
     def _dispatch_session_end_flush(args, budget_seconds=None):
         calls["session_end_flush"].append(list(args))
 
-    def _write_keepwarm_arm(session_id, transcript_path, now=None):
-        calls["keepwarm_arm"].append(
-            {"session_id": session_id, "transcript_path": transcript_path}
-        )
-        return None
+    from _measure import keepwarm_safety
+    stop_flush_args = keepwarm_safety.stop_flush_args
+
+    def _preflight(facade, args, payload):
+        calls["keepwarm_preflight"].append(payload)
+        return stop_flush_args(facade, args, payload)
 
     monkeypatch.setattr(runner.measure, "compact_capture", _compact_capture)
     monkeypatch.setattr(
         runner.measure, "_dispatch_session_end_flush", _dispatch_session_end_flush
     )
-    monkeypatch.setattr(
-        runner.measure, "write_keepwarm_arm_record", _write_keepwarm_arm
-    )
+    monkeypatch.setattr(keepwarm_safety, "stop_flush_args", _preflight)
+
+    def _unexpected_arm(*args, **kwargs):
+        calls["keepwarm_arm"].append((args, kwargs))
+
+    monkeypatch.setattr(runner.measure, "write_keepwarm_arm_record", _unexpected_arm)
     # Side-effect helpers: must not raise, must not touch the real filesystem.
     monkeypatch.setattr(runner.measure, "_install_hook_budget", lambda seconds=8: object())
     monkeypatch.setattr(runner.measure, "_clear_hook_budget", lambda deadline: None)
@@ -260,7 +265,7 @@ def _install_call_recorder(monkeypatch, runner):
 # --------------------------------------------------------------------------- #
 
 
-def test_all_three_stop_subcommands_run_in_one_process(monkeypatch, tmp_path):
+def test_stop_runs_capture_and_hands_keepwarm_to_flush(monkeypatch, tmp_path):
     runner = _load_runner(monkeypatch, tmp_path)
     _install_fake_deadline(monkeypatch, runner)
     calls = _install_call_recorder(monkeypatch, runner)
@@ -276,7 +281,8 @@ def test_all_three_stop_subcommands_run_in_one_process(monkeypatch, tmp_path):
 
     assert len(calls["compact_capture"]) == 1, "compact-capture must run"
     assert len(calls["session_end_flush"]) == 1, "session-end-flush must run"
-    assert len(calls["keepwarm_arm"]) == 1, "keepwarm-arm must run"
+    assert len(calls["keepwarm_preflight"]) == 1, "keep-warm preflight must run"
+    assert calls["keepwarm_arm"] == [], "owner discovery belongs to the worker"
 
     # Verify the REAL call shapes, pinned against the measure.py __main__
     # dispatch.
@@ -297,10 +303,9 @@ def test_all_three_stop_subcommands_run_in_one_process(monkeypatch, tmp_path):
     assert "--defer" in sef_args, "--defer flag must be preserved"
     assert "--quiet" in sef_args, "--quiet flag must be preserved"
 
-    # keepwarm-arm must receive session_id and transcript_path from stdin.
-    kw = calls["keepwarm_arm"][0]
-    assert kw["session_id"] == "sess-stop-abc"
-    assert kw["transcript_path"] == "/tmp/t.jsonl"
+    assert calls["keepwarm_preflight"] == [payload]
+    assert sef_args[sef_args.index("--session-id") + 1] == "sess-stop-abc"
+    assert sef_args[sef_args.index("--transcript-path") + 1] == "/tmp/t.jsonl"
 
 
 def test_sessionend_runs_only_session_end_flush_with_trigger_end(monkeypatch, tmp_path):
@@ -323,8 +328,8 @@ def test_sessionend_runs_only_session_end_flush_with_trigger_end(monkeypatch, tm
     assert calls["compact_capture"] == [], (
         "compact-capture must NOT run on SessionEnd (Stop-only subcommand)"
     )
-    assert calls["keepwarm_arm"] == [], (
-        "keepwarm-arm must NOT run on SessionEnd (Stop-only subcommand)"
+    assert calls["keepwarm_preflight"] == [], (
+        "keep-warm preflight must NOT run on SessionEnd"
     )
     assert len(calls["session_end_flush"]) == 1, (
         "session-end-flush must run on SessionEnd"
@@ -338,9 +343,9 @@ def test_sessionend_runs_only_session_end_flush_with_trigger_end(monkeypatch, tm
 
 
 def test_stop_subcommands_run_in_dispatch_order(monkeypatch, tmp_path):
-    """The three subcommands must run in the same order as the hooks.json
-    entries they replace: compact-capture, session-end-flush, keepwarm-arm."""
+    """The flush needs the keep-warm preflight before it starts its worker."""
     runner = _load_runner(monkeypatch, tmp_path)
+    from _measure import keepwarm_safety
     _install_fake_deadline(monkeypatch, runner)
     _install_call_recorder(monkeypatch, runner)
 
@@ -352,20 +357,18 @@ def test_stop_subcommands_run_in_dispatch_order(monkeypatch, tmp_path):
     def _sef(args, **_kw):
         order.append("session-end-flush")
 
-    def _kw(sid, tp, now=None):
-        order.append("keepwarm-arm")
-        return None
+    def _kw(facade, args, payload):
+        order.append("keepwarm-preflight")
+        return args
 
     monkeypatch.setattr(runner.measure, "compact_capture", _cc)
     monkeypatch.setattr(runner.measure, "_dispatch_session_end_flush", _sef)
-    monkeypatch.setattr(runner.measure, "write_keepwarm_arm_record", _kw)
+    monkeypatch.setattr(keepwarm_safety, "stop_flush_args", _kw)
 
     monkeypatch.setattr(runner, "_read_hook_input",
                         lambda: {"session_id": "s", "hook_event_name": "Stop"})
     assert runner.main() == 0
-    assert order == ["compact-capture", "session-end-flush", "keepwarm-arm"], (
-        f"dispatch order must match the legacy hooks.json entry order, got {order}"
-    )
+    assert order == ["compact-capture", "keepwarm-preflight", "session-end-flush"]
 
 
 # --------------------------------------------------------------------------- #
@@ -387,9 +390,9 @@ def test_one_failing_subcommand_does_not_abort_the_others(monkeypatch, tmp_path,
 
     assert runner.main() == 0, "a subcommand failure must never abort the hook (exit 0)"
 
-    # The other two subcommands still ran.
+    # The flush and its preflight still ran.
     assert len(calls["session_end_flush"]) == 1
-    assert len(calls["keepwarm_arm"]) == 1
+    assert len(calls["keepwarm_preflight"]) == 1
 
     err = capsys.readouterr().err
     assert "compact-capture failed, continuing" in err, (
@@ -416,8 +419,8 @@ def test_a_subcommand_calling_sys_exit_does_not_abort_the_others(monkeypatch, tm
     assert len(calls["compact_capture"]) == 1, (
         "a SystemExit in session-end-flush must not abort compact-capture"
     )
-    assert len(calls["keepwarm_arm"]) == 1, (
-        "a SystemExit in session-end-flush must not abort keepwarm-arm"
+    assert len(calls["keepwarm_preflight"]) == 1, (
+        "the worker dispatch must receive its preflight even if dispatch exits"
     )
 
 
@@ -467,8 +470,8 @@ def test_shared_deadline_bounds_total_wall_time(monkeypatch, tmp_path):
         "the exhausted SHARED deadline must skip later subcommands; a "
         "per-subcommand timeout would have let each start a fresh clock"
     )
-    assert calls["keepwarm_arm"] == [], (
-        "the exhausted SHARED deadline must skip keepwarm-arm"
+    assert calls["keepwarm_preflight"] == [], (
+        "the exhausted SHARED deadline must skip keep-warm preflight"
     )
     # The 0.7s budget burn adds ~0.7s over baseline dispatch; the historical
     # regression ran the later subcommands under three independent timeouts
@@ -486,10 +489,7 @@ def test_shared_deadline_bounds_total_wall_time(monkeypatch, tmp_path):
 
 
 def test_stop_stdout_is_empty_under_quiet(monkeypatch, tmp_path, capsys):
-    """All three Stop subcommands run with --quiet (compact-capture and
-    keepwarm-arm suppress their print; session-end-flush --defer spawns a
-    detached worker and prints nothing). The consolidated runner must produce
-    no stdout, preserving the host's no-output contract for Stop."""
+    """Stop capture and the detached flush preserve the no-output contract."""
     runner = _load_runner(monkeypatch, tmp_path)
     _install_fake_deadline(monkeypatch, runner)
     _install_call_recorder(monkeypatch, runner)
@@ -507,6 +507,7 @@ def test_stop_stdout_preserves_order_when_emitted(monkeypatch, tmp_path, capsys)
     """If a subcommand does emit stdout (e.g. a non-quiet invocation path), the
     runner buffers and emits in dispatch order, not interleaved."""
     runner = _load_runner(monkeypatch, tmp_path)
+    from _measure import keepwarm_safety
     _install_fake_deadline(monkeypatch, runner)
 
     def _cc(**kw):
@@ -515,23 +516,22 @@ def test_stop_stdout_preserves_order_when_emitted(monkeypatch, tmp_path, capsys)
     def _sef(args, **_kw):
         print("SEF-OUTPUT")
 
-    def _kw(sid, tp, now=None):
+    def _kw(facade, args, payload):
         print("KW-OUTPUT")
-        return None
+        return args
 
     monkeypatch.setattr(runner.measure, "compact_capture", _cc)
     monkeypatch.setattr(runner.measure, "_dispatch_session_end_flush", _sef)
-    monkeypatch.setattr(runner.measure, "write_keepwarm_arm_record", _kw)
+    monkeypatch.setattr(keepwarm_safety, "stop_flush_args", _kw)
     monkeypatch.setattr(runner, "_read_hook_input",
                         lambda: {"session_id": "s", "hook_event_name": "Stop"})
 
     assert runner.main() == 0
     out = capsys.readouterr().out
     # Each subcommand's stdout is a self-contained unit, emitted in dispatch
-    # order: compact-capture, session-end-flush, keepwarm-arm.
+    # order: compact-capture, keep-warm preflight, then flush dispatch.
     assert "CC-OUTPUT" in out
-    assert out.index("CC-OUTPUT") < out.index("SEF-OUTPUT")
-    assert out.index("SEF-OUTPUT") < out.index("KW-OUTPUT")
+    assert out.index("CC-OUTPUT") < out.index("KW-OUTPUT") < out.index("SEF-OUTPUT")
 
 
 def test_hook_always_exits_zero(monkeypatch, tmp_path):
@@ -546,13 +546,8 @@ def test_hook_always_exits_zero(monkeypatch, tmp_path):
     def _boom_sef(args, **_kw):
         raise SystemExit(1)
 
-    def _boom_kw(sid, tp, now=None):
-        raise ValueError("boom")
-        return None
-
     monkeypatch.setattr(runner.measure, "compact_capture", _boom_cc)
     monkeypatch.setattr(runner.measure, "_dispatch_session_end_flush", _boom_sef)
-    monkeypatch.setattr(runner.measure, "write_keepwarm_arm_record", _boom_kw)
     monkeypatch.setattr(runner, "_read_hook_input",
                         lambda: {"session_id": "s", "hook_event_name": "Stop"})
 

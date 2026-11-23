@@ -568,57 +568,44 @@ def _keepwarm_iso_to_epoch(ts):
         return None
 
 
-def write_keepwarm_arm_record(session_id, transcript_path, now=None):
-    """Arm a live terminal snapshot and start its detached, token-free idle watcher."""
+def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_pid=None):
+    """Record a paused terminal snapshot from the flush worker."""
     _measure_facade = _compat.facade()
     try:
         if not session_id or not transcript_path:
             return None
-        # Claude Code cloud: no local CLI to keep warm and the VM is reclaimed
-        # with the session, so an arm record can never be acted on.
         if _measure_facade._remote_lean_profile():
             return None
-        # ANTI-RECURSION contract: a keep-warm ping subprocess carries
-        # TOKEN_OPTIMIZER_KEEPWARM_PING=1; its own Stop hook must never arm,
-        # re-arm, or refresh any record -- no self-feeding ping loops.
         if _measure_facade.os.environ.get("TOKEN_OPTIMIZER_KEEPWARM_PING"):
             return None
-        # Only arm under the claude_code runtime: Codex has no write premium to
-        # recover, and the prefix proxy below is Claude-shaped. Cheap guard,
-        # fail-open to "arm anyway" only if detection errors (tick re-checks).
-        try:
-            if _measure_facade.detect_runtime() != "claude":
-                return None
-        except Exception:
-            pass
-        from . import keepwarm_safety
+        if _measure_facade.detect_runtime() != "claude":
+            return None
+        from . import keepwarm_auto, keepwarm_safety
         if keepwarm_safety.headless_disabled(_measure_facade) not in (None, "headless-busy"):
             return None
-        owner = keepwarm_safety.session_owner(_measure_facade.SNAPSHOT_DIR, session_id)
-        if owner is None:
-            return None
         tp = _measure_facade.Path(transcript_path)
+        now = _measure_facade.time.time() if now is None else now
+        snapshot = tp.stat()
         usage, model, ts = _measure_facade._keepwarm_last_usage(tp)
         if not usage:
             return None
         prefix_proxy = _measure_facade._keepwarm_prefix_proxy(usage)
+        if parent_pid is not None and (
+            prefix_proxy < keepwarm_auto.MIN_CONTEXT or snapshot.st_mtime > now
+            or not _measure_facade._keepwarm_valid_arg(session_id) or "subagents" in tp.parts
+            or keepwarm_safety.ended_since(_measure_facade.SNAPSHOT_DIR, session_id, snapshot.st_mtime)
+        ):
+            return None
         ttl_kind = _measure_facade._keepwarm_ttl_kind(usage)
         if ttl_kind == "unknown" and prefix_proxy >= 100000:
             _, measured, last_model = _measure_facade._status_bar_transcript_state(tp)
             if measured and last_model == model:
                 ttl_kind = measured
-        if now is None:
-            now = _measure_facade.time.time()
-        try:
-            st = tp.stat()
-            transcript_mtime = st.st_mtime
-            # Byte size is the resume signal: an O(1) stat-based
-            # equality replaces the old full line-count scan. A resume appends
-            # turns -> the file GROWS, so a later size increase past the armed size
-            # is the resume marker. This removes the per-arm full read (which the
-            # SIGALRM hook budget bounded but a multi-MB transcript still strained).
-            byte_size = int(st.st_size)
-        except OSError:
+        owner = (keepwarm_safety.session_owner(_measure_facade.SNAPSHOT_DIR, session_id)
+                 if parent_pid is None else keepwarm_safety.session_owner(
+                     _measure_facade.SNAPSHOT_DIR, session_id, now, parent_pid=parent_pid))
+        current = tp.stat()
+        if owner is None or (current.st_mtime_ns, current.st_size) != (snapshot.st_mtime_ns, snapshot.st_size):
             return None
         # Store the last real turn as epoch seconds (the policy/replay type),
         # falling back to the arm time when the transcript timestamp is absent.
@@ -632,8 +619,8 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
             "prefix_proxy": int(prefix_proxy),
             "ttl_kind": ttl_kind,
             "last_turn_ts": last_turn_epoch,
-            "transcript_mtime": float(transcript_mtime),
-            "byte_size": int(byte_size),
+            "transcript_mtime": snapshot.st_mtime,
+            "byte_size": snapshot.st_size,
             "ts": float(now),
             "state": "armed", "owner": owner,
         }
@@ -656,7 +643,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
                 if not acquired:
                     return None
                 for existing in _measure_facade.load_keepwarm_records():
-                    if existing.get("session_id") != record["session_id"]:
+                    if existing.get("session_id") != record["session_id"] or existing.get("owner") != owner:
                         continue
                     try:
                         same_snapshot = (
@@ -693,7 +680,6 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None):
                     return None
         except Exception:
             return None
-        keepwarm_safety.schedule_terminal(_measure_facade, record)
         return record
     except Exception:
         # Absolute backstop: nothing in the arm path may propagate to the hook.

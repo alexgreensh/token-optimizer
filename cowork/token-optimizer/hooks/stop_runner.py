@@ -10,9 +10,8 @@ and caused each subcommand to start a separate interpreter and import
   2. ``measure.py session-end-flush --trigger stop --quiet --defer``   (timeout 8)
   3. ``measure.py keepwarm-arm --quiet``                               (timeout 5)
 
-The separate processes also repeat cold imports when a read-only plugin
-installation cannot retain ``__pycache__``. Consolidation pays that startup
-cost once, then runs the real work under one shared deadline.
+The runner pays the import cost once, then captures the checkpoint and
+hands refresh and keep-warm to one detached worker under a shared deadline.
 
 The ``SessionEnd`` hook (a fourth entry: ``session-end-flush --trigger end
 --defer``, timeout 60) joins this runner too. It synchronously marks the
@@ -28,23 +27,18 @@ files.
 Key properties:
   - ONE shared ``HookDeadline`` (13s for Stop, 2s margin under the hooks.json
     timeout of 15; 58s for SessionEnd, 2s margin under timeout 60) replaces the
-    three independent per-entry timeouts (12 + 8 + 5 = 25s). Remaining time is
+    three former per-entry timeouts (12 + 8 + 5 = 25s). Remaining time is
     budgeted fairly across the subcommands still pending (``_runner_budget``);
     the shared deadline's ``os._exit(0)`` is the ONLY kill switch in the
     process, so an early subcommand hang can never preemptively kill later ones.
-  - The ``--defer`` behaviour is preserved EXACTLY: ``session-end-flush`` calls
-    ``measure._dispatch_session_end_flush`` with the same args list the
-    ``__main__`` dispatch received, so the detached worker gets the same
-    ``--trigger`` / ``--defer`` / ``--quiet`` flags.
+  - The flush worker receives the original trigger, defer and quiet flags,
+    plus the session identity and keep-warm candidate when available.
   - The trigger values ``stop`` and ``end`` are preserved EXACTLY so entry
     budget rules can distinguish the Stop and SessionEnd work.
   - SessionEnd runs synchronously to prevent keep-warm from pinging ended sessions.
-  - No once-per-session latching exists in the Stop/SessionEnd chain (none of
-    the three subcommands use ``_mark_ran_this_session`` or
-    ``_ran_once_this_session``), so there is nothing to preserve there.
   - stdout from all subcommands is captured through one buffered emitter and
     emitted in dispatch order at the end of ``main()``. Under ``--quiet`` (the
-    Stop path) all three subcommands produce no stdout; the SessionEnd path
+    Stop path) both subcommands produce no stdout; the SessionEnd path
     likewise produces none (``_dispatch_session_end_flush`` only spawns a
     detached worker). The buffer is a safety net for any unexpected output.
   - One subcommand throwing/aborting never aborts the others (each is wrapped in
@@ -148,7 +142,7 @@ def _is_session_end(hook_input: dict) -> bool:
     registered under both ``Stop`` and ``SessionEnd`` in hooks.json; this check
     routes to the right subcommand set. Case-insensitive to tolerate host
     variations. When the field is missing, default to the Stop path (the
-    primary use case -- running all three subcommands when only
+    primary use case -- running both subcommands when only
     session-end-flush was needed is harmless and fail-open; the reverse would
     miss the checkpoint and keepwarm arm).
     """
@@ -161,9 +155,7 @@ def _run_safely(name: str, fn, *args, **kwargs) -> None:
 
     Catches ``Exception``, ``SystemExit``, and ``measure._HookTimeout`` (a
     ``BaseException``) so one subcommand's bug, internal ``sys.exit()``, or
-    legacy timeout signal cannot abort the others. The ``session-end-flush``
-    and ``keepwarm-arm`` dispatch blocks both end in ``sys.exit(0)``; in-process
-    that is a ``SystemExit`` that this guard isolates. The original
+    legacy timeout signal cannot abort the others. The original
     ``__main__`` blocks explicitly catch ``_HookTimeout``; in production the
     new ``HookDeadline`` watchdog calls ``os._exit(0)`` directly (uncatchable),
     but ``_HookTimeout`` is caught here for defense-in-depth and for tests
@@ -295,46 +287,16 @@ def _sub_compact_capture_stop(hook_input: dict) -> None:
 def _sub_session_end_flush_stop(hook_input: dict) -> None:
     """``measure.py session-end-flush --trigger stop --quiet --defer`` (entry 2).
 
-    Mirrors the ``session-end-flush`` dispatch (measure.py ~L42154):
-      calls _dispatch_session_end_flush(args) with the exact args list;
-      _dispatch_session_end_flush defers by default (--no-defer not present),
-      spawning a detached worker with args[1:] = [--trigger, stop, --quiet,
-      --defer]; the worker reads --trigger for its compact_capture call.
-    The dispatch's trailing ``sys.exit(0)`` is NOT part of
-    _dispatch_session_end_flush; calling the function directly avoids it. Even
-    if it did sys.exit, ``_run_safely`` catches SystemExit.
+    The same detached worker handles checkpoint refresh and keep-warm.
     """
     budget = _runner_budget(8)
     if budget < 0.1:
         return
-    args = ["session-end-flush", "--trigger", "stop", "--quiet", "--defer"]
-    # The deferred worker has no stdin, so hand it the session identity the
-    # host gave THIS hook; without it the worker can only guess and (on Codex)
-    # wrote an "unknown" placeholder checkpoint (issue #278).
-    for flag, key in (("--session-id", "session_id"), ("--transcript-path", "transcript_path")):
-        value = hook_input.get(key)
-        if isinstance(value, str) and value and len(value) <= 4096 and "\x00" not in value:
-            args += [flag, value]
+    from _measure import keepwarm_safety
+    args = keepwarm_safety.stop_flush_args(
+        measure, ["session-end-flush", "--trigger", "stop", "--quiet", "--defer"], hook_input,
+    )
     measure._dispatch_session_end_flush(args, budget_seconds=budget)
-
-
-def _sub_keepwarm_arm(hook_input: dict) -> None:
-    """``measure.py keepwarm-arm --quiet`` (Stop entry 3).
-
-    Mirrors the ``keepwarm-arm`` dispatch (measure.py ~L42479):
-      reads stdin for session_id and transcript_path;
-      calls write_keepwarm_arm_record(sid, transcript);
-      --quiet suppresses the print.
-    The dispatch's own ``_install_hook_budget(2)`` is replaced by the runner's
-    shared HookDeadline. The dispatch's ``sys.exit(0)`` on _HookTimeout /
-    Exception is replaced by ``_run_safely``'s SystemExit catch.
-    """
-    budget = _runner_budget(2)
-    if budget < 0.1:
-        return
-    sid = hook_input.get("session_id")
-    transcript = hook_input.get("transcript_path")
-    measure.write_keepwarm_arm_record(sid, transcript)
 
 
 def _sub_session_end_flush_end(hook_input: dict) -> None:
@@ -379,7 +341,7 @@ def main() -> int:
             _install_runner_deadline()
 
         # Buffer every subcommand's stdout and emit in dispatch order at the end.
-        # Under --quiet (the Stop path) all three subcommands produce no stdout;
+        # Under --quiet (the Stop path) both subcommands produce no stdout;
         # the SessionEnd path likewise produces none. The buffer is a safety net
         # for any unexpected output, preserving the host's no-output contract.
         _stdout_bufs: list[str] = []
@@ -398,13 +360,10 @@ def main() -> int:
             _capture("session-end-flush --trigger end", _sub_session_end_flush_end,
                      hook_input)
         else:
-            # Stop: all three subcommands in dispatch order (matching the legacy
-            # hooks.json entry order: compact-capture, session-end-flush, keepwarm-arm).
-            _runner_budget(8, subcommand_count_hint=3)
+            _runner_budget(8, subcommand_count_hint=2)
             _capture("compact-capture", _sub_compact_capture_stop, hook_input)
             _capture("session-end-flush --trigger stop", _sub_session_end_flush_stop,
                      hook_input)
-            _capture("keepwarm-arm", _sub_keepwarm_arm, hook_input)
 
         # Emit all buffered stdout in order (preserves per-shape contract: each
         # subcommand's output is a self-contained unit, emitted in the order the

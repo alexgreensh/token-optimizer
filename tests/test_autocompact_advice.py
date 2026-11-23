@@ -93,8 +93,8 @@ def test_recorded_estimate_shows_in_savings_summary(tmp_path, monkeypatch):
     monkeypatch.setenv('TOKEN_OPTIMIZER_SNAPSHOT_DIR', str(tmp_path))
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
     (tmp_path / 'home').mkdir()
-    import measure
-    measure = importlib.reload(measure)
+    monkeypatch.delitem(sys.modules, 'measure', raising=False)
+    measure = importlib.import_module('measure')
     conn = measure._init_trends_db()
     conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_id,detail,model) VALUES(?,?,?,?,?,?,?)",
                  (datetime.now().isoformat(), 'autocompact_window_estimated', 1200, .12, '11111111-2222-3333-4444-555555555555', '{"net_limit_units": 1200}', 'claude-opus-5-5'))
@@ -213,8 +213,8 @@ def test_transcript_to_ledger_with_real_parser(tmp_path, monkeypatch):
     monkeypatch.setenv('TOKEN_OPTIMIZER_SNAPSHOT_DIR', str(tmp_path / 'data'))
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
     (tmp_path / 'home').mkdir()
-    import measure
-    measure = importlib.reload(measure)
+    monkeypatch.delitem(sys.modules, 'measure', raising=False)
+    measure = importlib.import_module('measure')
     stamp = datetime.now(timezone.utc) - timedelta(minutes=20)
     model = 'claude-opus-5-5'
     conn = measure._init_trends_db()

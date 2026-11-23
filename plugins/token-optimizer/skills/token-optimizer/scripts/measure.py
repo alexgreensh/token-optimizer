@@ -6862,7 +6862,7 @@ _V5_COMPRESSION_LABELS = {
 # continuation value lives only in _estimate_behavioral_savings (estimated).
 _NON_SAVINGS_COMPRESSION_FEATURES = frozenset({
     "fresh_session_nudge", "cohort_demoted", "first_read_edit_followup",
-    "cache_drop_warning", "agent_result_skeleton", "unknown", "loop_detection",
+    "cache_drop_warning", "agent_result_skeleton", "unknown", "loop_detection", "cold_guard",
     "context_advisory_shadow", "context_size_advisory", "post_run_classify_shadow",
 })
 

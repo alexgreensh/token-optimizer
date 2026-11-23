@@ -8,6 +8,8 @@ times). This runner is invoked ONCE per prompt, imports ``measure.py`` ONCE,
 and runs all six subcommands in-process with per-subcommand failure isolation.
 
 Key properties:
+  - The cold-session guard runs after consent, before the six subcommands.
+    It can warn in the same envelope or hold an opted-in prompt by itself.
   - The three always-on subcommands (``quality-cache --warn --quiet``,
     ``prompt-continuity --quiet``, ``verbosity-steer --quiet``) run every prompt.
   - The three harness-only subcommands (``ensure-health --once-per-session``,
@@ -230,7 +232,7 @@ def _quality_cache_is_missing(hook_input: dict) -> bool:
         return False
 
 
-def _run_safely(name: str, fn, *args, **kwargs) -> None:
+def _run_safely(name: str, fn, *args, **kwargs):
     """Run fn, swallow any failure to the diagnostics log, never propagate.
 
     Catches ``Exception`` and ``SystemExit`` so one subcommand's bug or internal
@@ -243,7 +245,7 @@ def _run_safely(name: str, fn, *args, **kwargs) -> None:
     (the host captures stderr into the model's session context).
     """
     try:
-        fn(*args, **kwargs)
+        return fn(*args, **kwargs)
     except (Exception, SystemExit):
         try:
             buf = io.StringIO()
@@ -313,6 +315,22 @@ def _clear_runner_deadline():
 # --------------------------------------------------------------------------- #
 # Subcommand handlers — each mirrors its measure.py __main__ dispatch block.
 # --------------------------------------------------------------------------- #
+
+
+def _sub_cold_guard(hook_input: dict):
+    from _measure import cold_guard
+
+    try:
+        # Only the decision may reach the host, even if checkpointing prints.
+        with redirect_stdout(io.StringIO()):
+            result = cold_guard.bounded_evaluate(measure, hook_input, _time.time(), 2.0)
+    except cold_guard.BudgetExceeded:
+        return None
+    if result["kind"] == "warn":
+        print(json.dumps({"systemMessage": result["text"]}))
+    elif result["kind"] == "block":
+        return result["text"]
+    return None
 
 
 def _sub_quality_cache_warn(hook_input: dict) -> None:
@@ -675,11 +693,11 @@ def main() -> int:
     # the model's session context, so diagnostics must reach neither).
     _stdout_bufs: list[str] = []
 
-    def _capture(name: str, fn, *args, **kwargs) -> None:
+    def _capture(name: str, fn, *args, **kwargs):
         buf = io.StringIO()
         err_buf = io.StringIO()
         with redirect_stdout(buf), redirect_stderr(err_buf):
-            _run_safely(name, fn, *args, **kwargs)
+            result = _run_safely(name, fn, *args, **kwargs)
         captured = buf.getvalue()
         err_captured = err_buf.getvalue()
         # ALL stdout -> envelope (systemMessage + bare-text + JSON all
@@ -688,6 +706,13 @@ def main() -> int:
             _stdout_bufs.append(captured)
         if err_captured:
             _write_diagnostics(f"--- {name} ---\n{err_captured}")
+        return result
+
+    # A hold has its own host envelope and must leave the other hooks untouched.
+    if reason := _capture("cold-guard", _sub_cold_guard, hook_input):
+        print(json.dumps({"decision": "block", "reason": reason}), flush=True)
+        _clear_runner_deadline()
+        return 0
 
     # 1-3: always-on subcommands. Ordering: the cheap,
     # user-visible subcommands (prompt-continuity, verbosity-steer) run BEFORE

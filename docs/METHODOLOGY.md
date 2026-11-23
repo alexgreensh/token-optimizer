@@ -154,6 +154,7 @@ Each key below is one line in the report. All are priced at the window's input-r
 | `checkpoint_restore_estimated` | Unverified restore estimate, excluded from totals. |
 | `structural_estimated` | Realized setup cleanup estimated from dated archives or owner-attested trims, priced at each eligible call's cache-read rate. |
 | `keepwarm_estimated` | Keep-warm, net and signed. The cache-rewrite cost avoided by verified warm resumes, minus the full cost of every warm-up ping (pings that never led to a return, and manual warm-ups booked from the Claude Code mod, included). A paused session is credited once however many warm-ups it received. Can be negative, and is then subtracted. |
+| `cold_guard_estimated` | Cold-session guard. For an observed fresh start, the old context's cache-write premium less the new session's first-request cache writes, priced on each session's exact model card. Signed, with overlapping lean-resume credits excluded. |
 | `mod_fresh_estimated` | Start-fresh actions taken from the Claude Code mod. The dropped old context (less the handoff) is priced at the cache-read rate for a continuation estimated from your own earlier sessions (cohort median, capped at 10 turns, needs a cohort of 5). Counted as 0 when `handover_rerun` is already positive, so the two overlapping counterfactuals are never stacked. |
 | `expand_overhead` | Estimated expansion-command and reread overhead, subtracted from action savings. |
 | `uncaptured_runtime` | Compression inside sub-agent runs that is never logged as an event |
@@ -431,7 +432,26 @@ days. The subtotal and the all-in balance have separate correction histories.
 ### 11.2 Apply safe savings and compact-window advice (lane B)
 To be written by lane X.
 ### 11.3 Cold-session guard (lane C)
-To be written by lane X.
+
+The guard logs one `cold_guard` bookkeeping event per warning or hold with
+`tier=estimated`. These events carry zero measured savings. The default mode
+warns once per cold gap. The hold requires opt-in and a restorable checkpoint.
+
+After ten minutes, a usage row in the old transcript shows a continuation. A
+compaction boundary before that row shows compaction. A single new transcript
+started in the same project during those ten minutes, with no new usage in the
+old transcript, shows a fresh start. Otherwise the choice is unknown. This
+uses local transcript metadata. Marker files expire after 14 days and contain
+no prompt or transcript text.
+
+Only a fresh start can contribute to `cold_guard_estimated`. Multiply the old
+input context by its exact cache-write rate minus its cache-read rate. Subtract
+the new session's first-request cache-creation tokens at its exact write rates,
+including each lifetime separately for a mixed write. Record the signed result
+once per recipient. A previously credited lean resume for the old session,
+compaction, continuation or a missing price contributes zero. Plan limits
+express the same estimate in input-equivalent units for each model. The estimate
+stays out of the counted total. See `test_cold_guard.py`.
 ### 11.4 Automatic keep-warm (lane D)
 To be written by lane X.
 ### 11.5 Next actions and the status-bar action (lane E)

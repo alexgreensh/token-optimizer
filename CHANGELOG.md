@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.13.76] - 2026-11-23
+
+- **See what to do next.** `/token-optimizer:next` shows what you saved and your top actions, ranked by real monthly value.
+- **One-yes savings.** `/token-optimizer:apply-safe` cleans up duplicates and unused startup load, with one approval and a full undo.
+- **Automatic keep-warm.** Big paused sessions stay cached when a refresh is cheaper than a rebuild, within hard daily limits.
+- **Cold-session guard.** Coming back to a big idle session shows the cost first, with fresh start, compact, or continue.
+- **A savings total you can trust.** Your since-install number holds steady and only changes through a named correction.
+
 ## [5.13.75] - 2026-11-20
 
 - Savings cards for long-time users keep their pre-install model mix: baselines saved before the per-model mix field existed are read correctly again, so routing savings no longer show as $0 for them.

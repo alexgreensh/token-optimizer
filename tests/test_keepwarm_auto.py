@@ -209,7 +209,7 @@ def test_approval_requires_mod_activity_and_positive_capped_replay(policy, monke
     item = auto.plan_item(policy)
     assert item['basis'].endswith('1 returns within the hour, 3 pings')
     assert item['net_usd_month'] == 1 and item['own_cost_usd_month'] == 2
-    assert auto.apply_item(policy, item) is False
+    assert auto.apply_item(policy, item) == {'ok': True, 'before': False, 'after': True}
     assert auto.plan_item(policy) is None
 
 

@@ -2,6 +2,7 @@
 import copy
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,11 +11,37 @@ sys.path.insert(0, str(SCRIPTS))
 from _measure import autocompact_advice
 
 
+def test_apply_and_undo_hold_lock_across_read_and_write():
+    from contextlib import contextmanager
+    state = {'locked': False, 'settings': {'autoCompactWindow': 800000, 'other': 1}}
+    @contextmanager
+    def lock(**kwargs):
+        assert not state['locked']
+        state['locked'] = True
+        try:
+            yield True
+        finally:
+            state['locked'] = False
+    def read():
+        assert state['locked']
+        return copy.deepcopy(state['settings']), True
+    def write(data, **kwargs):
+        assert state['locked']
+        state['settings'] = copy.deepcopy(data)
+        return True
+    facade = SimpleNamespace(_settings_lock=lock, _read_settings_for_write=read,
+                             _write_settings_atomic_locked=write)
+    receipt = autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': 450000})
+    assert receipt['ok']
+    assert autocompact_advice.undo_item(facade, receipt)
+    assert state['settings'] == {'autoCompactWindow': 800000, 'other': 1}
+
+
 def test_apply_uses_per_model_setting_and_preserves_other_values():
     original = {'autoCompactWindow': 800000, 'modelSettings': {'model-full': {'autoCompactWindow': 700000}}, 'other': 1}
     writes = []
-    facade = SimpleNamespace(_read_settings_for_write=lambda: (copy.deepcopy(original), True),
-                             _write_settings_atomic=lambda data, **kw: (writes.append(copy.deepcopy(data)) or True))
+    facade = SimpleNamespace(_settings_lock=lambda **kw: nullcontext(True), _read_settings_for_write=lambda: (copy.deepcopy(original), True),
+                             _write_settings_atomic_locked=lambda data, **kw: (writes.append(copy.deepcopy(data)) or True))
     result = autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': 450000})
     assert result['ok']
     assert result['before'] == 700000
@@ -25,8 +52,8 @@ def test_apply_uses_per_model_setting_and_preserves_other_values():
 
 def test_unreadable_settings_are_never_written():
     writes = []
-    facade = SimpleNamespace(_read_settings_for_write=lambda: ({}, False),
-                             _write_settings_atomic=lambda data, **kw: writes.append(data))
+    facade = SimpleNamespace(_settings_lock=lambda **kw: nullcontext(True), _read_settings_for_write=lambda: ({}, False),
+                             _write_settings_atomic_locked=lambda data, **kw: writes.append(data))
     assert not autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': 450000})['ok']
     assert not writes
 
@@ -62,8 +89,8 @@ def test_p75_selects_appropriate_window(monkeypatch):
 def test_undo_preserves_unrelated_settings_and_refuses_later_edits():
     settings = {'autoCompactWindow': 450000, 'other': 42}
     writes = []
-    facade = SimpleNamespace(_read_settings_for_write=lambda: (copy.deepcopy(settings), True),
-                             _write_settings_atomic=lambda data, **kw: (writes.append(data) or True))
+    facade = SimpleNamespace(_settings_lock=lambda **kw: nullcontext(True), _read_settings_for_write=lambda: (copy.deepcopy(settings), True),
+                             _write_settings_atomic_locked=lambda data, **kw: (writes.append(data) or True))
     receipt = {'model': None, 'before': 800000, 'before_exists': True, 'after': 450000}
     assert autocompact_advice.undo_item(facade, receipt)
     assert writes == [{'autoCompactWindow': 800000, 'other': 42}]

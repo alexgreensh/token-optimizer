@@ -11,6 +11,87 @@ import measure
 from _measure import dashboard, structural_ledger, apply_safe
 
 
+@pytest.mark.parametrize('kind,ident,key,old,new', [
+    ('cold_guard', 'cold_guard:ask', 'cold_guard_mode', 'warn', 'ask'),
+    ('keepwarm_auto', 'keepwarm_auto:on', 'keepwarm_auto', False, True),
+])
+def test_lane_apply_and_undo_restore_value(overlaps, monkeypatch, kind, ident, key, old, new):
+    from contextlib import nullcontext
+    flags = {key: old}
+    monkeypatch.setattr(measure, '_read_config_flag', lambda k, default=None: flags.get(k, default))
+    monkeypatch.setattr(measure, '_write_config_flag', lambda k, v: flags.update({k: v}))
+    monkeypatch.setattr(measure, '_settings_lock', lambda **kw: nullcontext(True))
+    item = {'id': ident, 'kind': kind, 'net_usd_month': 1, 'own_cost_usd_month': 0}
+    monkeypatch.setattr(apply_safe, 'build_plan', lambda _: {'items': [item]})
+    result = apply_safe.apply(measure, {}, [ident], apply_safe.plan_token([item]))
+    assert result['ok'] and flags[key] == new
+    assert apply_safe.undo(measure, result['receipt']['receipt_id'])['ok']
+    assert flags[key] == old
+
+
+def test_undo_recovers_change_after_crash_before_item_receipt(overlaps, monkeypatch):
+    from contextlib import nullcontext
+    flags = {'cold_guard_mode': 'warn'}
+    monkeypatch.setattr(measure, '_read_config_flag', lambda k, default=None: flags.get(k, default))
+    monkeypatch.setattr(measure, '_write_config_flag', lambda k, v: flags.update({k: v}))
+    monkeypatch.setattr(measure, '_settings_lock', lambda **kw: nullcontext(True))
+    item = {'id': 'cold_guard:ask', 'kind': 'cold_guard', 'net_usd_month': 1, 'own_cost_usd_month': 0}
+    monkeypatch.setattr(apply_safe, 'build_plan', lambda _: {'items': [item]})
+    append = apply_safe._append_receipt
+    def crash(facade, row):
+        if row.get('status') == 'item':
+            raise KeyboardInterrupt()
+        append(facade, row)
+    monkeypatch.setattr(apply_safe, '_append_receipt', crash)
+    with pytest.raises(KeyboardInterrupt):
+        apply_safe.apply(measure, {}, [item['id']], apply_safe.plan_token([item]))
+    assert flags['cold_guard_mode'] == 'ask'
+    pending = apply_safe._receipts(measure)[0]
+    monkeypatch.setattr(apply_safe, '_append_receipt', append)
+    assert apply_safe.undo(measure, pending['receipt_id'])['ok']
+    assert flags['cold_guard_mode'] == 'warn'
+
+
+@pytest.mark.parametrize('kind,key,initial,applied,changed', [
+    ('cold_guard', 'cold_guard_mode', 'warn', 'ask', 'off'),
+    ('keepwarm_auto', 'keepwarm_auto', False, True, False),
+])
+def test_lane_undo_refuses_a_later_edit(monkeypatch, kind, key, initial, applied, changed):
+    from importlib import import_module
+    from types import SimpleNamespace
+    flags = {key: initial}
+    facade = SimpleNamespace(_read_config_flag=lambda k, default=None: flags.get(k, default),
+                             _write_config_flag=lambda k, v: flags.update({k: v}))
+    module = import_module('_measure.' + kind)
+    receipt = module.apply_item(facade, {'id': kind + (':on' if kind == 'keepwarm_auto' else ':ask')})
+    assert flags[key] == applied
+    flags[key] = changed
+    assert not module.undo_item(facade, receipt)
+    assert flags[key] == changed
+
+
+def test_undo_recovers_archive_after_crash_before_item_receipt(overlaps, monkeypatch):
+    from contextlib import nullcontext
+    item = {'id': 'unused_skill:first', 'kind': 'unused_skill', 'tokens_per_request': 100,
+            'net_usd_month': 1, 'own_cost_usd_month': 0}
+    monkeypatch.setattr(apply_safe, 'build_plan', lambda _: {'items': [item]})
+    monkeypatch.setattr(measure, '_manage_skill', lambda action, name: dashboard._manage_skill_locked(action, name))
+    monkeypatch.setattr(measure, '_settings_lock', lambda **kw: nullcontext(True))
+    append = apply_safe._append_receipt
+    def crash(facade, row):
+        if row.get('status') == 'item':
+            raise KeyboardInterrupt()
+        append(facade, row)
+    monkeypatch.setattr(apply_safe, '_append_receipt', crash)
+    with pytest.raises(KeyboardInterrupt):
+        apply_safe.apply(measure, {}, [item['id']], apply_safe.plan_token([item]))
+    assert not (overlaps / 'first').exists()
+    pending = apply_safe._receipts(measure)[0]
+    monkeypatch.setattr(apply_safe, '_append_receipt', append)
+    assert apply_safe.undo(measure, pending['receipt_id'])['ok']
+    assert (overlaps / 'first/SKILL.md').exists()
+
+
 @pytest.fixture
 def overlaps(tmp_path, monkeypatch):
     root = tmp_path / 'claude'

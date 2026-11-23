@@ -597,7 +597,15 @@ def _set_mode(facade, mode):
 def apply_item(facade, item):
     previous = _configured_mode(facade)
     _set_mode(facade, "ask")
-    return previous
+    return {'ok': True, 'before': previous, 'after': 'ask'}
+
+
+def undo_item(facade, receipt):
+    before = receipt.get('before')
+    if before not in MODES or _configured_mode(facade) != receipt.get('after'):
+        return False
+    _set_mode(facade, before)
+    return True
 
 
 def main(facade, args):

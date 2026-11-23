@@ -34,6 +34,20 @@ class NextActionsTest(unittest.TestCase):
         self.assertIn('writes', [x['id'] for x in next_actions.build(self.f)['actions']])
         self.assertNotEqual(next_actions.main(self.f, ['decline', 'invalid']), 0)
 
+    def test_refresh_reuses_fresh_plan_and_rebuilds_expired_plan(self):
+        from _measure import apply_safe
+        from datetime import datetime, timedelta, timezone
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        plan = {'items': [], 'total_net_usd_month': 0}
+        with patch.object(apply_safe, 'build_plan', return_value=plan) as build:
+            with patch.object(next_actions, '_now', return_value=now):
+                next_actions.on_savings_refresh(self.f, self.summary)
+                next_actions.on_savings_refresh(self.f, self.summary)
+            self.assertEqual(build.call_count, 1)
+            with patch.object(next_actions, '_now', return_value=now + timedelta(hours=2)):
+                next_actions.on_savings_refresh(self.f, self.summary)
+            self.assertEqual(build.call_count, 2)
+
     def test_read_only_and_routing_off(self):
         before = {p.name: p.read_bytes() for p in Path(self.temp.name).iterdir()}
         with patch.dict(os.environ, {'TOKEN_OPTIMIZER_ROUTING': '0'}), contextlib.redirect_stdout(io.StringIO()):

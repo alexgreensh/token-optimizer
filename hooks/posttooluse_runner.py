@@ -1039,10 +1039,12 @@ def _handle_post_tool_use_failure(hook_input: dict) -> None:
 def main() -> int:
     hook_input = _read_hook_input()
     tool_name = str(hook_input.get("tool_name") or "")
-
+    try:
+        from hook_fastpath import can_early_exit_posttooluse as _can_early_exit
+        if _can_early_exit(hook_input): return 0
+    except Exception: pass
     if hook_input.get("hook_event_name") == "PostToolUseFailure":
-        # Arm the same shared per-handler deadline as the PostToolUse path so
-        # a slow regex/handler on the failure branch is bounded, not unbounded.
+        # Shared per-handler deadline bounds the failure branch too.
         _install_runner_deadline()
         _runner_budget(0.0, subcommand_count_hint=1)
         budget = _runner_budget(_RUNNER_TOTAL_BUDGET)
@@ -1058,9 +1060,7 @@ def main() -> int:
 
     _install_shared_stdin(hook_input)
 
-    # Gate FIRST, then budget: the fair share must be divided among the
-    # subcommands that will actually run, not among all five. An Edit only runs
-    # two of them and should get half the budget each, not a fifth.
+    # Gate FIRST, then budget: divide fair share among subcommands that actually run.
     pending = [
         (name, handler)
         for name, matcher, handler in _subcommand_table()
@@ -1071,7 +1071,7 @@ def main() -> int:
 
     _install_runner_deadline()
 
-    # Buffer every subcommand's stdout and emit in dispatch order at the end.
+    # Buffer subcommand stdout and emit in dispatch order.
     _stdout_bufs: list[str] = []
 
     def _capture(name: str, fn, *args, **kwargs) -> None:

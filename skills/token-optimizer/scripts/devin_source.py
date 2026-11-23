@@ -51,7 +51,7 @@ REPO_MODULES = frozenset((
     'archive_verify', 'codemap', 'codemap_hint', 'codemap_index', 'codemap_ledger', 'codemap_reread',
     'coverage_funnel', 'hint_paths', 'holdout', 'post_run_classify', 'large_transcripts', 'preserved_reinject', 'session_store_guard',
     # Added by 5.13.70+ (settings backup + builtin tools + pipe/file compress + visibility rule + emit safety gate + benchmark fixtures dir).
-    'settings_backup', 'builtin_tool_compress', 'pipe_file_compress', 'visibility_rule', 'emit_safety_gate', 'fixtures', 'large_output_policy',
+    'settings_backup', 'builtin_tool_compress', 'pipe_file_compress', 'visibility_rule', 'emit_safety_gate', 'fixtures', 'large_output_policy', 'hook_fastpath',
 ))
 
 class SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):

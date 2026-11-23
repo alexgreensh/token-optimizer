@@ -358,6 +358,7 @@ def classify_output(
     command: str = "",
     exit_code: int | None = None,
     require_expand: bool = True,
+    budget=None,
 ) -> tuple[str, list[str]]:
     """Classify ``compressed`` against ``original`` using replay v2 rules."""
     if not original or not compressed:
@@ -391,7 +392,9 @@ def classify_output(
     crit_reasons: set[str] = set()
     hidden_nonempty = 0
     orig_lines = original.splitlines()
-    for raw_line in orig_lines:
+    for _idx, raw_line in enumerate(orig_lines):
+        if budget is not None:
+            budget.check(_idx, stride=64)
         line = (_ANSI_RE.sub("", raw_line) if has_ansi else raw_line).strip()
         if not line or _line_is_visible(
             line, comp_clean, comp_low, is_search=is_search, feature=feature, comp_index=comp_index

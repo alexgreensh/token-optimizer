@@ -61,6 +61,11 @@ def write_cache(facade, session_id, savings, reason):
         'last_attempt': facade.time.time() if failed else 0, 'failures': failures, 'refresh_failed': failed and failures >= 2 and reason != 'no savings recorded yet',
     }
     try:
+        from . import poc_commands
+        data.update(poc_commands.status_extras(facade, session_id))
+    except Exception:
+        pass
+    try:
         atomic_write(facade, facade._status_bar_cache_path(session_id), data)
     except PermissionError:
         atomic_write(facade, directory / ('global-pending-' + facade.os.urandom(16).hex() + '.json'), data)

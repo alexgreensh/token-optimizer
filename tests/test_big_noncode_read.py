@@ -176,7 +176,10 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(archive_result, "TRENDS_DB", snap / "trends.db")
     monkeypatch.setattr(compression_log, "SNAPSHOT_DIR", snap)
     monkeypatch.setattr(compression_log, "TRENDS_DB", snap / "trends.db")
-    monkeypatch.delenv("TOKEN_OPTIMIZER_BIG_NONCODE_READ", raising=False)
+    # big_read_preview is default OFF (DECISION row 9); this suite exercises the
+    # feature itself, so it opts in explicitly. Default-OFF is pinned in
+    # tests/test_c7_row_defaults.py.
+    monkeypatch.setenv("TOKEN_OPTIMIZER_BIG_NONCODE_READ", "1")
     monkeypatch.delenv("CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT", raising=False)
     return snap
 

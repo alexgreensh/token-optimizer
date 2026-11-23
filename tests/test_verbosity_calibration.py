@@ -91,6 +91,7 @@ def _stub_nudge(m, monkeypatch, tmp_path, transcript_outputs):
 
 
 def test_nudge_books_zero_not_assumed(m, monkeypatch, tmp_path):
+    monkeypatch.setenv("TOKEN_OPTIMIZER_VERBOSITY_STEER", "1")  # default OFF (DECISION row 11)
     transcript, logged = _stub_nudge(m, monkeypatch, tmp_path, [800, 800, 800])
     out = m.run_verbosity_steer(transcript_path=str(transcript),
                                 quiet=True, session_id=LIVE_SID)
@@ -103,6 +104,7 @@ def test_nudge_books_zero_not_assumed(m, monkeypatch, tmp_path):
 
 
 def test_real_nudge_path_settles_prior_nudge_with_measured_delta(m, monkeypatch, tmp_path):
+    monkeypatch.setenv("TOKEN_OPTIMIZER_VERBOSITY_STEER", "1")  # default OFF (DECISION row 11)
     """D1: the REAL UserPromptSubmit path must invoke the measure-not-assume
     logic. A prior nudge recorded a pre-nudge baseline; a later run_verbosity_steer
     turn must call _verbosity_measured_savings on the observed post-nudge output
@@ -198,6 +200,7 @@ def test_streamed_lines_fold_to_one_output_per_request(m, tmp_path):
 
 
 def test_measured_saving_counts_requests_not_streamed_lines(m, monkeypatch, tmp_path):
+    monkeypatch.setenv("TOKEN_OPTIMIZER_VERBOSITY_STEER", "1")  # default OFF (DECISION row 11)
     """Pre: two 1000-token replies (2 lines each). Post: two 600-token replies
     (4 lines each). True saving is 2 x (1000 - 600) = 800, whatever the line
     counts are."""

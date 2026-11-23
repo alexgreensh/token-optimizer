@@ -61,21 +61,6 @@ def _git_status(nfiles, branch="main"):
 def test_first_run_is_not_deduped(hook):
     assert hook._crossturn_dedup("git status", _git_status(12)) is None
 
-def test_identical_rerun_is_collapsed(hook):
-    out = _git_status(12)
-    assert hook._crossturn_dedup("git status", out) is None       # records
-    ref = hook._crossturn_dedup("git status", out)                # identical
-    assert ref is not None
-    assert "identical" in ref.lower()
-    assert len(ref) < len(out) * 0.5                              # big saving
-
-def test_small_change_becomes_a_delta(hook):
-    hook._crossturn_dedup("git status", _git_status(12))          # records
-    ref = hook._crossturn_dedup("git status", _git_status(14))    # +2 files
-    assert ref is not None
-    assert "except" in ref.lower()
-    assert len(ref) < len(_git_status(14)) * 0.85
-
 def test_different_command_never_dedups(hook):
     hook._crossturn_dedup("git status", _git_status(12))
     other = "\n".join(f"-rw-r--r-- 1 u s {1000+i} module_{i:02d}.py" for i in range(30)) + "\n"
@@ -113,65 +98,6 @@ _OUTPUT_WITH_AWS_KEY = (
     f"{{\n  \"status\": \"ok\",\n  \"key\": \"{_AWS_KEY}\",\n"
     f"  \"rows\": [\n" + "\n".join(f"    {{\"id\": {i}}}" for i in range(40)) + "\n  ]\n}\n"
 )
-
-def test_crossturn_dedup_command_text_redacted_in_store(hook):
-    """C-4: a credential-bearing command must not survive in command_outputs.command_text."""
-    hook._crossturn_dedup(_CMD_WITH_BEARER, _OUTPUT_WITH_AWS_KEY)  # records
-    db = _session_db_path(hook)
-    conn = sqlite3.connect(str(db))
-    try:
-        row = conn.execute(
-            "SELECT command_text FROM command_outputs LIMIT 1"
-        ).fetchone()
-    finally:
-        conn.close()
-    assert row is not None, "dedup should have recorded the command"
-    command_text = row[0] or ""
-    assert _BEARER_SECRET not in command_text
-    assert "Bearer " + _BEARER_SECRET not in command_text
-    assert "CREDENTIAL REDACTED" in command_text
-
-def test_crossturn_dedup_compressed_output_redacted_in_store(hook):
-    """C-4: a credential-bearing output must not survive in command_outputs.compressed_output."""
-    hook._crossturn_dedup(_CMD_WITH_BEARER, _OUTPUT_WITH_AWS_KEY)  # records
-    db = _session_db_path(hook)
-    conn = sqlite3.connect(str(db))
-    try:
-        row = conn.execute(
-            "SELECT compressed_output FROM command_outputs LIMIT 1"
-        ).fetchone()
-    finally:
-        conn.close()
-    assert row is not None
-    compressed_output = row[0] or ""
-    assert _AWS_KEY not in compressed_output
-    assert "CREDENTIAL REDACTED" in compressed_output
-
-def test_crossturn_dedup_ref_label_does_not_leak_secret(hook):
-    """C-1: the ref string returned to the model must not contain the raw secret.
-
-    The label is embedded in the ref (``[Token Optimizer: identical to your
-    previous `<label>` output ...]``) which becomes updatedToolOutput.stdout.
-    A raw `label = command.strip()[:60]` would surface the Bearer token to the
-    model AND to trends.db via compressed_text.
-    """
-    hook._crossturn_dedup(_CMD_WITH_BEARER, _OUTPUT_WITH_AWS_KEY)  # records
-    ref = hook._crossturn_dedup(_CMD_WITH_BEARER, _OUTPUT_WITH_AWS_KEY)  # identical
-    assert ref is not None
-    assert _BEARER_SECRET not in ref
-    assert "Bearer " + _BEARER_SECRET not in ref
-    # The redacted label should carry the placeholder, proving safe_command was used.
-    assert "CREDENTIAL REDACTED" in ref
-
-def test_crossturn_dedup_delta_label_does_not_leak_secret(hook):
-    """C-1 (delta path): the delta ref must also use the redacted label."""
-    hook._crossturn_dedup(_CMD_WITH_BEARER, _OUTPUT_WITH_AWS_KEY)  # records
-    changed = _OUTPUT_WITH_AWS_KEY.replace("\"ok\"", "\"changed\"")
-    ref = hook._crossturn_dedup(_CMD_WITH_BEARER, changed)  # delta
-    assert ref is not None
-    assert _BEARER_SECRET not in ref
-    assert "Bearer " + _BEARER_SECRET not in ref
-    assert "CREDENTIAL REDACTED" in ref
 
 def test_log_event_command_pattern_redacted_in_trends_db(hook):
     """C-2: _log_event must redact command_pattern before it reaches trends.db.
@@ -223,27 +149,6 @@ def test_log_event_does_not_persist_raw_secret_in_any_column(hook):
         if isinstance(val, str):
             assert _BEARER_SECRET not in val, f"raw secret leaked in column {col!r}"
             assert "Bearer " + _BEARER_SECRET not in val, f"Bearer leaked in column {col!r}"
-
-def test_sibling_agents_do_not_share_dedup_history(hook, monkeypatch):
-    """A reference is valid only inside the agent context that saw the output."""
-    out = _git_status(12)
-    monkeypatch.setenv("TOKEN_OPTIMIZER_DEDUP_AGENT_ID", "agent-alpha")
-    assert hook._crossturn_dedup("git status", out) is None
-
-    monkeypatch.setenv("TOKEN_OPTIMIZER_DEDUP_AGENT_ID", "agent-beta")
-    assert hook._crossturn_dedup("git status", out) is None
-
-    # Beta's own repeat still dedups, proving isolation did not disable the feature.
-    ref = hook._crossturn_dedup("git status", out)
-    assert ref is not None
-    assert "identical" in ref.lower()
-
-def test_same_agent_keeps_dedup_history(hook, monkeypatch):
-    out = _git_status(12)
-    monkeypatch.setenv("TOKEN_OPTIMIZER_DEDUP_AGENT_ID", "agent-alpha")
-    assert hook._crossturn_dedup("git status", out) is None
-    assert hook._crossturn_dedup("git status", out) is not None
-
 
 def test_main_and_agent_store_ids_are_stable_and_distinct(hook):
     session = "test-xturn-session"

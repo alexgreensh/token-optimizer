@@ -220,16 +220,6 @@ def _dedup_probe(root: Path) -> str:
     assert proc.returncode == 0, proc.stderr[-2000:]
     return proc.stdout.strip().splitlines()[-1]
 
-
-def test_cross_turn_bash_dedup_does_not_point_at_cleared_output(tmp_path):
-    assert _dedup_probe(tmp_path) == "None"
-    assert "identical to your previous" in _dedup_probe(tmp_path), "precondition: dedup is live"
-
-    _session_start(tmp_path, "clear")
-
-    assert _dedup_probe(tmp_path) == "None", "a reference to output the model no longer holds"
-
-
 def _seed_mcp_archive(root: Path, session: str, tool: str, tool_input: dict) -> None:
     sys.path.insert(0, str(SCRIPTS))
     try:

@@ -170,7 +170,8 @@ def test_codex_mcp_unused_servers_flagged_from_session_logs(isolated_env):
 # 6. Output style audit + verbosity-steer suppression
 # ---------------------------------------------------------------------------
 
-def test_output_style_audit_and_verbosity_steer_suppression(isolated_env, tmp_path):
+def test_output_style_audit_and_verbosity_steer_suppression(isolated_env, tmp_path, monkeypatch):
+    monkeypatch.setenv("TOKEN_OPTIMIZER_VERBOSITY_STEER", "1")  # default OFF (DECISION row 11)
     db = measure.TRENDS_DB
     conn = sqlite3.connect(str(db))
     conn.execute("CREATE TABLE savings_events (timestamp TEXT, event_type TEXT, tokens_saved INTEGER, session_uuid TEXT, detail TEXT)")

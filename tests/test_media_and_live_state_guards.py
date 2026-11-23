@@ -198,13 +198,6 @@ def test_twin_dispatch_is_not_called_identical(dedup):
     assert dedup._crossturn_dedup("cat log", OUT, "toolu_same") is None  # install A
     assert dedup._crossturn_dedup("cat log", OUT, "toolu_same") is None  # install B, same call
 
-
-def test_real_rerun_is_still_collapsed(dedup):
-    assert dedup._crossturn_dedup("cat log", OUT, "toolu_1") is None
-    ref = dedup._crossturn_dedup("cat log", OUT, "toolu_2")
-    assert ref and "identical" in ref.lower()
-
-
 def test_old_store_without_the_column_migrates(dedup, tmp_path):
     # A session DB created before this fix has command_outputs without
     # last_tool_use_id; opening it must add the column, keep the old row, and

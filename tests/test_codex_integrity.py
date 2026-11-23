@@ -122,6 +122,7 @@ def test_astra_pricing_uses_request_context_not_session_sum(measure):
 
 
 def test_rollout_nudge_identity_matches_only_its_live_task(measure, tmp_path, monkeypatch):
+    monkeypatch.setenv("TOKEN_OPTIMIZER_VERBOSITY_STEER", "1")  # default OFF (DECISION row 11)
     m = measure
     transcript = write_session(tmp_path / f'rollout-2026-09-06-{SID}.jsonl')
     cache_path = tmp_path / f'quality-cache-{transcript.stem}.json'

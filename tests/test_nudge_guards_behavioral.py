@@ -17,6 +17,7 @@ Run: python3 -m pytest tests/test_nudge_guards_behavioral.py -v
 """
 from helpers.measure_split import measure_source as _split_measure_source
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +70,8 @@ def _run(body):
         [sys.executable, "-c", code],
         cwd=str(SCRIPTS), capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=60,
+        # verbosity-steer is default OFF (DECISION row 11): opt in explicitly.
+        env={**os.environ, "TOKEN_OPTIMIZER_VERBOSITY_STEER": "1"},
     )
 
 

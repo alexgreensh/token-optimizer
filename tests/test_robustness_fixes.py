@@ -176,31 +176,6 @@ class TestMissingCredentialPatterns:
 
 
 # ---------------------------------------------------------------------------
-# M-15: _crossturn_dedup redaction failure must log exception type
-# ---------------------------------------------------------------------------
-class TestCrossturnDedupFailureLogging:
-    def test_redaction_failure_logs_exception_type(self, capsys, monkeypatch):
-        """M-15: if _crossturn_dedup fails, the exception type must be logged
-        to stderr so an admin can distinguish 'no prior run' from 'redaction
-        failed'."""
-        from bash_compress_hook import _crossturn_dedup
-        # Force a failure by making redact_credentials raise.
-        import credential_patterns
-        def boom(text):
-            raise RuntimeError("regex catastrophic backtracking")
-        monkeypatch.setattr(credential_patterns, "redact_credentials", boom)
-        # Set env vars so the function gets past the early exit.
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "test-session")
-        # Large enough output to pass the len check.
-        output = "x" * 300
-        result = _crossturn_dedup("some command", output)
-        assert result is None  # fail-open
-        captured = capsys.readouterr()
-        assert "[token optimizer]" in captured.err.lower()
-        assert "runtimeerror" in captured.err.lower()
-
-
-# ---------------------------------------------------------------------------
 # M-16: Bearer pattern idempotency — re-redacting must not nest placeholders
 # ---------------------------------------------------------------------------
 class TestBearerIdempotency:

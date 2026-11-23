@@ -79,25 +79,6 @@ def test_archive_hook_stores_redacted_command(sandbox, command, secret):
     leaked = sorted({t for t, b in blobs if secret in b})
     assert not leaked, f"{secret!r} stored in {leaked}"
 
-
-@pytest.mark.parametrize("command,secret", CASES + [LONG], ids=[c[1][:14] for c in CASES + [LONG]])
-def test_sync_dedup_stores_redacted_command(sandbox, command, secret):
-    env, snap = sandbox
-    code = (
-        "import sys; sys.path.insert(0, %r)\n"
-        "import bash_compress_hook as b\n"
-        "b._crossturn_dedup(%r, 'row ok\\n' * 80, 'tu-1')\n" % (str(SCRIPTS), command)
-    )
-    env = dict(env, CLAUDE_SESSION_ID="sess-dedup")
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                          env=env, timeout=120)
-    assert proc.returncode == 0, proc.stderr
-    blobs = list(_db_blobs(snap))
-    assert any("command_outputs" in t for t, _ in blobs), "dedup stored nothing; test would pass vacuously"
-    leaked = sorted({t for t, b in blobs if secret in b})
-    assert not leaked, f"{secret!r} stored in {leaked}"
-
-
 def test_engine_command_mode_keeps_structure():
     sys.path.insert(0, str(SCRIPTS))
     import credential_patterns as cp

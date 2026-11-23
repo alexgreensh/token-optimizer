@@ -169,7 +169,8 @@ print('NOIDENT:' + ('1' if _probe(30) else '0'))
 
 def test_lean_nudge_boundary_is_25pct():
     """Pin the gentle floor, SessionEfficiency gate, and honest tier labels."""
-    r = _run(_LEAN_PROBE)
+    # verbosity-steer is default OFF (DECISION row 11): opt in explicitly.
+    r = _run(_LEAN_PROBE, env={"TOKEN_OPTIMIZER_VERBOSITY_STEER": "1"})
     assert r.returncode == 0, f"lean probe crashed: {r.stderr}"
     out = r.stdout
     assert "AT30:1" in out, f"gentle nudge should fire at 30% fill: {out!r}"

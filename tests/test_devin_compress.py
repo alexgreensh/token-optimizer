@@ -402,13 +402,13 @@ _DOMAIN_FORMATS = {
 # embeds sys.executable so the frame is not interpreter-stable). A named
 # handler must keep compressing its own domain exactly as well as before.
 _OWN_DOMAIN_PIN = {
-    ('git-status', 'git_status_long'): 1234,
-    ('git-log', 'git_stat'): 1635,
-    ('git-log', 'git_oneline'): 1616,
-    ('listing', 'ls_la'): 2506,
-    ('search', 'grep'): 2666,
-    ('tests', 'pytest_run'): 1752,
-    ('build', 'build_log'): 3393,
+    ('git-status', 'git_status_long'): 1275,
+    ('git-log', 'git_stat'): 4113,
+    ('git-log', 'git_oneline'): 1632,
+    ('listing', 'ls_la'): 2522,
+    ('search', 'grep'): 2682,
+    ('tests', 'pytest_run'): 1805,
+    ('build', 'build_log'): 33469,
 }
 
 

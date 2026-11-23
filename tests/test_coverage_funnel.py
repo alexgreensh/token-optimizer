@@ -164,7 +164,10 @@ def test_unwritable_ledger_never_breaks_the_hook(tmp_path):
     (tmp_path / 'snap').write_text('a file where the directory should be')
     proc = _hook(tmp_path, 'ls -la', LONG_LS)
     assert proc.returncode == 0
-    assert 'updatedToolOutput' in proc.stdout
+    # When snapshot_dir is unwritable, archive_result also fails; visibility rule (d)
+    # and emit_safety_gate require failing open to raw output (empty stdout) rather
+    # than emitting a lossy preview without a working expand pointer.
+    assert proc.stdout == ''
 
 
 def test_record_ignores_unknown_gate_and_never_raises(tmp_path):

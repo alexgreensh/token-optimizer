@@ -32,6 +32,17 @@ if bad == "compressor":
         out = _orig_compress(command_str, raw_output, returncode=returncode, stderr=stderr)
         return "\n".join(ln for ln in out.splitlines() if not _drop.search(ln))
     _bc.compress = _bad_compress
+    try:
+        import visibility_rule as _vr
+        _vr.enforce_visibility_and_exact_hidden = lambda raw, cand, **kw: cand
+    except Exception:
+        pass
+    try:
+        import emit_safety_gate as _esg
+        _esg.gate_or_raw = lambda raw, candidate, **kw: candidate
+        _esg.gate_or_none = lambda raw, candidate, **kw: candidate
+    except Exception:
+        pass
 
 import bash_compress_hook  # noqa: E402
 

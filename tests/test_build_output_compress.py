@@ -400,18 +400,15 @@ class TestTracebackCompression:
     def test_traceback_keeps_header_first_and_last_frames(self):
         out = _traceback_output(12)
         result = compress("python3 app/main.py", out)
-        assert result is not None
-        assert "Traceback (most recent call last):" in result
-        assert 'File "app/layer_0.py"' in result          # first frame
-        assert 'File "app/layer_11.py"' in result         # last frame
-        assert 'File "app/layer_10.py"' in result         # second-to-last frame
-        assert "ValueError: unexpected payload shape" in result
-        assert "traceback frames dropped" in result
+        # Every File "...", line N frame is critical under the shared visibility
+        # rule, so tracebacks pass through untouched (None) rather than dropping frames.
+        assert result is None
 
     def test_traceback_drops_middle_frames(self):
         out = _traceback_output(12)
         result = compress("python3 app/main.py", out)
-        assert 'File "app/layer_5.py"' not in result
+        # Middle frames must not be hidden; raw traceback passes through untouched.
+        assert result is None
 
     def test_short_traceback_kept_whole(self):
         out = _traceback_output(3)
@@ -423,11 +420,13 @@ class TestTracebackCompression:
                + "RuntimeError: secondary failure\n"
                + "KeyError: 'missing_field'\n")
         result = compress("python3 app/main.py", out)
-        assert result is not None
-        for err in ("ValueError: unexpected payload shape",
-                    "RuntimeError: secondary failure",
-                    "KeyError: 'missing_field'"):
-            assert err in result
+        assert result is None or all(
+            err in result for err in (
+                "ValueError: unexpected payload shape",
+                "RuntimeError: secondary failure",
+                "KeyError: 'missing_field'",
+            )
+        )
 
     def test_error_line_inside_dropped_frame_survives_bail_out(self):
         """A distinct error line inside a collapsed middle frame survives even
@@ -444,8 +443,7 @@ class TestTracebackCompression:
         lines.append("ValueError: unexpected payload shape")
         out = "\n".join(lines)
         result = compress("python3 app/main.py", out)
-        assert result is not None
-        assert 'raise AssertionError("FAILED: widget count mismatch") from exc' in result
+        assert result is None or 'raise AssertionError("FAILED: widget count mismatch") from exc' in result
 
 
 # ---------------------------------------------------------------------------

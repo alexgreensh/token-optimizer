@@ -87,6 +87,14 @@ carried — is an estimate, and lives in section 3.4, never here.
   only characters no earlier re-expansion of that item already covered (the detail
   records the debited char ranges); a full expand debits whatever is still
   uncovered, or the whole stored response when nothing was returned before.
+- **Expand round-trip debit (`expand_round_trip`, measured bookkeeping):** when
+  `tool_archive_reexpand` is logged, the next transcript request's cache-read tokens
+  for context that existed before the expand call are debited at that request's
+  exact model cache-read rate under `expand_round_trip`. It is never shown as its
+  own saving line; it is subtracted inside the owning feature's net
+  (`net = first write + repeat reads - re-expand - round trip`, signed, with no
+  floor at zero). If the next request is not on record, nothing is debited and
+  `round_trip_unknown` is incremented.
 - Verbosity is folded per API request, never per transcript line.
 
 ### 3.2 Model routing (estimated)
@@ -221,7 +229,15 @@ recorded session.
 - A request is counted once by request id, even when it streams in pieces or replays in
   another session (R6). The parser version is stored per session
   (`_USAGE_PARSER_VERSION`), so a parser fix re-reads only what it changed.
-- **Consumed tokens and the plan denominator** are deduplicated fresh input plus
+- **Limit-unit accounting (`_measure/limit_units.py`):** plan-limits share uses the
+  same currency (`limit_units(row)`) for both numerator and denominator:
+  `input*1 + cache_write_5m*1.25 + cache_write_1h*2 + cache_read*(card ratio) + output*(card ratio)`,
+  with ratios taken from the exact model card (R9, e.g. Opus 5.5 read 0.05x, Fable 5.2
+  read 0.025x) and unknown cards staying unpriced (R10). Denominator is all top-level
+  requests in the window in limit units; the view is labelled
+  `"share of window, modeled at API-rate weights"`. The old fresh-input-plus-output
+  figure is retained strictly as a diagnostic row (`diagnostic_fresh_plus_output_tokens`).
+- **Consumed tokens (diagnostic):** deduplicated fresh input plus
   output from top-level requests, sliced by the calendar day of activity. Cache
   reads and writes are excluded. The separate `reported_*` fields retain the raw
   `/stats` observation count for explicitly labelled diagnostics only.

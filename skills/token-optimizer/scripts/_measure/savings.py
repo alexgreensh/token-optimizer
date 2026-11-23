@@ -1390,7 +1390,7 @@ def _get_savings_summary(days=None, since=None):
 
         daily_avg = total_cost / days if days > 0 else 0.0
 
-        return {
+        _summary_out = {
             "total_tokens": total_tokens,
             "total_cost_usd": round(total_cost, 4),
             "total_events": total_events,
@@ -1423,23 +1423,19 @@ def _get_savings_summary(days=None, since=None):
             # Nudged replies and their later rereads, net of matched un-nudged
             # replies (U5). Estimated tier; the booked rows are reference only.
             "verbosity_output_estimated": verbosity_output_est,
-            # True when at least one event's dollars moved because its event-time
-            # model stamp disagreed with its own session's recorded model mix. The
-            # figure is then a rate ALLOCATION, not a pure event-time meter, so
-            # every consumer must label it "estimated" (see _window_overage_usd).
+            # Event-time vs session-mix allocation disclosure; apply expand_round_trip & feature_net.
             "repriced_to_session_mix": repriced_to_session_mix,
             "reprice_detail": {
                 "repriced_tokens": int(repriced_tokens),
-                # NOT MEASURED: no joinable session row, so no mix to price
-                # against. These keep their event-time price; nothing is invented.
                 "unmeasured_tokens": int(unmeasured_tokens),
-                # Saved tokens that ran on models with no exact rate card: counted
-                # as tokens, priced at zero.
                 "unpriced_tokens": int(round(unpriced_reprice.get("tokens", 0))),
                 "delta_usd": round(sum(reprice_deltas.values()), 4),
                 "basis": "session_log.model_usage_json token-weighted mix",
             },
         }
+        from . import limit_units as _lu
+        _lu.apply_round_trip_and_feature_net(_summary_out, labels=_measure_facade._SAVINGS_CATEGORY_LABELS, conn=None, cutoff=cutoff)
+        return _summary_out
     except Exception:
         return {
             "total_tokens": 0,
@@ -2298,8 +2294,8 @@ def runway_snapshot(days=None, now=None, token_headline=None):
             token_parts = token_headline
         except Exception:
             token_parts = _compat.facade()._headline.token_headline({})
-        from . import runway_all_in; conn = _measure_facade._init_trends_db()
-        try: direct_pct = runway_all_in.safe_extra_work(_measure_facade, conn, days)
+        from . import runway_all_in, limit_units as _lu; conn = _measure_facade._init_trends_db()
+        try: direct_pct = runway_all_in.safe_extra_work(_measure_facade, conn, days); _lu_plan = _lu.plan_limits_summary(_measure_facade, conn, days, summary=locals().get("token_source"))
         finally: conn.close()
         context_saved = token_parts["total_tokens"]
         context_mult = (consumed + context_saved) / consumed if consumed > 0 else 1.0
@@ -2577,10 +2573,8 @@ def runway_snapshot(days=None, now=None, token_headline=None):
             "window_savings_basis": (
                 "full workload, exact subscription week" if weekly_full else
                 "counted transcript window" if _wk_counted else "flat savings ledger fallback"),
-            # period_days scopes the throughput MULTIPLIERS (context/routing), not
-            # the per-window dollars: each window now prices overage over its OWN
-            # span (weekly = 7d), so the dollars are window-real, not a slice.
-            "period_days": days,
+            # period_days scopes throughput multipliers; limit_units uses the same currency on both sides.
+            "period_days": days, "limit_units": _lu_plan,
             "meter_age_s": meters.get("age_s"),
             "meter_ts": meters.get("ts"),
             "meter_stale": meter_stale,
@@ -6030,8 +6024,11 @@ def _get_merged_savings(days=None, since=None):
     for _k, _v in by_category.items():
         if isinstance(_v, dict):
             _v.setdefault("label", _measure_facade._SAVINGS_CATEGORY_LABELS.get(_k, _k))
+    from . import limit_units as _lu
+    _fnet = _lu.apply_round_trip_and_feature_net({"by_category": dict(by_category), "total_tokens": total_tokens, "total_cost_usd": total_cost, "total_events": total_events}, labels=_measure_facade._SAVINGS_CATEGORY_LABELS)
     return {
         "resume_lean_verified": verified_lean,
+        "feature_net": _fnet["feature_net"], "round_trip_unknown": savings.get("round_trip_unknown", 0), "expand_round_trip_tokens": savings.get("expand_round_trip_tokens", 0), "expand_round_trip_usd": savings.get("expand_round_trip_usd", 0.0),
         "total_tokens": total_tokens,
         "total_cost_usd": round(total_cost, 4),
         "total_events": total_events,

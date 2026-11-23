@@ -638,6 +638,18 @@ def stop_flush_args(facade, args, hook_input):
     return args
 
 
+def flush_hook_args(facade, args):
+    """Read a real hook's payload once, record session end, or forward the Stop owner."""
+    if facade.os.name != 'posix' or not facade.os.environ.get(HOOK_PARENT_PID_ENV):
+        return args
+    payload = facade._read_stdin_hook_input()
+    if str(payload.get('hook_event_name', '')).lower() == 'sessionend':
+        mark_ended(facade.SNAPSHOT_DIR, payload.get('session_id'))
+    elif args[1:3] == ['--trigger', 'stop']:
+        return stop_flush_args(facade, args, payload)
+    return args
+
+
 def run_flush_worker(facade, args):
     """Arm before the refresh throttle and watch after releasing the flush lock."""
     record = None

@@ -3017,14 +3017,6 @@
       "line": 64807
     },
     {
-      "expression": "'--quiet' not in args",
-      "argv": [
-        "keepwarm-arm",
-        "--quiet"
-      ],
-      "line": 64790
-    },
-    {
       "expression": "args[0] == 'keepwarm-consent-status'",
       "argv": [
         "keepwarm-consent-status"

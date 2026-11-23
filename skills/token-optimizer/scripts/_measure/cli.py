@@ -822,14 +822,7 @@ def main():
         # settings.json surgery. --no-defer keeps the synchronous path for
         # manual refresh / tests; `--defer` stays accepted (now redundant).
         from . import keepwarm_safety
-        args = _measure_facade.args
-        if _measure_facade.os.name == "posix" and _measure_facade.os.environ.get(keepwarm_safety.HOOK_PARENT_PID_ENV):
-            payload = _measure_facade._read_stdin_hook_input()
-            if str(payload.get("hook_event_name", "")).lower() == "sessionend":
-                keepwarm_safety.mark_ended(_measure_facade.SNAPSHOT_DIR, payload.get("session_id"))
-            elif args[1:3] == ["--trigger", "stop"]:
-                args = keepwarm_safety.stop_flush_args(_measure_facade, args, payload)
-        _measure_facade._dispatch_session_end_flush(args)
+        _measure_facade._dispatch_session_end_flush(keepwarm_safety.flush_hook_args(_measure_facade, _measure_facade.args))
         _measure_facade.sys.exit(0)
     elif _measure_facade.args[0] == "session-end-flush-worker":
         from . import keepwarm_safety

@@ -913,16 +913,20 @@ def _try_large_output_policy(command: str, stdout: str, stderr: str,
     """
     if os.environ.get("TOKEN_OPTIMIZER_LARGE_OUTPUT", "").strip() != "1":
         return False
-    if not stdout or len(stdout.encode("utf-8", errors="replace")) <= 8192:
+    if not stdout or len(stdout.encode("utf-8", errors="replace")) < 16384:
         return False
     try:
         from large_output_policy import FEATURE_NAME, handle_post_tool_use
+        _tr = payload.get("tool_response") if isinstance(payload, dict) else {}
+        _interrupted = bool(_tr.get("interrupted", False)) if isinstance(_tr, dict) else False
         compressed, cleaned_orig = handle_post_tool_use(
             command,
             stdout,
             session_id=os.environ.get("CLAUDE_SESSION_ID", ""),
             tool_use_id=str(payload.get("tool_use_id", "") or ""),
             exit_code=exit_code,
+            stderr=stderr,
+            interrupted=_interrupted,
         )
         if compressed is None:
             return False

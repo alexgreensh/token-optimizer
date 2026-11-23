@@ -103,6 +103,10 @@ _DECL_COUNT_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\b(\d[\d,]*)\s+of\s+(\d[\d,]*)\s+(?:lines?|matches?|rows?|records?|files?)\b",
         re.I,
     ),
+    re.compile(
+        r"\[lines\s+\d+-\d+\s+hidden:\s*(\d[\d,]*)\s+lines\s+matching\b",
+        re.I,
+    ),
 )
 _DECL_PLACE_RE = re.compile(
     r"\b(?:in\s+[\w./@+-]+|lines?\s+\d+(?:\s*[-–]\s*\d+)?|rows?\s+\d+(?:\s*[-–]\s*\d+)?|"

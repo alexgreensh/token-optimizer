@@ -83,3 +83,12 @@ def can_early_exit_posttooluse(
     session_id = str(hook_input.get("session_id") or "")
     sdir = snapshot_dir if snapshot_dir is not None else _resolve_snapshot_dir()
     return not _quality_throttle_due(session_id, sdir)
+
+
+def skip_posttooluse(pending_names: list[str], hook_input: dict) -> bool:
+    """Runner entry: skip ONLY when the quality-throttle tick is the sole
+    matching handler and it is provably not due. Any tool that reaches
+    context_intel, archive, compression or invalidation always does real work."""
+    if list(pending_names) != ["quality-cache --throttle-only"]:
+        return False
+    return can_early_exit_posttooluse(hook_input, only_throttle_matches=True)

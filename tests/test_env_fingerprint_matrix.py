@@ -892,12 +892,9 @@ def test_every_hook_envelope_names_the_event_that_fired_it(machine, name):
     there through a host misdetection, #162 through a static runtime check."""
     h = HOSTS[name]
     env, home, project, plugin = materialize(machine, h)
-    # The prompt hook's context nudge is verbosity-steer, default OFF
-    # (DECISION row 11): opt in so the UserPromptSubmit envelope is exercised.
-    env["TOKEN_OPTIMIZER_VERBOSITY_STEER"] = "1"
+    env["TOKEN_OPTIMIZER_VERBOSITY_STEER"] = "1"  # the prompt nudge is verbosity-steer, default OFF (row 11)
     transcript = transcript_for(machine, h, project)
-    # 800k of 1M: high enough that the prompt hook speaks (a context nudge),
-    # so the UserPromptSubmit envelope is really exercised.
+    # 800k of 1M: high enough that the prompt hook speaks, so its envelope is exercised.
     write_transcript(transcript, project, tokens=800_000)
     outs = run_session(machine, h, env, project, transcript)
     seen = set()

@@ -49,3 +49,12 @@ def test_deliberate_read_guard_is_narrower_than_condition4():
     for cmd in ("cat a.py", "cd repo && cat a.py b.py", "jq . f.json", 'python3 -c "print(1)"'):
         assert lop.is_deliberate_content_read(cmd) is True, cmd
         assert lop.is_condition4_excluded(cmd) is True, cmd
+
+
+def test_runner_skip_requires_throttle_to_be_the_only_handler(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path))
+    payload = {"tool_name": "TodoWrite", "session_id": "s"}
+    assert hf.skip_posttooluse(["quality-cache --throttle-only"], payload) is True
+    for pending in (["context_intel", "quality-cache --throttle-only"],
+                    ["bash_compress_hook", "archive_result", "context_intel", "quality-cache --throttle-only"]):
+        assert hf.skip_posttooluse(pending, payload) is False

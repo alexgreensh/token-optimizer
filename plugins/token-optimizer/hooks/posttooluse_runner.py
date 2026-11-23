@@ -432,8 +432,7 @@ def _run_safely(name: str, fn, *args, **kwargs):
     except (Exception, SystemExit):
         try:
             sys.stderr.write(f"[Token Optimizer] {name} failed, continuing\n")
-            import traceback  # lazy: error path only (~10 ms import on the hot path)
-            traceback.print_exc(file=sys.stderr)
+            __import__("traceback").print_exc(file=sys.stderr)  # lazy: error path only
             sys.stderr.flush()
         except (OSError, ValueError):
             pass
@@ -1064,17 +1063,9 @@ def main() -> int:
     ]
     if not pending:  # pragma: no cover -- quality-cache's _MATCHER_UNION is always True
         return 0
-    # Fast path: skip ONLY when the throttle tick is the sole matching handler
-    # and it is provably not due. Any tool that reaches context_intel, archive,
-    # compression or invalidation always does real work (activity rows etc.).
-    if [n for n, _ in pending] == ["quality-cache --throttle-only"]:
-        try:
-            from hook_fastpath import can_early_exit_posttooluse as _can_early_exit
-
-            if _can_early_exit(hook_input, only_throttle_matches=True):
-                return 0
-        except Exception:
-            pass
+    try:  # fast path: only a provable no-op may skip (see hook_fastpath)
+        if __import__("hook_fastpath").skip_posttooluse([n for n, _ in pending], hook_input): return 0
+    except Exception: pass
 
     _install_runner_deadline()
 

@@ -325,3 +325,34 @@ def test_yes_with_stale_token_does_not_change_files(overlaps, monkeypatch, capsy
     assert (overlaps / 'first/SKILL.md').exists()
     assert not measure.SNAPSHOT_DIR.exists()
     assert 'Your setup changed' in capsys.readouterr().out
+
+
+def test_first_yes_accepts_dollar_changes_below_display_precision(overlaps, monkeypatch, capsys):
+    from contextlib import nullcontext
+
+    item = {'id': 'unused_skill:first', 'kind': 'unused_skill', 'label': 'Archive first',
+            'tokens_per_request': 100, 'net_usd_month': 1.001, 'own_cost_usd_month': 0.101}
+    monkeypatch.setattr(apply_safe, 'build_plan', lambda _: {'items': [item], 'token': apply_safe.plan_token([item])})
+    monkeypatch.setattr(measure, '_manage_skill', dashboard._manage_skill_locked)
+    monkeypatch.setattr(measure, '_settings_lock', lambda **kw: nullcontext(True))
+    assert apply_safe.main(measure, ['--json']) == 0
+    token = json.loads(capsys.readouterr().out)['token']
+
+    item.update(net_usd_month=1.004, own_cost_usd_month=0.104)
+    assert apply_safe.main(measure, ['--yes', '--token', token]) == 0
+    assert not (overlaps / 'first').exists()
+
+
+@pytest.mark.parametrize('change', [
+    {'id': 'autocompact_window:new'}, {'tokens_per_request': 1}, {'net_usd_month': 1.006},
+    {'own_cost_usd_month': 0.106}, {'net_usd_month': None}, {'target': 500000},
+    {'current': 500000}, {'per_model': False}, {'model': 'different'},
+])
+def test_plan_token_rejects_changed_actions_or_display_figures(monkeypatch, change):
+    item = {'id': 'autocompact_window', 'kind': 'autocompact_window', 'tokens_per_request': 0,
+            'net_usd_month': 1.004, 'own_cost_usd_month': 0.104, 'current': 600000,
+            'target': 450000, 'per_model': True, 'model': 'fixture'}
+    token = apply_safe.plan_token([item])
+    monkeypatch.setattr(apply_safe, 'build_plan', lambda _: {'items': [dict(item, **change)]})
+
+    assert not apply_safe.validate_token(measure, [item['id']], token)

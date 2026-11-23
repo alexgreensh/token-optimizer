@@ -16,6 +16,8 @@ from spawn_utils import spawn_detached
 IDS = ('apply_safe', 'cold_fresh', 'skill_list', 'writes', 'stale_reads', 'routing')
 REPORT_NAME = 'next_report.json'
 LOCK_NAME = 'next_refresh.lock'
+WINDOWS_PID_MARKER = 'next_refresh_pid.json'
+WINDOWS_HANDOFF_SECONDS = 30
 PLAN_NAME = 'next_apply_plan.json'
 MAX_SUMMARY_BYTES = 4 * 1024 * 1024
 
@@ -229,12 +231,18 @@ def _start_refresh(facade):
         # The PID covers the handoff until the Windows child takes the lock.
         with _exclusive(lock, timeout=0) as held:
             if held:
-                marker = directory / 'next_refresh_pid.json'
-                pid = _read(marker).get('pid')
-                if not pid or not facade._pid_is_running(pid):
+                marker = directory / WINDOWS_PID_MARKER
+                pending = _read(marker)
+                pid = pending.get('pid')
+                spawned_at = _number(pending.get('spawned_at'))
+                now = time.time()
+                # A worker that dies before taking the lock can leave a marker behind.
+                in_handoff = (spawned_at is not None and 0 <= now - spawned_at < WINDOWS_HANDOFF_SECONDS
+                              and pid and facade._pid_is_running(pid))
+                if not in_handoff:
                     child = spawn_detached(argv, **stdio)
                     if child is not None:
-                        _write(marker, {'pid': child.pid})
+                        _write(marker, {'pid': child.pid, 'spawned_at': now})
         return
     fd = _acquire(lock, timeout=0)
     if fd is not None:
@@ -251,9 +259,11 @@ def _refresh(facade):
         return 1
     # An upgraded install has no stored total until a dashboard refresh, so seed it here.
     if _call('counted_headline', 'build_overall', facade) is None:
-        if not summary.get('since_install'):
-            summary['since_install'] = _call('savings', '_savings_since_install')
-        _call('counted_closes', 'on_savings_refresh', facade, summary)
+        since_install = summary.get('since_install') or _call('savings', '_savings_since_install')
+        all_in = (since_install or {}).get('all_in') or {}
+        if not (all_in.get('routing_pending') or all_in.get('remeasuring')):
+            summary['since_install'] = since_install
+            _call('counted_closes', 'on_savings_refresh', facade, summary)
     plan = _call('apply_safe', 'build_plan', facade)
     if not isinstance(plan, dict):
         return 1
@@ -277,7 +287,16 @@ def _refresh_worker(facade, args):
         os.set_inheritable(fd, False)
         return _refresh(facade)
     with _exclusive(lock) as held:
-        return _refresh(facade) if held else 0
+        if not held:
+            return 0
+        if os.name == 'nt':
+            marker = lock.with_name(WINDOWS_PID_MARKER)
+            if _read(marker).get('pid') == os.getpid():
+                try:
+                    marker.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return _refresh(facade)
 
 
 def _foreground_result(facade, show_all):

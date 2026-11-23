@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -9,6 +10,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'))
 from _measure import next_actions
@@ -288,3 +291,64 @@ def test_refresh_seeds_the_saved_total_for_an_upgraded_install(tmp_path, monkeyp
     results['build_overall'] = {'display': {'short': 'Saved $9 since install'}}
     assert module._refresh(SimpleNamespace(SNAPSHOT_DIR=tmp_path)) == 0
     assert 'on_savings_refresh' not in calls
+
+
+@pytest.mark.parametrize('flag', ['routing_pending', 'remeasuring'])
+@pytest.mark.parametrize('summary_has_since_install', [False, True])
+def test_next_waits_for_a_complete_since_install_total(tmp_path, monkeypatch, flag, summary_has_since_install):
+    import measure
+    from _measure import apply_safe, cold_guard, counted_headline, savings
+
+    db = tmp_path / 'trends.db'
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        conn.executescript(measure._SCHEMA)
+    since_install = {'install_date': '2026-03-24', 'all_in': {'total_usd': 9, flag: True}}
+    summary = {'since_install': since_install} if summary_has_since_install else {}
+    monkeypatch.setattr(measure, 'TRENDS_DB', db)
+    monkeypatch.setattr(measure, 'SNAPSHOT_DIR', tmp_path)
+    monkeypatch.setattr(measure, '_get_merged_savings', lambda **kw: dict(summary))
+    monkeypatch.setattr(savings, '_savings_since_install', lambda: since_install)
+    monkeypatch.setattr(apply_safe, 'build_plan', lambda _: {'items': []})
+    monkeypatch.setattr(cold_guard, 'pool', lambda _: {})
+
+    assert next_actions.main(measure, ['--refresh-cache']) == 0
+    assert counted_headline.build_overall(measure) is None
+    assert json.loads((tmp_path / next_actions.REPORT_NAME).read_text())['schema'] == 1
+
+    since_install['all_in'].update({flag: False, 'total_usd': 15})
+    assert next_actions.main(measure, ['--refresh-cache']) == 0
+    assert counted_headline.build_overall(measure)['usd'] == 15
+
+
+def test_windows_refresh_clears_its_pid_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(next_actions, 'os', SimpleNamespace(**{**vars(os), 'name': 'nt'}))
+    facade = SimpleNamespace(SNAPSHOT_DIR=tmp_path, __file__=__file__, _pid_is_running=lambda _: True,
+                             _get_merged_savings=lambda **kw: None)
+    starts = []
+
+    def start(argv, **kwargs):
+        starts.append(argv)
+        return SimpleNamespace(pid=os.getpid())
+
+    monkeypatch.setattr(next_actions, 'spawn_detached', start)
+    next_actions._start_refresh(facade)
+    next_actions._start_refresh(facade)
+    assert len(starts) == 1
+
+    assert next_actions.main(facade, ['--refresh-cache']) == 1
+    assert not (tmp_path / 'next_refresh_pid.json').exists()
+
+    next_actions._start_refresh(facade)
+    assert len(starts) == 2
+
+
+@pytest.mark.parametrize('marker', [{'pid': 123}, {'pid': 123, 'spawned_at': 1}])
+def test_windows_refresh_ignores_abandoned_pid_markers(tmp_path, monkeypatch, marker):
+    monkeypatch.setattr(next_actions, 'os', SimpleNamespace(**{**vars(os), 'name': 'nt'}))
+    facade = SimpleNamespace(SNAPSHOT_DIR=tmp_path, __file__=__file__, _pid_is_running=lambda _: True)
+    path = tmp_path / 'next_refresh_pid.json'
+    path.write_text(json.dumps(marker))
+    monkeypatch.setattr(next_actions, 'spawn_detached', lambda *a, **kw: SimpleNamespace(pid=456))
+
+    next_actions._start_refresh(facade)
+    assert json.loads(path.read_text())['pid'] == 456

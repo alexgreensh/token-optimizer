@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from hook_provenance import _acquire, _exclusive
+from process_identity import process_start
 from spawn_utils import spawn_detached
 
 IDS = ('apply_safe', 'cold_fresh', 'skill_list', 'writes', 'stale_reads', 'routing')
@@ -226,15 +227,16 @@ def _start_refresh(facade):
     lock = directory / LOCK_NAME
     stdio = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if os.name == 'nt':
-        # The PID covers the handoff until the Windows child takes the lock.
+        # The process identity covers the handoff until the child takes the lock.
         with _exclusive(lock, timeout=0) as held:
             if held:
                 marker = directory / 'next_refresh_pid.json'
-                pid = _read(marker).get('pid')
-                if not pid or not facade._pid_is_running(pid):
+                previous = _read(marker)
+                start = previous.get('start')
+                if not start or process_start(previous.get('pid')) != start:
                     child = spawn_detached(argv, **stdio)
                     if child is not None:
-                        _write(marker, {'pid': child.pid})
+                        _write(marker, {'pid': child.pid, 'start': process_start(child.pid)})
         return
     fd = _acquire(lock, timeout=0)
     if fd is not None:

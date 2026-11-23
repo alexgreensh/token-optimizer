@@ -568,7 +568,7 @@ def _keepwarm_iso_to_epoch(ts):
         return None
 
 
-def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_pid=None):
+def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_pid=None, parent_start=None):
     """Record a paused terminal snapshot from the flush worker."""
     _measure_facade = _compat.facade()
     try:
@@ -586,15 +586,19 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
         tp = _measure_facade.Path(transcript_path)
         now = _measure_facade.time.time() if now is None else now
         snapshot = tp.stat()
+        turn = None
+        if parent_pid is not None:
+            turn = keepwarm_safety.terminal_turn(tp)
+            turn_epoch = _measure_facade._keepwarm_iso_to_epoch(turn["timestamp"]) if turn else None
+            if (turn_epoch is None or turn_epoch > now or not _measure_facade._keepwarm_valid_arg(session_id)
+                    or "subagents" in tp.parts or keepwarm_safety.ended_since(
+                        _measure_facade.SNAPSHOT_DIR, session_id, turn_epoch)):
+                return None
         usage, model, ts = _measure_facade._keepwarm_last_usage(tp)
         if not usage:
             return None
         prefix_proxy = _measure_facade._keepwarm_prefix_proxy(usage)
-        if parent_pid is not None and (
-            prefix_proxy < keepwarm_auto.MIN_CONTEXT or snapshot.st_mtime > now
-            or not _measure_facade._keepwarm_valid_arg(session_id) or "subagents" in tp.parts
-            or keepwarm_safety.ended_since(_measure_facade.SNAPSHOT_DIR, session_id, snapshot.st_mtime)
-        ):
+        if parent_pid is not None and prefix_proxy < keepwarm_auto.MIN_CONTEXT:
             return None
         ttl_kind = _measure_facade._keepwarm_ttl_kind(usage)
         if ttl_kind == "unknown" and prefix_proxy >= 100000:
@@ -603,10 +607,13 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
                 ttl_kind = measured
         owner = (keepwarm_safety.session_owner(_measure_facade.SNAPSHOT_DIR, session_id)
                  if parent_pid is None else keepwarm_safety.session_owner(
-                     _measure_facade.SNAPSHOT_DIR, session_id, now, parent_pid=parent_pid))
-        current = tp.stat()
-        if owner is None or (current.st_mtime_ns, current.st_size) != (snapshot.st_mtime_ns, snapshot.st_size):
+                     _measure_facade.SNAPSHOT_DIR, session_id, now, parent_pid=parent_pid, parent_start=parent_start))
+        if owner is None:
             return None
+        if turn is None:
+            current = tp.stat()
+            if (current.st_mtime_ns, current.st_size) != (snapshot.st_mtime_ns, snapshot.st_size):
+                return None
         # Store the last real turn as epoch seconds (the policy/replay type),
         # falling back to the arm time when the transcript timestamp is absent.
         last_turn_epoch = _measure_facade._keepwarm_iso_to_epoch(ts)
@@ -624,39 +631,22 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
             "ts": float(now),
             "state": "armed", "owner": owner,
         }
-        line = _measure_facade.json.dumps(record) + "\n"
-        # Idempotency (state-machine invariant: ONE active arm per
-        # session+transcript-snapshot). A double-registered Stop hook (the
-        # settings-fossil case) or two Stop events with no transcript growth
-        # between them would otherwise append a second record with an identical
-        # (session_id, transcript_mtime, byte_size) snapshot, and the tick then
-        # fires one probe ping PER RECORD for the same paused session -- the
-        # per-pause probe cap is tracked per record, and the ping's
-        # --no-session-persistence never bumps the mtime the classifier watches
-        # (regression: tests/test_keepwarm_arm_dedup.py). The check and the
-        # append must share ONE lock hold, or a concurrent arm/compaction can
-        # slip between them; the lease is not reentrant, so the append body is
-        # inlined here instead of calling _keepwarm_append_line (which takes
-        # the same lock itself).
+        if turn is not None:
+            record["terminal_turn"] = turn
+        # Dedup and append under one lock so duplicate Stop hooks share one ping cap.
         try:
             with _measure_facade._keepwarm_lock() as acquired:
-                if not acquired:
+                if not acquired or (turn is not None and keepwarm_safety.terminal_turn(tp) != turn):
                     return None
-                for existing in _measure_facade.load_keepwarm_records():
+                for existing in reversed(_measure_facade.load_keepwarm_records()):
                     if existing.get("session_id") != record["session_id"] or existing.get("owner") != owner:
                         continue
-                    try:
-                        same_snapshot = (
-                            abs(float(existing.get("transcript_mtime", 0) or 0)
-                                - record["transcript_mtime"]) < 0.001
-                            and existing.get("byte_size") is not None
-                            and int(existing.get("byte_size")) == record["byte_size"])
-                    except (TypeError, ValueError):
-                        same_snapshot = False
-                    if same_snapshot:
-                        # Already armed for this exact pause state; keep the
-                        # original record (and its pings_fired history).
-                        return existing
+                    if keepwarm_safety.same_pause(existing, record):
+                        if turn is None or "terminal_turn" in existing:
+                            return existing
+                        # Supersede the legacy snapshot with the same pause and attempts.
+                        record = {**existing, "terminal_turn": turn}
+                        break
                 # The append body of _keepwarm_append_line, inlined so it runs
                 # inside this lock hold (same O_NOFOLLOW / 0600 semantics).
                 try:
@@ -673,7 +663,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
                         return None
                     try:
                         with _measure_facade.os.fdopen(fd, "a", encoding="utf-8") as fh:
-                            fh.write(line)
+                            fh.write(_measure_facade.json.dumps(record) + "\n")
                     except OSError:
                         return None
                 except OSError:
@@ -731,23 +721,10 @@ def load_keepwarm_records(path=None):
 
 
 def classify_keepwarm_record(rec, now=None):
-    """Pure-ish resume classifier for one arm record (tick-side, consumed).
+    """Classify a pause using the last conversation row, or file stats for old records.
 
-    Compares the arm record's snapshot of the transcript (mtime + byte_size)
-    against the transcript's CURRENT state and returns one of:
-        'gone'         -> transcript file no longer exists / unreadable
-        'resumed'      -> "stop tracking this arm" umbrella, NOT proof of a real
-                          resume. Covers three cases: the transcript grew (a true
-                          resume), the arm expired past the 14d max age, and the
-                          mtime moved but the file became unreadable. The name is
-                          historical; callers that BOOK realized savings
-                          (keepwarm_detect_realized) must re-read the post-arm
-                          turn's actual usage and never book off this verdict
-                          alone. Compaction may safely drop all three.
-        'still_paused' -> transcript unchanged since the arm record was written
-
-    The ONLY side effect is reading the transcript tail / stat — no writes, no
-    hook involvement. `now` is injectable for deterministic tests.
+    "gone" means the session or snapshot is unavailable. "resumed" retires a
+    changed or expired arm. Booking requires separate proof from post-arm usage.
     """
     _measure_facade = _compat.facade()
     if now is None:
@@ -784,6 +761,9 @@ def classify_keepwarm_record(rec, now=None):
     if ((not mod_receipt and not keepwarm_safety.owner_alive(owner)) or keepwarm_safety.ended_since(
             _measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts)):
         return "gone"
+    if "terminal_turn" in rec:
+        turn = keepwarm_safety.terminal_turn(p)
+        return "still_paused" if turn and turn == rec["terminal_turn"] else "resumed"
     try:
         armed_size = int(rec["byte_size"])
     except (KeyError, TypeError, ValueError):

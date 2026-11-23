@@ -195,7 +195,11 @@ def reconcile_while_paused(facade, reason, now, dry_run):
 def transcript_changed(record):
     try:
         from pathlib import Path
-        stat = Path(record['transcript_path']).stat()
+        from . import keepwarm_safety
+        path = Path(record['transcript_path'])
+        stat = path.stat()
+        if 'terminal_turn' in record:
+            return keepwarm_safety.terminal_turn(path) != record['terminal_turn']
         return stat.st_size != int(record['byte_size']) or stat.st_mtime != float(record['transcript_mtime'])
     except (KeyError, TypeError, ValueError, OSError):
         return False

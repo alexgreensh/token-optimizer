@@ -150,6 +150,21 @@ class NextActionsTest(unittest.TestCase):
                 if child is not None:
                     self.assertEqual(child.wait(timeout=5), 0)
 
+    def test_windows_refresh_replaces_reused_pid_but_keeps_live_child(self):
+        self.f.__file__ = __file__
+        self.f._pid_is_running = lambda pid: True
+        marker = self.f.SNAPSHOT_DIR / 'next_refresh_pid.json'
+        marker.write_text(json.dumps({'pid': 123, 'start': 'previous-worker'}))
+        starts = {123: 'unrelated-process', 124: 'new-worker'}
+        windows = SimpleNamespace(**{**vars(os), 'name': 'nt'})
+        with patch.object(next_actions, 'os', windows), \
+             patch.object(next_actions, 'process_start', side_effect=starts.get, create=True), \
+             patch.object(next_actions, 'spawn_detached', return_value=SimpleNamespace(pid=124)) as spawn:
+            next_actions._start_refresh(self.f)
+            self.assertEqual(json.loads(marker.read_text()), {'pid': 124, 'start': 'new-worker'})
+            next_actions._start_refresh(self.f)
+            self.assertEqual(spawn.call_count, 1)
+
     def test_status_threshold_and_no_nudges(self):
         self.summary['skill_listing_budget']['cost_usd'] = 4.99
         self.summary['nudge'] = 'MODEL FACING SECRET NUDGE'

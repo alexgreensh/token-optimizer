@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 
+from process_identity import process_start
+
 
 def process_info(pid):
     # Terminal owner checks use ps and lsof, which are unavailable on Windows.
@@ -155,13 +157,17 @@ def _pid_exists(pid):
     return True
 
 
-def session_owner(directory, session_id, now=None, *, parent_pid=None):
+def session_owner(directory, session_id, now=None, *, parent_pid=None, parent_start=None):
     """Reuse terminal eligibility only for the current hook's Claude process."""
     process = _find_claude_process(parent_pid)
     if process is None:
         return None
     now = time.time() if now is None else now
     if parent_pid is not None:
+        # Check the wrapper itself after the ancestry walk. Its replacement
+        # could otherwise lead to an older, unrelated Claude process.
+        if parent_start is not None and process_start(parent_pid) != parent_start:
+            return None
         try:
             started = time.mktime(time.strptime(process['start'], '%a %b %d %H:%M:%S %Y'))
         except (ValueError, OverflowError, OSError):
@@ -232,6 +238,45 @@ def ended_since(directory, session_id, armed_at):
         return False
     except (OSError, ValueError, TypeError):
         return True
+
+
+def terminal_turn(path):
+    """Return the last conversation row's identity from a bounded suffix."""
+    try:
+        with path.open("rb") as stream:
+            end = stream.seek(0, os.SEEK_END)
+            start = max(0, end - 1024 * 1024)
+            stream.seek(start)
+            suffix = stream.read(end - start)
+        if not suffix.endswith(b"\n") or len(suffix) != end - start:
+            return None
+        lines = suffix[:-1].split(b"\n")
+        for line in reversed(lines[bool(start):]):
+            row_end = end
+            end -= len(line) + 1
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                continue
+            if row.get("subtype") == "compact_boundary" or row.get("isCompactSummary"):
+                return None
+            if row.get("type") in ("user", "assistant"):
+                return {"end": row_end, "digest": hashlib.sha256(line).hexdigest(),
+                        "timestamp": row.get("timestamp") or row.get("ts")}
+    except (OSError, ValueError, RecursionError):
+        return None
+    return None
+
+
+def same_pause(existing, record):
+    if "terminal_turn" in record and "terminal_turn" in existing:
+        return existing["terminal_turn"] == record["terminal_turn"]
+    try:
+        return (abs(float(existing.get("transcript_mtime") or 0) - record["transcript_mtime"]) < 0.001
+                and int(existing["byte_size"]) == record["byte_size"])
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def compacted_since(record):
@@ -632,7 +677,10 @@ def stop_flush_args(facade, args, hook_input):
 
         usage, _, _ = _bounded_last_usage(path)
         if usage and facade._keepwarm_prefix_proxy(usage) >= MIN_CONTEXT:
-            args += ['--keepwarm-parent-pid', str(parent_pid), '--keepwarm-stop-at', str(now)]
+            parent_start = process_start(parent_pid)
+            if parent_start:
+                args += ['--keepwarm-parent-pid', str(parent_pid), '--keepwarm-parent-start', parent_start,
+                         '--keepwarm-stop-at', str(now)]
     except Exception:
         pass
     return args
@@ -660,10 +708,11 @@ def run_flush_worker(facade, args):
         if (os.name == 'posix' and '--keepwarm-parent-pid' in args
                 and value('--trigger') == 'stop' and not facade._remote_lean_profile()):
             parent_pid = int(value('--keepwarm-parent-pid'))
-            if parent_pid > 1:
+            parent_start = value('--keepwarm-parent-start')
+            if parent_pid > 1 and parent_start:
                 record = facade.write_keepwarm_arm_record(
                     value('--session-id'), value('--transcript-path'),
-                    now=float(value('--keepwarm-stop-at')), parent_pid=parent_pid,
+                    now=float(value('--keepwarm-stop-at')), parent_pid=parent_pid, parent_start=parent_start,
                 )
     except Exception:
         pass
@@ -719,7 +768,7 @@ def watch_terminal(facade, sid, fd):
             state = facade.classify_keepwarm_record(record, now=now)
             if state != 'still_paused':
                 # A new turn is writing its transcript and will arm on Stop.
-                facade.time.sleep(5)
+                facade.time.sleep(30)
                 continue
             rows = facade._keepwarm_load_ledger_rows()
             decision = _headless_decision(facade, record, now, None, _headless_meters(facade, now), rows)

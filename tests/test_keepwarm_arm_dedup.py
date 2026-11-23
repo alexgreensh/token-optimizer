@@ -38,6 +38,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -45,6 +46,8 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
+
+from _measure.keepwarm_safety import session_owner
 
 
 @pytest.fixture
@@ -57,7 +60,7 @@ def m(monkeypatch, tmp_path):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.setenv("TOKEN_OPTIMIZER_RUNTIME", "claude")
     from _measure import keepwarm_safety
-    monkeypatch.setattr(keepwarm_safety, "session_owner", lambda *args: {"pid": 123, "start": "fixture"})
+    monkeypatch.setattr(keepwarm_safety, "session_owner", lambda *args, **kw: {"pid": 123, "start": "fixture"})
     monkeypatch.setattr(keepwarm_safety, "owner_alive", lambda owner: bool(owner))
     # The LLM ping is dogfood-gated; the duplicate-fire path only exists when
     # the escape hatch is explicitly on.
@@ -109,6 +112,132 @@ def _sidecar_records(mod):
     return mod.load_keepwarm_records()
 
 
+def _stop_transcript(tmp_path):
+    transcript = _write_transcript(tmp_path, 100)
+    turn = json.loads(transcript.read_text())
+    turn["message"]["usage"].update(cache_read_input_tokens=100_000,
+                                    cache_creation={"ephemeral_1h_input_tokens": 1000})
+    transcript.write_text(json.dumps(turn) + "\n")
+    return transcript
+
+
+def _append_stop_rows(transcript, stop_at):
+    with transcript.open("a", encoding="utf-8") as stream:
+        for subtype in ("stop_hook_summary", "turn_duration"):
+            ts = datetime.fromtimestamp(stop_at + 2, timezone.utc).isoformat()
+            stream.write(json.dumps({"type": "system", "subtype": subtype, "timestamp": ts}) + "\n")
+    os.utime(transcript, (stop_at + 2, stop_at + 2))
+
+
+@pytest.mark.parametrize("append_before_worker", [True, False])
+def test_stop_metadata_preserves_terminal_arm(m, tmp_path, append_before_worker):
+    from _measure import keepwarm_economics
+
+    mod, _ = m
+    transcript = _stop_transcript(tmp_path)
+    stop_at = time.time()
+    if append_before_worker:
+        _append_stop_rows(transcript, stop_at)
+    record = mod.write_keepwarm_arm_record("abc123", str(transcript), now=stop_at, parent_pid=123)
+    assert record is not None
+    if not append_before_worker:
+        _append_stop_rows(transcript, stop_at)
+    assert mod.classify_keepwarm_record(record, now=stop_at + 3) == "still_paused"
+    assert not keepwarm_economics.transcript_changed(record)
+    assert mod.write_keepwarm_arm_record("abc123", str(transcript), now=stop_at, parent_pid=123) == record
+    assert _sidecar_records(mod) == [record]
+    resumed = datetime.fromtimestamp(stop_at + 3, timezone.utc).isoformat()
+    with transcript.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"type": "user", "timestamp": resumed}) + "\n")
+    assert mod.classify_keepwarm_record(record, now=stop_at + 3) == "resumed"
+    assert keepwarm_economics.transcript_changed(record)
+
+
+def test_stop_worker_upgrades_an_existing_arm_for_the_same_pause(m, tmp_path):
+    mod, _ = m
+    transcript = _stop_transcript(tmp_path)
+    before_stop = time.time()
+    old = mod.write_keepwarm_arm_record("abc123", str(transcript), now=before_stop)
+    assert old is not None
+    mod._keepwarm_append_line(mod._keepwarm_sidecar_path(),
+                              json.dumps({**old, "pings_fired": [before_stop]}) + "\n")
+
+    stop_at = time.time()
+    record = mod.write_keepwarm_arm_record("abc123", str(transcript), now=stop_at, parent_pid=123)
+    assert record is not None
+    assert record["ts"] == old["ts"]
+    assert record["pings_fired"] == [before_stop]
+    _append_stop_rows(transcript, stop_at)
+    assert mod.classify_keepwarm_record(record, now=stop_at + 3) == "still_paused"
+    assert mod.compact_keepwarm_sidecar(now=stop_at + 3)[0] == 1
+    assert _sidecar_records(mod) == [record]
+
+
+@pytest.mark.parametrize("row_type", ["user", "assistant"])
+def test_stop_worker_rejects_post_stop_conversation_even_with_old_mtime(m, tmp_path, row_type):
+    mod, _ = m
+    transcript = _stop_transcript(tmp_path)
+    stop_at = time.time()
+    resumed = datetime.fromtimestamp(stop_at + 2, timezone.utc).isoformat()
+    with transcript.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"type": row_type, "timestamp": resumed}) + "\n")
+    os.utime(transcript, (stop_at - 1, stop_at - 1))
+    assert mod.write_keepwarm_arm_record("abc123", str(transcript), now=stop_at, parent_pid=123) is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="terminal keep-warm requires POSIX")
+def test_stop_worker_rejects_reused_wrapper_under_an_older_claude(m, tmp_path, monkeypatch):
+    from _measure import keepwarm_safety
+
+    mod, _ = m
+    sid, wrapper = "abc123", 456
+    transcript = _stop_transcript(tmp_path)
+    stop_at = time.time()
+    owner_start = time.ctime(stop_at - 60)
+    wrapper_start = {wrapper: "original-wrapper"}
+    processes = {wrapper: {"ppid": 123, "start": owner_start, "command": "sh"},
+                 123: {"ppid": 1, "start": owner_start, "command": "claude"},
+                 124: {"ppid": 1, "start": owner_start, "command": "claude"}}
+    monkeypatch.setenv(keepwarm_safety.HOOK_PARENT_PID_ENV, str(wrapper))
+    monkeypatch.setattr(keepwarm_safety, "process_start", wrapper_start.get, raising=False)
+    monkeypatch.setattr(keepwarm_safety, "process_info", processes.get)
+    monkeypatch.setattr(keepwarm_safety, "owner_eligible", lambda pid: True)
+    monkeypatch.setattr(keepwarm_safety, "session_owner", session_owner)
+    monkeypatch.setattr(mod, "_run_session_end_flush_worker", lambda args: None)
+    monkeypatch.setattr(keepwarm_safety, "watch_armed_terminal", lambda *args: None)
+    payload = {"session_id": sid, "transcript_path": str(transcript), "hook_event_name": "Stop"}
+    args = keepwarm_safety.stop_flush_args(mod, ["session-end-flush-worker", "--trigger", "stop"], payload)
+    assert "--keepwarm-parent-pid" in args
+
+    # The replacement wrapper belongs to a different, already-running Claude.
+    wrapper_start[wrapper] = "replacement-wrapper"
+    processes[wrapper]["ppid"] = 124
+    keepwarm_safety.run_flush_worker(mod, args)
+    assert _sidecar_records(mod) == []
+
+
+def test_terminal_watcher_backs_off_while_turn_is_running(m, tmp_path, monkeypatch):
+    from _measure import keepwarm_safety
+
+    mod, _ = m
+    now = time.time()
+    sleeps = []
+    states = iter(("resumed", "still_paused"))
+    record = {"session_id": "abc123", "owner": {"pid": 123}, "ts": now, "last_turn_ts": now}
+    monkeypatch.setattr(mod, "time", SimpleNamespace(time=lambda: now, sleep=sleeps.append))
+    monkeypatch.setattr(mod, "load_keepwarm_records", lambda: [record])
+    monkeypatch.setattr(mod, "classify_keepwarm_record", lambda *a, **kw: next(states))
+    monkeypatch.setattr(mod, "_keepwarm_load_ledger_rows", lambda: [])
+    monkeypatch.setattr(keepwarm_safety, "headless_disabled", lambda *a: None)
+    monkeypatch.setattr(keepwarm_safety, "_headless_meters", lambda *a: (None, None))
+    monkeypatch.setattr(keepwarm_safety, "_headless_decision", lambda *a: {"action": "stop", "reason": "fixture"})
+    monkeypatch.setattr(keepwarm_safety, "fire_headless", lambda *a, **kw: pytest.fail("unexpected ping"))
+    watch = tmp_path / "watch"
+    fd = os.open(watch, os.O_CREAT | os.O_WRONLY, 0o600)
+    assert keepwarm_safety.watch_terminal(mod, "abc123", fd) == 0
+    assert len(sleeps) == 1 and 30 <= sleeps[0] <= 60
+
+
 @pytest.mark.skipif(os.name != "posix", reason="terminal keep-warm requires POSIX")
 @pytest.mark.parametrize("case", ["eligible", "small", "subagent", "ended", "unknown-owner"])
 def test_stop_worker_arms_and_watches_only_eligible_sessions(m, tmp_path, monkeypatch, case):
@@ -130,7 +259,8 @@ def test_stop_worker_arms_and_watches_only_eligible_sessions(m, tmp_path, monkey
 
     calls = []
 
-    def lookup(directory, session_id, now, *, parent_pid):
+    def lookup(directory, session_id, now, *, parent_pid, parent_start):
+        assert parent_start == "hook-parent"
         calls.append(("owner", session_id, parent_pid))
         return None if case == "unknown-owner" else {"pid": parent, "start": "fixture"}
 
@@ -138,6 +268,7 @@ def test_stop_worker_arms_and_watches_only_eligible_sessions(m, tmp_path, monkey
         pytest.fail("keep-warm must use the existing worker")
 
     monkeypatch.setattr(keepwarm_safety, "session_owner", lookup)
+    monkeypatch.setattr(keepwarm_safety, "process_start", lambda pid: "hook-parent" if pid == parent else None)
     monkeypatch.setattr(keepwarm_safety.subprocess, "Popen", forbidden)
     monkeypatch.setattr(mod, "spawn_detached", forbidden)
     monkeypatch.setattr(mod, "_run_session_end_flush_worker", lambda args: calls.append("flush"))

@@ -1355,7 +1355,7 @@ def _get_savings_summary(days=None, since=None):
     boundary (e.g. the subscription limit reset). When *since* is None / empty,
     the rolling cutoff is computed from *days* as before.
     """
-    _measure_facade = _compat.facade(); from . import keepwarm_economics, mod_fresh_booking, mod_compaction_booking, nudge_followthrough, autocompact_advice
+    _measure_facade = _compat.facade(); from . import keepwarm_economics, mod_fresh_booking, mod_compaction_booking, nudge_followthrough, autocompact_advice; autocompact_advice.refresh_if_allowed(_measure_facade)
     try:
         conn = _measure_facade._init_trends_db()
         try:
@@ -6328,7 +6328,7 @@ def _reread_savings_for_window(days):
 
 def savings_report(days=None, as_json=None):
     """Display savings from logged actions and the counted repeat-read cohort."""
-    _measure_facade = _compat.facade()
+    _measure_facade = _compat.facade(); from . import autocompact_advice; autocompact_advice.refresh_if_allowed(_measure_facade, explicit=True)
     summary = _measure_facade._get_merged_savings(days=days)
     # Use the same stored removal cohort as the dashboard. Its counted benefit
     # survives transcript rotation and never needs another transcript walk.

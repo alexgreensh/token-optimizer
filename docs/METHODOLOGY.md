@@ -151,7 +151,7 @@ Each key below is one line in the report. All are priced at the window's input-r
 | `checkpoint_restore_estimated` | Unverified restore estimate, excluded from totals. |
 | `structural_estimated` | Realized setup cleanup estimated from dated archives or owner-attested trims, priced at each eligible call's cache-read rate. |
 | `keepwarm_estimated` | Keep-warm, net and signed. The cache-rewrite cost avoided by verified warm resumes, minus the full cost of every warm-up ping (pings that never led to a return, and manual warm-ups booked from the Claude Code mod, included). A paused session is credited once however many warm-ups it received. Can be negative, and is then subtracted. |
-| `autocompact_window_estimated` | Earlier auto-compact, net and signed. The intended calculation uses removed context at following requests' cache-read rates, capped by the user's median continuation and 10 turns, less the compaction's own request cost. Automatic booking is not yet implemented because that cost is not available in the observed transcript records. |
+| `autocompact_window_estimated` | Earlier auto-compact, net and signed. Credits removed context on later reads, capped by the user's median continuation and 10 turns, and subtracts a pessimistic estimate of the compaction request, summary output and rebuild. Only automatic boundaries attributable to an approved earlier window qualify. |
 | `mod_fresh_estimated` | Start-fresh actions taken from the Claude Code mod. The dropped old context (less the handoff) is priced at the cache-read rate for a continuation estimated from your own earlier sessions (cohort median, capped at 10 turns, needs a cohort of 5). Counted as 0 when `handover_rerun` is already positive, so the two overlapping counterfactuals are never stacked. |
 | `expand_overhead` | Estimated expansion-command and reread overhead, subtracted from action savings. |
 | `uncaptured_runtime` | Compression inside sub-agent runs that is never logged as an event |
@@ -411,7 +411,9 @@ Recovery evidence remains provisional and its public panel remains observational
 ### 11.1 Counted total since install (lane A)
 To be written by lane X.
 ### 11.2 Apply safe savings and compact-window advice (lane B)
-The plan uses recent use, age and the user's request mix; changes require an explicit approval and have an undo receipt. A compact-window recommendation requires a 1M window, enough long sessions and positive net savings after compaction costs. An environment override blocks the recommendation. Automatic compaction receipts are not yet booked; the reporting path accepts an existing estimated event but does not manufacture a missing cost.
+The plan uses recent use, age and the user's request mix; changes require an explicit approval and have an undo receipt. A compact-window recommendation requires a 1M window, enough long sessions and positive net savings after compaction costs. An environment override blocks the recommendation.
+
+For an eligible automatic boundary, the compaction request is estimated at the preceding model's cache-read rate while the cache is warm, otherwise its cache-write rate. Summary output is priced at the preceding model's output rate, and the rebuilt context at the next request's cache-write rate. Later savings use each request's cache-read rate and cannot exceed its actual cached read. The continuation is capped at the user's comparable-session median and 10 turns, and stops at the next compaction. These deliberately pessimistic costs are estimates, not observed request charges. A boundary at or above the previous window is excluded, as is any boundary overlapping a manual-compaction receipt. Reports and the dashboard refresh this accounting outside hook paths; a later manual receipt suppresses an overlapping estimate.
 ### 11.3 Cold-session guard (lane C)
 To be written by lane X.
 ### 11.4 Automatic keep-warm (lane D)

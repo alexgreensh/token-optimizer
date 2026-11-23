@@ -952,7 +952,7 @@ def _counted_session_cache_mix(conn, session_uuid, tier_data, memo, rate_key=Non
     return mix
 
 
-def _counted_rollup_rows(rows, conn=None, mix_memo=None):
+def _counted_rollup_rows(rows, conn=None, mix_memo=None, *, for_close=False):
     """Only per-row verified prices are eligible; retain all stored token evidence.
 
     A stored row without a current per-turn price keeps its signed repeat-read
@@ -1012,6 +1012,10 @@ def _counted_rollup_rows(rows, conn=None, mix_memo=None):
                 or (row["source"] == "mk" and not current)):
             out["estimated_magnitude_events"] += 1
         out["refresh_incomplete_events"] += bool(detail.get("refresh_incomplete"))
+    if for_close:
+        # Persist the unrounded daily amount. The lifetime sum rounds once.
+        out["total_usd"] = out["oneshot_usd"] + out["reread_usd"]
+        return out
     out["oneshot_usd"] = round(out["oneshot_usd"], 6)
     out["oneshot_class_premium_usd"] = round(out["oneshot_class_premium_usd"], 6)
     out["reread_miss_premium_usd"] = round(out["reread_miss_premium_usd"], 6)
@@ -1048,21 +1052,10 @@ def _counted_cumulative_summary(days=None, now=None):
         start = end - _measure_facade.timedelta(days=max(1, int(days))) if days is not None else None
         conn = _measure_facade._init_trends_db()
         try:
-            excluded = set()
-            if _measure_facade._ensure_counted_views(conn):
-                excluded.update(r[0] for r in conn.execute(
-                    "SELECT 'se:'||id FROM main.savings_events EXCEPT "
-                    "SELECT 'se:'||id FROM counted_savings_events"))
-                excluded.update(r[0] for r in conn.execute(
-                    "SELECT 'ce:'||id FROM main.compression_events EXCEPT "
-                    "SELECT 'ce:'||id FROM counted_compression_events"))
+            from . import counted_closes
+            selected, stored, candidates, orphaned = counted_closes.selected_rows(_measure_facade, conn)
             rows = []
-            stored = _measure_facade._counted_stored_rows(conn)
-            candidates = _measure_facade._counted_candidate_events(conn)
-            orphaned = _measure_facade._counted_pricing_v5.orphaned_keys(stored.values(), {c[0] for c in candidates}, conn)
-            for row in stored.values():
-                if row["event_key"] in excluded or row["event_key"] in orphaned:
-                    continue
+            for row in selected:
                 if start is not None:
                     if row["source"] == "mk":
                         try:
@@ -1107,8 +1100,7 @@ def _counted_cumulative_summary(days=None, now=None):
             # provisional, so the card reports re-measurement instead of a final
             # figure. Rows with no session can never be re-scored and are left
             # to the coverage notes.
-            awaiting = [row for row in rows if row.get("session_uuid")
-                        and _measure_facade._counted_row_awaits_rescore(row)]
+            awaiting = counted_closes.awaiting_rescore(_measure_facade, rows)
             remeasuring_sessions = len({row["session_uuid"] for row in awaiting})
             media_rows = [row for row in rows if row["source"] == "md"]
             media_priced = [row for row in media_rows if int(row["tokens"] or 0) > 0]
@@ -6278,10 +6270,9 @@ def _live_savings_payload(days=None):
 def _headline_tripwire(measured_usd, events, days):
     """Flag a measured-savings collapse that activity does not explain.
 
-    Keeps one reading per day. If the measured total fell below half of the
-    most recent earlier reading while the number of savings events stayed at
-    70%+ of it, the likely cause is a calculation change, not less saving, and
-    a message is returned so the report says so instead of quietly shrinking.
+    Keeps one reading per day. If the measured total fell more than 10% from
+    the most recent earlier reading while at least 90% of the events remain,
+    return a message asking the user to report the possible calculation change.
     Returns None otherwise. Never raises."""
     _measure_facade = _compat.facade()
     try:
@@ -6298,8 +6289,8 @@ def _headline_tripwire(measured_usd, events, days):
         hist[key] = rows[-14:]
         _measure_facade._write_baseline_state(path, hist)
         if (prior and float(prior.get("usd") or 0) >= 20
-                and measured_usd < 0.5 * float(prior["usd"])
-                and events >= 0.7 * int(prior.get("events") or 0)):
+                and measured_usd < 0.9 * float(prior["usd"])
+                and events >= 0.9 * int(prior.get("events") or 0)):
             return (f"Measured savings fell from ${float(prior['usd']):,.0f} ({prior['date']}) to "
                     f"${measured_usd:,.0f} while activity held steady. That usually means a "
                     f"calculation change, not less saving. Please report it.")
@@ -6342,6 +6333,9 @@ def savings_report(days=None, as_json=None):
     summary["action_savings"] = _measure_facade._action_savings_components(
         summary, summary["reread_avoided"])
 
+    from . import counted_headline
+    summary["counted_headline"] = counted_headline.build(_measure_facade)
+    summary["overall_headline"] = overall = counted_headline.build_overall(_measure_facade)
     if as_json:
         print(_measure_facade.json.dumps(summary, indent=2))
         return
@@ -6380,9 +6374,10 @@ def savings_report(days=None, as_json=None):
     _est_cents = _shown["estimates_cents"]
     _money = _measure_facade._format_cents
 
-    print("\n  Token Optimizer Savings Report")
+    since_display = (overall or summary["counted_headline"])["display"]
+    print(since_display["long"] if since_display else "Since-install savings are still being counted.")
+    print(f"\n  Last {days} days ({start} to {end})")
     print(f"  {'=' * 58}")
-    print(f"  Period: Last {days} days ({start} to {end})")
     print(_compat.facade()._headline.cli_headline(summary["token_headline"], days, summary.get("session_effect")))
 
     # Headline transformation. With the session-weight pool live it is the
@@ -6723,16 +6718,6 @@ def savings_report(days=None, as_json=None):
         net_total = _mo(summary["action_savings"]["net_total_usd"])
         print(f"  i  signed adjustments give a net total of ~${net_total:.2f}{per}; "
               "the headline has a $0 floor")
-    try:
-        since = _measure_facade._savings_since_install()
-    except Exception:
-        since = None
-    since_all_in = (since or {}).get("all_in") or {}
-    if float(since_all_in.get("total_usd") or 0) > 0:
-        so_far = " so far" if since_all_in.get("routing_pending") or since_all_in.get("remeasuring") else ""
-        print(f"  = SINCE INSTALL ({since['install_date']}, {since['days']} days): "
-              f"~${since_all_in['total_usd']:,.2f}{so_far} (same parts, added up)")
-
     # Informational (not summed): one-time first-trim + progressive disclosure.
     one_time = summary.get("one_time_setup") or {}
     if int(one_time.get("tokens_saved", 0) or 0) > 0:

@@ -1,7 +1,7 @@
 // Savings story (U9): the Savings tab, top to bottom. Savings are big and
 // confident; the measured / estimated breakdown lives only in the folds.
-//   1. Hero band: three huge numbers (30-day total with routing included,
-//      saved since install with routing included, tokens kept out of context).
+//   1. Hero band: the stored since-install total and its correction, with
+//      the moving period and potential savings alongside it.
 //   2. Transformation (when the payload says ok) and "Your limits go further".
 //   3. Still on the table: computable opportunities per period, warm accent,
 //      each with one action. Never part of a savings total.
@@ -128,8 +128,7 @@ function savingsStoryHtml(data, extras) {
   var days = Number(s.period_days) || 30;
   var out = '';
 
-  // ---- 1. Hero: three huge numbers. The breakdown lives only in the folds. ----
-  // Measured and estimated savings, plus the routing estimate, are one number.
+  // ---- 1. Hero: the stored lifetime amount leads. The split stays in the fold. ----
   // Setup cleanup recorded by the trim ledger sits inside logged_usd (the
   // structural pool always has), so it is its own row, taken out of
   // "Context removed" once.
@@ -139,8 +138,9 @@ function savingsStoryHtml(data, extras) {
   var routing30 = has(mr.realized_cost_usd) ? num(mr.realized_cost_usd) : num(as.routing_usd);
   if (!(routing30 > 0)) routing30 = 0;
   var bigTotal = totalUsd + routing30;
+  var overall = s.overall_headline;
   function sum(rows, k) { return rows.reduce(function(a, r) { return a + num(r[k]); }, 0); }
-  if (measured.length || estimated.length) {
+  if (overall || measured.length || estimated.length) {
     function cents(rows) { return rows.reduce(function(n, r) { return n + Math.round(num(r.usd) * 100); }, 0); }
     function table(title, rows) {
       if (!rows.length) return '';
@@ -273,24 +273,27 @@ function savingsStoryHtml(data, extras) {
     if (SIh && SIh.measured > 0) tipSinceLines.push({ html: 'Measured: ' + usd(SIh.measured) });
     if (SIh && SIh.estimated > 0) tipSinceLines.push({ html: 'Estimated: ' + usd(SIh.estimated) });
     if (SIh && SIh.routing > 0) tipSinceLines.push({ html: 'Model routing (estimate): ' + usd(SIh.routing) });
+    var lifetimeLabel = '<span class="st-mega__unit">saved since you installed';
+    var hasDailyClose = Object.prototype.hasOwnProperty.call(s, 'overall_headline');
+    var oldSince = !hasDailyClose && SIh && SIh.all > 0
+      ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-since">' + usd(SIh.all) + '</button>' +
+        tipCard('st-tip-since', 'Since ' + esc(SIh.date || 'install'), tipSinceLines) +
+        lifetimeLabel + soFar(soFarAll) + '</span></div>' : '';
+    var rolling = hasDailyClose
+      ? '<div class="st-mega__item"><strong>' + usd(bigTotal) + '</strong><span class="st-mega__unit">Last ' + days + ' days (moves as days roll off)</span></div>'
+      : '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-total">' + usd(bigTotal) + '</button>' +
+        tipCard('st-tip-total', 'What makes up ' + usd(bigTotal), tipTotalLines) +
+        '<span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>';
     out += '<div class="card st-hero">' +
       '<h2 class="st-h">What Token Optimizer saved</h2>' +
       '<div class="st-mega__row st-mega__row--hero">' +
-        (has(mr.routing_enabled) ? (SIh && SIh.all > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-since">' + usd(SIh.all) + '</button>' +
-          tipCard('st-tip-since', 'Since ' + esc(SIh.date || 'install'), tipSinceLines) +
-          '<span class="st-mega__unit">saved since you installed' + soFar(soFarAll) + '</span></div>' : '') + '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-total">' + usd(bigTotal) + '</button>' +
-          tipCard('st-tip-total', 'What makes up ' + usd(bigTotal), tipTotalLines) +
-          '<span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' : '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-total">' + usd(bigTotal) + '</button>' +
-          tipCard('st-tip-total', 'What makes up ' + usd(bigTotal), tipTotalLines) +
-          '<span class="st-mega__unit">saved in the last ' + days + ' days' + soFar(soFar30) + '</span></div>' + (SIh && SIh.all > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--usd st-tip" aria-describedby="st-tip-since">' + usd(SIh.all) + '</button>' +
-          tipCard('st-tip-since', 'Since ' + esc(SIh.date || 'install'), tipSinceLines) +
-          '<span class="st-mega__unit">saved since you installed' + soFar(soFarAll) + '</span></div>' : '')) +
+        (overall ? savingsOverallAmount(overall) + rolling : (has(mr.routing_enabled) ? oldSince + rolling : rolling + oldSince)) +
         (totalTok > 0 ? '<div class="st-mega__item"><button type="button" class="st-mega st-mega--tok st-tip" aria-describedby="st-tip-tokens">' + tok(totalTok) + '</button>' +
           tipCard('st-tip-tokens', tok(totalTok) + ' tokens kept out of context', tipTokLines) +
           '<span class="st-mega__unit">tokens kept out of context in ' + days + ' days' + soFar(cp.remeasuring === true) + '</span></div>' : '') +
       '</div>' +
       (soFar30 || soFarAll ? '<p class="st-lead st-progress">Updating your history after an upgrade' + (left > 0 ? ' (' + count(left) + ' session' + (left === 1 ? '' : 's') + ' left)' : '') + '. These totals are in progress and will change when it finishes.</p>' : '') +
-      f.fold('How this is calculated', method + (SIh && SIh.all > 0 ? savingsSinceInstallBody(data, SIh) : '')) +
+      f.fold('How this is calculated', method + (SIh && SIh.all > 0 ? savingsSinceInstallBody(data, SIh) : '') + savingsCountedSplit(s)) +
       '</div>';
   }
 
@@ -319,6 +322,40 @@ function savingsStoryHtml(data, extras) {
   return out ? '<section class="st" aria-label="What Token Optimizer saved">' + out + '</section>' : '';
 }
 
+function savingsOverallAmount(overall) {
+  var f = savingsStoryFmt();
+  var change = overall.last_correction;
+  var note = change ? String(change.reason).replace(/\.$/, '') + ' (' +
+    f.day(change.date) + ', ' + (change.delta_usd > 0 ? '+' : '') + savingsCents(change.delta_usd) + ').' : '';
+  return '<div class="st-mega__item"><span class="st-mega st-mega--usd">' +
+    f.usd(overall.usd) + '</span><span class="st-mega__unit">saved since you installed</span>' +
+    (note ? '<p class="st-sub">' + esc(note) + '</p>' : '') +
+    (overall.rechecking ? '<p class="st-sub">Rechecking an earlier savings figure.</p>' : '') + '</div>';
+}
+
+function savingsCountedSplit(savings) {
+  var counted = savings.counted_headline;
+  if (!counted || !counted.since) return '';
+  var date = new Date(counted.since + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return '<p>Counted since ' + esc(date) + ' ' + savingsCents(counted.usd) + ' in context removals and repeat reads.' +
+    (counted.last_correction ? ' ' + esc(counted.last_correction.reason) : '') + '</p>';
+}
+
+function savingsOverallFallback(data) {
+  var s = data.savings || {}, overall = s.overall_headline, f = savingsStoryFmt();
+  if (!overall) return '';
+  var si = savingsSinceInstall(data), action = s.action_savings || {};
+  return '<div class="card st-hero">' + savingsOverallAmount(overall) +
+    '<p>Last ' + (Number(s.period_days) || 30) + ' days (moves as days roll off) <strong>' +
+    f.usd(f.num(action.total_usd) + Math.max(0, f.num(action.routing_usd))) + '</strong></p>' +
+    f.fold('How this is calculated', (si ? savingsSinceInstallBody(data, si) : '') + savingsCountedSplit(s)) + '</div>';
+}
+
+function savingsLimitsLifetime(data) {
+  var headline = ((data.savings || {}).overall_headline || {}).display;
+  return headline ? '<p class="st-sub">' + esc(headline.long) + '</p>' : '';
+}
+
 // "Apr to Jul" (years added when they differ or are needed), or ''.
 function savingsMonthRange(period, joiner) {
   period = period || {};
@@ -345,9 +382,12 @@ function savingsSinceInstallBody(data, SI) {
   var basis = savingsRoutingBasis(data);
   var period = savingsMonthRange(ai.routing_majority_period, ' to ');
   var since = SI.date ? esc_(SI.date) : 'install';
-  var split = '<p><strong>Since ' + since + ', ' + savingsCents(SI.all) + '</strong></p><ul>' +
+  var overall = s.overall_headline;
+  var updated = overall && Math.abs(overall.usd - SI.all) >= 0.005;
+  var split = '<p><strong>' + (updated ? 'Latest breakdown since ' : 'Since ') + since +
+    (updated ? '' : ', ' + savingsCents(SI.all)) + '</strong></p><ul>' +
     (SI.measured > 0 ? '<li>Measured: ' + savingsCents(SI.measured) + '. Context removed, cheaper cache writes and re-reads avoided, counted event by event.</li>' : '') +
-    (SI.estimated > 0 ? '<li>Estimated: ' + savingsCents(SI.estimated) + '. Setup cleanup from archives, handovers and other documented estimates.</li>' : '') +
+    (SI.estimated > 0 ? (overall ? '<li>Estimated (can move) ' : '<li>Estimated: ') + savingsCents(SI.estimated) + '. Setup cleanup from archives, handovers and other documented estimates.</li>' : '') +
     (SI.routing > 0 ? '<li>Model routing, estimated: ' + savingsCents(SI.routing) + '. ' + esc_(basis.lead) + (period ? ' Most of it from ' + esc_(period) + '.' : '') + '</li>' : '') +
     (mr.routing_enabled === false ? '<li>Routing off</li>' : '') + '</ul>';
   var alt = SI.routing > 0 && basis.kind === 'stated' && has(ai.routing_measured_baseline_opus_share) && has(ai.routing_measured_baseline_realized_cost_usd)
@@ -552,7 +592,7 @@ function savingsLimitsHtml(data) {
     '</div>' +
     '<div class="st-limits__body">' +
       bars +
-      '<p class="st-sub">' + esc(basis) + '</p>' +
+      '<p class="st-sub">' + esc(basis) + '</p>' + savingsLimitsLifetime(data) +
       (win && !live.length ? '<p class="st-sub">Last reading from your meter history.</p>' : '') +
       f.fold('How this is calculated', method) +
     '</div></div>';
@@ -595,7 +635,7 @@ function savingsOnTableHtml(data, extras) {
   }
   var changeWord = rows.length === 1 ? 'this change' : (rows.length === 2 ? 'these two changes' : 'these ' + rows.length + ' changes');
   return '<div class="card st-table">' +
-    '<h2 class="st-h">Still on the table</h2>' +
+    '<h2 class="st-h">' + (s.overall_headline ? 'Could save (not saved yet)' : 'Still on the table') + '</h2>' +
     '<div class="st-table__body"><p class="st-mega__item st-mega__item--card">' +
       '<span class="st-mega st-mega--route st-mega--card">' + usd(total) + '</span><span class="st-mega__unit">more every ' + days + ' days if you make ' + changeWord + '</span></p>' +
     '<div class="st-table__rows"><ul class="st-rows st-rows--card">' + rows.map(function(r) {
@@ -764,7 +804,8 @@ function savingsLedgerHtml(data) {
     out += '<h3 class="ts-section-label st-gap">Since you installed' + (SI.date ? ' on ' + esc(SI.date) : '') + ' (' + f.count(SI.days) + ' days)</h3><ul class="st-rows">' +
       SI.parts.map(function(p) { return row(p[0], p[1], 0); }).join('') +
       (SI.routing ? row(savingsRoutingBasis(data).ledger, SI.routing, 0) : '') +
-      '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(SI.all) + '</strong></span></li></ul>';
+      (s.overall_headline && Math.abs(s.overall_headline.usd - SI.all) >= 0.005 ? '' :
+        '<li><span><strong>Total</strong></span><span class="st-v"><strong>' + cents(SI.all) + '</strong></span></li>') + '</ul>';
   }
   var cp = s.counted_period || {};
   if (cp.pricing_note) out += '<p>' + esc(cp.pricing_note) + '</p>';

@@ -4238,11 +4238,7 @@ var DB = (function() {
         if (v >= 10)   return '$' + v.toFixed(1);
         return '$' + v.toFixed(2);
       }
-      // Validate the numbers this template did not produce. The guard above only
-      // proves the payload SHAPE; a window missing a numeric field would render
-      // "NaN%" to the user, which is worse than the card being absent. Every
-      // figure here originates in runway_snapshot, so a bad window means that
-      // contract changed and the honest response is to drop the window.
+      // Ignore malformed window metrics before rendering the meter.
       var rwCards = rw.windows.map(function (w) {
         var headPct = Number(w.headroom_pct);
         var offPct = w.would_be_capped ? 0 : Number(w.without_headroom_pct);
@@ -4484,6 +4480,7 @@ var DB = (function() {
         '</div>' +
       '</div>';
     }
+    if (html && typeof savingsLimitsLifetime === 'function') html += savingsLimitsLifetime(data);
     return html;
   }
 
@@ -4713,10 +4710,7 @@ var DB = (function() {
       parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + moneyCents(oppCents.output) + per + ' in output.');
     }
 
-    // U9: the savings story leads when the payload carries session_effect;
-    // older payloads (or a template without the inlined module) keep the
-    // previous layout unchanged. extras carries the "Still on the table" fix
-    // targets and the merged "More changes you could make" parts.
+    // The detailed story needs session_effect. The stored total can render without it.
     var story = '';
     if (storyOn) {
       try {
@@ -4744,7 +4738,8 @@ var DB = (function() {
       '</div>' +
       '<div class="last-updated">Updated ' + esc(updTxt) + ' &middot; refreshes after every session</div>';
 
-    html += story || runwayCardHtml();
+    var overallFallback = !story && typeof savingsOverallFallback === 'function' ? savingsOverallFallback(data) : '';
+    html += story || (overallFallback + runwayCardHtml());
     var storyHead = html; html = '';
 
     // ---- Tokens Saved card: the full card (hero + spent-vs-saved + model-
@@ -4948,7 +4943,7 @@ var DB = (function() {
     html += '</div>';
     html += fold('Token savings and model usage', tokensSavedCardHtml(s));
     var ledgerHtml = html;
-    html = storyHead + (story ? '' : ledgerHtml);
+    html = storyHead + (story ? '' : overallFallback ? fold('Full ledger and history', ledgerHtml) : ledgerHtml);
 
     // ---- SAVE MORE: the parts list was built before the story render (see
     // above); story mode already folded it into "Still on the table". ----
@@ -4980,7 +4975,7 @@ var DB = (function() {
       moreFolds.push('<details class="fold"><summary>Full ledger and history</summary><div class="fold__body">' + ledgerBody + '</div></details>');
     } else if (parts.length > 0) {
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);border:1px solid var(--c-amber);box-shadow:0 0 0 1px rgba(217,164,65,0.18), 0 0 44px rgba(217,164,65,0.12);">';
-      html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-text-dim);">Money on the table &middot; opportunity</div>';
+      html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-text-dim);">' + (overallFallback ? 'Could save (not saved yet)' : 'Money on the table &middot; opportunity') + '</div>';
       if (opportunityMo > 0) {
         html += '<div style="display:flex;align-items:baseline;gap:var(--s-2);flex-wrap:wrap;">' +
             '<span style="font-family:var(--font-mono);font-weight:300;font-size:76px;line-height:0.9;color:var(--c-text-main);text-shadow:0 0 30px rgba(217,164,65,0.5);letter-spacing:-0.02em;">' + moneyCents(oppCents.total) + '</span>' +

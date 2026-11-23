@@ -4576,7 +4576,7 @@ def _rotate_checkpoint_events():
 
 
 def _prune_trends_db():
-    """Remove session_log rows older than the retention threshold. No-op when unlimited (0)."""
+    """Prune old source rows. Daily closes and corrections outlive retention."""
     _measure_facade = _compat.facade()
     if _measure_facade._TRENDS_RETENTION_DAYS <= 0:
         return

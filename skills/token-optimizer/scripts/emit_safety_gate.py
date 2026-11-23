@@ -58,6 +58,21 @@ _CRIT_ERROR_RE = re.compile(
     r"(?:[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\b|\b(?:error|errors|exception|failed|failure|failures)\b)",
     re.I,
 )
+_CRIT_NON_ERROR_FAILURE_RE = re.compile(
+    r"(?:"
+    r"(?i:\bcommand\s+not\s+found\b)|"
+    r"(?i:\bno\s+such\s+file\s+or\s+directory\b)|"
+    r"^CONFLICT\b|(?i:\bmerge\s+conflict\b)|"
+    r"\[rejected\]|"
+    r"^\s*Killed(?:\s|$|:)|\bKilled:\s*\d+|"
+    r"(?i:\bexceeded\s+its\s+progress\s+deadline\b)|"
+    r"(?i:\bno\s+space\s+left\s+on\s+device\b)|"
+    r"(?i:\baddress\s+already\s+in\s+use\b)|"
+    r"(?i:\bread-only\s+file\s+system\b)|"
+    r"(?i:\bcannot\s+(?:access|open|create|remove)\b)|"
+    r"(?i:\b(?:could|unable)\s+to\s+resolve\b)"
+    r")"
+)
 _BENIGN_ZERO_ERR_RE = re.compile(
     r"\b(?:0|no|zero|without)\s+(?:errors?|failures?|failed)\b|"
     r"\b(?:error_count|errors|failures|failed)\s*[:=]\s*0\b",
@@ -128,6 +143,51 @@ def _is_search_context(feature: str, tool_name: str, command: str, comp_clean: s
     return False
 
 
+_TOKEN_RE = re.compile(r"[^\s,;:'\"()\[\]{}]+")
+_LINENO_TOKEN_RE = re.compile(r"(?:^|[:\s])(\d+):|:(\d+)\b")
+
+
+def _build_comp_index(comp_clean: str, feature: str) -> dict:
+    """Pre-index compressed text in O(M) so per-raw-line checks are O(1)."""
+    lines_set: set[str] = set()
+    prefix80_set: set[str] = set()
+    tokens_set: set[str] = set()
+    lineno_lines: dict[str, list[str]] = {}
+    for raw_ln in comp_clean.splitlines():
+        s = raw_ln.strip()
+        if not s:
+            continue
+        lines_set.add(s)
+        if len(s) > 80:
+            prefix80_set.add(s[:80])
+        for tok in _TOKEN_RE.findall(s):
+            tokens_set.add(tok)
+            if "/" in tok:
+                tokens_set.add(tok.rsplit("/", 1)[-1])
+            if ":" in tok:
+                head = tok.split(":", 1)[0]
+                if head:
+                    tokens_set.add(head)
+                    if "/" in head:
+                        tokens_set.add(head.rsplit("/", 1)[-1])
+        s_low = s.lower()
+        for m in _LINENO_TOKEN_RE.finditer(s):
+            lno = m.group(1) or m.group(2)
+            if lno:
+                lst = lineno_lines.get(lno)
+                if lst is None:
+                    lineno_lines[lno] = [s_low]
+                elif len(lst) < 8:
+                    lst.append(s_low)
+    return {
+        "lines": lines_set,
+        "prefix80": prefix80_set,
+        "tokens": tokens_set,
+        "lineno_lines": lineno_lines,
+        "feature": feature,
+    }
+
+
 def _line_is_visible(
     line: str,
     comp_clean: str,
@@ -135,7 +195,37 @@ def _line_is_visible(
     *,
     is_search: bool = False,
     feature: str = "",
+    comp_index: dict | None = None,
 ) -> bool:
+    if comp_index is not None:
+        if line in comp_index["lines"]:
+            return True
+        if len(line) > 80 and line[:80] in comp_index["prefix80"]:
+            return True
+        tokens = comp_index["tokens"]
+        if _SEARCH_MATCH_LINE_RE.match(line):
+            parts = line.split(":", 2)
+            if len(parts) == 3:
+                fname, lineno, body = parts[0], parts[1], parts[2].strip()
+                base = fname.rsplit("/", 1)[-1]
+                if (fname in tokens or base in tokens) and lineno in comp_index["lineno_lines"]:
+                    if not body:
+                        return True
+                    body_key = body[:40].lower()
+                    if any(body_key in cand for cand in comp_index["lineno_lines"][lineno]):
+                        return True
+        if (
+            _PLAIN_PATH_LINE_RE.match(line) or (is_search and "/" in line and " " not in line)
+        ) and line.rsplit("/", 1)[-1] in tokens:
+            return True
+        if feature == "cmd_git_diff_stat" and "|" in line:
+            left, right = line.split("|", 1)
+            fname = left.strip().rsplit("/", 1)[-1]
+            nums = re.findall(r"\d+", right)
+            if fname and fname in tokens and (not nums or nums[0] in tokens):
+                return True
+        return False
+
     if line in comp_clean or (len(line) > 80 and line[:80] in comp_clean):
         return True
     if _SEARCH_MATCH_LINE_RE.match(line):
@@ -161,19 +251,48 @@ def _line_is_visible(
     return False
 
 
-def _critical_reasons_for_line(line: str, is_search: bool, is_gh_list: bool) -> list[str]:
+_CRIT_SEARCH_STRICT_RE = re.compile(
+    r'traceback \(most recent call last\)|^\s*file ".+", line \d+|'
+    r"^\s*at\s+\S+\s+\([^)]+:\d+:\d+\)|^goroutine \d+ \[|"
+    r"\b(?:exit(?:ed with)?|return(?:ed)?)\s+(?:code|status)\s+[1-9]\d*\b|"
+    r"^error:\s*exit code\s+[1-9]\d*\b|"
+    r"\b(?:fatal|panic|panicked|segfault|segmentation fault|core dumped|out of memory)\b",
+    re.I,
+)
+
+
+def _critical_reasons_for_line(
+    line: str,
+    is_search: bool,
+    is_gh_list: bool,
+    *,
+    has_search_strict: bool = True,
+) -> list[str]:
     if is_gh_list and "\t" in line and (
         "completed\tsuccess" in line.lower() or "\tsuccess\t" in line.lower()
     ):
         return []
     if is_search:
-        if _SEARCH_MATCH_LINE_RE.match(line) or _PLAIN_PATH_LINE_RE.match(line):
+        if _PLAIN_PATH_LINE_RE.match(line):
             return []
+        if _SEARCH_MATCH_LINE_RE.match(line):
+            # Search hits for ordinary source words like "error" may compress,
+            # but hits containing hard failure signals (FATAL/panic, Traceback,
+            # non-zero exit code) must stay visible verbatim.
+            if not has_search_strict or not _CRIT_SEARCH_STRICT_RE.search(line):
+                return []
+            strict_reasons: list[str] = []
+            if _CRIT_TRACEBACK_RE.search(line):
+                strict_reasons.append("hidden_traceback")
+            if _CRIT_EXIT_RE.search(line):
+                strict_reasons.append("hidden_exit_code")
+            if _CRIT_PANIC_RE.search(line):
+                strict_reasons.append("hidden_panic_fatal")
+            return strict_reasons
         if not (
             _SEARCH_TOOL_DIAG_RE.match(line)
-            or _CRIT_TRACEBACK_RE.search(line)
-            or _CRIT_EXIT_RE.search(line)
-            or _CRIT_PANIC_RE.search(line)
+            or (has_search_strict and _CRIT_SEARCH_STRICT_RE.search(line))
+            or _CRIT_NON_ERROR_FAILURE_RE.search(line)
         ):
             return []
     reasons: list[str] = []
@@ -185,6 +304,8 @@ def _critical_reasons_for_line(line: str, is_search: bool, is_gh_list: bool) -> 
         reasons.append("hidden_failing_test")
     if _CRIT_PANIC_RE.search(line):
         reasons.append("hidden_panic_fatal")
+    if not reasons and _CRIT_NON_ERROR_FAILURE_RE.search(line):
+        reasons.append("hidden_error")
     if not reasons and _CRIT_ERROR_RE.search(line) and not _BENIGN_ZERO_ERR_RE.search(line):
         reasons.append("hidden_error")
     return reasons
@@ -257,25 +378,33 @@ def classify_output(
     ):
         return VISIBLE_OK, []
 
-    comp_clean = _ANSI_RE.sub("", compressed)
+    comp_clean = _ANSI_RE.sub("", compressed) if "\x1b" in compressed else compressed
     comp_low = comp_clean.lower()
+    comp_index = _build_comp_index(comp_clean, feature)
     is_search = _is_search_context(feature, tool_name, command, comp_clean)
     is_gh_list = feature == "cmd_gh_list" or (
         tool_name == "Bash" and (command or "").strip().startswith("gh ")
     )
+    has_ansi = "\x1b" in original
+    has_search_strict = bool(_CRIT_SEARCH_STRICT_RE.search(original)) if is_search else True
 
     crit_reasons: set[str] = set()
     hidden_nonempty = 0
     orig_lines = original.splitlines()
     for raw_line in orig_lines:
-        line = _ANSI_RE.sub("", raw_line).strip()
+        line = (_ANSI_RE.sub("", raw_line) if has_ansi else raw_line).strip()
         if not line or _line_is_visible(
-            line, comp_clean, comp_low, is_search=is_search, feature=feature
+            line, comp_clean, comp_low, is_search=is_search, feature=feature, comp_index=comp_index
         ):
             continue
         hidden_nonempty += 1
-        creasons = _critical_reasons_for_line(line, is_search, is_gh_list)
+        creasons = _critical_reasons_for_line(
+            line, is_search, is_gh_list, has_search_strict=has_search_strict
+        )
         if creasons:
+            # Substring fallback only for the rare critical line not matching whole-line index.
+            if line in comp_clean or (len(line) > 80 and line[:80] in comp_clean):
+                continue
             core = line.split(": ", 1)[-1][:60].strip()
             if not (core and len(core) >= 12 and core.lower() in comp_low):
                 crit_reasons.update(creasons)

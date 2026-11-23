@@ -1630,7 +1630,9 @@ def _compress_disk_stats(output):
     tail = lines[-5:]
     kept = len(head) + len(tail)
     result = head
-    result.append(f"... ({len(lines) - kept} entries omitted)")
+    result.append(
+        f"... ({len(lines) - kept} entries omitted, lines {len(head) + 1}-{len(lines) - len(tail)})"
+    )
     result.extend(tail)
     return "\n".join(result)
 

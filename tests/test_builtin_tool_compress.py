@@ -515,7 +515,7 @@ def test_measured_features_appear_in_savings_json_labels_limits_and_dashboard(tm
         )
         conn.commit()
 
-        # Plan-limits headroom floor (_runway_saved_tokens) includes both measured features.
+        # Plan-limits capacity floor (_runway_saved_tokens) includes both measured features.
         runway_tokens = savings._runway_saved_tokens(conn, "2020-01-01T00:00:00")
         assert runway_tokens >= 2100
     finally:

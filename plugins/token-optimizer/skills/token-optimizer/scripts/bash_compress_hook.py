@@ -299,12 +299,18 @@ def _run(payload: dict) -> None:
                     _cov("compressed", FEATURE_BASH_REREAD, "cat", stdout, _removed_tokens(stdout, _cat_out))
                     _emit_updated_tool_output(_cat_out, stderr, nudge=_nudge)
                 else:
-                    if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
-                        return
                     _cov("not_read_only", "cat_file_read", text=stdout)
                     if _nudge:
                         _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
                 return
+        # Never chop deliberate bare cat / cat-chain file reads even when cwd
+        # is unavailable or the file path cannot be resolved on disk.
+        from large_output_policy import is_deliberate_content_read as _is_delib_read
+        if _is_delib_read(command):
+            _cov("not_read_only", "deliberate_read", text=stdout)
+            if _nudge:
+                _emit_updated_tool_output(stdout, stderr, nudge=_nudge)
+            return
     except Exception:
         pass  # Fail open
 
@@ -312,7 +318,7 @@ def _run(payload: dict) -> None:
     try:
         from post_run_classify import unsafe_compound_output
         if unsafe_compound_output(command):
-            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov, exit_code=exit_code):
                 return
             _cov("not_read_only", "mixed_output", text=stdout)
             if _nudge:
@@ -397,7 +403,7 @@ def _run(payload: dict) -> None:
                             return
                 except Exception:
                     pass  # Fail open: raw output stands
-            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov, exit_code=exit_code):
                 return
             _cov("not_read_only", reason, text=stdout)
             if _post_run_shadow is not None:
@@ -434,7 +440,7 @@ def _run(payload: dict) -> None:
 
         # --- check for failure (exit code or stderr patterns) ---
         if _looks_like_failure(exit_code, stderr):
-            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov, exit_code=exit_code):
                 return
             _cov("error_or_short", "failed_command", text=stdout)
             if _nudge:
@@ -450,7 +456,7 @@ def _run(payload: dict) -> None:
         # literal "error" are ordinary search hits, not tool failures.
         _is_search_cmd = _detect_pattern(compress_command) == "search_results"
         if _stdout_has_error_patterns(cleaned_stdout, is_search=_is_search_cmd):
-            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov, exit_code=exit_code):
                 return
             _cov("error_or_short", "error_words", text=stdout)
             if _nudge:
@@ -473,11 +479,13 @@ def _run(payload: dict) -> None:
         # full ANSI-stripped stdout (never a lossy preview) so changed-line diffs
         # are exact; prefer dedup only when it beats single-output compression.
         deduped = _crossturn_dedup(command, cleaned_stdout, str(payload.get("tool_use_id", "") or ""))
-        _log_feature = "bash_search_noise_fold" if (comp_helped and "[Folded noisy matches:" in best) else "bash_compress_pipeline"
+        _log_feature = "bash_compress_pipeline"
+        if comp_helped and "[Folded noisy matches:" in best:
+            _log_feature = "bash_search_noise_fold"
         if deduped is not None and len(deduped) < len(best):
             best, comp_helped = deduped, True
             _log_feature = "crossturn_dedup"
-        else:
+        elif _log_feature != "bash_search_noise_fold":
             try:
                 from command_compress_extra import feature_for_command as _extra_feat
                 _log_feature = _extra_feat(compress_command, cleaned_stdout) or "bash_compress_pipeline"
@@ -485,7 +493,7 @@ def _run(payload: dict) -> None:
                 pass
 
         if not comp_helped:
-            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov):
+            if _try_large_output_policy(command, stdout, stderr, payload, _nudge, _cov, exit_code=exit_code):
                 return
             _cov("under_10pct", "read_only", _detect_pattern(command), stdout)
             if _nudge:
@@ -870,23 +878,23 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
             pass
 
         # Log to trends.db with the dedicated B2 feature when applicable, else build_output_compress
-        _build_feature = "build_output_compress"
+        _feature = "build_output_compress"
         try:
             from command_compress_extra import feature_for_command as _extra_feat
-            _build_feature = _extra_feat(command, cleaned_stdout) or "build_output_compress"
+            _feature = _extra_feat(command, cleaned_stdout) or "build_output_compress"
         except Exception:
             pass
         try:
             from emit_safety_gate import gate_or_none as _emit_gate_none
             compressed = _emit_gate_none(
-                stdout, compressed, feature=_build_feature,
+                stdout, compressed, feature=_feature,
                 tool_name="Bash", command=command, require_expand=True,
             )
         except Exception:
             compressed = None
         if compressed is None:
             return None
-        _log_event(command, cleaned_stdout, compressed, feature=_build_feature)
+        _log_event(command, cleaned_stdout, compressed, feature=_feature)
 
         return compressed
     except Exception:
@@ -895,13 +903,16 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
 
 def _try_large_output_policy(command: str, stdout: str, stderr: str,
                              payload: dict, nudge: str | None,
-                             cov_fn) -> bool:
-    """Run large_output_policy after existing compressors (shadow by default).
+                             cov_fn, *, exit_code: int | None = None) -> bool:
+    """Run large_output_policy after existing compressors (opt-in, default OFF).
 
-    Returns True only in active mode when compression + archival succeeded and
-    updatedToolOutput was emitted. In shadow mode always returns False so the
-    caller's output and coverage path stay byte-identical to today.
+    When TOKEN_OPTIMIZER_LARGE_OUTPUT != '1', returns False immediately without
+    importing or inspecting stdout. When enabled ('1'), archives first, passes
+    through the shared emit safety verifier (with exit_code), logs measured
+    savings under large_output_policy, and emits updatedToolOutput.
     """
+    if os.environ.get("TOKEN_OPTIMIZER_LARGE_OUTPUT", "").strip() != "1":
+        return False
     if not stdout or len(stdout.encode("utf-8", errors="replace")) <= 8192:
         return False
     try:
@@ -911,6 +922,7 @@ def _try_large_output_policy(command: str, stdout: str, stderr: str,
             stdout,
             session_id=os.environ.get("CLAUDE_SESSION_ID", ""),
             tool_use_id=str(payload.get("tool_use_id", "") or ""),
+            exit_code=exit_code,
         )
         if compressed is None:
             return False

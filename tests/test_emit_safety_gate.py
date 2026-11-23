@@ -203,27 +203,31 @@ def test_noise_fold_passes_gate_and_fails_closed_on_rejection(monkeypatch):
     assert bash_compress.compress("rg -n createSession .", raw) == raw
 
 
-def test_large_output_policy_active_gated_and_shadow_byte_identical(tmp_path, monkeypatch):
+def test_large_output_policy_on_gated_and_off_byte_identical(tmp_path, monkeypatch):
     raw = "\n".join(f"row {i:04d}: " + ("x" * 60) for i in range(200)) + "\n"
 
-    # Shadow mode (default): always returns (None, ""), never calls emit_safety_gate
-    monkeypatch.delenv(large_output_policy.MODE_ENV, raising=False)
+    # Off mode (default unset and explicit '0'): returns (None, ""), never calls emit_safety_gate
     called = []
     monkeypatch.setattr(esg, "gate_or_none", lambda *a, **kw: (called.append(1), None)[1])
-    res, clean = large_output_policy.handle_post_tool_use(
-        "echo a && echo b", raw, session_id="s-shadow", tool_use_id="tu-s", snapshot_dir=tmp_path
-    )
-    assert res is None and clean == ""
-    assert called == []
+    for val in (None, "0"):
+        if val is None:
+            monkeypatch.delenv(large_output_policy.ENABLED_ENV, raising=False)
+        else:
+            monkeypatch.setenv(large_output_policy.ENABLED_ENV, val)
+        res, clean = large_output_policy.handle_post_tool_use(
+            "echo a && echo b", raw, session_id="s-off", tool_use_id="tu-off"
+        )
+        assert res is None and clean == ""
+        assert called == []
 
-    # Active mode: when gate rejects, returns (None, "")
-    monkeypatch.setenv(large_output_policy.MODE_ENV, "active")
+    # On mode ('1'): when gate rejects, returns (None, "")
+    monkeypatch.setenv(large_output_policy.ENABLED_ENV, "1")
     monkeypatch.setattr("archive_result.archive_original", lambda *a, **kw: tmp_path / "a.json")
     monkeypatch.setattr("archive_result.archive_entry_exists", lambda *a, **kw: True)
-    res_act, clean_act = large_output_policy.handle_post_tool_use(
-        "echo a && echo b", raw, session_id="s-active", tool_use_id="tu-a", snapshot_dir=tmp_path
+    res_on, clean_on = large_output_policy.handle_post_tool_use(
+        "echo a && echo b", raw, session_id="s-on", tool_use_id="tu-on"
     )
-    assert res_act is None and clean_act == ""
+    assert res_on is None and clean_on == ""
     assert len(called) == 1
 
 
@@ -317,6 +321,36 @@ _SHARED_VECTORS = [
         "[Token Optimizer: foo.py (2 lines) is unchanged since your earlier full read in this session.]",
         "bash_reread_unchanged", "Bash", "cat foo.py", 0,
         "VISIBLE_OK", [],
+    ),
+    (
+        "logs/app.log:1:2026-11-22 INFO ok\nlogs/app.log:222:2026-11-22 FATAL database down: exit code 137\nlogs/app.log:223:2026-11-22 INFO ok",
+        "[Search results: 3 matches across 1 files.]\nlogs/app.log:1:2026-11-22 INFO ok\n  ... 2 more matches in logs/app.log (lines 222-223) ..." + EXPAND_PTR,
+        "bash_compress_pipeline", "Bash", "grep -rn 2026-11-22 logs", 0,
+        "CRITICAL_HIDDEN", ["hidden_exit_code", "hidden_panic_fatal"],
+    ),
+    (
+        "line 1\nbash: line 3: jqq: command not found\nline 3",
+        "line 1\n... 1 line omitted (line 2) ...\nline 3" + EXPAND_PTR,
+        "large_output_policy", "Bash", "for d in a b; do ./sync.sh; done", 0,
+        "CRITICAL_HIDDEN", ["hidden_error"],
+    ),
+    (
+        "line 1\nCONFLICT (content): Merge conflict in src/app.py\nline 3",
+        "line 1\n... 1 line omitted (line 2) ...\nline 3" + EXPAND_PTR,
+        "large_output_policy", "Bash", "git merge main && ./check.sh", 0,
+        "CRITICAL_HIDDEN", ["hidden_error"],
+    ),
+    (
+        "line 1\n ! [rejected] main -> main (non-fast-forward)\nline 3",
+        "line 1\n... 1 line omitted (line 2) ...\nline 3" + EXPAND_PTR,
+        "large_output_policy", "Bash", "git push && echo done", 0,
+        "CRITICAL_HIDDEN", ["hidden_error"],
+    ),
+    (
+        "line 1\nKilled\nline 3",
+        "line 1\n... 1 line omitted (line 2) ...\nline 3" + EXPAND_PTR,
+        "large_output_policy", "Bash", "for d in a b; do ./sync.sh; done", 0,
+        "CRITICAL_HIDDEN", ["hidden_error"],
     ),
 ]
 

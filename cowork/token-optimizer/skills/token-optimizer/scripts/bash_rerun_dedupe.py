@@ -152,13 +152,15 @@ def dedupe_rerun(
             return None
         if len(output) < MIN_OUTPUT_CHARS:
             return None
-        n_lines = len(output.splitlines())
-        if n_lines < MIN_OUTPUT_LINES:
-            return None
 
         from session_store import SessionStore
         from delta_diff import content_hash, compute_delta
         from credential_patterns import redact_credentials
+
+        safe_output = redact_credentials(output)
+        n_lines = len(output.splitlines())
+        if n_lines < MIN_OUTPUT_LINES:
+            return None
 
         norm_cmd = normalize_command(command)
         if not norm_cmd:
@@ -167,7 +169,6 @@ def dedupe_rerun(
         raw_cmd_h = content_hash(command.strip())
         out_h = content_hash(output)
 
-        safe_output = redact_credentials(output)
         safe_command = redact_credentials(command, command=True)[:500]
         # Bound stored text: if output exceeds MAX_STORED_OUTPUT_CHARS, keep
         # the exact SHA-256 hash (so identical reruns still match) but store
@@ -232,14 +233,14 @@ def dedupe_rerun(
                 hidden_lines = n_lines - len(err_lines)
                 if err_lines:
                     ref = (
-                        f"[Token Optimizer: `{label}`: identical to previous run "
+                        f"[Token Optimizer: `{label}`: identical to your previous run "
                         f"at {prev_time}, {hidden_lines} lines (lines 1-{n_lines}) hidden; "
                         f"{len(err_lines)} error/failure lines preserved below:]\n"
                         + "\n".join(err_lines)
                     )
                 else:
                     ref = (
-                        f"[Token Optimizer: `{label}`: identical to previous run "
+                        f"[Token Optimizer: `{label}`: identical to your previous run "
                         f"at {prev_time}, {n_lines} lines (lines 1-{n_lines}) hidden; unchanged.]"
                     )
             else:
@@ -256,8 +257,8 @@ def dedupe_rerun(
                     return None
                 unchanged = max(0, n_lines - changed)
                 ref = (
-                    f"[Token Optimizer: `{label}`: same as previous run "
-                    f"at {prev_time}, {n_lines} lines; changed lines below "
+                    f"[Token Optimizer: `{label}`: same as your previous run "
+                    f"at {prev_time} except for changes below "
                     f"({unchanged} unchanged lines in lines 1-{n_lines} hidden):]\n"
                     f"{delta}"
                 )

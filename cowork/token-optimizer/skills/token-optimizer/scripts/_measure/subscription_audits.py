@@ -474,7 +474,7 @@ def audit_monorepo_claude_md(components: dict, facade, cwd: Path | None = None) 
         "has_claude_md_excludes": has_excludes,
         "title": f"Monorepo CLAUDE.md Stack ({len(all_files)} files, ~{total_tokens:,} tokens)",
         "markdown": (
-            f"**Scope monorepo CLAUDE.md stack ({len(all_files)} files, ~{total_tokens:,} tokens)**: "
+            f"**Scope monorepo CLAUDE.md stack ({len(all_files)} files)**: "
             "Claude Code concatenates ancestor `CLAUDE.md` files on every turn, and nested package "
             f"files add further overhead as you traverse the repo.{domain_clause}\n"
             "  Move path-specific instructions into `.claude/rules/<topic>.md` with `paths:` YAML "

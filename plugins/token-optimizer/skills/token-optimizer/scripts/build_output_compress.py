@@ -580,7 +580,10 @@ def _collapse_near_identical_warnings(lines: list[str]) -> list[str]:
                and _normalize(lines[i + run]) == norm_current):
             run += 1
         if run > 1:
-            result.append(f"{current}  [+{run - 1} near-identical warnings]")
+            result.append(
+                f"{current}  [+{run - 1} near-identical warnings "
+                f"({run - 1} lines collapsed in lines {i + 2}-{i + run})]"
+            )
         else:
             result.append(current)
         i += run
@@ -802,6 +805,7 @@ def compress(command: str, output: str) -> str | None:
             return None
 
         # --- assemble the compressed output ---
+        _omit_marker_idx: int | None = None
         if len(collapsed) <= _HEAD_LINES + _TAIL_LINES:
             parts = list(collapsed)
         else:
@@ -810,9 +814,8 @@ def compress(command: str, output: str) -> str | None:
             middle = collapsed[_HEAD_LINES:-_TAIL_LINES]
             parts = list(head)
             if len(middle) > 50:
-                parts.append(
-                    f"... [{len(middle)} more lines (lines {_HEAD_LINES + 1}-{len(collapsed) - _TAIL_LINES} of collapsed output), repetition collapsed] ..."
-                )
+                _omit_marker_idx = len(parts)
+                parts.append("")  # placeholder filled with exact omitted raw line count below
             else:
                 parts.extend(middle)
             parts.extend(tail)
@@ -835,6 +838,19 @@ def compress(command: str, output: str) -> str | None:
             if p not in current_set:
                 parts.append(p)
                 current_set.add(p)
+
+        if _omit_marker_idx is not None:
+            visible_set = {ln.strip() for ln in parts if ln}
+            hidden_nos = [
+                idx for idx, raw_ln in enumerate(lines, 1)
+                if raw_ln.strip() and raw_ln.strip() not in visible_set
+            ]
+            omitted_cnt = len(hidden_nos) if hidden_nos else len(collapsed) - _HEAD_LINES - _TAIL_LINES
+            lo = hidden_nos[0] if hidden_nos else _HEAD_LINES + 1
+            hi = hidden_nos[-1] if hidden_nos else len(lines) - _TAIL_LINES
+            parts[_omit_marker_idx] = (
+                f"... [{omitted_cnt} more lines (lines {lo}-{hi}), repetition collapsed] ..."
+            )
 
         if noise_dropped > 0:
             parts.insert(0, f"[build output: {noise_dropped} progress lines collapsed (lines {noise_first}-{noise_last})]")

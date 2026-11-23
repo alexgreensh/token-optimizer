@@ -146,6 +146,47 @@ def extract_search_line_number(line: str) -> int | None:
         return None
 
 
+_BENIGN_ZERO_ERR_RE = re.compile(
+    r"\b(?:0|no|zero|without)\s+(?:errors?|failures?|failed)\b|"
+    r"\b(?:error_count|errors|failures|failed)\s*[:=]\s*0\b",
+    re.I,
+)
+
+# Failure lines that carry no literal "error" word (shared with emit_safety_gate).
+_NON_ERROR_FAILURE_RE = re.compile(
+    r"(?:"
+    r"(?i:\bcommand\s+not\s+found\b)|"
+    r"(?i:\bno\s+such\s+file\s+or\s+directory\b)|"
+    r"^CONFLICT\b|(?i:\bmerge\s+conflict\b)|"
+    r"\[rejected\]|"
+    r"^\s*Killed(?:\s|$|:)|\bKilled:\s*\d+|"
+    r"(?i:\bexceeded\s+its\s+progress\s+deadline\b)|"
+    r"(?i:\bno\s+space\s+left\s+on\s+device\b)|"
+    r"(?i:\baddress\s+already\s+in\s+use\b)|"
+    r"(?i:\bread-only\s+file\s+system\b)|"
+    r"(?i:\bcannot\s+(?:access|open|create|remove)\b)|"
+    r"(?i:\b(?:could|unable)\s+to\s+resolve\b)"
+    r")"
+)
+
+_STRICT_PANIC_RE = re.compile(
+    r"\b(?:fatal|panic|panicked|segfault|segmentation fault|core dumped|out of memory)\b",
+    re.I,
+)
+
+
+def is_strict_critical_line(line: str) -> bool:
+    """True for unambiguous hard failures (traceback, fatal/panic, non-zero exit)
+    that must stay visible even when matched inside a ``file:line:content`` search hit."""
+    if not line or not line.strip():
+        return False
+    return bool(
+        _STRICT_ERROR_RE.search(line)
+        or _NONZERO_EXIT_RE.search(line)
+        or _STRICT_PANIC_RE.search(line)
+    )
+
+
 def is_error_or_failure_line(
     line: str,
     *,
@@ -165,7 +206,11 @@ def is_error_or_failure_line(
         return True
     if _STRICT_ERROR_RE.search(line):
         return True
+    if _NON_ERROR_FAILURE_RE.search(line):
+        return True
     if strict_exception_only:
+        return False
+    if _BENIGN_ZERO_ERR_RE.search(line):
         return False
     return bool(_GENERAL_ERROR_RE.search(line))
 
@@ -198,6 +243,14 @@ def format_line_ranges(line_numbers: list[int]) -> str:
     return ", ".join(f"line {a}" if a == b else f"lines {a}-{b}" for a, b in runs)
 
 
+_FAST_STRICT_RE = re.compile(
+    r"traceback|file \"|at \S+\s*\(|caused by:|goroutine \d+|##\[error\]|"
+    r"panicked|panic|fatal|segfault|segmentation fault|core dumped|out of memory|"
+    r"--- fail:|fail\t|\.\.\. failed|not ok \d+|exit|return",
+    re.I,
+)
+
+
 def find_missing_critical_lines(
     raw_text: str,
     compressed_text: str,
@@ -206,18 +259,30 @@ def find_missing_critical_lines(
     strict_exception_only: bool = False,
 ) -> list[tuple[int, str]]:
     """Return ``(1-based line_no, line)`` for every critical line in ``raw_text``
-    that is not visible verbatim in ``compressed_text``."""
+    that is not visible verbatim in ``compressed_text`` (O(N+M))."""
     if not raw_text:
         return []
+    # Fast whole-text pre-check for search output: if no strict-critical keyword
+    # appears anywhere in raw_text and no non-match diagnostic line is possible,
+    # skip per-line regex scanning.
+    has_strict_anywhere = bool(_FAST_STRICT_RE.search(raw_text))
+    comp_lines = compressed_text.splitlines()
+    comp_set = set(comp_lines) | {ln.strip() for ln in comp_lines}
     missing: list[tuple[int, str]] = []
     for idx, line in enumerate(raw_text.splitlines(), 1):
-        if not line.strip():
+        stripped = line.strip()
+        if not stripped:
             continue
         if is_search and is_search_match_line(line):
+            if not has_strict_anywhere or not is_strict_critical_line(line):
+                continue
+        elif not is_error_or_failure_line(line, strict_exception_only=strict_exception_only):
             continue
-        if is_error_or_failure_line(line, strict_exception_only=strict_exception_only):
-            if line not in compressed_text and line.strip() not in compressed_text:
-                missing.append((idx, line))
+        if line in comp_set or stripped in comp_set:
+            continue
+        # Fallback substring check only for the few critical lines not matching a whole line.
+        if line not in compressed_text and stripped not in compressed_text:
+            missing.append((idx, line))
     return missing
 
 
@@ -322,11 +387,13 @@ def enforce_visibility_and_exact_hidden(
     if skip_hidden_check:
         return result
 
-    # 2. Compute exact hidden raw lines (non-empty lines absent from result).
+    # 2. Compute exact hidden raw lines (O(N+M) via line set).
     raw_lines = raw_text.splitlines()
+    res_lines = result.splitlines()
+    res_set = set(res_lines) | {ln.strip() for ln in res_lines}
     hidden_nos = [
         idx for idx, ln in enumerate(raw_lines, 1)
-        if ln.strip() and ln not in result and ln.strip() not in result
+        if ln.strip() and ln not in res_set and ln.strip() not in res_set
     ]
     if not hidden_nos:
         return result
@@ -386,8 +453,26 @@ def enforce_baseline_safe(
     if len(raw_output) <= threshold_chars:
         return raw_output
 
+    raw_lines = raw_output.splitlines()
+    crit_lines: list[tuple[int, str]] = []
+    for idx, ln in enumerate(raw_lines, 1):
+        if not ln.strip():
+            continue
+        if is_search and is_search_match_line(ln):
+            if is_strict_critical_line(ln):
+                crit_lines.append((idx, ln))
+            continue
+        if is_error_or_failure_line(ln):
+            crit_lines.append((idx, ln))
+
+    def _safe_head(s: str, limit: int) -> str:
+        from bash_compress import _unicode_safe_head
+        return _unicode_safe_head(s, limit)
+
     if not archive_key:
-        return raw_output
+        if crit_lines:
+            return raw_output
+        return _safe_head(text, cap)
 
     try:
         from archive_result import build_archive_pointer
@@ -404,17 +489,12 @@ def enforce_baseline_safe(
     if ptr_pos >= 0:
         body = body[:ptr_pos]
 
-    raw_lines = raw_output.splitlines()
-    crit_lines: list[tuple[int, str]] = []
-    for idx, ln in enumerate(raw_lines, 1):
-        if not ln.strip():
-            continue
-        if is_search and is_search_match_line(ln):
-            continue
-        if is_error_or_failure_line(ln):
-            crit_lines.append((idx, ln))
-
     budget = cap - len(pointer)
+    # Single-line preview with no critical lines: cap cleanly on grapheme boundary
+    # while keeping the archive pointer intact.
+    if "\n" not in body and not crit_lines:
+        return _safe_head(body, budget) + pointer
+
     # Reserve space for critical lines and an exact omission footer.
     crit_block = "\n".join(ln for _, ln in crit_lines)
     reserve_footer = 96
@@ -440,9 +520,11 @@ def enforce_baseline_safe(
         if missing:
             preview = (preview + "\n" if preview else "") + "\n".join(missing)
 
+    prev_lines = preview.splitlines()
+    prev_set = set(prev_lines) | {ln.strip() for ln in prev_lines}
     hidden_nos = [
         idx for idx, ln in enumerate(raw_lines, 1)
-        if ln.strip() and ln not in preview and ln.strip() not in preview
+        if ln.strip() and ln not in prev_set and ln.strip() not in prev_set
     ]
     if hidden_nos:
         footer = f"... {len(hidden_nos)} lines omitted ({format_line_range(hidden_nos)}) ..."

@@ -509,11 +509,6 @@ def main():
         # Did the agent fetch the same file range again after TO cut file content printed
         # through the shell? Metric only, read-only over this user's own transcripts.
         _measure_facade.sys.exit(coverage_report.refetch_cli(_measure_facade.args[1:], _measure_facade.CLAUDE_DIR / "projects"))
-    elif _measure_facade.args[0] == "large-output-shadow":
-        # Shadow-only large-output policy report. Read-only, counts only, not counted in savings.
-        import large_output_policy as _large_output_policy
-        _measure_facade.sys.exit(_large_output_policy.shadow_report_cli(
-            _measure_facade.args[1:], _measure_facade.TRENDS_DB, _measure_facade.CLAUDE_DIR / "projects"))
     elif _measure_facade.args[0] == "dashboard":
         _measure_facade._dispatch_dashboard(_measure_facade.args)
     elif _measure_facade.args[0] == "status-bar":

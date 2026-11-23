@@ -79,14 +79,14 @@ higher with archives on than off:
 
 **Recovery is bounded.** Stored copies are credential-redacted, size-capped, and subject to retention. Eligible MCP results have retrieval pointers; archiving does not universally replace all tools inline. See [Tool archives](/features/tool-result-archive/) for the exact current contract.
 
-**87 safety fixtures, all passing.** Each fixture is a real piece of output with a must-preserve
+**90 safety fixtures, all passing.** Each fixture is a real piece of output with a must-preserve
 list, a must-not-contain list (which catches hallucination), and a minimum compression ratio. A
 fixture passes only when all three checks hold. The rules that matter most: credentials such as AWS
 keys, GitHub personal access tokens and Slack tokens are never stripped, and error output and the
 output of failed commands always pass through untouched.
 
 <details>
-<summary>The 87 fixtures by category</summary>
+<summary>The 90 fixtures by category</summary>
 
 | Category | Fixtures | What it tests |
 |---|---:|---|

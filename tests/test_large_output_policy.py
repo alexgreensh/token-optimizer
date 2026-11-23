@@ -1,4 +1,4 @@
-"""Tests for C4: large_output_policy.py (default SHADOW mode + active opt-in)."""
+"""Tests for large_output_policy.py (two states: on/off via TOKEN_OPTIMIZER_LARGE_OUTPUT=1/0, default OFF)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import re
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -54,7 +54,7 @@ def _run_hook(
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["CLAUDE_SESSION_ID"] = session_id
-    env.pop("TOKEN_OPTIMIZER_LARGE_OUTPUT_MODE", None)
+    env.pop("TOKEN_OPTIMIZER_LARGE_OUTPUT", None)
     env.pop("TOKEN_OPTIMIZER_NO_UPDATED_TOOL_OUTPUT", None)
     env.pop("TOKEN_OPTIMIZER_HOLDOUT", None)
     if extra_env:
@@ -104,21 +104,19 @@ class TestEligibilityAndExclusions:
         assert len(small.encode("utf-8")) <= lop.MIN_BYTES
         assert lop.evaluate("echo a && echo b", small) is None
 
-    @pytest.mark.parametrize("cmd,expected_bucket", [
-        ("echo start && ./run_a.sh && ./run_b.sh", "and_chain"),
-        ("echo start; ./run_a.sh; ./run_b.sh", "semi_or_newline_chain"),
-        ("for f in a b c; do ./check \"$f\"; done", "for_while_loop"),
-        ("while read line; do echo \"$line\"; done < list.txt", "for_while_loop"),
-        ("(cd sub && ./emit_logs.sh)", "subshell_or_subst"),
-        ("res=$(./emit_logs.sh); echo \"$res\"", "subshell_or_subst"),
-        ("python3 - <<'EOF'\nfor i in range(200): print(i)\nEOF", "heredoc_script"),
+    @pytest.mark.parametrize("cmd", [
+        "echo start && ./run_a.sh && ./run_b.sh",
+        "echo start; ./run_a.sh; ./run_b.sh",
+        "for f in a b c; do ./check \"$f\"; done",
+        "while read line; do echo \"$line\"; done < list.txt",
+        "(cd sub && ./emit_logs.sh)",
+        "res=$(./emit_logs.sh); echo \"$res\"",
     ])
-    def test_eligible_compound_shapes_and_buckets(self, cmd, expected_bucket):
+    def test_eligible_compound_shapes(self, cmd):
         raw = _make_large_output(180)
         assert len(raw.encode("utf-8")) > lop.MIN_BYTES
         ev = lop.evaluate(cmd, raw)
         assert ev is not None
-        assert ev["bucket"] == expected_bucket
         assert ev["saved_tokens"] >= lop.MIN_SAVING_TOKENS
         assert (ev["saved_tokens"] / ev["tokens_before"]) >= lop.MIN_SAVING_RATIO
 
@@ -211,22 +209,23 @@ class TestPreservationAndExactCounts:
         assert ev is not None
         body = ev["preview_body"]
 
-        # Kept lines: 1..25 (25), 60 (1), 120 (1), 156..180 (25) => 52 kept, 128 hidden.
-        # Hidden runs: 26-59 (34), 61-119 (59), 121-155 (35) => 34 + 59 + 35 = 128.
+        # Kept lines: 1..25 (25), 60 (1), 117..124 (8: line 120 + context -3/+4),
+        # 156..180 (25) => 59 kept, 121 hidden.
+        # Hidden runs: 26-59 (34), 61-116 (56), 125-155 (31) => 34 + 56 + 31 = 121.
         assert ev["lines"] == 180
-        assert ev["would_hide_lines"] == 128
-        assert ev["hidden_ranges"] == "lines 26-59, lines 61-119, lines 121-155"
+        assert ev["hidden_lines"] == 121
+        assert ev["hidden_ranges"] == "lines 26-59, lines 61-116, lines 125-155"
         assert "[... 34 lines hidden: lines 26-59 ...]" in body
-        assert "[... 59 lines hidden: lines 61-119 ...]" in body
-        assert "[... 35 lines hidden: lines 121-155 ...]" in body
-        assert "128 of 180 lines hidden (lines 26-59, lines 61-119, lines 121-155)" in body
+        assert "[... 56 lines hidden: lines 61-116 ...]" in body
+        assert "[... 31 lines hidden: lines 125-155 ...]" in body
+        assert "121 of 180 lines hidden (lines 26-59, lines 61-116, lines 125-155)" in body
 
-        # Sum of all inline hidden markers equals would_hide_lines
+        # Sum of all inline hidden markers equals hidden_lines
         inline_counts = [
             int(m.group(1))
             for m in re.finditer(r"\[\.\.\. (\d+) lines? hidden:", body)
         ]
-        assert sum(inline_counts) == ev["would_hide_lines"]
+        assert sum(inline_counts) == ev["hidden_lines"]
 
     def test_deterministic_output(self):
         raw = _make_large_output(190, inject={80: "RuntimeError: deterministic check"})
@@ -236,156 +235,105 @@ class TestPreservationAndExactCounts:
 
 
 # ---------------------------------------------------------------------------
-# Shadow log privacy, bounded retention, fail-open
+# Two states only (on/off), no shadow log or schema created, archive failure
 # ---------------------------------------------------------------------------
 
 
-class TestShadowLogPrivacyRetentionFailOpen:
-    def test_shadow_row_stores_counts_only_no_text(self, tmp_path):
-        secret_cmd = "echo SUPER_SECRET_CMD_TOKEN_99 && ./deploy_alpha.sh"
-        secret_body = _make_large_output(180, prefix="SECRET_OUTPUT_PAYLOAD_XYZ")
-        ev = lop.evaluate(secret_cmd, secret_body)
-        assert ev is not None
+class TestOnOffStatesAndNoLocalLog:
+    @pytest.mark.parametrize("env_val", [None, "0", "", "shadow", "active", "true"])
+    def test_is_enabled_strictly_one_or_off(self, monkeypatch, env_val):
+        if env_val is None:
+            monkeypatch.delenv(lop.ENABLED_ENV, raising=False)
+        else:
+            monkeypatch.setenv(lop.ENABLED_ENV, env_val)
+        assert lop.is_enabled() is False
 
-        ok = lop.record_shadow_row(
-            ev,
-            session_id="12345678-1234-1234-1234-123456789abc",
-            tool_use_id="tu_privacy_1",
-            snapshot_dir=tmp_path,
-        )
-        assert ok is True
+    def test_is_enabled_when_one(self, monkeypatch):
+        monkeypatch.setenv(lop.ENABLED_ENV, "1")
+        assert lop.is_enabled() is True
 
-        db = tmp_path / "trends.db"
-        with sqlite3.connect(str(db)) as conn:
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(large_output_shadow)")]
-            assert set(cols) == {
-                "id", "timestamp", "session_id", "tool_use_id", "bucket",
-                "bytes", "lines", "would_hide_lines", "tokens_before",
-                "tokens_after", "critical_lines",
-            }
-            rows = conn.execute("SELECT * FROM large_output_shadow").fetchall()
-        assert len(rows) == 1
-        dumped = repr(rows)
-        assert "SUPER_SECRET_CMD_TOKEN_99" not in dumped
-        assert "SECRET_OUTPUT_PAYLOAD_XYZ" not in dumped
-        assert "deploy_alpha" not in dumped
+    def test_off_does_no_work_beyond_env_check(self, monkeypatch):
+        monkeypatch.delenv(lop.ENABLED_ENV, raising=False)
+        called = []
+        monkeypatch.setattr(lop, "evaluate", lambda *a, **kw: called.append(1))
+        assert lop.handle_post_tool_use("echo a && ./run.sh", _make_large_output(200)) == (None, "")
+        assert called == []
 
-    def test_retention_bound_age_and_max_rows(self, tmp_path):
-        ev = lop.evaluate("echo a && ./run.sh", _make_large_output(180))
-        assert ev is not None
-        now = datetime(2026, 11, 23, 12, 0, 0)
+        monkeypatch.setenv(lop.ENABLED_ENV, "0")
+        assert lop.handle_post_tool_use("echo a && ./run.sh", _make_large_output(200)) == (None, "")
+        assert called == []
 
-        # Insert an expired row (> retention_days old)
-        assert lop.record_shadow_row(
-            ev, session_id="s1", tool_use_id="old_row",
-            snapshot_dir=tmp_path, retention_days=30, max_rows=5,
-            now=now - timedelta(days=45),
-        )
-        # Insert 8 recent rows with max_rows=5
-        for i in range(8):
-            assert lop.record_shadow_row(
-                ev, session_id="s1", tool_use_id=f"recent_{i}",
-                snapshot_dir=tmp_path, retention_days=30, max_rows=5,
-                now=now + timedelta(seconds=i),
-            )
-
-        with sqlite3.connect(str(tmp_path / "trends.db")) as conn:
-            tids = [r[0] for r in conn.execute(
-                "SELECT tool_use_id FROM large_output_shadow ORDER BY id ASC"
-            )]
-        assert "old_row" not in tids
-        assert len(tids) == 5
-        assert tids == ["recent_3", "recent_4", "recent_5", "recent_6", "recent_7"]
-
-    def test_fail_open_on_log_failure(self, tmp_path, monkeypatch):
-        # Point snapshot_dir at a regular file so mkdir/sqlite fails.
-        blocker = tmp_path / "not_a_dir"
-        blocker.write_text("x", encoding="utf-8")
-        ev = lop.evaluate("echo a && ./run.sh", _make_large_output(180))
-        assert ev is not None
-        assert lop.record_shadow_row(ev, snapshot_dir=blocker) is False
-
-        # handle_post_tool_use still returns (None, "") cleanly without raising
-        monkeypatch.delenv(lop.MODE_ENV, raising=False)
-        res = lop.handle_post_tool_use(
-            "echo a && ./run.sh", _make_large_output(180), snapshot_dir=blocker
-        )
-        assert res == (None, "")
-
-
-# ---------------------------------------------------------------------------
-# Hook end-to-end: shadow default vs active mode + archive failure
-# ---------------------------------------------------------------------------
-
-
-class TestHookShadowAndActiveModes:
-    def test_shadow_default_byte_identical_no_archive_no_savings_credit(self, tmp_path):
-        raw = _make_large_output(200, inject={90: "ValueError: shadow check"})
+    @pytest.mark.parametrize("extra_env", [None, {"TOKEN_OPTIMIZER_LARGE_OUTPUT": "0"}])
+    def test_hook_off_is_byte_identical_and_creates_no_log_or_schema(self, tmp_path, extra_env):
+        raw = _make_large_output(200, inject={90: "ValueError: off check"})
         cmd = "echo step1 && ./run_job.sh"
-        proc = _run_hook(cmd, raw, home=tmp_path, tool_use_id="tu_shadow_1")
+        proc = _run_hook(cmd, raw, home=tmp_path, tool_use_id="tu_off_1", extra_env=extra_env)
         assert proc.returncode == 0, proc.stderr
-        # Shadow mode MUST emit nothing (byte-identical to today)
         assert proc.stdout == ""
         assert _updated_stdout(proc) is None
 
-        # Must NOT archive anything
+        # Must NOT archive anything, must NOT create large_output_shadow table,
+        # and must NOT log any compression_events / savings_events rows.
         archive_dir = tmp_path / ".claude" / "_backups" / "token-optimizer" / "tool-archive"
         assert not archive_dir.exists() or list(archive_dir.rglob("*.json")) == []
-
-        # Shadow row recorded, but ZERO compression_events / savings_events rows
         db = tmp_path / ".claude" / "_backups" / "token-optimizer" / "trends.db"
-        assert db.exists()
-        with sqlite3.connect(str(db)) as conn:
-            shadow_rows = conn.execute(
-                "SELECT bucket, lines, would_hide_lines, critical_lines FROM large_output_shadow"
-            ).fetchall()
-            has_ce = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='compression_events'"
-            ).fetchone()
-            ce_count = conn.execute("SELECT COUNT(*) FROM compression_events").fetchone()[0] if has_ce else 0
-            has_se = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='savings_events'"
-            ).fetchone()
-            se_count = conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] if has_se else 0
+        if db.exists():
+            with sqlite3.connect(str(db)) as conn:
+                tables = {
+                    r[0] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                assert "large_output_shadow" not in tables
+                if "compression_events" in tables:
+                    assert conn.execute("SELECT COUNT(*) FROM compression_events").fetchone()[0] == 0
+                if "savings_events" in tables:
+                    assert conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 0
 
-        assert len(shadow_rows) == 1
-        assert shadow_rows[0][0] == "and_chain"
-        assert shadow_rows[0][1] == 200
-        assert shadow_rows[0][2] == 149
-        assert shadow_rows[0][3] >= 1
-        assert ce_count == 0
-        assert se_count == 0
+    def test_direct_off_call_creates_no_files(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv(lop.ENABLED_ENV, raising=False)
+        res = lop.handle_post_tool_use("echo a && ./run.sh", _make_large_output(200), session_id="s1")
+        assert res == (None, "")
+        assert list(tmp_path.rglob("*")) == []
 
-    def test_active_mode_archives_first_and_logs_measured_feature(self, tmp_path):
-        raw = _make_large_output(200, inject={90: "ValueError: active check"})
+    def test_hook_on_archives_first_logs_measured_and_creates_no_shadow_table(self, tmp_path):
+        raw = _make_large_output(200, inject={90: "ValueError: on check"})
         cmd = "echo step1 && ./run_job.sh"
         proc = _run_hook(
-            cmd, raw, home=tmp_path, tool_use_id="tu_active_1",
-            extra_env={lop.MODE_ENV: "active"},
+            cmd, raw, home=tmp_path, tool_use_id="tu_on_1",
+            extra_env={lop.ENABLED_ENV: "1"},
         )
         assert proc.returncode == 0, proc.stderr
         out = _updated_stdout(proc)
         assert out is not None
         assert len(out) < len(raw)
-        assert "ValueError: active check" in out
-        assert "149 of 200 lines hidden" in out
+        assert "ValueError: on check" in out
+        assert "142 of 200 lines hidden" in out
         assert "expand " in out
 
         # Archive file exists on disk
         archive_dir = tmp_path / ".claude" / "_backups" / "token-optimizer" / "tool-archive"
         assert len(list(archive_dir.rglob("*.json"))) >= 1
 
-        # Logged as measured in compression_events under feature=large_output_policy
+        # Logged as measured in compression_events under feature=large_output_policy;
+        # no large_output_shadow table created.
         db = tmp_path / ".claude" / "_backups" / "token-optimizer" / "trends.db"
         with sqlite3.connect(str(db)) as conn:
+            tables = {
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            assert "large_output_shadow" not in tables
             rows = conn.execute(
                 "SELECT feature, tier, verified FROM compression_events WHERE feature = 'large_output_policy'"
             ).fetchall()
         assert rows == [("large_output_policy", "measured", 1)]
 
-    def test_active_mode_archive_failure_returns_original(self, monkeypatch):
+    def test_on_mode_archive_failure_returns_original(self, monkeypatch):
         import archive_result
-        monkeypatch.setenv(lop.MODE_ENV, "active")
+        monkeypatch.setenv(lop.ENABLED_ENV, "1")
         monkeypatch.setattr(archive_result, "archive_original", lambda *a, **kw: None)
         res = lop.handle_post_tool_use(
             "echo a && ./run.sh", _make_large_output(200), session_id="s1"
@@ -400,77 +348,26 @@ class TestHookShadowAndActiveModes:
         )
         assert res2 == (None, "")
 
-
-# ---------------------------------------------------------------------------
-# measure.py large-output-shadow CLI + follow-up proxy
-# ---------------------------------------------------------------------------
-
-
-class TestShadowReportCLI:
-    def test_shadow_report_and_followup_proxy(self, tmp_path, capsys):
-        ev = lop.evaluate("echo a && ./run_suite.sh src/auth.py", _make_large_output(200))
-        assert ev is not None
-        sid = "12345678-1234-1234-1234-123456789abc"
-        lop.record_shadow_row(ev, session_id=sid, tool_use_id="tu_1", snapshot_dir=tmp_path)
-        lop.record_shadow_row(ev, session_id=sid, tool_use_id="tu_2", snapshot_dir=tmp_path)
-
-        # Synthetic transcript: after tu_1 model immediately Reads src/auth.py (hit);
-        # after tu_2 model edits an unrelated file (miss).
-        projects = tmp_path / "projects" / "demo"
-        projects.mkdir(parents=True)
-        transcript = projects / f"{sid}.jsonl"
-        events = [
-            {"message": {"content": [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "echo a && ./run_suite.sh src/auth.py"}}]}},
-            {"message": {"content": [{"type": "tool_use", "id": "tu_f1", "name": "Read", "input": {"file_path": "/repo/src/auth.py"}}]}},
-            {"message": {"content": [{"type": "tool_use", "id": "tu_2", "name": "Bash", "input": {"command": "echo b && ./build_docs.sh docs/index.md"}}]}},
-            {"message": {"content": [{"type": "tool_use", "id": "tu_f2", "name": "Read", "input": {"file_path": "/repo/README.md"}}]}},
-        ]
-        transcript.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
-
-        db = tmp_path / "trends.db"
-        rc = lop.shadow_report_cli(["--days", "30", "--json"], db, projects.parent)
-        assert rc == 0
-        data = json.loads(capsys.readouterr().out)
-        assert data["available"] is True
-        assert data["status"] == "shadow, not counted"
-        assert data["counted"] is False
-        assert data["eligible_outputs"] == 2
-        assert data["would_save_tokens"] == ev["saved_tokens"] * 2
-        assert "and_chain" in data["buckets"]
-        assert data["followup_checked"] == 2
-        assert data["followup_rerun_or_read"] == 1
-        assert data["followup_rate"] == 0.5
-
-        rc_txt = lop.shadow_report_cli(["--days", "30"], db, projects.parent)
-        assert rc_txt == 0
-        txt = capsys.readouterr().out
-        assert "shadow, not counted" in txt
-        assert "and_chain" in txt
+    def test_module_contains_no_shadow_log_or_sqlite_schema(self):
+        src = (SCRIPTS / "large_output_policy.py").read_text(encoding="utf-8")
+        assert "sqlite3" not in src
+        assert "CREATE TABLE" not in src
+        assert "large_output_shadow" not in src
+        assert "record_shadow_row" not in src
+        assert "shadow_report_cli" not in src
+        assert not hasattr(lop, "record_shadow_row")
+        assert not hasattr(lop, "collect_shadow_report")
+        assert not hasattr(lop, "shadow_report_cli")
+        assert not hasattr(lop, "SHADOW_TABLE")
 
 
 # ---------------------------------------------------------------------------
-# ADDENDUM: savings summary JSON, labels, shadow exclusion, benchmark, registry
+# ADDENDUM: savings summary JSON, labels, benchmark, registry
 # ---------------------------------------------------------------------------
 
 
 class TestAddendumAndRegistrations:
-    def test_shadow_rows_not_counted_in_savings_summary(self, tmp_path, monkeypatch):
-        import measure
-        monkeypatch.setattr(measure, "SNAPSHOT_DIR", tmp_path)
-        monkeypatch.setattr(measure, "TRENDS_DB", tmp_path / "trends.db")
-        conn = measure._init_trends_db()
-        conn.close()
-
-        ev = lop.evaluate("echo a && ./run.sh", _make_large_output(200))
-        assert ev is not None
-        lop.record_shadow_row(ev, session_id="12345678-1234-1234-1234-123456789abc",
-                              tool_use_id="tu_s1", snapshot_dir=tmp_path)
-
-        summary = measure._get_merged_savings(days=30)
-        assert "large_output_policy" not in summary.get("by_category", {})
-        assert summary.get("total_tokens_saved", 0) == 0
-
-    def test_active_fake_event_appears_in_savings_summary_with_human_label(self, tmp_path, monkeypatch):
+    def test_on_fake_event_appears_in_savings_summary_with_human_label(self, tmp_path, monkeypatch):
         import measure
         monkeypatch.setattr(measure, "SNAPSHOT_DIR", tmp_path)
         monkeypatch.setattr(measure, "TRENDS_DB", tmp_path / "trends.db")

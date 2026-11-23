@@ -127,7 +127,7 @@ def is_binary_like(text: str) -> bool:
     return (sample.count("\ufffd") / len(sample)) > 0.15
 
 
-def is_deliberate_content_read(command: str) -> bool:
+def is_condition4_excluded(command: str) -> bool:
     """True when command matches any Condition 4 exclusion or is unparseable."""
     if not command or not isinstance(command, str) or not command.strip():
         return True
@@ -150,7 +150,31 @@ def is_deliberate_content_read(command: str) -> bool:
     return False
 
 
-is_explicit_narrow_read = is_deliberate_content_read
+is_explicit_narrow_read = is_condition4_excluded
+
+# Deliberate content reads (bare cat / cat chains, jq, inline-script dumps) that
+# bash_compress_hook must never chop. Deliberately narrower than Condition 4:
+# `git log | head -20` or `du | sort | head` are NOT content reads and stay
+# eligible for the ordinary compression pipeline.
+_JQ_CMD_RE = re.compile(_CMD_PREFIX + r"(?:jq|yq)\b")
+_INLINE_SCRIPT_READ_RE = re.compile(
+    _CMD_PREFIX + r"(?:python3?(?:\.\d+)?\s+(?:[^;&|\n]*?-c\b|-\s*<<)|(?:node|ruby|perl)\s+[^;&|\n]*?-e\b)"
+)
+_CAT_SEG_RE = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:cd|cat|nl|bat)\b")
+_CHAIN_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\n)\s*")
+
+
+def is_deliberate_content_read(command: str) -> bool:
+    """True for deliberate content reads (bare cat, cat chains, jq, inline-script dumps)."""
+    if not command or not isinstance(command, str):
+        return False
+    if _JQ_CMD_RE.search(command) or _INLINE_SCRIPT_READ_RE.search(command):
+        return True
+    segs = [s.strip() for s in _CHAIN_SPLIT_RE.split(command.strip()) if s.strip()]
+    if segs and any(re.match(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:cat|nl|bat)\b", s) for s in segs):
+        if all(_CAT_SEG_RE.match(s) and "|" not in s for s in segs):
+            return True
+    return False
 
 
 def _extract_echo_markers(command: str) -> frozenset[str]:
@@ -236,7 +260,7 @@ def evaluate(
         if is_already_archived(stdout) or is_binary_like(stdout):
             return None
         # Condition 4: excluded read/slice/query/inline-script commands
-        if is_deliberate_content_read(command or ""):
+        if is_condition4_excluded(command or ""):
             return None
 
         cleaned = _strip_ansi(stdout)

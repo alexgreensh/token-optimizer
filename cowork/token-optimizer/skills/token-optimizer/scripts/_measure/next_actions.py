@@ -21,6 +21,8 @@ WINDOWS_PID_MARKER = 'next_refresh_pid.json'
 WINDOWS_HANDOFF_SECONDS = 30
 PLAN_NAME = 'next_apply_plan.json'
 MAX_SUMMARY_BYTES = 4 * 1024 * 1024
+# A filesystem timestamp can lead the wall clock by a tick on Windows.
+FILE_MTIME_SKEW_SECONDS = 1
 
 
 def _now():
@@ -73,7 +75,8 @@ def _cached_summary(facade):
         path = Path(facade.DASHBOARD_PATH)
         info = path.stat()
         stamp = info.st_mtime
-        if info.st_size <= MAX_SUMMARY_BYTES and 0 <= time.time() - stamp < 86400:
+        if (info.st_size <= MAX_SUMMARY_BYTES
+                and -FILE_MTIME_SKEW_SECONDS <= time.time() - stamp < 86400):
             html = path.read_text(encoding='utf-8')
             marker = 'window.__TOKEN_DATA__ = '
             start = html.index(marker) + len(marker)
@@ -90,11 +93,12 @@ def _cached_summary(facade):
                 continue
             data = _read(path)
             stamp = data.get('computed_at', info.st_mtime)
+            skew = 0 if 'computed_at' in data else FILE_MTIME_SKEW_SECONDS
             if isinstance(stamp, str):
                 stamp = datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp()
             age = time.time() - float(stamp)
             summary = data.get('savings', data)
-            if (0 <= age < 86400 and isinstance(summary, dict)
+            if (-skew <= age < 86400 and isinstance(summary, dict)
                     and summary.get('period_days') == 30
                     and any(k in summary for k in ('output_waste', 'stale_reads_reclaimable', 'model_routing'))):
                 fresh.append((float(stamp), summary))

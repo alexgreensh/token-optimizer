@@ -217,7 +217,9 @@ class NextActionsTest(unittest.TestCase):
         self.assertIn({'id': 'routing', 'why': 'routing-off'}, next_actions.build(self.f)['hidden'])
         self.assertEqual(before, {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.f.SNAPSHOT_DIR.iterdir()})
         next_actions.main(self.f, ['decline', 'skill_list'])
-        self.assertEqual((self.f.SNAPSHOT_DIR / 'next_declined.json').stat().st_mode & 0o777, 0o600)
+        self.assertIn({'id': 'skill_list', 'why': 'declined'}, next_actions.build(self.f)['hidden'])
+        if os.name == 'posix':
+            self.assertEqual((self.f.SNAPSHOT_DIR / 'next_declined.json').stat().st_mode & 0o777, 0o600)
 
     def test_quiet_period_and_doubling(self):
         from datetime import datetime, timedelta, timezone
@@ -230,7 +232,8 @@ class NextActionsTest(unittest.TestCase):
             self.summary['skill_listing_budget']['cost_usd'] = 24
             next_actions.on_savings_refresh(self.f, self.summary)
             self.assertEqual(next_actions.status_action(self.f, 's')['id'], 'skill_list')
-        self.assertEqual((self.f.SNAPSHOT_DIR / 'next_action.json').stat().st_mode & 0o777, 0o600)
+        if os.name == 'posix':
+            self.assertEqual((self.f.SNAPSHOT_DIR / 'next_action.json').stat().st_mode & 0o777, 0o600)
 
     def test_fresh_cache_used_and_old_cache_ignored(self):
         import time
@@ -252,8 +255,15 @@ class NextActionsTest(unittest.TestCase):
         self.f.DASHBOARD_PATH = path
         path.write_text('<script>window.__TOKEN_DATA__ = ' + json.dumps({'savings': self.summary}) + ';</script>')
         self.f._get_merged_savings = lambda days: self.fail('dashboard summary should be reused')
-        result = next_actions.build(self.f)
+        # An OS file timestamp can be a tick ahead of Python's wall clock.
+        with patch.object(next_actions.time, 'time', return_value=path.stat().st_mtime - 0.01):
+            result = next_actions.build(self.f)
         self.assertTrue(result['cached'])
+        self.f._get_merged_savings = lambda days: self.summary
+        for offset in (-2, 86400):
+            with self.subTest(offset=offset), patch.object(
+                    next_actions.time, 'time', return_value=path.stat().st_mtime + offset):
+                self.assertNotIn('cached', next_actions.build(self.f))
         self.assertEqual(result['actions'][0]['id'], 'skill_list')
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

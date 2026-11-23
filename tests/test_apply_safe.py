@@ -1,7 +1,9 @@
 """Approval boundaries for the safe savings command."""
 import json
+import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,6 +11,15 @@ SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'
 sys.path.insert(0, str(SCRIPTS))
 import measure
 from _measure import dashboard, structural_ledger, apply_safe
+
+
+def test_apply_receipts_append_without_fchmod(tmp_path, monkeypatch):
+    facade = SimpleNamespace(SNAPSHOT_DIR=tmp_path)
+    monkeypatch.delattr(os, 'fchmod', raising=False)
+    for status in ('pending', 'complete'):
+        apply_safe._append_receipt(facade, {'status': status})
+    assert (tmp_path / 'apply_safe_receipts.jsonl').read_bytes() == (
+        b'{"status": "pending"}\n{"status": "complete"}\n')
 
 
 @pytest.mark.parametrize('kind,ident,key,old,new', [
@@ -302,9 +313,11 @@ def test_mcp_apply_and_undo_restore_original_settings_bytes(overlaps, monkeypatc
     assert len(trims) == 1 and trims[0]['closed_at']
 
 
-def test_restore_settings_format_preserves_symlink(tmp_path):
+@pytest.mark.parametrize('without_fchmod', [False, True], ids=['native', 'without-fchmod'])
+def test_restore_settings_format_preserves_symlink(tmp_path, monkeypatch, without_fchmod):
     from contextlib import nullcontext
-    from types import SimpleNamespace
+    if without_fchmod:
+        monkeypatch.delattr(os, 'fchmod', raising=False)
     target = tmp_path / 'actual.json'
     target.write_text('{"key": 1}')
     link = tmp_path / 'settings.json'

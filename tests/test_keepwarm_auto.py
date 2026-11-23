@@ -172,7 +172,8 @@ def test_history_refresh_writes_only_counts_once_daily(policy, monkeypatch):
     data = json.loads(auto._history_path(policy).read_text())
     assert data == {'built_at': NOW, 'buckets': {'3300': {'at_risk': 20, 'returned': 20},
                     '6900': {'at_risk': 0, 'returned': 0}, '10500': {'at_risk': 0, 'returned': 0}}}
-    assert auto._history_path(policy).stat().st_mode & 0o777 == 0o600
+    if os.name == 'posix':
+        assert auto._history_path(policy).stat().st_mode & 0o777 == 0o600
     history(policy, stamp=NOW - 7 * auto.DAY - 1)
     assert decide(policy)['reason'] == 'no-history'
 
@@ -488,15 +489,16 @@ def test_resume_during_headless_reservation_cancels_without_spend(m, monkeypatch
 
 
 def test_dashboard_and_limits_expose_same_signed_net(policy):
-    import subprocess
     root = Path(__file__).resolve().parents[1] / 'skills/token-optimizer/assets'
     data = {'runway': {}, 'cache_health': {'keepwarm': {}, 'keepwarm_auto': {
         'state': 'on', 'headless_state': 'stopped', 'headless_reason': 'headless-proof',
         'pings_7d': 1, 'proof_failed_7d': 1, 'net_usd_7d': -.12}}}
-    js = '\n'.join([(root / 'keepwarm_health.js').read_text(), (root / 'savings_story.js').read_text(),
+    js = '\n'.join([(root / 'keepwarm_health.js').read_text(encoding='utf-8'),
+                    (root / 'savings_story.js').read_text(encoding='utf-8'),
                     'const data = ' + json.dumps(data),
                     'console.log(JSON.stringify([keepwarmHealthHtml(data), savingsLimitsHtml(data)]))'])
-    health, limits = json.loads(subprocess.run(['node', '-e', js], check=True, capture_output=True, text=True).stdout)
+    proc = subprocess.run(['node', '-'], input=js, check=True, capture_output=True, encoding='utf-8')
+    health, limits = json.loads(proc.stdout)
     assert 'Automatic keep-warm is on, inside open sessions only.' in health
     assert 'warm-up failed the cache proof' in health
     assert all('&minus;$0.12 estimated at API rates' in panel for panel in (health, limits))

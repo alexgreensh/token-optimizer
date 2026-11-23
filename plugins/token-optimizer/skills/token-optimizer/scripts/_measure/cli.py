@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat, coverage_report
+from . import _compat, coverage_report, poc_commands
 
 
 def main():
@@ -2193,6 +2193,8 @@ def main():
             finally:
                 _measure_facade.e = None
                 del _measure_facade.e
+    elif _measure_facade.args[0] in poc_commands.COMMANDS:
+        _measure_facade.sys.exit(poc_commands.run(_measure_facade, _measure_facade.args))
     elif _measure_facade.args[0] == "plugin-cleanup":
         _measure_facade.dry = "--dry-run" in _measure_facade.args
         _measure_facade.plugin_cleanup(dry_run=_measure_facade.dry)

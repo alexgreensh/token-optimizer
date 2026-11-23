@@ -1228,6 +1228,11 @@ def _dashboard_savings_data(days=None, include_billing_mode=None, fail_open=None
         savings_data["savings_headline"] = savings_headline.build(savings_data)
     except Exception:
         savings_data["savings_headline"] = None
+    try:
+        from . import poc_commands
+        poc_commands.on_savings_refresh(_measure_facade, savings_data)
+    except Exception:
+        pass
     if include_billing_mode:
         try:
             savings_data["billing_mode"] = _measure_facade.keepwarm_billing_mode()

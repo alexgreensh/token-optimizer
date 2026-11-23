@@ -1663,8 +1663,8 @@ def keepwarm_scheduler_install(gate=None, quiet=None):
     A refused gate leaves scheduler configuration untouched.
     """
     _measure_facade = _compat.facade(); from . import keepwarm_linux
-    from .keepwarm_safety import scheduler_gate
-    gate_fn = gate or (lambda: scheduler_gate(_measure_facade))
+    from . import keepwarm_safety
+    gate_fn = gate or (lambda: keepwarm_safety.scheduler_gate(_measure_facade))
     allowed, reason = gate_fn()
     if not allowed:
         return (False, (
@@ -1738,8 +1738,8 @@ def keepwarm_scheduler_status(gate=None):
     files + the gate, never installs. `gate` injectable for tests.
     """
     _measure_facade = _compat.facade(); from . import keepwarm_linux
-    from .keepwarm_safety import scheduler_gate
-    gate_fn = gate or (lambda: scheduler_gate(_measure_facade))
+    from . import keepwarm_safety
+    gate_fn = gate or (lambda: keepwarm_safety.scheduler_gate(_measure_facade))
     if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.status(_measure_facade, gate_fn)
     plist_path = _measure_facade._keepwarm_scheduler_plist_path()
     marker = _measure_facade._keepwarm_read_scheduler_marker()
@@ -1781,8 +1781,8 @@ def keepwarm_scheduler_repair(gate=None):
     _measure_facade = _compat.facade(); from . import keepwarm_linux
     if _measure_facade._remote_lean_profile():
         return "noop-remote"
-    from .keepwarm_safety import scheduler_gate
-    gate_fn = gate or (lambda: scheduler_gate(_measure_facade))
+    from . import keepwarm_safety
+    gate_fn = gate or (lambda: keepwarm_safety.scheduler_gate(_measure_facade))
     if _measure_facade._normalized_platform() == "Linux": return keepwarm_linux.repair(_measure_facade, gate_fn)
     marker = _measure_facade._keepwarm_read_scheduler_marker()
     if gate is None and marker is None:
@@ -2380,8 +2380,8 @@ def keepwarm_tick(now=None, dry_run=None, env=None, runner=None,
     if env is None:
         env = _measure_facade.os.environ
     if gate is None:
-        from .keepwarm_safety import scheduler_tick
-        return scheduler_tick(_measure_facade, now, dry_run, env, runner)
+        from . import keepwarm_safety
+        return keepwarm_safety.scheduler_tick(_measure_facade, now, dry_run, env, runner)
     summary = {"allowed": False, "reason": "", "decisions": [],
                "fired": 0, "skipped": 0}
 
@@ -3147,8 +3147,8 @@ def keepwarm_forecast(days=None, now=None, files=None, parse_fn=None, *, automat
         now = _measure_facade.time.time()
     try:
         if automatic:
-            from .keepwarm_auto import capped_forecast
-            return capped_forecast(_measure_facade, days, now, files, parse_fn)
+            from . import keepwarm_auto
+            return keepwarm_auto.capped_forecast(_measure_facade, days, now, files, parse_fn)
         result = _measure_facade.keepwarm_backfill(days=days, now=now, files=files,
                                    parse_fn=parse_fn)
         probe = result.get("modes", {}).get("probe-only", {})

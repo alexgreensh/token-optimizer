@@ -27614,7 +27614,18 @@
     "pilot_report",
     "session_activity",
     "routing_savings",
-    "pt_resume_cues"
+    "pt_resume_cues",
+    "prefix_cost",
+    "limit_units",
+    "local_adapt",
+    "poc_commands",
+    "next_actions",
+    "apply_safe",
+    "autocompact_advice",
+    "cold_guard",
+    "keepwarm_auto",
+    "counted_headline",
+    "counted_closes"
   ],
   "facade_binding_overrides": {
     "_compute_model_routing_savings": "_measure_providers['pricing']._compute_model_routing_savings",

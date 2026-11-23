@@ -4,9 +4,11 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 import json
 import math
+import os
 import sqlite3
 
 _HELD_KEY = "counted_held_since"
+_OVERALL_EVIDENCE_KEY = "overall_close_evidence"
 _RECOUNT = "A recount could not reproduce the earlier figure for this day."
 _EMPTY = {"usd": 0.0, "tokens": 0, "since": None, "held_days": 0, "last_correction": None}
 
@@ -125,7 +127,7 @@ def _write_correction(conn, tier, day, stamp, before, after, reason):
 
 
 def _refresh_counted(facade, conn, today, stamp, version):
-    rows, *_ = selected_rows(facade, conn)
+    rows, source_rows, *_ = selected_rows(facade, conn)
     pending = bool(awaiting_rescore(facade, rows))
     amounts = _per_day(facade, conn, rows)
     _create_counted(conn)
@@ -133,8 +135,12 @@ def _refresh_counted(facade, conn, today, stamp, version):
         "SELECT day, usd, tokens, pricing_version FROM counted_day_close")}
     held = _held(conn)
     prior_held = held.copy()
+    # A filtered row can support a correction to zero. An absent row cannot.
+    missing = stored.keys() - {_removal_day(row) for row in source_rows.values()}
+    for day in missing:
+        held.pop(day, None)
     written = 0
-    for day in sorted(amounts.keys() | stored.keys()):
+    for day in sorted(amounts.keys() | (stored.keys() - missing)):
         current, tokens = amounts.get(day, (0.0, 0))
         saved_version = version
         if day in stored:
@@ -166,10 +172,57 @@ def _refresh_counted(facade, conn, today, stamp, version):
     if held != prior_held:
         conn.execute("INSERT OR REPLACE INTO token_optimizer_meta(key, value) VALUES (?, ?)",
                      (_HELD_KEY, json.dumps(held, sort_keys=True)))
-    return written, pending
+    return written, pending, missing
 
 
-def _refresh_overall(conn, since_install, monthly, today, stamp, version, pending):
+def _recorded_costs(facade, conn, since, now):
+    """Read the cost evidence eligible for the same since-install summary."""
+    table = facade._counted_table(conn, "savings_events")
+    compaction = conn.execute(f"""SELECT COALESCE(-SUM(cost_saved_usd), 0)
+        FROM {table} WHERE event_type = 'autocompact_window_estimated'
+        AND timestamp >= ? AND cost_saved_usd < 0""", (since,)).fetchone()[0]
+    start = facade._keepwarm_iso_to_epoch(since)
+    warm = facade.keepwarm_spend_summary(days=max(0, now - start) / 86400, now=now)["spend_usd"]
+    return {"keepwarm": warm, "autocompact": compaction}
+
+
+def _historical_sources(facade, conn, since, seen, *, recheck):
+    """Identify evidence that a fresh recount may no longer be able to read."""
+    from . import cold_guard
+
+    sources = set()
+    for key, path in conn.execute("""SELECT 'session:' || COALESCE(NULLIF(session_uuid, ''), id), jsonl_path
+        FROM session_log WHERE date >= ? AND jsonl_path IS NOT NULL""", (since,)):
+        if key not in sources and ((key in seen and not recheck) or os.path.isfile(path)):
+            sources.add(key)
+    start = facade._keepwarm_iso_to_epoch(since)
+    for _, marker in cold_guard._markers(facade):
+        for block in cold_guard._blocks(marker):
+            if block.get("choice") == "fresh" and block.get("fresh_session_id") and block["told_at"] >= start:
+                sources.add(f"cold_guard:{block['fresh_session_id']}:{block['told_at']}")
+    return sources
+
+
+def _overall_evidence(facade, conn, since, now, current, previous):
+    row = conn.execute("SELECT value FROM token_optimizer_meta WHERE key = ?", (_OVERALL_EVIDENCE_KEY,)).fetchone()
+    prior = _decode_held(row[0]) if row else {}
+    costs = _recorded_costs(facade, conn, since, now)
+    debit = 0.0
+    if prior.get("since") == since:
+        new_costs = sum(costs.values()) - sum(prior["costs"].values())
+        # A fraction of a cent can move the displayed total by one cent.
+        debit_limit = math.ceil(round(new_costs * 100, 6)) / 100
+        debit = round(max(0.0, min(debit_limit, prior["usd"] - current, previous - current)), 2)
+    seen = set(prior.get("sources", ()))
+    sources = _historical_sources(facade, conn, since, seen, recheck=current < previous)
+    snapshot = {"since": since, "costs": costs, "usd": current, "sources": sorted(seen | sources)}
+    if snapshot != prior:
+        conn.execute("INSERT OR REPLACE INTO token_optimizer_meta(key, value) VALUES (?, ?)",
+                     (_OVERALL_EVIDENCE_KEY, json.dumps(snapshot, separators=(",", ":"))))
+    return debit, bool(seen - sources)
+
+
+def _refresh_overall(facade, conn, since_install, monthly, now, version, pending, missing):
     # This sum includes lifetime estimates whose model mix spans the whole
     # window. Store the balance observed each day. Adding daily balances (or
     # pricing slices separately) would count the same savings more than once.
@@ -191,9 +244,12 @@ def _refresh_overall(conn, since_install, monthly, today, stamp, version, pendin
         from_usd REAL NOT NULL, to_usd REAL NOT NULL, reason_code TEXT NOT NULL, reason_text TEXT NOT NULL)""")
     prior = conn.execute("""SELECT day, usd, since, pricing_version, held_since, estimated_usd, last_30d_usd
         FROM overall_day_close ORDER BY day DESC LIMIT 1""").fetchone()
+    today, stamp = now.date(), now.isoformat()
     day, held_since = today.isoformat(), None
     estimate, rolling = monthly
     pending = pending or all_in.get("remeasuring") or all_in.get("routing_pending")
+    debit, missing_sources = _overall_evidence(
+        facade, conn, since, now.timestamp(), current, prior[1] if prior else current)
     if prior:
         old_day, previous, old_since, old_version, first, old_estimate, old_rolling = prior
         estimate = old_estimate if estimate is None else estimate
@@ -201,15 +257,25 @@ def _refresh_overall(conn, since_install, monthly, today, stamp, version, pendin
         # A wall-clock rollback must not make a later close unreachable.
         day = max(day, old_day)
         since = min(since, old_since)
-        held_since, correction = _decrease(
-            previous, current, old_version, version, pending, first, today,
-            "A recount could not reproduce the earlier since-install savings total.")
-        if correction:
-            _write_correction(conn, "overall", day, stamp, previous, current, correction)
-        else:
+        if debit:
+            after_debit = round(previous - debit, 2)
+            _write_correction(conn, "overall", day, stamp, previous, after_debit,
+                              ("net_debit", "New recorded costs reduced since-install savings."))
+            previous = after_debit
+        if missing_sources or any(day >= since for day in missing):
+            # Aging out of the source window is not evidence for a restatement.
             current = max(previous, current)
-            if pending:
-                version = old_version
+            version = old_version
+        else:
+            held_since, correction = _decrease(
+                previous, current, old_version, version, pending, first, today,
+                "A recount could not reproduce the earlier since-install savings total.")
+            if correction:
+                _write_correction(conn, "overall", day, stamp, previous, current, correction)
+            else:
+                current = max(previous, current)
+                if pending:
+                    version = old_version
     conn.execute("""INSERT OR REPLACE INTO overall_day_close
         (day, usd, since, pricing_version, held_since, estimated_usd, last_30d_usd)
         VALUES (?, ?, ?, ?, ?, ?, ?)""", (day, current, since, version, held_since, estimate, rolling))
@@ -222,9 +288,9 @@ def refresh(facade, conn, now=None, *, since_install=None, monthly=(None, None))
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         version = str(facade._COUNTED_PRICING_VERSION)
         with _transaction(conn):
-            written, pending = _refresh_counted(facade, conn, now.date(), now.isoformat(), version)
+            written, pending, missing = _refresh_counted(facade, conn, now.date(), now.isoformat(), version)
             if since_install:
-                _refresh_overall(conn, since_install, monthly, now.date(), now.isoformat(), version, pending)
+                _refresh_overall(facade, conn, since_install, monthly, now, version, pending, missing)
     except Exception:
         written = 0
     return {k: v for k, v in total(conn).items() if k != "last_correction"} | {"corrections_written": written}

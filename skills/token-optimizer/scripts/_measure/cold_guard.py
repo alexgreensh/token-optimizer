@@ -9,10 +9,11 @@ import math
 import os
 import re
 import signal
-import sys
+import sqlite3
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager, nullcontext
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -25,19 +26,26 @@ _MIN_CONTEXT = 300_000
 _HOUR = 3600
 _CHOICE_WINDOW = 600
 _RETENTION = 14 * 86400
+_CHECKPOINT_BUDGET = 5.0
+_WARNING_BUDGET = 0.25
+_OUTPUT_BUDGET = 0.10
+_TAIL_BYTES = 1024 * 1024
 _MARKER_NAME = re.compile(r"[0-9a-f]{64}\.json\Z")
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]+\Z")
 _MODEL_ID = re.compile(r"[A-Za-z0-9_.:@/-]{1,160}\Z")
+_FINGERPRINT = re.compile(r"[0-9a-f]{32}:[0-9a-f]{64}\Z")
 _WIN_WORKER = """
 import json, sys
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from _measure import cold_guard
 with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
     import measure
-    result = cold_guard.evaluate(measure, json.load(sys.stdin), float(sys.argv[2]))
-print(json.dumps(result))
+    path, session_id = json.load(sys.stdin)
+    saved = cold_guard._checkpoint_saved(measure, Path(path), session_id, float(sys.argv[2]))
+print(json.dumps(saved))
 """
 
 
@@ -49,7 +57,7 @@ class BudgetExceeded(BaseException):
 def deadline(seconds):
     """Use the earlier alarm when nested inside the runner's shorter budget."""
     if not hasattr(signal, "setitimer"):
-        # The Windows runner bounds the whole operation in a child process.
+        # Windows bounds checkpoint capture in a child process.
         yield
         return
     old_wait, old_interval = signal.getitimer(signal.ITIMER_REAL)
@@ -78,19 +86,25 @@ def deadline(seconds):
 
 
 def bounded_evaluate(facade, hook_input, now, seconds):
-    if hasattr(signal, "setitimer"):
-        with deadline(seconds):
-            return evaluate(facade, hook_input, now)
+    expires = time.monotonic() + seconds
+    with deadline(seconds):
+        return evaluate(facade, hook_input, now, expires)
 
-    # Windows cannot interrupt one in-process handler. Kill only this worker
-    # on timeout so the other prompt hooks still run on the original process.
+
+def _checkpoint_in_worker(_facade, path, session_id, seconds):
+    """Give only checkpoint capture a killable process on Windows."""
     import subprocess
-    child = subprocess.run(
-        [sys.executable, "-c", _WIN_WORKER, str(Path(__file__).resolve().parents[1]), str(now)],
-        input=json.dumps(hook_input), capture_output=True, text=True, encoding="utf-8",
-        timeout=seconds, check=True,
-    )
-    return json.loads(child.stdout)
+    import sys
+
+    try:
+        child = subprocess.run(
+            [sys.executable, "-c", _WIN_WORKER, str(Path(__file__).resolve().parents[1]), str(seconds)],
+            input=json.dumps([str(path), session_id]), capture_output=True, text=True,
+            encoding="utf-8", timeout=seconds, check=True,
+        )
+        return json.loads(child.stdout) is True
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return False
 
 
 def _configured_mode(facade):
@@ -251,17 +265,19 @@ def _model_id(value):
     return value if isinstance(value, str) and _MODEL_ID.fullmatch(value) else None
 
 
-def _checkpoint_saved(facade, path, session_id):
+def _checkpoint_saved(facade, path, session_id, seconds):
     try:
-        with deadline(5):
+        with deadline(seconds):
             checkpoint = facade.compact_capture(transcript_path=str(path), session_id=session_id)
             return bool(checkpoint and facade._checkpoint_has_restorable_body(checkpoint))
-    except BudgetExceeded as exc:
-        if exc.args != (5,):
-            raise
+    except (Exception, BudgetExceeded, facade._HookTimeout):
         return False
-    except (Exception, facade._HookTimeout):
-        return False
+
+
+def _prompt_fingerprint(prompt, salt):
+    digest = hashlib.blake2b(prompt.strip().encode("utf-8", errors="surrogatepass"),
+                             key=bytes.fromhex(salt), digest_size=32)
+    return f"{salt}:{digest.hexdigest()}"
 
 
 def _publish(facade, path, state):
@@ -278,6 +294,7 @@ def _publish(facade, path, state):
             return False
         if _recent_block(current, now):
             state["kind"] = "warn"
+            state.pop("prompt_fingerprint", None)
         history = [
             {key: value for key, value in block.items() if key != "previous_blocks"}
             for block in _blocks(current) if now - block["told_at"] < _RETENTION
@@ -288,7 +305,26 @@ def _publish(facade, path, state):
         return True
 
 
-def evaluate(facade, hook_input, now):
+def _bounded_last_usage(path):
+    """Inspect a fixed transcript suffix where the hook has no alarm."""
+    try:
+        with path.open("rb") as stream:
+            start = max(0, stream.seek(0, os.SEEK_END) - _TAIL_BYTES)
+            stream.seek(start)
+            lines = stream.read(_TAIL_BYTES).split(b"\n")
+    except OSError:
+        return None, None, None
+    for line in reversed(lines[bool(start):]):
+        try:
+            row = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(row, dict) and not _delegated(row) and (found := _assistant_usage(row)):
+            return *found, row.get("timestamp") or row.get("ts")
+    return None, None, None
+
+
+def evaluate(facade, hook_input, now, expires=None):
     """Return a decision without emitting output or retaining any prompt text."""
     directory = _marker_dir(facade)
     _prune(facade, directory, now)
@@ -304,7 +340,8 @@ def evaluate(facade, hook_input, now):
     path = _transcript(facade, hook_input, session_id)
     if path is None:
         return dict(_PASS)
-    usage, model, ts = facade._keepwarm_last_usage(path)
+    alarm_available = hasattr(signal, "setitimer")
+    usage, model, ts = facade._keepwarm_last_usage(path) if alarm_available else _bounded_last_usage(path)
     model = _model_id(model)
     context = facade._context_token_count(usage)
     last = facade._keepwarm_iso_to_epoch(ts)
@@ -320,17 +357,19 @@ def evaluate(facade, hook_input, now):
     if current.get("gap_key") == str(ts):
         return dict(_PASS)
     text = texts(facade, context, model, idle, ttl)
-    kind = "warn"
+    state = {
+        "gap_key": str(ts), "told_at": now, "kind": "warn", "context": context, "model": model,
+        "ttl": ttl, "session_id": session_id, "project_id": _project_id(path.parent),
+    }
     if (mode == "ask" and not _recent_block(current, now) and not hook_input.get("attachments")
             and "[Image #" not in prompt and "[Pasted text #" not in prompt):
         from . import keepwarm_safety
-        if (keepwarm_safety.session_owner(facade.SNAPSHOT_DIR, session_id, now)
-                and _checkpoint_saved(facade, path, session_id)):
-            kind = "block"
-    state = {
-        "gap_key": str(ts), "told_at": now, "kind": kind, "context": context, "model": model,
-        "ttl": ttl, "session_id": session_id, "project_id": _project_id(path.parent),
-    }
+        if keepwarm_safety.session_owner(facade.SNAPSHOT_DIR, session_id, now):
+            remaining = _CHECKPOINT_BUDGET if expires is None else expires - time.monotonic() - _WARNING_BUDGET
+            save = _checkpoint_saved if alarm_available else _checkpoint_in_worker
+            if remaining > 0 and save(facade, path, session_id, min(remaining, _CHECKPOINT_BUDGET)):
+                state["kind"] = "block"
+                state["prompt_fingerprint"] = _prompt_fingerprint(prompt, os.urandom(16).hex())
     try:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if not _publish(facade, marker_path, state):
@@ -338,7 +377,14 @@ def evaluate(facade, hook_input, now):
     except OSError:
         return dict(_PASS)
     kind = state["kind"]
-    facade._log_compression_event("cold_guard", session_id=session_id, detail=kind, tier="estimated")
+    # A durable decision should still reach the host if bookkeeping stalls.
+    log_budget = None if expires is None else expires - time.monotonic() - _OUTPUT_BUDGET
+    if log_budget is None or log_budget > 0:
+        try:
+            with nullcontext() if log_budget is None else deadline(log_budget):
+                facade._log_compression_event("cold_guard", session_id=session_id, detail=kind, tier="estimated")
+        except BudgetExceeded:
+            pass
     return {"kind": kind, "text": text[kind]}
 
 
@@ -350,6 +396,10 @@ def _markers(facade):
             continue
 
 
+def _delegated(row):
+    return row.get("isSidechain") or row.get("agentId") or row.get("teamName")
+
+
 def _rows(facade, path):
     with path.open(encoding="utf-8", errors="replace") as stream:
         for line in stream:
@@ -357,7 +407,7 @@ def _rows(facade, path):
                 row = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(row, dict) or row.get("isSidechain"):
+            if not isinstance(row, dict) or _delegated(row):
                 continue
             stamp = facade._keepwarm_iso_to_epoch(row.get("timestamp") or row.get("ts"))
             if stamp is not None:
@@ -368,9 +418,28 @@ def _assistant_usage(row):
     message = row.get("message")
     if row.get("type") == "assistant" and isinstance(message, dict):
         usage = message.get("usage")
-        if isinstance(usage, dict) and usage:
-            return usage, message.get("model") or row.get("model")
+        model = message.get("model") or row.get("model")
+        if isinstance(usage, dict) and usage and model != "<synthetic>":
+            return usage, model
     return None
+
+
+def _user_text(row):
+    message = row.get("message")
+    if (row.get("type") != "user" or row.get("isMeta") or row.get("isCompactSummary")
+            or not isinstance(message, dict) or message.get("role") != "user"):
+        return None
+    content = message.get("content")
+    if isinstance(content, str):
+        if not content.lstrip().startswith(("<command-name>", "<local-command-stdout>")):
+            return content
+        return None
+    if isinstance(content, list) and content and all(
+        isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
+        for part in content
+    ):
+        return "\n".join(part["text"] for part in content)
+    return ""
 
 
 def _handover(facade, usage, model):
@@ -384,23 +453,38 @@ def _handover(facade, usage, model):
             "write_1h": hour, "write_5m": short, "write_unknown": max(0, total - hour - short)}
 
 
-def _fresh_session(facade, project, old, told_at):
+def _fresh_session(facade, project, old, block):
+    fingerprint = block.get("prompt_fingerprint")
+    if not isinstance(fingerprint, str) or not _FINGERPRINT.fullmatch(fingerprint):
+        return None
+    salt = fingerprint.split(":", 1)[0]
+    told_at = block["told_at"]
+    until = told_at + _CHOICE_WINDOW
     candidate = None
     for path in project.glob("*.jsonl"):
         if path == old or path.is_symlink() or not _SESSION_ID.fullmatch(path.stem):
             continue
         try:
+            if path.stat().st_mtime < told_at:
+                continue
             with _read_rows(facade, path) as rows:
                 first = next(rows, None)
-                if not first or not told_at <= first[0] <= told_at + _CHOICE_WINDOW:
+                if not first or not told_at <= first[0] <= until:
                     continue
-                if candidate:
-                    return None  # Several new sessions fit the same block.
-                usage = next((use for _, row in itertools.chain((first,), rows)
-                              if (use := _assistant_usage(row))), None)
-                candidate = {"fresh_session_id": path.stem}
-                if usage is not None:
-                    candidate["handover"] = _handover(facade, *usage)
+                for stamp, row in itertools.chain((first,), rows):
+                    if not told_at <= stamp <= until or _assistant_usage(row):
+                        break
+                    prompt = _user_text(row)
+                    if prompt is None:
+                        continue
+                    if _prompt_fingerprint(prompt, salt) == fingerprint:
+                        if candidate:
+                            return None  # Two sessions resent the same held prompt.
+                        candidate = {"fresh_session_id": path.stem}
+                        usage = next((use for _, reply in rows if (use := _assistant_usage(reply))), None)
+                        if usage is not None:
+                            candidate["handover"] = _handover(facade, *usage)
+                    break
         except OSError:
             continue
     return candidate
@@ -427,7 +511,7 @@ def _choice(facade, project, block):
     try:
         with _read_rows(facade, old) as rows:
             for stamp, row in rows:
-                if stamp < told_at:
+                if not told_at <= stamp <= told_at + _CHOICE_WINDOW:
                     continue
                 if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
                     compact = True
@@ -435,7 +519,7 @@ def _choice(facade, project, block):
                     return {"choice": "compact" if compact else "continue"}
     except OSError:
         return {"choice": "unknown"}
-    fresh = _fresh_session(facade, project, old, told_at)
+    fresh = _fresh_session(facade, project, old, block)
     return {"choice": "fresh", **fresh} if fresh else {"choice": "unknown"}
 
 
@@ -447,7 +531,7 @@ def resolve(facade, now):
         pending = [
             block for block in _blocks(marker)
             if now - block["told_at"] >= _CHOICE_WINDOW
-            and ("choice" not in block or (block["choice"] == "fresh" and "handover" not in block))
+            and block.get("choice") not in ("continue", "compact")
         ]
         if not pending:
             continue
@@ -457,8 +541,10 @@ def resolve(facade, now):
         before = json.dumps(marker)
         for block in pending:
             outcome = _choice(facade, projects.get(block.get("project_id")), block)
-            if "choice" not in block or outcome.get("fresh_session_id") == block.get("fresh_session_id"):
-                block.update(outcome)
+            for key in ("fresh_session_id", "handover"):
+                if key not in outcome:
+                    block.pop(key, None)
+            block.update(outcome)
         try:
             with _marker_lock(facade, path.parent) as held:
                 if held and json.dumps(_maybe_marker(path)) == before and json.dumps(marker) != before:
@@ -494,19 +580,56 @@ def _net_estimate(facade, block):
     return gross / 1_000_000, cost / 1_000_000, units
 
 
-def estimate(facade, days=30, since=None, now=None):
+def _overlapping_credits(facade, days, since, now, handover, mod_fresh):
+    """Use the receipt identities from the pools that contribute to this report."""
+    from . import mod_fresh_booking
+
+    restores = set()
+    mod_starts = {}
+    handover_counted = float((handover or {}).get("cost_saved_usd") or 0) > 0
+    mod_counted = mod_fresh_booking.additive(mod_fresh, handover) > 0
+    if handover_counted or mod_counted:
+        cutoff = datetime.fromtimestamp(now) - timedelta(days=days)
+        with closing(facade._open_trends_db_readonly(timeout=1.0)) as conn:
+            if handover_counted:
+                table = facade._counted_table(conn, "savings_events")
+                restored_ids = {sid for sid, in conn.execute(
+                    facade._CHECKPOINT_RESTORED_SQL[table], (cutoff.isoformat(),)
+                )}
+                restores = restored_ids.intersection(
+                    Path(path).stem for path, in conn.execute(
+                        "SELECT jsonl_path FROM session_log WHERE date >= ?", (cutoff.date().isoformat(),)
+                    ) if path
+                )
+            if mod_counted:
+                mod_starts = {sid: datetime.fromisoformat(stamp).timestamp() for sid, stamp in conn.execute(
+                    "SELECT session_uuid, timestamp FROM mod_fresh_receipts "
+                    "WHERE timestamp >= ? AND estimated_usd > 0", (since or cutoff.isoformat(),)
+                )}
+    return restores, mod_starts
+
+
+def estimate(facade, days=30, since=None, now=None, *, handover=None, mod_fresh=None):
     """Read the signed estimate from retained, resolved choices."""
     now = time.time() if now is None else now
+    days = days or 30
     cutoff = facade._keepwarm_iso_to_epoch(since) if since else None
     if cutoff is None:
-        cutoff = now - (days or 30) * 86400
+        cutoff = now - days * 86400
     fresh = sorted(
         (block for _, marker in _markers(facade) for block in _blocks(marker)
-         if block.get("choice") == "fresh" and block.get("fresh_session_id") and block.get("session_id")),
+         if block.get("choice") == "fresh" and block.get("fresh_session_id") and block.get("session_id")
+         and isinstance(block.get("prompt_fingerprint"), str) and _FINGERPRINT.fullmatch(block["prompt_fingerprint"])),
         key=lambda block: (block["told_at"], block["session_id"]),
     )
     gross = cost = units = 0.0
     priced = unpriced = 0
+    if fresh:
+        try:
+            restores, mod_starts = _overlapping_credits(facade, days, since, now, handover, mod_fresh)
+        except (OSError, sqlite3.Error, ValueError):
+            # An unavailable overlap check cannot support an additional credit.
+            fresh = []
     seen = set()
     for block in fresh:
         target = block["fresh_session_id"]
@@ -514,6 +637,9 @@ def estimate(facade, days=30, since=None, now=None):
             continue
         seen.add(target)
         if not cutoff <= block["told_at"] <= now:
+            continue
+        mod_at = mod_starts.get(block["session_id"])
+        if target in restores or (mod_at is not None and block["told_at"] <= mod_at <= block["told_at"] + _CHOICE_WINDOW):
             continue
         if facade._resume_lean_already_credited(block["session_id"]):
             continue
@@ -535,10 +661,15 @@ def estimate(facade, days=30, since=None, now=None):
 
 
 def on_savings_refresh(facade, summary):
+    from . import savings_story
+
     now = time.time()
     resolve(facade, now)
     previous = summary.get(ESTIMATE_KEY)
-    current = estimate(facade, days=summary.get("period_days"), now=now)
+    current = estimate(
+        facade, days=summary.get("period_days"), since=savings_story.install_anchor(), now=now,
+        handover=summary.get("handover_rerun"), mod_fresh=summary.get("mod_fresh_estimated"),
+    )
     summary[ESTIMATE_KEY] = current
     if previous != current and "action_savings" in summary:
         summary["action_savings"] = facade._action_savings_components(summary, summary.get("counted_period"))

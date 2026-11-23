@@ -168,9 +168,15 @@ def build_plan(facade):
 
 
 def plan_token(items):
-    """Bind approval to the selected identities and their financial figures."""
-    fields = ('id', 'tokens_per_request', 'net_usd_month', 'own_cost_usd_month')
-    selected = [{key: item.get(key) for key in fields} for item in items]
+    """Bind approval to the actions, settings and displayed dollar precision."""
+    fields = ('id', 'kind', 'tokens_per_request', 'model', 'per_model', 'current', 'target')
+    selected = []
+    for item in items:
+        entry = {key: item.get(key) for key in fields}
+        for key in ('net_usd_month', 'own_cost_usd_month'):
+            amount = item.get(key)
+            entry[key] = round(float(amount), 2) if amount is not None else None
+        selected.append(entry)
     payload = json.dumps(sorted(selected, key=lambda item: item['id']), sort_keys=True, separators=(',', ':'), allow_nan=False)
     return hashlib.sha256(payload.encode()).hexdigest()
 

@@ -75,7 +75,7 @@ printf '\n' >&2
 "${TO_CMD[@]}" apply-safe --json
 ```
 
-If the preview fails, show its error and stop. Use the items where `default_selected` is true or absent. If there are no selected changes, say so and stop. Otherwise show the selected changes, their estimated monthly savings (mark unpriced items), and any plan advice. Ask in chat once: **Apply these changes? Reply yes to approve this plan.** End the turn and wait for the user's reply.
+If the preview fails, show its error and stop. Use the items where `default_selected` is true or absent. If there are no selected changes, say so and stop. Otherwise show the selected changes, their estimated monthly savings rounded to the nearest cent (mark unpriced items), and any plan advice. Ask in chat once: **Apply these changes? Reply yes to approve this plan.** End the turn and wait for the user's reply.
 
 Run the saved command prefix followed by `apply-safe --yes --token '<exact token from the displayed plan>'` only after the user replies yes to that plan. Stop on any other answer. If the command reports the plan changed, obtain a new preview and approval before applying it.
 

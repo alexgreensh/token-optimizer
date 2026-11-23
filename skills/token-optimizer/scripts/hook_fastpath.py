@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 DEFAULT_COMPRESSION_BUDGET_S = 1.5
-_EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 _QUALITY_THROTTLE_S = 120.0
 
 
@@ -50,25 +49,6 @@ def _quality_throttle_due(session_id: str, snapshot_dir: Path | None) -> bool:
         return False
 
 
-def _read_cache_has_entry(session_id: str, file_path: str, snapshot_dir: Path | None) -> bool:
-    """Cheap file existence / substring check without importing read_cache or sqlite3."""
-    if not snapshot_dir or not file_path:
-        return False
-    try:
-        rc_dir = snapshot_dir / "read-cache"
-        if not rc_dir.is_dir():
-            return False
-        # Check session file if present
-        if session_id:
-            sf = rc_dir / f"{session_id}.json"
-            if sf.is_file():
-                return file_path in sf.read_text(encoding="utf-8", errors="ignore")
-            return False
-        return any(rc_dir.iterdir())
-    except OSError:
-        return False
-
-
 def _resolve_snapshot_dir() -> Path | None:
     env_dir = os.environ.get("TOKEN_OPTIMIZER_SNAPSHOT_DIR", "").strip()
     if env_dir:
@@ -79,42 +59,27 @@ def _resolve_snapshot_dir() -> Path | None:
     return Path.home() / ".claude" / "token-optimizer"
 
 
-def can_early_exit_posttooluse(hook_input: dict, snapshot_dir: Path | None = None) -> bool:
-    """Return True when PostToolUse is guaranteed to be a no-op and can exit
-    immediately before importing sqlite3, session_store, archive_result, or
-    bash_compress.
+def can_early_exit_posttooluse(
+    hook_input: dict,
+    snapshot_dir: Path | None = None,
+    *,
+    only_throttle_matches: bool = False,
+) -> bool:
+    """Return True only when PostToolUse is provably a no-op.
+
+    The runner's sole proven no-op is a tool whose only matching handler is the
+    quality-cache throttle tick, with no tick due. Every tool that matches
+    context_intel (Bash, Edit, Write, Read, ...) always records an activity row,
+    and Edit-family tools always invalidate the read cache, so neither may skip.
+    The caller states the matcher result via ``only_throttle_matches``; without
+    it this returns False.
     """
-    if not isinstance(hook_input, dict):
+    if not only_throttle_matches or not isinstance(hook_input, dict):
         return False
     if hook_input.get("hook_event_name") == "PostToolUseFailure":
         return False
-    tool_name = str(hook_input.get("tool_name") or "")
+    if os.environ.get("TOKEN_OPTIMIZER_COVERAGE_FUNNEL", "").strip() == "1":
+        return False
     session_id = str(hook_input.get("session_id") or "")
     sdir = snapshot_dir if snapshot_dir is not None else _resolve_snapshot_dir()
-
-    if tool_name in _EDIT_TOOLS:
-        ti = hook_input.get("tool_input") or {}
-        fpath = str(ti.get("file_path") or ti.get("notebook_path") or "")
-        if not _read_cache_has_entry(session_id, fpath, sdir) and not _quality_throttle_due(session_id, sdir):
-            return True
-        return False
-
-    if tool_name == "Bash":
-        tr = hook_input.get("tool_response")
-        if isinstance(tr, dict):
-            stdout = tr.get("stdout") or ""
-            stderr = tr.get("stderr") or ""
-            exit_code = tr.get("exit_code", 0)
-            if (
-                isinstance(stdout, str)
-                and isinstance(stderr, str)
-                and len(stdout) + len(stderr) < 100
-                and (exit_code is None or exit_code == 0)
-                and not tr.get("isImage")
-                and not _quality_throttle_due(session_id, sdir)
-            ):
-                # Do not skip if coverage funnel recording is explicitly requested
-                if os.environ.get("TOKEN_OPTIMIZER_COVERAGE_FUNNEL", "").strip() == "1":
-                    return False
-                return True
-    return False
+    return not _quality_throttle_due(session_id, sdir)

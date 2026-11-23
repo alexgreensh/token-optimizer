@@ -1039,10 +1039,6 @@ def _handle_post_tool_use_failure(hook_input: dict) -> None:
 def main() -> int:
     hook_input = _read_hook_input()
     tool_name = str(hook_input.get("tool_name") or "")
-    try:
-        from hook_fastpath import can_early_exit_posttooluse as _can_early_exit
-        if _can_early_exit(hook_input): return 0
-    except Exception: pass
     if hook_input.get("hook_event_name") == "PostToolUseFailure":
         # Shared per-handler deadline bounds the failure branch too.
         _install_runner_deadline()
@@ -1068,6 +1064,17 @@ def main() -> int:
     ]
     if not pending:  # pragma: no cover -- quality-cache's _MATCHER_UNION is always True
         return 0
+    # Fast path: skip ONLY when the throttle tick is the sole matching handler
+    # and it is provably not due. Any tool that reaches context_intel, archive,
+    # compression or invalidation always does real work (activity rows etc.).
+    if [n for n, _ in pending] == ["quality-cache --throttle-only"]:
+        try:
+            from hook_fastpath import can_early_exit_posttooluse as _can_early_exit
+
+            if _can_early_exit(hook_input, only_throttle_matches=True):
+                return 0
+        except Exception:
+            pass
 
     _install_runner_deadline()
 

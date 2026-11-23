@@ -258,3 +258,349 @@ def reconcile_attempts(record, rows):
             record['ping_failed'] = True
             changed = True
     return changed
+
+
+def _headless_latch(facade):
+    return facade.SNAPSHOT_DIR / 'keepwarm-headless-unproved'
+
+
+def headless_disabled(facade, env=None):
+    """Flags, legacy opt-out and install-wide proof latch, without reading transcripts."""
+    from . import keepwarm_auto
+    env = facade.os.environ if env is None else env
+    if env.get(facade._KEEPWARM_PING_ENV):
+        return 'ping-process'
+    if facade._keepwarm_llm_ping_disabled(env):
+        return 'kill-switch'
+    if str(env.get('TOKEN_OPTIMIZER_KEEPWARM_HEADLESS', 'on')).strip().lower() in keepwarm_auto.OFF:
+        return 'settings-disabled'
+    if facade.keepwarm_consent() == 'declined':
+        return 'consent-declined'
+    try:
+        path = _headless_latch(facade)
+        if path.is_symlink():
+            return 'headless-proof'
+        with path.open(encoding='utf-8') as stream:
+            state = stream.read(128)
+        if state.startswith('pending ') and 0 <= facade.time.time() - path.stat().st_mtime < 200:
+            return 'headless-busy'
+        return 'headless-proof'
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return 'accounting-unavailable'
+
+
+def scheduler_gate(facade, env=None):
+    reason = headless_disabled(facade, env)
+    if reason is None and (facade._remote_lean_profile() or facade.detect_runtime() != 'claude'):
+        reason = 'platform-gap'
+    if reason is None and facade.keepwarm_tripwire_mode() == 'off':
+        reason = 'tripwire-off'
+    return reason is None, reason or 'headless-enabled'
+
+
+def _run_ping(facade, runner, command, cwd, env, context, fallback_cost):
+    """Return only usage and bounded machine-readable diagnostics from the child."""
+    import math
+    from .keepwarm_auto import proof_ok
+
+    row = {'status': 'error', 'reason': 'unproved-cache-read', 'proof': False,
+           'cost_usd': fallback_cost}
+    try:
+        if runner is None:
+            def runner(args, folder, environment, timeout):
+                return subprocess.run(args, cwd=folder, env=environment, timeout=timeout,
+                                      stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                      encoding='utf-8', errors='replace')
+        output = runner(command, cwd, env, facade._KEEPWARM_PING_TIMEOUT_SECONDS)
+        data = json.loads(output.stdout)
+        reported = data.get('total_cost_usd')
+        if type(reported) in (float, int) and math.isfinite(reported) and reported > 0:
+            row['cost_usd'] = reported
+        usage = data.get('usage')
+        row['proof'] = (output.returncode == 0 and data.get('is_error') is not True
+                        and proof_ok(usage, context))
+        if row['proof']:
+            row.update(status='ok', reason='proved',
+                       cache_read=usage['cache_read_input_tokens'],
+                       cache_write=usage['cache_creation_input_tokens'])
+    except subprocess.TimeoutExpired:
+        row.update(status='timeout', reason='timeout')
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return row
+
+
+def _pending_attempt(rows, sid, now):
+    pending = {r.get('action_id') for r in rows if r.get('session_id') == sid
+               and r.get('action_id') and r.get('status') == 'firing'
+               and float(r['ts']) > now - 600}
+    finished = {r.get('action_id') for r in rows if r.get('session_id') == sid
+                and r.get('status') in ('ok', 'error', 'timeout', 'cancelled', 'unproved')}
+    return bool(pending - finished)
+
+
+def fire_headless(facade, record, *, now, env=None, runner=None, live=None, meters=None):
+    """Reserve once under the shared lock, then run one bounded fork and prove it."""
+    from .mod_action_booking import _append, _lock
+
+    sid, model = record['session_id'], record['model']
+    context = record['prefix_proxy']
+    if not facade._keepwarm_valid_arg(sid) or not facade._keepwarm_valid_arg(model):
+        return {'fired': False, 'reason': 'bad-record'}
+    binary, cwd = facade._keepwarm_resolve_claude_bin(), facade._keepwarm_extract_cwd(record['transcript_path'])
+    if not binary or not cwd:
+        return {'fired': False, 'reason': 'launch-unavailable'}
+    if live is None:
+        live = lambda: facade.classify_keepwarm_record(record, now=now) == 'still_paused'
+    if meters is None:
+        meters = _headless_meters(facade, now)
+    if env is None:
+        env = facade.os.environ
+    with _lock(facade) as held:
+        if not held:
+            return {'fired': False, 'reason': 'ledger-locked'}
+        rows = facade._keepwarm_load_ledger_rows()
+        decision = _headless_decision(facade, record, now, env, meters, rows)
+        if decision['action'] != 'ping':
+            return {'fired': False, 'reason': decision['reason']}
+        if _pending_attempt(rows, sid, now) or not live():
+            return {'fired': False, 'reason': 'session-changed-or-busy'}
+        action_id = 'headless-' + os.urandom(16).hex()
+        pause_key = facade._keepwarm_pause_key(sid, record['ts'])
+        fallback = facade._get_model_cost(model, 1000, 0, 0, context,
+                                          cache_create_1h=context, cache_create_5m=0, per_request=True)
+        if fallback <= 0:
+            return {'fired': False, 'reason': 'unpriced'}
+        common = {'source': 'keepwarm-headless', 'action': 'warm', 'auto': True,
+                  'session_id': sid, 'action_id': action_id, 'attempt_key': action_id,
+                  'pause_key': pause_key, 'model': model, 'prefix_proxy': context}
+        command = facade._keepwarm_build_ping_cmd(sid, model, binary,
+                   budget_usd=max(facade._KEEPWARM_PING_BUDGET_USD, 2 * decision['ping_cost_usd']))
+        # Ask rules preserve the tool definitions while unattended prompts deny tool calls.
+        settings = json.dumps({'disableAllHooks': True, 'permissions': {'ask': ['*']}})
+        command.extend(['--max-turns', '1', '--permission-mode', 'default',
+                        '--permission-prompts', 'none', '--settings', settings,
+                        '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'])
+        try:
+            fd = os.open(str(_headless_latch(facade)), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as stream:
+                stream.write('pending ' + action_id)
+        except OSError:
+            return {'fired': False, 'reason': 'headless-proof'}
+        _append(facade._keepwarm_ledger_path(), {**common, 'status': 'firing',
+                'ts': now, 'est_cost_usd': fallback})
+    if not live():
+        with _lock(facade) as held:
+            if held:
+                _append(facade._keepwarm_ledger_path(), {**common, 'status': 'cancelled', 'ts': now})
+                _headless_latch(facade).unlink()
+        return {'fired': False, 'reason': 'session-changed'}
+    child_env = dict(env)
+    child_env.pop('CLAUDECODE', None)
+    child_env[facade._KEEPWARM_PING_ENV] = '1'
+    child_env.update(DISABLE_TELEMETRY='1', DISABLE_ERROR_REPORTING='1')
+    child_env['PATH'] = os.path.dirname(binary) + os.pathsep + child_env.get('PATH', os.defpath)
+    outcome = _run_ping(facade, runner, command, cwd, child_env, context, fallback)
+    with _lock(facade) as held:
+        if not held:
+            return {'fired': True, 'proof': False, 'status': 'error', 'reason': 'ledger-locked'}
+        _append(facade._keepwarm_ledger_path(), {**common, **outcome, 'ts': max(now, facade.time.time())})
+        if outcome['proof']:
+            _headless_latch(facade).unlink()
+            # A user can resume while the request is in flight. Credit is still
+            # decided by the real return and must occur after this ping started.
+            _track_proven_ping(facade, record, now)
+        else:
+            # Keep the crash latch and replace the pending state under the ledger lock.
+            fd = os.open(str(_headless_latch(facade)), os.O_WRONLY | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0))
+            with os.fdopen(fd, 'w') as stream:
+                stream.write('failed ' + action_id)
+    return {'fired': True, **outcome}
+
+
+def _track_proven_ping(facade, record, now):
+    """Append a replacement arm under the shared lock, only after proven usage."""
+    from .mod_action_booking import _append
+
+    found = next((rec for rec in reversed(facade.load_keepwarm_records())
+                  if rec.get('session_id') == record['session_id']
+                  and rec.get('byte_size') == record['byte_size']
+                  and rec.get('transcript_mtime') == record['transcript_mtime']), None)
+    latest = found or record
+    updated = dict(latest, auto_warm=True, pings_fired=[*(latest.get('pings_fired') or []), now])
+    _append(facade._keepwarm_sidecar_path(), updated)
+
+
+def _headless_meters(facade, now):
+    data = facade._keepwarm_read_meters(now=now)
+    if data['age_s'] is None or data['age_s'] > 3600:
+        return None, None
+    return data['five_hour_pct'], data['seven_day_pct']
+
+
+def _headless_decision(facade, record, now, env, meters, rows):
+    from . import keepwarm_auto as policy
+
+    since_turn = now - record['last_turn_ts']
+    last_ping = max((float(r['ts']) for r in rows if r.get('session_id') == record['session_id']
+                     and r.get('action') == 'warm' and r.get('status') == 'ok'
+                     and r.get('proof') is not False and record['last_turn_ts'] <= float(r['ts']) <= now),
+                    default=record['last_turn_ts'])
+    since_cache = now - last_ping
+    if since_cache < policy.BUCKETS[0]:
+        return {'action': 'stop', 'reason': 'not-due', 'due_in_s': policy.BUCKETS[0] - since_cache}
+    if since_cache >= policy.CACHE_LIFETIME - 15:
+        return {'action': 'stop', 'reason': 'cache-expired'}
+    return policy.decide(facade, record['session_id'], record['prefix_proxy'], since_turn, record['model'],
+                         policy.CACHE_LIFETIME if record['ttl_kind'] == '1h' else 0,
+                         *meters, now, headless=True, env=env, rows=rows)
+
+
+def scheduler_tick(facade, now, dry_run, env, runner):
+    """Process the latest arm per session, with the same policy as the band."""
+    allowed, reason = scheduler_gate(facade, env)
+    summary = {'allowed': allowed, 'reason': reason, 'decisions': [], 'fired': 0, 'skipped': 0, 'errors': 0}
+    with facade._keepwarm_tick_singleton() as held:
+        if not held:
+            return dict(summary, reason='tick-already-running')
+        if not dry_run:
+            booked = facade.keepwarm_detect_realized(now=now)
+            facade.compact_keepwarm_sidecar(now=now)
+        if allowed:
+            latest = {record['session_id']: record for record in facade.load_keepwarm_records()
+                      if record.get('owner')}
+            for sid, record in latest.items():
+                try:
+                    at = now if dry_run or runner is not None else facade.time.time()
+                    if facade.classify_keepwarm_record(record, now=at) != 'still_paused':
+                        continue
+                    decision = _headless_decision(facade, record, at, env, _headless_meters(facade, at),
+                                                  facade._keepwarm_load_ledger_rows())
+                    entry = {'session_id': sid, 'action': decision['action'], 'reason': decision['reason']}
+                    summary['decisions'].append(entry)
+                    if decision['action'] == 'ping' and not dry_run:
+                        result = fire_headless(facade, record, now=at, env=env, runner=runner)
+                        summary['fired' if result['fired'] else 'skipped'] += 1
+                        entry['fire_reason'] = result['reason']
+                        if result.get('proof') is False:
+                            break
+                except Exception:
+                    summary['errors'] += 1
+        if not dry_run:
+            facade._keepwarm_emit_tick_observability(
+                now=now, allowed=allowed, reason=reason, armed=len(summary['decisions']),
+                fired=summary['fired'], skipped=summary['skipped'],
+                booked=booked.get('realized', 0), errors=summary['errors'])
+    return summary
+
+
+def desktop_headless_main(facade, args):
+    """Desktop fallback uses a fresh transcript snapshot supplied by the live mod."""
+    from .keepwarm_auto import _parse_args
+    from .mod_action_booking import _snapshot, _snapshot_still_usable
+
+    try:
+        event = json.loads(facade.sys.stdin.read(8193))
+        values = _parse_args(args)
+        sid = values.session_id
+        now = facade.time.time()
+        path = Path(event['transcript_path']).resolve(strict=True)
+        projects = (facade.CLAUDE_DIR / 'projects').resolve(strict=True)
+        if projects not in path.parents:
+            raise ValueError('unexpected transcript path')
+        snapshot = _snapshot(facade, {**event, 'auto': True}, sid)
+        if snapshot['model'] != values.model or not snapshot['last_turn']:
+            raise ValueError('stale model or transcript')
+        matches = next((rec for rec in reversed(facade.load_keepwarm_records())
+                        if rec.get('session_id') == sid and rec.get('byte_size') == snapshot['byte_size']
+                        and rec.get('transcript_mtime') == snapshot['mtime']), None)
+        record = matches or {'session_id': sid, 'ts': now, 'owner': None,
+                             'byte_size': snapshot['byte_size'], 'transcript_mtime': snapshot['mtime'],
+                             'transcript_path': snapshot['path'], 'prefix_proxy': snapshot['prefix'],
+                             'model': snapshot['model'], 'ttl_kind': snapshot['ttl'],
+                             'last_turn_ts': snapshot['last_turn']}
+
+        def live():
+            return (_snapshot_still_usable(snapshot) and path.stat().st_size == snapshot['byte_size']
+                    and not ended_since(facade.SNAPSHOT_DIR, sid, record['ts']))
+
+        result = fire_headless(facade, record, now=now, live=live,
+                               meters=(values.five_hour_pct, values.week_pct))
+    except (OSError, ValueError, TypeError, KeyError):
+        result = {'fired': False, 'reason': 'snapshot-unavailable'}
+    print(json.dumps(result))
+    return 0
+
+
+def schedule_terminal(facade, record):
+    """Start one POSIX idle watcher per armed terminal, without installing a job."""
+    from .keepwarm_auto import MIN_CONTEXT
+    if (os.name != 'posix' or facade._daemon_snapshot_sandboxed()
+            or record['prefix_proxy'] < MIN_CONTEXT or record['ttl_kind'] != '1h'
+            or headless_disabled(facade)):
+        return
+    import fcntl
+    sid = record['session_id']
+    if not facade._keepwarm_valid_arg(sid) or not facade._is_priced_model(record['model']):
+        return
+    filename = hashlib.sha256(sid.encode('utf-8')).hexdigest()
+    path = facade.SNAPSHOT_DIR / ('keepwarm-owner-watch-' + filename)
+    fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        os.utime(fd)
+        facade.spawn_detached([sys.executable, str(facade.__file__), 'keepwarm-decide',
+                               'watch', sid, str(fd)], pass_fds=(fd,),
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    finally:
+        # The child holds the same open file description until it exits.
+        os.close(fd)
+
+
+def watch_terminal(facade, sid, fd):
+    """Use current arm and meter evidence at the deadline, then yield at the caps."""
+    from . import keepwarm_auto as policy
+    if not facade._keepwarm_valid_arg(sid):
+        return 1
+    try:
+        os.fstat(fd)
+        while True:
+            now = facade.time.time()
+            disabled = headless_disabled(facade)
+            if disabled == 'headless-busy':
+                facade.time.sleep(5)
+                continue
+            if disabled:
+                return 0
+            records = [r for r in facade.load_keepwarm_records() if r.get('session_id') == sid and r.get('owner')]
+            if not records:
+                return 0
+            record = records[-1]
+            if not owner_alive(record['owner']) or ended_since(facade.SNAPSHOT_DIR, sid, record['ts']):
+                return 0
+            if now - record['last_turn_ts'] > policy.CACHE_LIFETIME * policy.MAX_PER_PAUSE:
+                return 0
+            if now - os.fstat(fd).st_mtime > policy.DAY:
+                os.utime(fd)
+            state = facade.classify_keepwarm_record(record, now=now)
+            if state != 'still_paused':
+                # A new turn is writing its transcript and will arm on Stop.
+                facade.time.sleep(5)
+                continue
+            rows = facade._keepwarm_load_ledger_rows()
+            decision = _headless_decision(facade, record, now, None, _headless_meters(facade, now), rows)
+            if decision['reason'] == 'not-due':
+                facade.time.sleep(min(60, max(1, decision['due_in_s'])))
+                continue
+            if decision['action'] != 'ping':
+                return 0
+            result = fire_headless(facade, record, now=now)
+            if not result.get('proof'):
+                return 0
+    finally:
+        os.close(fd)

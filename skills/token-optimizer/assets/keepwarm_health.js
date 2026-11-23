@@ -1,3 +1,29 @@
+function keepwarmAutoHealth(data) {
+  return (((data || {}).cache_health || {}).keepwarm_auto || {});
+}
+
+function keepwarmNetHtml(data) {
+  var auto = keepwarmAutoHealth(data);
+  if (!Number(auto.pings_7d) || auto.net_usd_7d == null) return '';
+  var net = Number(auto.net_usd_7d), sign = net < 0 ? '&minus;' : '';
+  return '<p>Keep-warm net over 7 days: ' + sign + '$' + Math.abs(net).toFixed(2) +
+    ' estimated at API rates (' + Number(auto.pings_7d) + ' pings, ' +
+    Number(auto.proof_failed_7d || 0) + ' failed proofs).</p>';
+}
+
+function keepwarmStateHtml(data) {
+  var auto = keepwarmAutoHealth(data);
+  var lines = auto.state === 'on' ? '<p>Automatic keep-warm is on, inside open sessions only.</p>' : '';
+  if (auto.headless_state === 'on') lines += '<p>Headless keep-warm is on for open terminal and desktop sessions.</p>';
+  if (auto.headless_reason === 'headless-proof') {
+    lines += '<p>Headless keep-warm stopped for this installation: a warm-up failed the cache proof.</p>';
+  }
+  if (auto.reason === 'tripwire' || auto.headless_reason === 'tripwire') {
+    lines += '<p>The seven-day safety tripwire stopped automatic warm-ups.</p>';
+  }
+  return lines;
+}
+
 // Keep-warm activity belongs in Health, separate from savings headline claims.
 function keepwarmHealthHtml(data) {
   var kw = ((data || {}).cache_health || {}).keepwarm;
@@ -18,10 +44,11 @@ function keepwarmHealthHtml(data) {
     'consent-declined': 'keep-warm is disabled in settings.',
     'tripwire-off': 'the safety tripwire stopped it.'
   };
+  var auto = keepwarmStateHtml(data);
   return '<div class="card wide"><div class="card-header"><span>Keep-warm</span></div>' +
-    '<p>Keep-warm: paused while we prove it is safe and saves you money</p>' +
-    (paused[kw.gate_reason] ? '<p>Also paused because ' + paused[kw.gate_reason] + '</p>' : '') +
-    '<p>' + Number(kw.pings_7d || 0) + ' pings in the last 7 days.</p>' +
+    (auto || '<p>Keep-warm: paused while we prove it is safe and saves you money</p>' +
+      (paused[kw.gate_reason] ? '<p>Also paused because ' + paused[kw.gate_reason] + '</p>' : '')) +
+    (keepwarmNetHtml(data) || '<p>' + Number(kw.pings_7d || 0) + ' pings in the last 7 days.</p>') +
     '<p>' + Number(kw.pings_30d || 0) + ' pings in the last 30 days.</p>' +
     (Number(kw.manual_pings_30d || 0) ? '<p>' + Number(kw.manual_pings_30d) + ' manual warm-ups from the Claude Code mod.</p>' : '') +
     '<p>Estimated net value: $' + Number(kw.net_usd || 0).toFixed(2) + ' at API rates.</p>' +

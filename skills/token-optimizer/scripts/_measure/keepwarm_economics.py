@@ -114,7 +114,7 @@ def gate_reason(facade):
 
 
 def verified_summary(facade, days, now):
-    conn = facade._open_trends_db_readonly(timeout=1.0)
+    conn = facade._open_trends_db_readonly(timeout=0.15)
     try:
         keys = {row[0] for row in conn.execute(
             "SELECT pause_key FROM savings_events WHERE event_type = 'keepwarm_estimated' AND pause_key IS NOT NULL")}
@@ -129,7 +129,7 @@ def manual_count(rows, start):
     attempts, cancelled = set(), set()
     for row in rows:
         try:
-            if (row.get('source') == 'claude-code-mod' and row.get('action') == 'warm' and
+            if (row.get('source') == 'claude-code-mod' and row.get('action') == 'warm' and row.get('auto') is not True and
                     row.get('status') in ('firing', 'ok', 'cancelled') and float(row.get('ts', 0)) >= start):
                 (cancelled if row.get('status') == 'cancelled' else attempts).add(row.get('action_id'))
         except (TypeError, ValueError):
@@ -152,7 +152,7 @@ def headline_pool(facade, cutoff):
         return None
     if not summary['pings'] and not summary['realized_count']:
         return None
-    return {'events': summary['pings'] + summary['realized_count'],
+    return {'label': 'Keep-warm net', 'events': summary['pings'] + summary['realized_count'],
             'tokens_saved': 0, 'cost_saved_usd': summary['net_usd'],
             'manual_pings': manual_count(facade._keepwarm_load_ledger_rows(), start)}
 

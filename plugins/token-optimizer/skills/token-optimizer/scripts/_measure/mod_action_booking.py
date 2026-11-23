@@ -39,8 +39,13 @@ def _snapshot(facade, event, sid):
     usage, model, last = facade._keepwarm_last_usage(path)
     if not usage or not model or not facade._is_priced_model(model):
         raise ValueError('model unpriced')
+    ttl = facade._keepwarm_ttl_kind(usage)
+    if ttl == 'unknown' and event.get('auto'):
+        _, measured, last_model = facade._status_bar_transcript_state(path)
+        if measured and last_model == model:
+            ttl = measured
     return {'path': str(path), 'byte_size': size, 'mtime': mtime, 'device': current.st_dev,
-            'inode': current.st_ino, 'model': model, 'ttl': facade._keepwarm_ttl_kind(usage),
+            'inode': current.st_ino, 'model': model, 'ttl': ttl,
             'prefix': facade._keepwarm_prefix_proxy(usage), 'last_turn': facade._keepwarm_iso_to_epoch(last)}
 
 
@@ -64,16 +69,37 @@ def _prepare(facade, event, sid, ident, when):
     with _lock(facade) as acquired:
         if not acquired:
             return {'ok': False, 'reason': 'ledger-locked'}
-        existing = [r for r in facade._keepwarm_load_ledger_rows() if r.get('action_id') == ident]
+        rows = facade._keepwarm_load_ledger_rows()
+        existing = [r for r in rows if r.get('action_id') == ident]
         if existing:
             return {'ok': False, 'reason': 'attempt-already-reserved' if _compatible(existing, sid) else 'identity-conflict'}
+        from . import keepwarm_auto, keepwarm_safety
+        if keepwarm_safety._pending_attempt(rows, sid, when):
+            return {'ok': False, 'reason': 'attempt-in-progress'}
+        flags = {key: event[key] for key in ('auto', 'proof') if key in event}
+        if flags.get('auto'):
+            last_turn = snapshot['last_turn']
+            context = event.get('context_tokens')
+            if type(context) is not int or not last_turn or not _snapshot_still_usable(snapshot):
+                return {'ok': False, 'reason': 'snapshot-unavailable'}
+            now = facade.time.time()
+            if abs(now - when) > 15 or abs(context - snapshot['prefix']) > context * .1:
+                return {'ok': False, 'reason': 'stale-decision'}
+            decision = keepwarm_auto.decide(
+                facade, sid, min(context, snapshot['prefix']), now - last_turn, snapshot['model'],
+                3600 if snapshot['ttl'] == '1h' else 0,
+                event.get('five_hour_pct'), event.get('week_pct'), now, rows=rows)
+            if decision['action'] != 'ping':
+                return {'ok': False, 'reason': decision['reason']}
+            snapshot['proof_context'] = context
+            estimate = max(estimate, decision['ping_cost_usd'])
         _append(facade._keepwarm_ledger_path(), {'status': 'firing', 'source': 'claude-code-mod',
             'action': 'warm', 'action_id': ident, 'attempt_key': ident, 'session_id': sid,
-            'ts': when, 'est_cost_usd': estimate, 'snapshot': snapshot})
+            'ts': when, 'est_cost_usd': estimate, 'snapshot': snapshot, **flags})
     return {'ok': True, 'duplicate': False}
 
 
-def _cancel(facade, sid, ident, when):
+def _cancel(facade, event, sid, ident, when):
     with _lock(facade) as acquired:
         if not acquired:
             return {'ok': False, 'reason': 'ledger-locked'}
@@ -82,7 +108,22 @@ def _cancel(facade, sid, ident, when):
             return {'ok': False, 'reason': 'reservation-unavailable'}
         if not any(r.get('status') == 'cancelled' for r in rows):
             _append(facade._keepwarm_ledger_path(), {'status': 'cancelled', 'source': 'claude-code-mod',
-                'action': 'warm', 'action_id': ident, 'session_id': sid, 'ts': when})
+                'action': 'warm', 'action_id': ident, 'session_id': sid, 'ts': when,
+                **{key: event[key] for key in ('auto', 'proof') if key in event}})
+    return {'ok': True}
+
+
+def _unproved(facade, sid, ident, when):
+    with _lock(facade) as acquired:
+        if not acquired:
+            return {'ok': False, 'reason': 'ledger-locked'}
+        rows = [r for r in facade._keepwarm_load_ledger_rows() if r.get('action_id') == ident]
+        if not _compatible(rows, sid) or not any(r.get('status') == 'firing' and r.get('auto') is True for r in rows):
+            return {'ok': False, 'reason': 'reservation-unavailable'}
+        if not any(r.get('proof') is False for r in rows):
+            _append(facade._keepwarm_ledger_path(), {'status': 'unproved', 'source': 'claude-code-mod',
+                'action': 'warm', 'session_id': sid, 'action_id': ident, 'ts': when,
+                'auto': True, 'proof': False})
     return {'ok': True}
 
 
@@ -107,13 +148,17 @@ def record(facade, event):
         if isinstance(event, dict) and event.get('action') in ('clean', 'clean-first'):
             from . import mod_compaction_booking
             return mod_compaction_booking.record(facade, event)
-        if not isinstance(event, dict) or event.get('action') not in ('warm', 'warm-prepare', 'warm-cancel'):
+        if not isinstance(event, dict) or event.get('action') not in ('warm', 'warm-prepare', 'warm-cancel', 'warm-unproved'):
             return {'ok': False, 'reason': 'unsupported-action'}
+        if any(key in event and type(event[key]) is not bool for key in ('auto', 'proof')):
+            return {'ok': False, 'reason': 'invalid-auto-proof'}
         sid, ident, when = _identity(event)
+        if event['action'] == 'warm-unproved':
+            return _unproved(facade, sid, ident, when)
         if event['action'] == 'warm-prepare':
             return _prepare(facade, event, sid, ident, when)
         if event['action'] == 'warm-cancel':
-            return _cancel(facade, sid, ident, when)
+            return _cancel(facade, event, sid, ident, when)
         usage = event['usage']
         if not isinstance(usage, dict) or any(type(usage.get(key)) is not int or usage[key] < 0 for key in _USAGE):
             return {'ok': False, 'reason': 'invalid-usage'}
@@ -131,6 +176,13 @@ def record(facade, event):
             snapshot = reservation.get('snapshot') if reservation else _snapshot(facade, event, sid)
             if not isinstance(snapshot, dict):
                 return {'ok': False, 'reason': 'snapshot-unavailable'}
+            flags = {key: event[key] for key in ('auto', 'proof') if key in event}
+            if flags.get('auto') or (reservation and reservation.get('auto') is True):
+                from .keepwarm_auto import proof_ok
+                if reservation is None or reservation.get('auto') is not True:
+                    return {'ok': False, 'reason': 'reservation-unavailable'}
+                flags = {'auto': True, 'proof': flags.get('proof') is True and proof_ok(
+                    usage, snapshot.get('proof_context')) and not any(r.get('proof') is False for r in existing)}
             model, ttl = snapshot['model'], snapshot['ttl']
             creation = usage['cache_creation_input_tokens']
             cost = facade._get_model_cost(model, usage['input_tokens'], usage['output_tokens'],
@@ -148,18 +200,23 @@ def record(facade, event):
             if same_pause is not None:
                 pause_key = facade._keepwarm_pause_key(sid, same_pause['ts'])
             row = {'status': 'ok', 'source': 'claude-code-mod', 'action': 'warm', 'action_id': ident,
-                   'attempt_key': ident, 'session_id': sid, 'pause_key': pause_key, 'ts': when,
+                   'attempt_key': ident, 'session_id': sid, 'pause_key': pause_key, 'ts': when, **flags,
                    'model': model, 'cost_usd': cost, 'cost_basis': 'conservative-1h-write' if creation else 'reported-usage', 'usage': dict(usage)}
             finished = [r for r in existing if r.get('status') == 'ok']
             if not finished:
                 _append(facade._keepwarm_ledger_path(), row)
             usable = _snapshot_still_usable(snapshot)
-            if event.get('answered', True) is True and usable and same_pause is None and not any(r.get('manual_action_id') == ident for r in arms):
-                _append(facade._keepwarm_sidecar_path(), {'session_id': sid, 'transcript_path': snapshot['path'],
-                    'transcript_mtime': snapshot['mtime'], 'byte_size': snapshot['byte_size'], 'model': model,
-                    'prefix_proxy': snapshot['prefix'], 'ttl_kind': ttl, 'last_turn_ts': snapshot['last_turn'] or when,
-                    'ts': when, 'state': 'armed', 'owner': None, 'pings_fired': [when],
-                    'pause_key': pause_key, 'manual_action_id': ident})
+            if event.get('answered', True) is True and usable and flags.get('proof') is not False:
+                if same_pause is None and not any(r.get('manual_action_id') == ident for r in arms):
+                    _append(facade._keepwarm_sidecar_path(), {'session_id': sid, 'transcript_path': snapshot['path'],
+                        'transcript_mtime': snapshot['mtime'], 'byte_size': snapshot['byte_size'], 'model': model,
+                        'prefix_proxy': snapshot['prefix'], 'ttl_kind': ttl, 'last_turn_ts': snapshot['last_turn'] or when,
+                        'ts': when, 'state': 'armed', 'owner': None, 'pings_fired': [when],
+                        'pause_key': pause_key, 'manual_action_id': ident, 'auto_warm': flags.get('auto', False)})
+                elif same_pause is not None and not finished and flags.get('auto'):
+                    latest = [r for r in arms if r.get('session_id') == sid and r.get('ts') == same_pause['ts']][-1]
+                    _append(facade._keepwarm_sidecar_path(), dict(latest, auto_warm=True,
+                            pings_fired=[*latest['pings_fired'], when]))
         return {'ok': True, 'pause_key': pause_key, 'cost_usd': cost, 'duplicate': bool(finished), 'resume_trackable': usable}
     except Exception as exc:
         return {'ok': False, 'reason': 'receipt-unavailable', 'exception_class': type(exc).__name__}

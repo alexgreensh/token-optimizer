@@ -750,7 +750,9 @@ def generate_dashboard(coord_path):
     # predictor transparency). Fail-open so it never blocks dashboard regen.
     try:
         if isinstance(cache_health, dict):
+            from . import keepwarm_auto
             cache_health["keepwarm"] = _measure_facade.keepwarm_cache_health_block(days=30)
+            cache_health["keepwarm_auto"] = keepwarm_auto.health_block(_measure_facade)
     except Exception:
         pass
 
@@ -2507,7 +2509,9 @@ def generate_standalone_dashboard(days=None, quiet=None, force=None):
     # predictor transparency). Fail-open so it never blocks dashboard regen.
     try:
         if isinstance(cache_health, dict):
+            from . import keepwarm_auto
             cache_health["keepwarm"] = _measure_facade.keepwarm_cache_health_block(days=30)
+            cache_health["keepwarm_auto"] = keepwarm_auto.health_block(_measure_facade)
     except Exception:
         pass
 
@@ -3711,6 +3715,9 @@ def _status_bar_savings_or_reason(session_id, _retried=None):
     headline["token_headline"] = headline_module.token_headline(headline)
     _measure_facade._apply_counted_oneshot_pricing(headline, counted)
     headline["action_savings"] = _measure_facade._action_savings_components(headline, counted)
+    from . import keepwarm_auto
+    status_headline = savings_headline_module.build(headline)
+    keepwarm_note = keepwarm_auto.status_headline(_measure_facade, status_headline, headline.get("keepwarm_estimated"))
     shown, measured = _measure_facade._dashboard_saved_tokens(headline)
     if measured == 0 and int(window.get("tokens", 0)) > 0:
         return None, "savings database busy"
@@ -3724,7 +3731,7 @@ def _status_bar_savings_or_reason(session_id, _retried=None):
         "total_30d_tokens": shown,
         "total_30d_measured_tokens": measured,
         # The shared headline the band, status line and dashboard hero quote.
-        "savings_headline": savings_headline_module.build(headline),
+        "savings_headline": status_headline, "keepwarm_note": keepwarm_note,
         "computed_at": _measure_facade.time.time(),
     }, None
 
@@ -4138,6 +4145,7 @@ def status_bar_payload(session_id, transcript=None, sync=None):
         if path is not None:
             out["last_request_epoch"], out["cache_lifetime"], session_model = (
                 _measure_facade._status_bar_transcript_state(path))
+            out["cache_model"] = session_model
             out["compactions"] = _measure_facade._status_bar_compactions(path, sid)
         # The native prompt_cache object (v2.1.251+) is authoritative for the
         # cache countdown/cold state when statusline.js bridged it recently;

@@ -6238,7 +6238,9 @@ def _live_savings_payload(days=None):
         cache_health = {"available": False, "tier": "opportunity"}
     try:
         if isinstance(cache_health, dict):
+            from . import keepwarm_auto
             cache_health["keepwarm"] = _measure_facade.keepwarm_cache_health_block(days=days)
+            cache_health["keepwarm_auto"] = keepwarm_auto.health_block(_measure_facade)
     except Exception:
         pass
     # Window/runway card (5h/7d): include it in the LIVE payload so an open dashboard
@@ -6380,6 +6382,9 @@ def savings_report(days=None, as_json=None):
     print(f"\n  Last {days} days ({start} to {end})")
     print(f"  {'=' * 58}")
     print(_compat.facade()._headline.cli_headline(summary["token_headline"], days, summary.get("session_effect")))
+    keepwarm = summary.get("keepwarm_estimated")
+    if keepwarm and keepwarm.get("events"):
+        print(f"  Keep-warm net, last {days} days: {_measure_facade._signed_usd(keepwarm['cost_saved_usd'])} estimated at API rates.")
 
     # Headline transformation. With the session-weight pool live it is the
     # work-normalized (per-API-call, constant-price) figure; otherwise the legacy

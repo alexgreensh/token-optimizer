@@ -653,6 +653,7 @@ def _preview_minified(content: str, file_path: str, lines: list[str]) -> tuple[s
     )
     out.append(f"Head (first 300 chars): {content[:300]!r}")
     if len(content) > 500:
+        out.append(f"... ({len(content) - 500:,} chars omitted in line 1, middle) ...")
         out.append(f"Tail (last 200 chars): {content[-200:]!r}")
     return "\n".join(out), 1
 

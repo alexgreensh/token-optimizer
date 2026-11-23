@@ -536,7 +536,7 @@ def _collapse_identical_runs(lines: list[str]) -> list[str]:
         while i + run < len(lines) and lines[i + run] == current:
             run += 1
         if run > 1:
-            result.append(f"{current}  [{run} identical lines collapsed]")
+            result.append(f"{current}  [{run} identical lines collapsed (lines {i + 1}-{i + run})]")
         else:
             result.append(current)
         i += run

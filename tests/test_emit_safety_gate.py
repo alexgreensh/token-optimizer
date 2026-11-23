@@ -204,7 +204,7 @@ def test_noise_fold_passes_gate_and_fails_closed_on_rejection(monkeypatch):
 
 
 def test_large_output_policy_on_gated_and_off_byte_identical(tmp_path, monkeypatch):
-    raw = "\n".join(f"row {i:04d}: " + ("x" * 60) for i in range(200)) + "\n"
+    raw = "\n".join(f"row {i:04d}: " + ("x" * 60) for i in range(280)) + "\n"
 
     # Off mode (default unset and explicit '0'): returns (None, ""), never calls emit_safety_gate
     called = []

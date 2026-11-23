@@ -500,7 +500,7 @@ def _run(payload: dict) -> None:
             from visibility_rule import enforce_visibility_and_exact_hidden as _vis_guard
             compressed = _vis_guard(
                 cleaned_stdout, compressed, is_search=_is_search_cmd,
-                skip_hidden_check=(_log_feature in ("crossturn_dedup", "cmd_git_diff_stat", "cmd_git_ls")),
+                skip_hidden_check=(_log_feature in ("cmd_git_diff_stat", "cmd_git_ls")),
             )
         except Exception:
             pass
@@ -561,9 +561,7 @@ def _run(payload: dict) -> None:
 
         # Log compression event to trends.db
         _log_event(command, cleaned_stdout, compressed, feature=_log_feature)
-        _cov("compressed",
-             "crossturn_dedup" if _log_feature == "crossturn_dedup" else "read_only",
-             "crossturn_dedup" if _log_feature == "crossturn_dedup" else _detect_pattern(command),
+        _cov("compressed", "read_only", _detect_pattern(command),
              stdout, _removed_tokens(cleaned_stdout, compressed))
 
         # Emit updatedToolOutput to replace what Claude sees. The thrash nudge,

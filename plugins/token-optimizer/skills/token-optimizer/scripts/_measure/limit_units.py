@@ -8,6 +8,7 @@ row deduplication / row-timestamp windowing.
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -376,6 +377,27 @@ def plan_limits_summary(facade, conn, days, summary=None, counted=None, default_
         if saved_lu["priced"]:
             saved_units = saved_lu["units"]
 
+    # Earlier compaction is signed and already net of its own request cost.
+    # Convert each priced event with its own model rather than the window model.
+    unpriced_estimate_events = 0
+    if summary and summary.get("autocompact_window_estimated"):
+        table = facade._counted_table(conn, "savings_events")
+        for (detail,) in conn.execute(
+            f"SELECT detail FROM {table} WHERE event_type=? AND timestamp >= ?",
+            ("autocompact_window_estimated", cutoff),
+        ):
+            try:
+                units = float(json.loads(detail)["net_limit_units"])
+                if not math.isfinite(units):
+                    raise ValueError("invalid units")
+            except (TypeError, ValueError, AttributeError):
+                unpriced_estimate_events += 1
+                continue
+            except KeyError:
+                unpriced_estimate_events += 1
+                continue
+            saved_units += units
+
     share_pct = round(saved_units / denom_units * 100.0, 4) if denom_units > 0 else None
     return {
         "label": LIMIT_UNITS_LABEL,
@@ -383,6 +405,7 @@ def plan_limits_summary(facade, conn, days, summary=None, counted=None, default_
         "saved_units": round(saved_units, 2),
         "denominator_units": round(denom_units, 2),
         "unpriced_tokens": unpriced_tokens,
+        "unpriced_estimate_events": unpriced_estimate_events,
         "diagnostic_fresh_plus_output_tokens": diag_fresh_out,
         "by_class": {k: round(v, 2) for k, v in by_class.items()},
         "reference_model": ref_model,

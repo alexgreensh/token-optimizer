@@ -1881,7 +1881,7 @@ def _collect_management_data(components=None, trends=None):
     }
 
 
-def plugin_cleanup(dry_run=None, quiet=None):
+def plugin_cleanup(dry_run=None, quiet=None, *, selected_items=None, plan_token=None, selected_ids=None):
     """Report stale plugin cache dirs and archive local/plugin skill overlaps.
 
     Two actions:
@@ -1896,6 +1896,9 @@ def plugin_cleanup(dry_run=None, quiet=None):
     import shutil
 
     actions_taken = []
+    if selected_items is not None:
+        from . import apply_safe
+        if not apply_safe.validate_token(_measure_facade, selected_ids, plan_token) or set(selected_items) != {s.split(':', 1)[1] for s in selected_ids if s.startswith('duplicate_skill:')}: return actions_taken
 
     # Defense-in-depth: under a foreign runtime (OpenCode, Copilot),
     # do not touch ~/.claude.
@@ -1904,7 +1907,6 @@ def plugin_cleanup(dry_run=None, quiet=None):
             print(f"  Skipped: {_measure_facade.runtime_name_for_humans()} runtime detected; not modifying ~/.claude.")
         return actions_taken
 
-    # --- Report 1: Stale cache version dirs (report only, never delete) ---
     registry = _measure_facade.CLAUDE_DIR / "plugins" / "installed_plugins.json"
     cache_dir = _measure_facade.CLAUDE_DIR / "plugins" / "cache"
 
@@ -1952,7 +1954,6 @@ def plugin_cleanup(dry_run=None, quiet=None):
     elif not quiet:
         print("\n  Stale plugin cache: clean")
 
-    # --- Local skills that duplicate plugin skills ---
     # Scan plugin skills to get the set of skill directory names
     plugin_skill_names = set()
     if registry.exists():
@@ -1989,7 +1990,6 @@ def plugin_cleanup(dry_run=None, quiet=None):
         except (_measure_facade.json.JSONDecodeError, OSError):
             pass
 
-    # Check ~/.claude/skills/ for overlaps
     # Only archive if local skill is a plain symlink OR has no extra files beyond SKILL.md.
     # Local skills with custom reference files (loaded on-demand) have content the plugin
     # version lacks, so archiving them would lose functionality.
@@ -2018,6 +2018,7 @@ def plugin_cleanup(dry_run=None, quiet=None):
         today = _measure_facade.time.strftime("%Y%m%d")
         archive_dir = backups_dir / f"skills-deduped-{today}"
         for item in overlaps:
+            if selected_items is not None and item.name not in selected_items: continue
             if dry_run:
                 if not quiet:
                     print(f"    [dry-run] would archive: {item.name} (exists as plugin + local)")
@@ -2087,7 +2088,6 @@ def _manage_skill_locked(action, name):
         print(f"  [!] Refusing to modify ~/.claude skills under the {_measure_facade.runtime_name_for_humans()} runtime.")
         return False
 
-    # Validate name: prevent path traversal
     if not isinstance(name, str) or not name or "/" in name or "\\" in name or name in (".", "..") or "\0" in name:
         print(f"  [!] Invalid skill name: {name}")
         return False

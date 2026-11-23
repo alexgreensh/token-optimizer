@@ -1302,7 +1302,7 @@ def _net_realized_savings(rows, reprice_deltas):
     #     a counterfactual (file not read within the follow-up window).
     for name in ("setup_optimization", "mcp_cap", "hint_followed", "verbosity_steer",
                  "resume_lean", "checkpoint_restore", "verbosity_steer_measured",
-                 "codemap_lookup", "keepwarm_estimated", "nudge_followed"):
+                 "codemap_lookup", "keepwarm_estimated", "autocompact_window_estimated", "nudge_followed"):
         entry = popped[name] = by_category.pop(name, None)
         if entry:
             total_tokens -= int(entry.get("tokens_saved", 0) or 0)
@@ -1355,7 +1355,7 @@ def _get_savings_summary(days=None, since=None):
     boundary (e.g. the subscription limit reset). When *since* is None / empty,
     the rolling cutoff is computed from *days* as before.
     """
-    _measure_facade = _compat.facade(); from . import keepwarm_economics, mod_fresh_booking, mod_compaction_booking, nudge_followthrough
+    _measure_facade = _compat.facade(); from . import keepwarm_economics, mod_fresh_booking, mod_compaction_booking, nudge_followthrough, autocompact_advice
     try:
         conn = _measure_facade._init_trends_db()
         try:
@@ -1373,7 +1373,7 @@ def _get_savings_summary(days=None, since=None):
             # _session_model_reprice.
             unpriced_reprice = {}
             reprice_deltas, repriced_tokens, unmeasured_tokens = _measure_facade._session_model_reprice(
-                conn, cutoff, unpriced_out=unpriced_reprice); reprice_deltas.pop("nudge_followed", None)
+                conn, cutoff, unpriced_out=unpriced_reprice); reprice_deltas.pop("nudge_followed", None); reprice_deltas.pop("autocompact_window_estimated", None)
             tier_data = _measure_facade.PRICING_TIERS.get(_measure_facade._load_pricing_tier(), _measure_facade.PRICING_TIERS["anthropic"])
             resume_fix = _measure_facade._counted_pricing_v5.resume_lean_reprice(conn, _measure_facade._counted_table(conn, "savings_events"), cutoff,
                                                 lambda model: _measure_facade._counted_exact_card(model, tier_data))
@@ -1405,7 +1405,7 @@ def _get_savings_summary(days=None, since=None):
             "period_days": days,
             # A1: one-time first-trim (compare). Reported separately, NEVER summed
             # into the realized total (structural_savings is the ongoing model).
-            "one_time_setup": one_time, "keepwarm_estimated": keepwarm_economics.headline_pool(_measure_facade, cutoff), "mod_fresh_estimated": mod_fresh_booking.summary(_measure_facade, cutoff), "mod_compaction_actions": mod_compaction_booking.summary(_measure_facade, cutoff),
+            "one_time_setup": one_time, "keepwarm_estimated": keepwarm_economics.headline_pool(_measure_facade, cutoff), "autocompact_window_estimated": dict(popped['autocompact_window_estimated'], label=autocompact_advice.LABEL) if popped['autocompact_window_estimated'] else None, "mod_fresh_estimated": mod_fresh_booking.summary(_measure_facade, cutoff), "mod_compaction_actions": mod_compaction_booking.summary(_measure_facade, cutoff),
             # U-G: observed-trigger / estimated-magnitude avoided-search from
             # proactive hints. Estimated tier, never in the realized total.
             "hint_followed_estimated": hint_followed_est, "nudge_followed": popped["nudge_followed"],
@@ -5894,7 +5894,7 @@ def _action_savings_components(summary, reread=None):
         for key in (
             "behavioral_estimate", "uncaptured_runtime",
             "contamination_exit", "handover_rerun", "resume_lean_estimated", "resume_lean_verified",
-            "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated", "keepwarm_estimated",
+            "checkpoint_restore_estimated", "verbosity_steer", "verbosity_output_estimated", "structural_estimated", "keepwarm_estimated", "autocompact_window_estimated",
         )
     }
     if summary.get("nudge_followed") is not None: estimates["nudge_followed"] = float((summary.get("nudge_followed") or {}).get("cost_saved_usd", 0) or 0)
@@ -6092,7 +6092,7 @@ def _get_merged_savings(days=None, since=None):
         # $ is already inside realized tool_archive (re-pops netted); not summed.
         "progressive_disclosure": _measure_facade._progressive_disclosure_summary(days=days),
         # A1: one-time first-trim, surfaced separately, never in the realized total.
-        "one_time_setup": savings.get("one_time_setup"), "keepwarm_estimated": savings.get("keepwarm_estimated"), "mod_fresh_estimated": savings.get("mod_fresh_estimated"), "mod_compaction_actions": savings.get("mod_compaction_actions"),
+        "one_time_setup": savings.get("one_time_setup"), "keepwarm_estimated": savings.get("keepwarm_estimated"), "autocompact_window_estimated": savings.get("autocompact_window_estimated"), "mod_fresh_estimated": savings.get("mod_fresh_estimated"), "mod_compaction_actions": savings.get("mod_compaction_actions"),
         # U-G: deterministically-triggered avoided-search from proactive hints
         # (observed hint->read), estimated magnitude. Estimated tier, never realized.
         "hint_followed": savings.get("hint_followed_estimated"), "nudge_followed": savings.get("nudge_followed"),
@@ -6159,7 +6159,7 @@ def _savings_since_install():
             float((full.get(k) or {}).get("cost_saved_usd", 0) or 0)
             for k in (
                 "behavioral_estimate", "uncaptured_runtime", "contamination_exit",
-                "handover_rerun", "resume_lean_verified", "keepwarm_estimated", "nudge_followed",
+                "handover_rerun", "resume_lean_verified", "keepwarm_estimated", "autocompact_window_estimated", "nudge_followed",
             )
         ) + mod_fresh_booking.additive(full.get("mod_fresh_estimated"), full.get("handover_rerun"))
         # Avoided-search: prefer hint_followed once any hint has fired, else retrieval_serve.
@@ -6714,7 +6714,7 @@ def savings_report(days=None, as_json=None):
         print(f"  + est. avoided search ({label}): ~${_money(_est_cents[avoided_source])}{per} "
               f"({detail}) [estimated]")
 
-    print(f"  = ALL IN: ~${all_in}{per} (measured + modeled + estimated)")
+    from . import autocompact_advice; autocompact_advice.print_savings_line(summary, _est_cents, per, _money); print(f"  = ALL IN: ~${all_in}{per} (measured + modeled + estimated)")
     if routing_pending:
         print("  i  ALL IN leaves out model routing; the assumption stays separate.")
     if summary["action_savings"].get("reread_pricing_complete") is False:

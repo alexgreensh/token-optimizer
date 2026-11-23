@@ -405,3 +405,15 @@ Recovery evidence remains provisional and its public panel remains observational
   disclosed in the report.
 - Rows with no known price stay unpriced, so totals are priced subtotals.
 - The headline is an API-rate equivalent, not a bill reconciliation.
+
+## 11. POC savings features
+### 11.1 Counted total since install (lane A)
+To be written by lane X.
+### 11.2 Apply safe savings and compact-window advice (lane B)
+To be written by lane X.
+### 11.3 Cold-session guard (lane C)
+To be written by lane X.
+### 11.4 Automatic keep-warm (lane D)
+To be written by lane X.
+### 11.5 Next actions and the status-bar action (lane E)
+To be written by lane X.

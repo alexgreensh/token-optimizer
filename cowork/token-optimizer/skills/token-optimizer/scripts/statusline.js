@@ -212,7 +212,7 @@ function _statusBarCacheFiles(dir, key) {
 // Freshness is decided on computed_at across all candidate files BEFORE
 // reading display, so a newer "below threshold" cache correctly hides an
 // older number that no longer applies.
-function _statusBarHeadlineDisplay(sessionId) {
+function _statusBarFreshestCache(sessionId) {
   try {
     const key = _statusBarSessionKey(sessionId);
     let best = null, bestTs = -1;
@@ -228,7 +228,17 @@ function _statusBarHeadlineDisplay(sessionId) {
         best = data;
       } catch (e) {}
     }
-    const headline = best && best.savings && best.savings.savings_headline;
+    return best;
+  } catch (e) {
+    return null;
+  }
+}
+
+function _statusBarHeadlineDisplay(sessionId, cache) {
+  try {
+    const best = cache || _statusBarFreshestCache(sessionId);
+    const headline = (best && best.counted_headline && best.counted_headline.display != null)
+      ? best.counted_headline : best && best.savings && best.savings.savings_headline;
     const display = headline && headline.display;
     if (display && typeof display === 'object' &&
         typeof display.short === 'string' && display.short) {
@@ -615,7 +625,8 @@ process.stdin.on('end', () => {
     // cache (never a Python spawn) and is omitted entirely when the shared
     // headline's display is null.
     const row2Parts = [];
-    const savingsDisplay = _statusBarHeadlineDisplay(sessionId);
+    const statusCache = _statusBarFreshestCache(sessionId);
+    const savingsDisplay = _statusBarHeadlineDisplay(sessionId, statusCache);
     let savingsSeg = null;
     if (savingsDisplay) {
       const label = `${savingsDisplay.short} ↗`;
@@ -625,6 +636,13 @@ process.stdin.on('end', () => {
         ? `\x1b[32m\x1b]8;;${url}\x07${label}\x1b]8;;\x07${RESET}`
         : `\x1b[32m${label}${RESET}`;
       row2Parts.push(savingsSeg);
+    }
+    const nextShort = statusCache && statusCache.next_action && statusCache.next_action.short;
+    if (typeof nextShort === 'string') {
+      const clean = nextShort.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+        .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+      const short = Array.from(clean).slice(0, 40).join('');
+      if (short) row2Parts.push(`\x1b[33m${short}${RESET}`);
     }
 
     // U3: near-zero-cost "resumable checkpoint" existence signal.

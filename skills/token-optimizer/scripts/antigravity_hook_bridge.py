@@ -8,12 +8,10 @@ events, registered via ``~/.gemini/config/plugins/token-optimizer/hooks.json``:
   pre-tool-use    -> bash output compression (run_command only)
   stop            -> detached rollup + dashboard regeneration
 
-Design contract (R15): every handler exits 0 and emits one JSON object on
-any error, malformed stdin, oversize stdin (over 4 MB), or a missing
-dependency. Consent-gated (R20): without the install record in
-``~/.gemini/token-optimizer/config.json`` every handler no-ops. A no-op is
-``{}`` for PreInvocation and Stop, and ``{"decision": "allow"}`` for PreToolUse,
-because Antigravity requires a ``decision`` in every PreToolUse response.
+Design contract (R15): every handler exits 0 and emits EITHER one JSON object
+or nothing, on any error, malformed stdin, oversize stdin (over 4 MB), or a
+missing dependency. Consent-gated (R20): without the install record in
+``~/.gemini/token-optimizer/config.json`` every handler no-ops to ``{}``.
 
 Hot-path imports stay stdlib + the copied payload modules (runtime_env,
 bash_hook, spawn_utils). ``measure.py`` is never imported here — the Stop hook
@@ -53,14 +51,6 @@ _RESTORE_MAX_BYTES = 16 * 1024  # 16 KB (R11)
 _FIELD_MAX_CHARS = 200  # R22 per-field cap
 _NUDGE_STATE_TTL_SECONDS = 7 * 86400
 _ROLLUP_LEASE_SECONDS = 30
-
-# Antigravity documents `decision` as a REQUIRED field of every PreToolUse
-# response (https://antigravity.google/docs/hooks/). When the bridge has
-# nothing to rewrite it must still answer with one. "allow" is the documented
-# lowest-rank answer: it delegates to the next hook / agy's own permission
-# engine, so it never approves a command by itself. The bridge never emits
-# auto_approve, force_ask, deny or permissionOverrides (R13).
-_PRE_TOOL_PASS_THROUGH = {"decision": "allow"}
 
 _SURFACES = ("antigravity-cli", "antigravity", "antigravity-ide")
 
@@ -106,17 +96,6 @@ def _read_payload() -> dict | None:
     except (json.JSONDecodeError, ValueError):
         return None
     return obj if isinstance(obj, dict) else None
-
-
-def _is_windows() -> bool:
-    return os.name == "nt"
-
-
-def _empty_output(event: str) -> dict:
-    """The "nothing to do" answer for an event: PreToolUse needs a decision."""
-    if event == "pre-tool-use":
-        return dict(_PRE_TOOL_PASS_THROUGH)
-    return {}
 
 
 def _emit(obj: dict) -> None:
@@ -340,42 +319,42 @@ def handle_pre_invocation(payload: dict) -> dict:
 
 
 def handle_pre_tool_use(payload: dict) -> dict:
-    if _is_windows():
-        return dict(_PRE_TOOL_PASS_THROUGH)
+    if os.name == "nt":
+        return {}
     if os.environ.get("TOKEN_OPTIMIZER_BASH_COMPRESS", "").strip() == "0":
-        return dict(_PRE_TOOL_PASS_THROUGH)
+        return {}
 
     tool_call = payload.get("toolCall")
     if not isinstance(tool_call, dict):
-        return dict(_PRE_TOOL_PASS_THROUGH)
+        return {}
     if tool_call.get("name") != "run_command":
-        return dict(_PRE_TOOL_PASS_THROUGH)
+        return {}
     args = tool_call.get("args")
     if not isinstance(args, dict):
-        return dict(_PRE_TOOL_PASS_THROUGH)
+        return {}
     command = args.get("CommandLine")
     if not isinstance(command, str) or not command:
-        return dict(_PRE_TOOL_PASS_THROUGH)
+        return {}
 
     try:
         import bash_hook as _bash_hook
     except Exception:
-        return dict(_PRE_TOOL_PASS_THROUGH)
+        return {}
 
     if _bash_hook._has_dangerous_chars(command):
-        return dict(_PRE_TOOL_PASS_THROUGH)
+        return {}
     if not _bash_hook._is_whitelisted(command):
-        return dict(_PRE_TOOL_PASS_THROUGH)
+        return {}
 
     compress_path = _SCRIPT_DIR / "bash_compress.py"
     try:
         if not compress_path.is_file():
-            return dict(_PRE_TOOL_PASS_THROUGH)
+            return {}
         original_tokens = shlex.split(command)
         if not original_tokens:
-            return dict(_PRE_TOOL_PASS_THROUGH)
+            return {}
     except ValueError:
-        return dict(_PRE_TOOL_PASS_THROUGH)
+        return {}
 
     rewritten = (
         shlex.quote(sys.executable)
@@ -385,8 +364,7 @@ def handle_pre_tool_use(payload: dict) -> dict:
         + " ".join(shlex.quote(t) for t in original_tokens)
     )
     # decision "ask" defers to the user's permission mode + "always allow" cache
-    # (R13); we never emit auto_approve/permissionOverrides or forward model
-    # fields. Pass-through paths answer {"decision": "allow"} (see above).
+    # (R13); we never emit allow/permissionOverrides or forward model fields.
     return {"decision": "ask", "overwrite": {"CommandLine": rewritten}}
 
 
@@ -511,15 +489,11 @@ def main(argv=None) -> int:
     try:
         from runtime_env import antigravity_home
     except Exception:
-        # Missing payload module: still answer PreToolUse with its required
-        # decision rather than printing nothing.
-        if event == "pre-tool-use":
-            _emit(_empty_output(event))
         return 0
 
     try:
         if not _consent_ok(antigravity_home()):
-            _emit(_empty_output(event))
+            _emit({})
             return 0
 
         if event == "pre-invocation":
@@ -541,8 +515,6 @@ def main(argv=None) -> int:
             traceback.print_exc(file=sys.stderr)
         except Exception:
             pass
-        if event == "pre-tool-use":
-            _emit(_empty_output(event))
         return 0
     return 0
 

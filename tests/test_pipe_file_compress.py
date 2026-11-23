@@ -4,12 +4,15 @@ proof-backed unchanged Bash file re-read detection (bash_reread_unchanged).
 from __future__ import annotations
 
 import json
+import ntpath
 import os
+import shlex
 import sqlite3
 import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +29,10 @@ import pipe_file_compress as pfc  # noqa: E402
 # ---------------------------------------------------------------------------
 # Fixtures (real-shaped CLI outputs)
 # ---------------------------------------------------------------------------
+
+def _cat_command(path: Path) -> str:
+    return f"cat {shlex.quote(path.as_posix())}"
+
 
 def _grep_output(n: int = 80, extra_line: str = "") -> str:
     lines = [
@@ -266,6 +273,18 @@ class TestBashRereadUnchanged:
         assert pfc.parse_unranged_cat("cd /repo && cat src/app.py") == "/repo/src/app.py"
         assert pfc.parse_unranged_cat("cat -- /tmp/foo.py") == "/tmp/foo.py"
 
+    @pytest.mark.parametrize(("command", "cwd", "expected"), [
+        ("cat /tmp/foo.py", "", "/tmp/foo.py"),
+        ("cd /repo && cat src/app.py", "", "/repo/src/app.py"),
+        ("cat '/d/My Repo/file.py'", "", r"d:\My Repo\file.py"),
+        ("cd /d/repo && cat ./file.py", "", r"d:\repo\file.py"),
+        ("cat src/app.py", r"D:\repo", r"D:\repo\src\app.py"),
+        ("cat 'D:/My Repo/file.py'", "", r"D:\My Repo\file.py"),
+    ])
+    def test_parse_unranged_cat_on_windows(self, monkeypatch, command, cwd, expected):
+        monkeypatch.setattr(pfc, "os", SimpleNamespace(name="nt", path=ntpath))
+        assert pfc.parse_unranged_cat(command, cwd=cwd) == expected
+
     @pytest.mark.parametrize("cmd", [
         "cat -n /tmp/foo.py",
         "cat /tmp/a.py /tmp/b.py",
@@ -295,7 +314,7 @@ class TestBashRereadUnchanged:
 
         # 1. First cat -> returns None (full output verbatim), records full read
         first = pfc.try_bash_reread_unchanged(
-            f"cat {target}", body,
+            _cat_command(target), body,
             session_id=sid, store_id=sid,
             transcript_path=str(transcript), tool_use_id="tu_1",
         )
@@ -303,7 +322,7 @@ class TestBashRereadUnchanged:
 
         # 2. Same tool_use_id (duplicate hook fire) -> returns None
         dup = pfc.try_bash_reread_unchanged(
-            f"cat {target}", body,
+            _cat_command(target), body,
             session_id=sid, store_id=sid,
             transcript_path=str(transcript), tool_use_id="tu_1",
         )
@@ -311,7 +330,7 @@ class TestBashRereadUnchanged:
 
         # 3. Second cat of same unchanged file -> returns short unchanged note
         second = pfc.try_bash_reread_unchanged(
-            f"cat {target}", body,
+            _cat_command(target), body,
             session_id=sid, store_id=sid,
             transcript_path=str(transcript), tool_use_id="tu_2",
         )
@@ -320,7 +339,7 @@ class TestBashRereadUnchanged:
         assert "sample.py" in second
         # Deterministic: repeating with tu_3 gives byte-identical note
         third = pfc.try_bash_reread_unchanged(
-            f"cat {target}", body,
+            _cat_command(target), body,
             session_id=sid, store_id=sid,
             transcript_path=str(transcript), tool_use_id="tu_3",
         )
@@ -328,7 +347,7 @@ class TestBashRereadUnchanged:
 
         # 4. Missing transcript_path -> cannot prove still in context -> None
         no_tr = pfc.try_bash_reread_unchanged(
-            f"cat {target}", body,
+            _cat_command(target), body,
             session_id=sid, store_id=sid,
             transcript_path="", tool_use_id="tu_4",
         )
@@ -338,7 +357,7 @@ class TestBashRereadUnchanged:
         with open(transcript, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"type": "system", "subtype": "microcompact_boundary", "uuid": "mc-1"}) + "\n")
         after_mc = pfc.try_bash_reread_unchanged(
-            f"cat {target}", body,
+            _cat_command(target), body,
             session_id=sid, store_id=sid,
             transcript_path=str(transcript), tool_use_id="tu_5",
         )
@@ -369,7 +388,7 @@ class TestBashRereadUnchanged:
         finally:
             store.close()
         assert pfc.try_bash_reread_unchanged(
-            f"cat {target}", body, session_id=sid, store_id=sid,
+            _cat_command(target), body, session_id=sid, store_id=sid,
             transcript_path=str(transcript), tool_use_id="tu_cat_a",
         ) is None
 
@@ -385,7 +404,7 @@ class TestBashRereadUnchanged:
         finally:
             store.close()
         assert pfc.try_bash_reread_unchanged(
-            f"cat {target}", body, session_id=sid, store_id=sid,
+            _cat_command(target), body, session_id=sid, store_id=sid,
             transcript_path=str(transcript), tool_use_id="tu_cat_b",
         ) is None
 
@@ -401,7 +420,7 @@ class TestBashRereadUnchanged:
         finally:
             store.close()
         assert pfc.try_bash_reread_unchanged(
-            f"cat {target}", body, session_id=sid, store_id=sid,
+            _cat_command(target), body, session_id=sid, store_id=sid,
             transcript_path=str(transcript), tool_use_id="tu_cat_c",
         ) is None
 
@@ -419,7 +438,7 @@ class TestBashRereadUnchanged:
         body2 = body + "# edited\n"
         target.write_text(body2, encoding="utf-8")
         assert pfc.try_bash_reread_unchanged(
-            f"cat {target}", body2, session_id=sid, store_id=sid,
+            _cat_command(target), body2, session_id=sid, store_id=sid,
             transcript_path=str(transcript), tool_use_id="tu_cat_d",
         ) is None
 
@@ -464,7 +483,7 @@ class TestHookEndToEnd:
 
         # First cat: never skeletonized, never chopped -> None (verbatim)
         p1 = _run_hook(
-            f"cat {target}", body, home=tmp_path,
+            _cat_command(target), body, home=tmp_path,
             transcript_path=str(transcript), tool_use_id="tu_cat_1",
         )
         assert p1.returncode == 0, p1.stderr
@@ -472,7 +491,7 @@ class TestHookEndToEnd:
 
         # Second cat of same unchanged file -> short note + expand pointer + measured event
         p2 = _run_hook(
-            f"cat {target}", body, home=tmp_path,
+            _cat_command(target), body, home=tmp_path,
             transcript_path=str(transcript), tool_use_id="tu_cat_2",
         )
         assert p2.returncode == 0, p2.stderr

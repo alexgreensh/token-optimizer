@@ -43,7 +43,8 @@ sys.path.insert(0, sys.argv[1])
 from _measure import cold_guard
 with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
     import measure
-    path, session_id = json.load(sys.stdin)
+    path, session_id, checkpoint_dir = json.load(sys.stdin)
+    measure.CHECKPOINT_DIR = Path(checkpoint_dir)
     saved = cold_guard._checkpoint_saved(measure, Path(path), session_id, float(sys.argv[2]))
 print(json.dumps(saved))
 """
@@ -91,7 +92,7 @@ def bounded_evaluate(facade, hook_input, now, seconds):
         return evaluate(facade, hook_input, now, expires)
 
 
-def _checkpoint_in_worker(_facade, path, session_id, seconds):
+def _checkpoint_in_worker(facade, path, session_id, seconds):
     """Give only checkpoint capture a killable process on Windows."""
     import subprocess
     import sys
@@ -99,7 +100,8 @@ def _checkpoint_in_worker(_facade, path, session_id, seconds):
     try:
         child = subprocess.run(
             [sys.executable, "-c", _WIN_WORKER, str(Path(__file__).resolve().parents[1]), str(seconds)],
-            input=json.dumps([str(path), session_id]), capture_output=True, text=True,
+            input=json.dumps([str(path), session_id, str(facade.CHECKPOINT_DIR)]),
+            capture_output=True, text=True,
             encoding="utf-8", timeout=seconds, check=True,
         )
         return json.loads(child.stdout) is True
@@ -370,6 +372,8 @@ def evaluate(facade, hook_input, now, expires=None):
             if remaining > 0 and save(facade, path, session_id, min(remaining, _CHECKPOINT_BUDGET)):
                 state["kind"] = "block"
                 state["prompt_fingerprint"] = _prompt_fingerprint(prompt, os.urandom(16).hex())
+    if expires is not None and time.monotonic() >= expires:
+        raise BudgetExceeded
     try:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if not _publish(facade, marker_path, state):

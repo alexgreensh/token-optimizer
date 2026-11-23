@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import posixpath
 import re
 import shlex
 import stat as stat_module
@@ -561,6 +562,23 @@ def compress_pipe(
 # Step 3: Unchanged Bash `cat` file re-read detection (bash_reread_unchanged)
 # ---------------------------------------------------------------------------
 
+def _resolve_bash_path(target: str, cwd: str) -> str | None:
+    target = os.path.expanduser(target)
+    if os.name == "nt":
+        # Git Bash uses /c/... for Windows drive paths. Keep shell-root
+        # paths such as /tmp distinct from native Windows paths.
+        drive = re.match(r"^/([A-Za-z])(?=/|$)", target)
+        if drive:
+            target = f"{drive[1]}:/{target[3:]}"
+        elif target.startswith("/") and not target.startswith("//"):
+            return posixpath.normpath(target)
+        elif cwd.startswith("/") and not cwd.startswith("//") and not os.path.splitdrive(target)[0]:
+            return posixpath.normpath(posixpath.join(cwd, target))
+    if os.path.isabs(target):
+        return os.path.normpath(target)
+    return os.path.normpath(os.path.join(cwd, target)) if cwd else None
+
+
 def parse_unranged_cat(command: str, cwd: str = "") -> str | None:
     """Return the resolved absolute file path for a bare unranged single-file
     ``cat <file>`` (or ``cd <dir> && cat <file>``), else ``None``.
@@ -591,7 +609,7 @@ def parse_unranged_cat(command: str, cwd: str = "") -> str | None:
         if not stmts:
             return None
 
-        base_dir = cwd
+        base_dir = (_resolve_bash_path(cwd, "") or cwd) if os.name == "nt" and cwd else cwd
         remaining: list[list[str]] = []
         for stmt in stmts:
             clean = _strip_safe_redirects(stmt)
@@ -599,12 +617,8 @@ def parse_unranged_cat(command: str, cwd: str = "") -> str | None:
                 return None
             if not remaining and _is_harmless_prefix(clean):
                 if clean and clean[0] == "cd" and len(clean) == 2:
-                    cd_target = os.path.expanduser(clean[1])
-                    if os.path.isabs(cd_target):
-                        base_dir = cd_target
-                    elif base_dir:
-                        base_dir = os.path.normpath(os.path.join(base_dir, cd_target))
-                    else:
+                    base_dir = _resolve_bash_path(clean[1], base_dir or "")
+                    if base_dir is None:
                         return None
                 continue
             remaining.append(clean)
@@ -630,12 +644,7 @@ def parse_unranged_cat(command: str, cwd: str = "") -> str | None:
         if target.startswith("/dev/"):
             return None
 
-        expanded = os.path.expanduser(target)
-        if os.path.isabs(expanded):
-            return os.path.normpath(expanded)
-        if not base_dir:
-            return None
-        return os.path.normpath(os.path.join(base_dir, expanded))
+        return _resolve_bash_path(target, base_dir or "")
     except Exception:
         return None
 
@@ -709,7 +718,7 @@ def try_bash_reread_unchanged(
             return None
 
         file_path = parse_unranged_cat(command, cwd=cwd)
-        if not file_path:
+        if not file_path or (os.name == "nt" and file_path.startswith("/")):
             return None
 
         # Must have a real transcript path so compaction/microcompact

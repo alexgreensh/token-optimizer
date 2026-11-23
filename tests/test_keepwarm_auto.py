@@ -426,10 +426,13 @@ def test_keepwarm_off_after_reservation_cancels_without_spend(m, monkeypatch):
     assert facade.keepwarm_spend_summary(rows=rows)['pings'] == 0
 
 
-def test_apply_undo_stops_headless_for_a_user_who_had_no_preference(m, monkeypatch):
+@pytest.mark.parametrize('has_fchmod', [True, False], ids=['native', 'no-fchmod'])
+def test_apply_undo_stops_headless_for_a_user_who_had_no_preference(m, monkeypatch, has_fchmod):
     from _measure import apply_safe
 
     facade, now, record = ready_install(m, monkeypatch)
+    if not has_fchmod:
+        monkeypatch.delattr(os, 'fchmod', raising=False)
     facade.SETTINGS_PATH.write_text('{}', encoding='utf-8')
     item = {'id': 'keepwarm_auto:on', 'kind': 'keepwarm_auto', 'net_usd_month': 1,
             'tokens_per_request': None, 'own_cost_usd_month': 0.1}

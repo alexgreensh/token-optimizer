@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -62,6 +63,8 @@ def guard(monkeypatch, tmp_path):
     claude = tmp_path / "claude"
     snapshot = tmp_path / "state"
     snapshot.mkdir()
+    monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(snapshot))
+    monkeypatch.setenv("TOKEN_OPTIMIZER_RUNTIME", "claude")
     for attr, value in {
         "CLAUDE_DIR": claude, "SNAPSHOT_DIR": snapshot, "CONFIG_DIR": snapshot,
         "CONFIG_PATH": snapshot / "config.json", "TRENDS_DB": snapshot / "trends.db",
@@ -141,6 +144,32 @@ def test_windows_skips_worker_for_ineligible_prompts(guard, case, monkeypatch):
     assert calls == []
 
 
+def test_windows_checkpoint_is_saved_in_the_install_checkpoint_directory(guard, monkeypatch):
+    _, facade, cold_guard, hook_input, _, marker, _ = guard
+    monkeypatch.setenv("TOKEN_OPTIMIZER_COLD_GUARD", "ask")
+    monkeypatch.delattr(cold_guard.signal, "setitimer", raising=False)
+
+    result = cold_guard.bounded_evaluate(facade, hook_input, time.time(), 2.0)
+
+    assert result["kind"] == "block"
+    assert json.loads(marker.read_text())["kind"] == "block"
+    checkpoints = list(facade.CHECKPOINT_DIR.glob("*.md"))
+    assert len(checkpoints) == 1
+    assert facade._checkpoint_has_restorable_body(checkpoints[0])
+
+
+def test_windows_guard_rejects_a_late_decision(guard, monkeypatch, capsys):
+    runner, _, cold_guard, _, _, marker, calls = guard
+    times = iter((10.0, 13.0))
+    monkeypatch.setattr(cold_guard, "time", SimpleNamespace(monotonic=lambda: next(times)))
+    monkeypatch.delattr(cold_guard.signal, "setitimer", raising=False)
+
+    assert runner.main() == 0
+    assert capsys.readouterr().out == ""
+    assert not marker.exists()
+    assert len(calls) == 6
+
+
 def test_warn_once_with_bookkeeping(guard, capsys):
     runner, facade, _, hook_input, _, marker, calls = guard
     assert runner.main() == 0
@@ -152,7 +181,8 @@ def test_warn_once_with_bookkeeping(guard, capsys):
     saved = json.loads(marker.read_text())
     assert saved["kind"] == "warn"
     assert saved["model"] == MODEL and saved["context"] == 412_000
-    assert marker.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert marker.stat().st_mode & 0o777 == 0o600
     assert hook_input["prompt"] not in marker.read_text()
     assert runner.main() == 0
     assert capsys.readouterr().out == ""
@@ -198,16 +228,28 @@ def test_block_is_published_after_marker_and_skips_other_hooks(guard, monkeypatc
 
 
 def test_read_only_marker_directory_passes(guard, monkeypatch, capsys):
-    runner, _, _, _, _, marker, calls = guard
+    runner, _, cold_guard, _, _, marker, calls = guard
     monkeypatch.setenv("TOKEN_OPTIMIZER_COLD_GUARD", "ask")
-    marker.parent.mkdir(mode=0o500)
+    marker.parent.mkdir(mode=0o500 if os.name == "posix" else 0o700)
+    if os.name == "nt":
+        # chmod cannot deny writes to a Windows directory. Inject the error
+        # mkstemp would receive from an ACL denying creation in this directory.
+        real_mkstemp = cold_guard.tempfile.mkstemp
+
+        def deny_marker(*args, **kwargs):
+            if kwargs.get("dir") == marker.parent:
+                raise PermissionError(13, "Access is denied", str(marker.parent))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(cold_guard.tempfile, "mkstemp", deny_marker)
     try:
         assert runner.main() == 0
         assert capsys.readouterr().out == ""
         assert not marker.exists()
         assert len(calls) == 6
     finally:
-        marker.parent.chmod(0o700)
+        if os.name == "posix":
+            marker.parent.chmod(0o700)
 
 
 def test_new_gap_warns_during_cooldown_then_may_block(guard, monkeypatch):
@@ -237,7 +279,8 @@ def test_ask_falls_back_to_warn(guard, case, monkeypatch, capsys):
     elif case == "no_owner":
         monkeypatch.setattr(keepwarm_safety, "session_owner", lambda *a: None)
     else:
-        monkeypatch.setattr(facade, "compact_capture", lambda **kw: None)
+        # Both the in-process capture and the Windows child see this failure.
+        facade.CHECKPOINT_DIR.touch()
     assert runner.main() == 0
     assert list(json.loads(capsys.readouterr().out)) == ["systemMessage"]
     assert json.loads(marker.read_text())["kind"] == "warn"
@@ -280,6 +323,20 @@ def test_windows_checkpoint_timeout_warns(guard, monkeypatch):
     assert json.loads(marker.read_text())["kind"] == "warn"
 
 
+def test_windows_slow_checkpoint_is_killed_and_other_hooks_continue(guard, monkeypatch, capsys):
+    runner, _, cold_guard, _, _, marker, calls = guard
+    monkeypatch.setenv("TOKEN_OPTIMIZER_COLD_GUARD", "ask")
+    monkeypatch.delattr(cold_guard.signal, "setitimer", raising=False)
+    monkeypatch.setattr(cold_guard, "_WIN_WORKER", "import time; time.sleep(3)")
+
+    started = time.monotonic()
+    assert runner.main() == 0
+    assert time.monotonic() - started < 2.8
+    assert list(json.loads(capsys.readouterr().out)) == ["systemMessage"]
+    assert json.loads(marker.read_text())["kind"] == "warn"
+    assert len(calls) == 6
+
+
 @pytest.mark.parametrize("case", ["exception", "overrun"])
 def test_guard_failure_leaves_other_hooks_running(guard, case, monkeypatch, capsys):
     runner, _, cold_guard, _, _, marker, calls = guard
@@ -290,7 +347,13 @@ def test_guard_failure_leaves_other_hooks_running(guard, case, monkeypatch, caps
         time.sleep(3)
         return {"kind": "block", "text": "Must never be printed"}
 
-    monkeypatch.setattr(cold_guard, "evaluate", fail)
+    if case == "overrun" and not hasattr(cold_guard.signal, "setitimer"):
+        # Windows has no signal timer for in-process preflight. Exercise its
+        # elapsed-budget check here and the actual child timeout above.
+        times = iter((10.0, 13.0))
+        monkeypatch.setattr(cold_guard, "time", SimpleNamespace(monotonic=lambda: next(times)))
+    else:
+        monkeypatch.setattr(cold_guard, "evaluate", fail)
     started = time.monotonic()
     assert runner.main() == 0
     assert time.monotonic() - started < 2.8

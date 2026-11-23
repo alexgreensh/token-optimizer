@@ -210,6 +210,23 @@ def _archive_paths(facade, name):
         return set()
 
 
+def _intent(facade, item):
+    ident, kind = item['id'], item['kind']
+    name = ident.split(':', 1)[1] if ':' in ident else ''
+    row = {'id': ident, 'kind': kind, 'ok': True}
+    if kind in ('duplicate_skill', 'unused_skill'):
+        row.update(undo_action='restore', archives_before=sorted(_archive_paths(facade, name)))
+    elif kind == 'unused_mcp':
+        row['undo_action'] = 'enable'
+    elif kind in ('cold_guard', 'keepwarm_auto'):
+        from importlib import import_module
+        module = import_module('.' + kind, __package__)
+        before = module._configured_mode(facade) if kind == 'cold_guard' else facade._read_config_flag('keepwarm_auto', False)
+        after = 'ask' if kind == 'cold_guard' else True
+        row.update(undo_action='lane', lane_result={'before': before, 'after': after})
+    return row
+
+
 def apply(facade, plan, selected_ids, token):
     """Apply an approved fresh plan, recording each result without double credit."""
     if facade._is_foreign_runtime():
@@ -239,6 +256,8 @@ def apply(facade, plan, selected_ids, token):
     before_archives = {item['id']: _archive_paths(facade, item['id'].split(':', 1)[1]) for item in duplicates}
     if duplicates:
         try:
+            for item in duplicates:
+                _append_receipt(facade, {'receipt_id': receipt_id, 'status': 'intent', 'item': _intent(facade, item)})
             result = facade.plugin_cleanup(dry_run=False, quiet=True,
                 selected_items={item['id'].split(':', 1)[1] for item in duplicates}, plan_token=token, selected_ids=selected_ids)
             duplicate_results = {line.removeprefix('archived duplicate local skill: ') for line in result if line.startswith('archived duplicate local skill: ')}
@@ -250,6 +269,8 @@ def apply(facade, plan, selected_ids, token):
         row = {'id': ident, 'kind': kind, 'undo_action': None, 'before': None, 'after': None, 'ok': False}
         previous_archives = before_archives.get(ident, _archive_paths(facade, name)) if kind in ('duplicate_skill', 'unused_skill') else set()
         try:
+            if kind not in ('duplicate_skill', 'autocompact_window'):
+                _append_receipt(facade, {'receipt_id': receipt_id, 'status': 'intent', 'item': _intent(facade, item)})
             if kind == 'duplicate_skill':
                 row.update(ok=name in duplicate_results, undo_action='restore', before=name, after=name)
             elif kind == 'unused_skill':
@@ -265,7 +286,11 @@ def apply(facade, plan, selected_ids, token):
                         raise RuntimeError('trim not recorded')
                     row['trim_id'] = trim['id']
             elif kind == 'autocompact_window':
-                result = autocompact_advice.apply_item(facade, item)
+                def record_window(setting):
+                    intent = {'id': ident, 'kind': kind, 'ok': True,
+                              'undo_action': 'restore_window', 'setting': setting}
+                    _append_receipt(facade, {'receipt_id': receipt_id, 'status': 'intent', 'item': intent})
+                result = autocompact_advice.apply_item(facade, item, before_write=record_window)
                 row.update(ok=bool(result.get('ok')), undo_action='restore_window', before=result.get('before'), after=result.get('after'), setting=result, main_model=item.get('model'), previous_window=item.get('current'), applied_at=datetime.now().isoformat())
             elif kind in ('cold_guard', 'keepwarm_auto'):
                 from importlib import import_module
@@ -354,7 +379,24 @@ def undo(facade, receipt_id):
     already_restored = {item['id'] for row in previous_undo for item in row.get('items', []) if item.get('ok')}
     receipt = next((row for row in reversed(rows) if row.get('receipt_id') == receipt_id and row.get('status') == 'complete'), None)
     if not receipt:
-        return {'ok': False, 'error': 'Receipt not found.'}
+        pending = next((row for row in reversed(rows) if row.get('receipt_id') == receipt_id and row.get('status') == 'pending'), None)
+        if not pending:
+            return {'ok': False, 'error': 'Receipt not found.'}
+        entries = [row for row in rows if row.get('receipt_id') == receipt_id and row.get('status') in ('intent', 'item')]
+        by_id = {}
+        for entry in entries:
+            item = entry.get('item') or {}
+            if item.get('id'):
+                by_id[item['id']] = dict(item)
+        for item in by_id.values():
+            if 'archives_before' in item:
+                name = item['id'].split(':', 1)[1]
+                added = _archive_paths(facade, name) - set(item.pop('archives_before'))
+                if len(added) == 1:
+                    item['archive'] = added.pop()
+                else:
+                    item['ok'] = False
+        receipt = dict(pending, items=list(by_id.values()))
     backup = facade.Path(receipt['backup_path'])
     try:
         backup.resolve().relative_to((facade.SNAPSHOT_DIR / 'apply-safe-backups').resolve())

@@ -81,6 +81,7 @@ REQUIRED_ENGINE_SCRIPTS = (
     "context_intel.py",
     "read_cache.py",
     "compact_markers.py",
+    "process_identity.py",
     "session_store.py",
     "session_store_guard.py",
     "refetch_guard.py",

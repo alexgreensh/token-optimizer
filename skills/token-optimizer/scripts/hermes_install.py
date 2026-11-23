@@ -80,6 +80,7 @@ _ENGINE_SCRIPTS = (
     "read_cache.py",
     "big_noncode_read.py",
     "compact_markers.py",
+    "process_identity.py",
     "session_store.py",
     "session_store_guard.py",
     "refetch_guard.py",

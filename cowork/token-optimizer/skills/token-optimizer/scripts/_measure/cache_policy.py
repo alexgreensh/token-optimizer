@@ -391,57 +391,29 @@ def _keepwarm_sidecar_path():
 
 
 def _keepwarm_lock():
-    """Serialize sidecar and ledger mutations until the writer releases its fd."""
+    """Serialize pause mutations until the writer releases its fd."""
     from . import keepwarm_rearm
     _measure_facade = _compat.facade()
     deadline = _measure_facade.current_deadline()
     timeout = min(0.075, deadline.remaining()) if deadline is not None else 0.075
-    with keepwarm_rearm.writer_lock(_measure_facade, timeout) as acquired:
+    with keepwarm_rearm.state_lock(_measure_facade.SNAPSHOT_DIR, timeout) as acquired:
         yield acquired
 
 
 def _keepwarm_append_line(path, line):
-    """Append one already-serialized line to `path` under the keep-warm lock.
-
-    The shared sidecar append pattern: take _keepwarm_lock, ensure
-    SNAPSHOT_DIR exists, create the file 0600 BEFORE the first write (or re-chmod
-    an existing one) so a group/other-readable sidecar can never exist, then
-    append. Returns True on success, False on any OSError. Used by the arm-writer
-    and the ping ledger; both serialize through the same lock so an
-    append can never tear against a concurrent compaction rewrite.
-    """
-    _measure_facade = _compat.facade()
+    """Append with the lock that owns this file."""
+    from . import mod_action_booking
+    facade = _compat.facade()
+    lock = mod_action_booking._lock(facade) if path == facade._keepwarm_ledger_path() else facade._keepwarm_lock()
     try:
-        with _measure_facade._keepwarm_lock() as acquired:
-            if not acquired:
+        with lock as held:
+            if not held:
                 return False
-            try:
-                _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                return False
-            try:
-                # Open the append target with O_NOFOLLOW so a pre-planted symlink
-                # at this path (same-UID TOCTOU, security M3) cannot redirect our
-                # ledger/state JSON into a victim file: ELOOP -> hard skip. Create
-                # 0600 if absent. The single fd we write to is the file itself, so
-                # no separate chmod-then-open race remains.
-                flags = _measure_facade.os.O_APPEND | _measure_facade.os.O_CREAT | _measure_facade.os.O_WRONLY
-                if hasattr(_measure_facade.os, "O_NOFOLLOW"):
-                    flags |= _measure_facade.os.O_NOFOLLOW
-                try:
-                    fd = _measure_facade.os.open(str(path), flags, 0o600)
-                except OSError:
-                    # ELOOP (symlink) or any open failure -> refuse to write.
-                    return False
-                try:
-                    with _measure_facade.os.fdopen(fd, "a", encoding="utf-8") as fh:
-                        fh.write(line)
-                except OSError:
-                    return False
-            except OSError:
-                return False
+            flags = facade.os.O_APPEND | facade.os.O_CREAT | facade.os.O_WRONLY | getattr(facade.os, 'O_NOFOLLOW', 0)
+            with facade.os.fdopen(facade.os.open(path, flags, 0o600), 'a', encoding='utf-8') as stream:
+                stream.write(line)
         return True
-    except Exception:
+    except OSError:
         return False
 
 
@@ -578,13 +550,16 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
         tp = _measure_facade.Path(transcript_path)
         now = _measure_facade.time.time() if now is None else now
         snapshot = tp.stat()
+        import stat
+        if not stat.S_ISREG(snapshot.st_mode):
+            return None
         turn = None
         if parent_pid is not None:
             turn = keepwarm_safety.terminal_turn(tp)
             turn_epoch = _measure_facade._keepwarm_iso_to_epoch(turn["timestamp"]) if turn else None
             if (turn_epoch is None or turn_epoch > now or not _measure_facade._keepwarm_valid_arg(session_id)
-                    or "subagents" in tp.parts or keepwarm_safety.ended_since(
-                        _measure_facade.SNAPSHOT_DIR, session_id, turn_epoch)):
+                    or "subagents" in tp.parts or keepwarm_safety.session_ended(
+                        _measure_facade.SNAPSHOT_DIR, session_id, turn_epoch) is True):
                 return None
         usage, model, ts = _measure_facade._keepwarm_last_usage(tp)
         if not usage:
@@ -625,7 +600,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
         }
         if turn is not None:
             record["terminal_turn"] = turn
-        return keepwarm_rearm.publish_arm(_measure_facade, record, tp, turn)
+        return keepwarm_rearm.publish_arm(_measure_facade, record)
     except Exception:
         # Absolute backstop: nothing in the arm path may propagate to the hook.
         return None
@@ -639,12 +614,13 @@ def _valid_keepwarm_record(rec):
     if not isinstance(rec.get("session_id"), str) or not rec["session_id"] or not rec.get("transcript_path"):
         return False
     try:
-        return _measure_facade.math.isfinite(float(rec.get("ts")))
+        return "ts" in rec and all(_measure_facade.math.isfinite(float(rec[key])) for key in
+                                   ("ts", "last_turn_ts", "transcript_mtime") if key in rec)
     except (TypeError, ValueError, OverflowError):
         return False
 
 
-def load_keepwarm_records(path=None):
+def load_keepwarm_records(path=None, *, strict=False):
     """Load valid arm records from the sidecar; corrupt lines are skipped.
 
     Returns a list of record dicts (possibly empty). Never raises: a missing file
@@ -656,8 +632,6 @@ def load_keepwarm_records(path=None):
         path = _measure_facade._keepwarm_sidecar_path()
     records = []
     try:
-        if not _measure_facade.Path(path).exists():
-            return []
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 line = line.strip()
@@ -669,7 +643,11 @@ def load_keepwarm_records(path=None):
                     continue
                 if _measure_facade._valid_keepwarm_record(rec):
                     records.append(rec)
+    except FileNotFoundError:
+        return []
     except OSError:
+        if strict:
+            raise
         return []
     return records
 
@@ -712,12 +690,14 @@ def classify_keepwarm_record(rec, now=None):
     from . import keepwarm_safety
     owner = rec.get("owner")
     mod_receipt = owner is None and rec.get("pings_fired") and (rec.get("manual_action_id") or rec.get("auto_warm"))
-    if ((not mod_receipt and not keepwarm_safety.owner_alive(owner)) or keepwarm_safety.ended_since(
-            _measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts)):
+    ended = keepwarm_safety.session_ended(_measure_facade.SNAPSHOT_DIR, rec.get("session_id"), arm_ts)
+    if ended is None:
+        return "unavailable"
+    if ended or (not mod_receipt and not keepwarm_safety.owner_alive(owner)):
         return "gone"
     if "terminal_turn" in rec:
         turn = keepwarm_safety.terminal_turn(p)
-        return "still_paused" if turn and turn == rec["terminal_turn"] else "resumed"
+        return "unavailable" if turn is None else ("still_paused" if turn == rec["terminal_turn"] else "resumed")
     try:
         armed_size = int(rec["byte_size"])
     except (KeyError, TypeError, ValueError):
@@ -749,7 +729,10 @@ def compact_keepwarm_sidecar(path=None, now=None):
     with _measure_facade._keepwarm_lock() as acquired:
         if not acquired:
             return (0, 0)
-        records = _measure_facade.load_keepwarm_records(path)
+        try:
+            records = _measure_facade.load_keepwarm_records(path, strict=True)
+        except OSError:
+            return 0, 0
         # Account for corrupt/invalid lines as dropped for the caller's visibility.
         try:
             raw_lines = 0
@@ -763,31 +746,17 @@ def compact_keepwarm_sidecar(path=None, now=None):
         dropped += len(records) - len(latest)
         for rec in latest.values():
             verdict = _measure_facade.classify_keepwarm_record(rec, now=now)
-            if verdict == "still_paused":
+            if verdict in ("still_paused", "unavailable"):
                 kept.append(rec)
             else:
                 dropped += 1
         if not path.exists() and not kept:
             return 0, dropped
         try:
-            _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-            fd, tmp_name = _measure_facade.tempfile.mkstemp(
-                prefix=".keepwarm_state.", suffix=".tmp", dir=str(_measure_facade.SNAPSHOT_DIR))
-            try:
-                if hasattr(_measure_facade.os, "fchmod"):
-                    _measure_facade.os.fchmod(fd, 0o600)
-                with _measure_facade.os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    for rec in kept:
-                        fh.write(_measure_facade.json.dumps(rec) + "\n")
-                _measure_facade.os.replace(tmp_name, str(path))
-            except Exception:
-                try:
-                    _measure_facade.os.unlink(tmp_name)
-                except OSError:
-                    pass
-                raise
+            from codex_io import atomic_write
+            atomic_write(path, ''.join(_measure_facade.json.dumps(r) + "\n" for r in kept), replace_symlink=True)
         except OSError:
-            pass
+            return 0, 0
     return len(kept), dropped
 
 
@@ -2224,71 +2193,11 @@ def _keepwarm_emit_tick_observability(now, allowed, reason, armed, fired,
 
 
 def _keepwarm_tick_singleton():
-    """Yield True iff this process holds the whole-tick single-instance lock.
-
-    Pidfile-style (O_CREAT|O_EXCL) so a hung/long tick blocks the next scheduled
-    tick rather than overlapping it. Stale locks (dead owner + old mtime) are
-    reclaimed. Yields False (caller exits quietly) when another tick is live.
-    """
-    _measure_facade = _compat.facade()
-    held = False
-    lock_path = _measure_facade.SNAPSHOT_DIR / _measure_facade._KEEPWARM_TICK_LOCK_NAME
-    fd = None
-    try:
-        try:
-            _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            yield False
-            return
-        try:
-            fd = _measure_facade.os.open(str(lock_path), _measure_facade.os.O_CREAT | _measure_facade.os.O_EXCL | _measure_facade.os.O_WRONLY, 0o600)
-        except FileExistsError:
-            # Reclaim if stale.
-            now = _measure_facade.time.time()
-            try:
-                st = lock_path.stat()
-                owner = None
-                try:
-                    owner = int(lock_path.read_text(encoding="utf-8").strip() or 0)
-                except (OSError, ValueError):
-                    owner = None
-                alive = False
-                if owner and owner > 0:
-                    alive = _measure_facade._pid_is_running(owner)
-                if not alive and (now - st.st_mtime) > _measure_facade._KEEPWARM_STALE_LOCK_SECONDS:
-                    try:
-                        _measure_facade.os.unlink(str(lock_path))
-                        fd = _measure_facade.os.open(str(lock_path),
-                                     _measure_facade.os.O_CREAT | _measure_facade.os.O_EXCL | _measure_facade.os.O_WRONLY, 0o600)
-                    except OSError:
-                        yield False
-                        return
-                else:
-                    yield False
-                    return
-            except OSError:
-                yield False
-                return
-        except OSError:
-            yield False
-            return
-        try:
-            _measure_facade.os.write(fd, str(_measure_facade.os.getpid()).encode("ascii"))
-        except OSError:
-            pass
-        held = True
-        yield True
-    finally:
-        if fd is not None:
-            try:
-                _measure_facade.os.close(fd)
-            except OSError:
-                pass
-        if held:
-            try:
-                _measure_facade.os.unlink(str(lock_path))
-            except OSError:
-                pass
+    """Only one scheduler runs per generation. Process exit releases its lock."""
+    from . import keepwarm_rearm
+    facade = _compat.facade()
+    with keepwarm_rearm.os_lock(facade.SNAPSHOT_DIR / facade._KEEPWARM_TICK_LOCK_NAME, 0) as held:
+        yield held
 
 
 def keepwarm_tick(now=None, dry_run=None, env=None, runner=None,
@@ -2434,41 +2343,25 @@ def keepwarm_tick(now=None, dry_run=None, env=None, runner=None,
 
 
 def _keepwarm_rewrite_records(records, now=None):
-    """Atomically rewrite the whole sidecar with `records` (0600, under flock).
-
-    Used by the tick to persist appended pings_fired entries. Mirrors
-    compact_keepwarm_sidecar's atomic rewrite. Never raises.
-    """
-    _measure_facade = _compat.facade()
-    if now is None:
-        now = _measure_facade.time.time()
-    path = _measure_facade._keepwarm_sidecar_path()
+    """Merge replayed ping counters with Stops published after the tick's read."""
+    from codex_io import atomic_write
+    facade = _compat.facade()
     try:
-        with _measure_facade._keepwarm_lock() as acquired:
-            if not acquired:
+        with facade._keepwarm_lock() as held:
+            if not held:
                 return
-            try:
-                _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-                fd, tmp_name = _measure_facade.tempfile.mkstemp(
-                    prefix=".keepwarm_state.", suffix=".tmp", dir=str(_measure_facade.SNAPSHOT_DIR))
-                try:
-                    if hasattr(_measure_facade.os, "fchmod"):
-                        _measure_facade.os.fchmod(fd, 0o600)
-                    with _measure_facade.os.fdopen(fd, "w", encoding="utf-8") as fh:
-                        for rec in records:
-                            if _measure_facade._valid_keepwarm_record(rec):
-                                fh.write(_measure_facade.json.dumps(rec) + "\n")
-                    _measure_facade.os.replace(tmp_name, str(path))
-                except Exception:
-                    try:
-                        _measure_facade.os.unlink(tmp_name)
-                    except OSError:
-                        pass
-                    raise
-            except OSError:
-                pass
-    except Exception:
-        pass
+            current = {(r['session_id'], r['ts']): r for r in facade.load_keepwarm_records(strict=True)}
+            for row in records:
+                latest = current.get((row['session_id'], row['ts']))
+                if latest is None:
+                    continue
+                latest['pings_fired'] = sorted(set(latest.get('pings_fired', ())) | set(row.get('pings_fired', ())))
+                if row.get('ping_failed'):
+                    latest['ping_failed'] = True
+            atomic_write(facade._keepwarm_sidecar_path(), ''.join(facade.json.dumps(r) + "\n" for r in current.values()),
+                         replace_symlink=True)
+    except (OSError, TypeError, ValueError):
+        return
 
 
 def keepwarm_resume_predictor(features):
@@ -3150,35 +3043,18 @@ def _keepwarm_compact_ledger(now=None, retain_days=None):
     if now is None:
         now = _measure_facade.time.time()
     path = _measure_facade._keepwarm_ledger_path()
+    from . import keepwarm_auto, mod_action_booking
     try:
-        if not path.exists():
-            return (False, 0, 0)
-        size = path.stat().st_size
-    except OSError:
-        return (False, 0, 0)
-    rows = _measure_facade._keepwarm_load_ledger_rows(path)
-    cutoff = float(now) - float(retain_days) * 86400.0
-    kept = []
-    dropped = 0
-    has_old = False
-    for r in rows:
-        try:
-            ts = float(r.get("ts", 0) or 0)
-        except (TypeError, ValueError):
-            ts = 0.0
-        if ts < cutoff:
-            dropped += 1
-            has_old = True
-        else:
-            kept.append(r)
-    # Only rewrite when something would actually change (size cap breached OR old
-    # rows present). A clean, in-window, small ledger is left untouched.
-    if not has_old and size <= _measure_facade._KEEPWARM_LEDGER_MAX_BYTES:
-        return (False, len(kept), 0)
-    try:
-        with _measure_facade._keepwarm_lock() as acquired:
+        with mod_action_booking._lock(_measure_facade) as acquired:
             if not acquired:
                 return (False, 0, 0)
+            size = path.stat().st_size
+            rows = keepwarm_auto.read_ledger(path)
+            cutoff = float(now) - float(retain_days) * 86400.0
+            kept = [row for row in rows if float(row.get("ts", 0)) >= cutoff]
+            dropped = len(rows) - len(kept)
+            if not dropped and size <= _measure_facade._KEEPWARM_LEDGER_MAX_BYTES:
+                return False, len(kept), 0
             try:
                 _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
                 fd, tmp_name = _measure_facade.tempfile.mkstemp(
@@ -3202,7 +3078,7 @@ def _keepwarm_compact_ledger(now=None, retain_days=None):
             except OSError:
                 return (False, len(kept), 0)
     except Exception:
-        return (False, len(kept), 0)
+        return (False, 0, 0)
     return (True, len(kept), dropped)
 
 
@@ -3361,18 +3237,26 @@ def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
         records = _measure_facade.load_keepwarm_records()
     out = {"realized": 0, "loss": 0, "skipped": 0, "errors": 0, "booked_usd": 0.0}
     try:
-        booked = _measure_facade._keepwarm_booked_pause_keys()
-    except Exception:
-        booked = set()
+        rows = _measure_facade._keepwarm_load_ledger_rows()
+        booked = _measure_facade._keepwarm_booked_pause_keys(rows)
+        proved = {}
+        for row in rows:
+            if row.get('source') == 'keepwarm-headless' and row.get('status') == 'ok' and row.get('proof') is True:
+                proved.setdefault(row.get('pause_key'), []).append(row['ts'])
+    except (TypeError, ValueError, KeyError, OSError):
+        return out
     for rec in {(r.get("session_id"), r.get("ts")): r for r in records}.values():
         try:
-            pings = rec.get("pings_fired")
-            n_pings = len(pings) if isinstance(pings, list) else 0
-            if n_pings < 1 or rec.get("ping_failed"):
-                continue
-            sid = rec.get("session_id")
-            arm_ts = rec.get("ts")
+            sid, arm_ts = rec.get("session_id"), rec.get("ts")
             pause_key = _measure_facade._keepwarm_pause_key(sid, arm_ts)
+            pings = rec.get("pings_fired") or []
+            # A proven outcome is durable even if the pause lock was busy when its receipt arrived.
+            if len(proved.get(pause_key, ())) > len(pings):
+                pings = proved[pause_key]
+                rec = dict(rec, auto_warm=True, pings_fired=pings)
+            n_pings = len(pings)
+            if not n_pings or rec.get("ping_failed"):
+                continue
             if pause_key in booked:
                 continue
             try:

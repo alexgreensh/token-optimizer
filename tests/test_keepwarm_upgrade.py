@@ -83,15 +83,16 @@ def test_dispatcher_checks_parent_before_export(race_env, monkeypatch, reparent)
 
 
 @pytest.mark.parametrize('legacy_takeover', [False, True])
-def test_upgrade_drains_live_legacy_compactor(m, tmp_path, monkeypatch, legacy_takeover):
+def test_legacy_compactor_cannot_erase_new_stop(m, tmp_path, monkeypatch, legacy_takeover):
     from hook_runtime import LeaseLock
 
     facade, _, first = ready_install(m, monkeypatch)
     lease = LeaseLock(facade.SNAPSHOT_DIR / (facade._KEEPWARM_LOCK_NAME + '.lease'),
                       lease_seconds=0.1, reclaim_released=True)
     assert lease.acquire()
-    path = facade._keepwarm_sidecar_path()
-    old_snapshot = path.read_bytes()
+    path = facade.SNAPSHOT_DIR / 'keepwarm_state.jsonl'
+    old_snapshot = json.dumps(first).encode() + b'\n'
+    path.write_bytes(old_snapshot)
     real_lock = facade._keepwarm_lock
     observations = []
 
@@ -148,10 +149,13 @@ def test_eligible_stop_outlasts_thirty_seconds_of_contention(m, monkeypatch, tmp
     def lock():
         yield elapsed[0] >= 31
     monkeypatch.setattr(facade, '_keepwarm_lock', lock)
-    record = facade.write_keepwarm_arm_record('waiting', path, parent_pid=2)
-    assert record and facade.load_keepwarm_records() == [record]
-    assert elapsed[0] >= 31
-    assert not list(facade.SNAPSHOT_DIR.glob('keepwarm-pending-stop-*'))
+    assert facade.write_keepwarm_arm_record('waiting', path, parent_pid=2) is None
+    assert elapsed == [0.0]
+    elapsed[0] += 31
+    rearm.recover_pending(facade, start + elapsed[0])
+    record, = facade.load_keepwarm_records()
+    assert record['terminal_turn'] == safety.terminal_turn(path) and record['session_id'] == 'waiting'
+    assert not list(facade.SNAPSHOT_DIR.glob('kw2-stop-*'))
 
 
 def test_pending_proof_is_complete_on_first_visibility(m, monkeypatch):
@@ -203,7 +207,7 @@ def test_pruning_preserves_locked_watcher_inode(m, monkeypatch):
 
     def watch(facade, sid, fd):
         try:
-            path, = facade.SNAPSHOT_DIR.glob('keepwarm-owner-watch-*')
+            path, = facade.SNAPSHOT_DIR.glob('kw2-watch-*')
             now = time.time()
             os.utime(fd, (now - 15 * policy.DAY,) * 2)
             policy.prune_markers(facade, now)

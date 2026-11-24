@@ -85,33 +85,42 @@ def test_slow_compaction_preserves_new_stop(m, tmp_path, monkeypatch):
         assert reading.wait(5)
         second = facade.write_keepwarm_arm_record('new-stop', transcript, parent_pid=2)
         assert compact.result(timeout=5) == (1, 0)
-    assert second is not None
-    assert facade.load_keepwarm_records() == [first, second]
+    assert second is None
+    from _measure import keepwarm_rearm
+    keepwarm_rearm.recover_pending(facade, time.time())
+    saved = facade.load_keepwarm_records()
+    assert saved[0] == first and [r['session_id'] for r in saved] == [first['session_id'], 'new-stop']
 
 
-def test_ledger_and_sidecar_share_lock_until_process_exit(m):
+@pytest.mark.parametrize('spending', [False, True])
+def test_each_lock_excludes_its_writers_until_process_exit(m, spending):
     facade, _ = m
     worker = """
 import os, sys
 sys.path.insert(0, sys.argv[1])
 import measure
-from _measure.mod_action_booking import _lock
-with _lock(measure) as held:
-    print(held, flush=True)
+from _measure.keepwarm_rearm import state_lock, writer_lock
+with (writer_lock(measure, 0) if sys.argv[2] == 'True' else state_lock(measure.SNAPSHOT_DIR, 0)) as held:
+    print(bool(held), flush=True)
     sys.stdin.read(1)
     os._exit(0)
 """
-    with subprocess.Popen([sys.executable, '-c', worker, str(SCRIPTS)], text=True,
+    with subprocess.Popen([sys.executable, '-c', worker, str(SCRIPTS), str(spending)], text=True,
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE) as child:
         try:
             assert child.stdout.readline().strip() == 'True'
-            with facade._keepwarm_lock() as held:
+            from _measure.keepwarm_rearm import state_lock, writer_lock
+            def acquire(financial):
+                return writer_lock(facade, 0) if financial else state_lock(facade.SNAPSHOT_DIR, 0)
+            with acquire(spending) as held:
                 assert held is False
+            with acquire(not spending) as held:
+                assert held
         finally:
             child.communicate('x', timeout=5)
     assert child.returncode == 0
-    with facade._keepwarm_lock() as held:
-        assert held is True
+    with acquire(spending) as held:
+        assert held
 
 
 def test_reparented_wrapper_cannot_pin_unrelated_owner(monkeypatch):
@@ -206,12 +215,8 @@ def test_busy_latch_respects_session_and_cache_lifetime(m, tmp_path, monkeypatch
         assert delay is None
 
 
-def test_read_only_writer_stops_retrying(m, tmp_path, monkeypatch):
-    from _measure.keepwarm_rearm import arm_lock
-
+def test_read_only_writer_stops_retrying(m, monkeypatch):
     facade, _ = m
-    transcript = _stop_transcript(tmp_path)
-    turn = safety.terminal_turn(transcript)
     facade.SNAPSHOT_DIR.mkdir(exist_ok=True, parents=True)
     lease = facade.SNAPSHOT_DIR / (facade._KEEPWARM_LOCK_NAME + '.lease')
     lease.write_text('{}')
@@ -226,7 +231,7 @@ def test_read_only_writer_stops_retrying(m, tmp_path, monkeypatch):
         return opened(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(os, 'open', read_only)
-    with arm_lock(facade, transcript, turn) as held:
+    with facade._keepwarm_lock() as held:
         assert not held
     assert len(failures) == 1
 

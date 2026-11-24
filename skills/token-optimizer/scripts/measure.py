@@ -2447,7 +2447,7 @@ _cache_ttl_waste_cached = _measure_compat.bind(_measure_providers['cache_policy'
 # cache_health.json / cohort_tripwire.json sites above. NOT compression_log.py
 # (that is a SQLite writer despite its name).
 
-_KEEPWARM_SIDECAR_NAME = "keepwarm_state.jsonl"
+_KEEPWARM_SIDECAR_NAME = "keepwarm_pauses_v2.jsonl"
 _KEEPWARM_LOCK_NAME = ".keepwarm_state.lock"
 # Records older than this (by their arm ts) are dropped on compaction regardless of
 # state: an arm that never resumed and never got pinged is dead weight after 14d.
@@ -2746,7 +2746,7 @@ _KEEPWARM_IDLE_RECHECK_SECONDS = 120
 # Per-session ping lock filename prefix in SNAPSHOT_DIR.
 _KEEPWARM_PING_LOCK_PREFIX = ".keepwarm_ping."
 # Whole-tick single-instance lock filename.
-_KEEPWARM_TICK_LOCK_NAME = ".keepwarm_tick.lock"
+_KEEPWARM_TICK_LOCK_NAME = ".keepwarm-tick-v2.lock"
 # Ping-spend / outcome ledger sidecar (operational accounting only; realized
 # savings live in the SQLite path, NOT here).
 _KEEPWARM_LEDGER_NAME = "keepwarm_ledger.jsonl"

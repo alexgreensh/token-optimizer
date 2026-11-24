@@ -1,5 +1,10 @@
 # Changelog
 
+## [5.13.78] - 2026-11-24
+
+- Paused sessions stay armed during upgrades. If the scheduler is busy, it picks up the waiting Stop on its next tick.
+- Keep-warm retries brief Windows file-sharing conflicts and skips the ping when it cannot verify spending.
+
 ## [5.13.77] - 2026-11-24
 
 - **Keep-warm covers every pause.** A big session stays cached after each reply, not only the first time it goes idle.

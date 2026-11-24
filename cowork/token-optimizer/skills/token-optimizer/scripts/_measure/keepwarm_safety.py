@@ -1,12 +1,12 @@
 """Fail-closed liveness checks for paused Claude sessions."""
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
-import stat
 import subprocess
 import sys
 import time
@@ -148,20 +148,7 @@ _NO_OWNER_TTL = 300.0
 
 def _owner_cache_path(directory, session_id):
     name = hashlib.sha256(str(session_id).encode('utf-8')).hexdigest()
-    return Path(directory) / ('keepwarm-owner-' + name)
-
-
-def _pid_exists(pid):
-    """Check whether a process may still be running."""
-    if os.name != 'posix':
-        return False
-    try:
-        os.kill(int(pid), 0)
-    except PermissionError:
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
-    return True
+    return Path(directory) / ('kw2-owner-' + name)
 
 
 def session_owner(directory, session_id, now=None, *, parent_pid=None, parent_start=None):
@@ -197,10 +184,10 @@ def session_owner(directory, session_id, now=None, *, parent_pid=None, parent_st
     eligible = owner_eligible(process['pid'])
     if path is not None:
         try:
-            Path(directory).mkdir(parents=True, exist_ok=True)
-            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                json.dump({'process': process, 'eligible': eligible, 'ts': now}, stream)
+            from codex_io import atomic_write_json
+            with keepwarm_rearm.state_lock(path.parent, 0) as held:
+                if held:
+                    atomic_write_json(path, {'process': process, 'eligible': eligible, 'ts': now}, replace_symlink=True)
         except OSError:
             pass
     return process if eligible else None
@@ -215,36 +202,56 @@ def owner_alive(owner, lookup=process_info, eligibility=owner_eligible):
 
 def _end_path(directory, session_id):
     name = hashlib.sha256(str(session_id).encode('utf-8')).hexdigest()
-    return Path(directory) / ('keepwarm-ended-' + name)
+    return Path(directory) / ('kw2-ended-' + name)
 
 
 def mark_ended(directory, session_id):
     if not session_id:
         return False
     try:
-        Path(directory).mkdir(parents=True, exist_ok=True)
+        from codex_io import atomic_write
         path = _end_path(directory, session_id)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0)
-        fd = os.open(str(path), flags, 0o600)
-        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-            if hasattr(os, 'fchmod'):
-                os.fchmod(stream.fileno(), 0o600)
-            stream.write(str(time.time()))
+        stamp = time.time()
+        with keepwarm_rearm.state_lock(path.parent, 0) as held:
+            if held:
+                atomic_write(path, str(stamp), replace_symlink=True)
+            else:
+                # Immutable input, like a staged Stop. A busy writer cannot lose SessionEnd.
+                event = path.parent / 'kw2-ends' / (path.name + '.' + os.urandom(8).hex())
+                atomic_write(event, str(stamp), replace_symlink=True)
         return True
     except OSError:
         return False
 
 
-def ended_since(directory, session_id, armed_at):
+def session_ended(directory, session_id, armed_at):
+    path = _end_path(directory, session_id)
+    # Imported pauses can still receive SessionEnd from the old hooks.
+    pending = path.parent / 'kw2-ends'
     try:
-        path = _end_path(directory, session_id)
-        if path.is_symlink():
-            return True
-        return float(path.read_text(encoding='utf-8')) >= float(armed_at)
+        events = [pending / name for name in os.listdir(pending) if name.startswith(path.name + '.')]
     except FileNotFoundError:
-        return False
-    except (OSError, ValueError, TypeError):
-        return True
+        events = []
+    except OSError:
+        return None
+    for marker in (path, path.with_name(path.name.replace('kw2-ended-', 'keepwarm-ended-')), *events):
+        try:
+            if marker.is_symlink():
+                return None
+            stamp = float(marker.read_text(encoding='utf-8'))
+            if not math.isfinite(stamp):
+                return None
+            if stamp >= float(armed_at):
+                return True
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, TypeError):
+            return None
+    return False
+
+
+def ended_since(directory, session_id, armed_at):
+    return session_ended(directory, session_id, armed_at) is not False
 
 
 def terminal_turn(path):
@@ -342,22 +349,27 @@ def _headless_preference_disabled(facade, env):
 
 
 def _headless_latch_reason(facade):
+    from .keepwarm_auto import accounting_error, retry_accounting_read
+    from .lease_candidate_cleanup import owner_is_gone
     try:
         path = _headless_latch(facade)
         if path.is_symlink():
             return 'headless-proof'
-        with path.open(encoding='utf-8') as stream:
-            state = stream.read(128).split()
+        def read():
+            with path.open(encoding='utf-8') as stream:
+                return stream.read(128).split()
+        state = retry_accounting_read(read)
         if state and state[0] == 'pending':
-            if len(state) == 3 and state[2].isdecimal() and int(state[2]) > 1 and _pid_exists(state[2]):
+            pid = int(state[2]) if len(state) == 3 and state[2].isdecimal() else 0
+            if os.name == 'posix' and 1 < pid < 2**31 and not owner_is_gone(pid):
                 return 'headless-busy'
             if 0 <= facade.time.time() - path.stat().st_mtime < 200:
                 return 'headless-busy'
         return 'headless-proof'
     except FileNotFoundError:
         return None
-    except OSError:
-        return 'accounting-unavailable'
+    except OSError as exc:
+        return 'headless-busy' if accounting_error(exc) == 'ledger-locked' else 'accounting-unavailable'
     except UnicodeError:
         return 'headless-proof'
 
@@ -452,7 +464,7 @@ def _pending_attempt(rows, sid, now, timeout=600):
 def fire_headless(facade, record, *, now, env=None, runner=None, live=None, meters=None):
     """Reserve once under the shared lock, then run one bounded fork and prove it."""
     from .mod_action_booking import _append, _lock
-    from .keepwarm_auto import read_ledger
+    from .keepwarm_auto import accounting_error, read_ledger
 
     sid, model = record['session_id'], record['model']
     context = record['prefix_proxy']
@@ -474,9 +486,10 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
         if meters is None:
             meters = _headless_meters(facade, now)
         try:
+            # Stale 5.13.76 readers can exceed the daily cap by multiple pings during upgrade overlap.
             rows = read_ledger(facade._keepwarm_ledger_path())
-        except (OSError, ValueError):
-            return {'fired': False, 'reason': 'accounting-unavailable'}
+        except (OSError, ValueError) as exc:
+            return {'fired': False, 'reason': accounting_error(exc)}
         decision = _headless_decision(facade, record, now, env, meters, rows)
         if decision['action'] != 'ping':
             return {'fired': False, 'reason': decision['reason']}
@@ -509,6 +522,7 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
         try:
             _append(facade._keepwarm_ledger_path(), {**common, 'status': 'firing',
                     'ts': now, 'est_cost_usd': fallback})
+            keepwarm_rearm.verify_spend(held)
             reason = _headless_preference_disabled(facade, env) if live() else 'session-changed'
             if reason:
                 _append(facade._keepwarm_ledger_path(), {**common, 'status': 'cancelled', 'ts': now})
@@ -531,9 +545,9 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
                     continue
                 _append(facade._keepwarm_ledger_path(), {**common, **outcome, 'ts': max(now, facade.time.time())})
                 recorded = True
-                if outcome['proof']:
-                    _track_proven_ping(facade, record, now)
                 break
+        if recorded and outcome['proof']:
+            _track_proven_ping(facade, record, now)
     finally:
         # The pending marker excludes other headless pings until we settle it.
         # If the ledger stays locked, the reservation still counts at fallback cost.
@@ -552,13 +566,12 @@ def _track_proven_ping(facade, record, now):
     """Append a replacement arm under the shared lock, only after proven usage."""
     from .mod_action_booking import _append
 
-    found = next((rec for rec in reversed(facade.load_keepwarm_records())
-                  if rec.get('session_id') == record['session_id']
-                  and rec.get('byte_size') == record['byte_size']
-                  and rec.get('transcript_mtime') == record['transcript_mtime']), None)
-    latest = found or record
-    updated = dict(latest, auto_warm=True, pings_fired=[*(latest.get('pings_fired') or []), now])
-    _append(facade._keepwarm_sidecar_path(), updated)
+    with facade._keepwarm_lock() as held:
+        if held:
+            found = next((r for r in reversed(facade.load_keepwarm_records()) if same_pause(r, record)
+                          and r['session_id'] == record['session_id']), record)
+            _append(facade._keepwarm_sidecar_path(), dict(found, auto_warm=True,
+                    pings_fired=[*(found.get('pings_fired') or []), now]))
 
 
 def _headless_meters(facade, now):
@@ -709,26 +722,13 @@ def stop_flush_args(facade, args, hook_input):
                 or 'agent_id' in hook_input or 'agent_type' in hook_input
                 or str(hook_input.get('hook_event_name', 'Stop')).lower() != 'stop'
                 or not facade._keepwarm_valid_arg(sid)
-                or '--transcript-path' not in args
-                or headless_disabled(facade) not in (None, 'headless-busy')):
+                or '--transcript-path' not in args or 'subagents' in Path(transcript).parts):
             return args
         parent_pid = int(os.environ.get(HOOK_PARENT_PID_ENV, '0'))
-        path = Path(transcript)
-        snapshot = path.stat()
-        if parent_pid <= 1 or 'subagents' in path.parts or not stat.S_ISREG(snapshot.st_mode):
-            return args
-        from .cold_guard import _bounded_last_usage, _TAIL_BYTES
-        from .keepwarm_auto import MIN_CONTEXT
-
-        usage, _, _ = _bounded_last_usage(path)
-        # A large tool result can hide the usage row from this bounded read.
-        # The existing worker checks the full turn before writing an arm.
-        incomplete = usage is None and snapshot.st_size > _TAIL_BYTES
-        if incomplete or (usage and facade._keepwarm_prefix_proxy(usage) >= MIN_CONTEXT):
-            parent_pid, parent_start = _stop_parent(facade, parent_pid, os.environ.get('TOKEN_OPTIMIZER_HOOK_PARENT_START'))
-            if parent_start:
-                args += ['--keepwarm-parent-pid', str(parent_pid), '--keepwarm-parent-start', parent_start,
-                         '--keepwarm-stop-at', str(now)]
+        parent_pid, parent_start = _stop_parent(facade, parent_pid, os.environ.get('TOKEN_OPTIMIZER_HOOK_PARENT_START'))
+        if parent_pid > 1 and parent_start:
+            args += ['--keepwarm-parent-pid', str(parent_pid), '--keepwarm-parent-start', parent_start,
+                     '--keepwarm-stop-at', str(now)]
     except Exception:
         pass
     return args
@@ -777,11 +777,10 @@ def watch_armed_terminal(facade, sid):
     """Reuse the flush process, with one watcher per terminal session."""
     import fcntl
     filename = hashlib.sha256(sid.encode('utf-8')).hexdigest()
-    path = facade.SNAPSHOT_DIR / ('keepwarm-owner-watch-' + filename)
+    path = facade.SNAPSHOT_DIR / ('kw2-watch-' + filename)
     fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        os.utime(fd)
     except BaseException:
         os.close(fd)
         raise
@@ -796,7 +795,8 @@ def _watch_delay(facade, record, fd):
     disabled = headless_disabled(facade)
     if disabled not in (None, 'headless-busy') or not record:
         return None
-    if not owner_alive(record['owner']) or ended_since(facade.SNAPSHOT_DIR, record['session_id'], record['ts']):
+    ended = session_ended(facade.SNAPSHOT_DIR, record['session_id'], record['ts'])
+    if ended or not owner_alive(record['owner']):
         return None
     rows = facade._keepwarm_load_ledger_rows()
     if (now - record['last_turn_ts'] > policy.CACHE_LIFETIME * policy.MAX_PER_PAUSE
@@ -804,9 +804,7 @@ def _watch_delay(facade, record, fd):
         if _pending_attempt(rows, record['session_id'], now, facade._KEEPWARM_PING_TIMEOUT_SECONDS):
             return 5
         return None
-    if now - os.fstat(fd).st_mtime > policy.DAY:
-        os.utime(fd)
-    if facade.classify_keepwarm_record(record, now=now) != 'still_paused':
+    if ended is None or facade.classify_keepwarm_record(record, now=now) != 'still_paused':
         return 30
     if disabled == 'headless-busy':
         return 5

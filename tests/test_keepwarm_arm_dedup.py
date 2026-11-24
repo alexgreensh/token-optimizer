@@ -278,7 +278,7 @@ def test_stop_worker_arms_and_watches_only_eligible_sessions(m, tmp_path, monkey
     monkeypatch.setattr(keepwarm_safety, "watch_terminal", lambda facade, sid, fd: (calls.append("watch"), os.close(fd)))
     args = keepwarm_safety.stop_flush_args(mod, ["session-end-flush-worker", "--trigger", "stop"], payload)
     assert calls == [], "owner lookup must never run during the Stop preflight"
-    assert ("--keepwarm-parent-pid" in args) is (case not in {"small", "subagent"})
+    assert ("--keepwarm-parent-pid" in args) is (case != "subagent")
     if case == "ended":
         assert keepwarm_safety.mark_ended(mod.SNAPSHOT_DIR, sid)
 

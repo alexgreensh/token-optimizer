@@ -68,19 +68,23 @@ def prune_markers(facade, now):
     removed = 0
     if not facade.SNAPSHOT_DIR.is_dir():
         return removed
-    for path in facade.SNAPSHOT_DIR.iterdir():
-        if (path.name.startswith('keepwarm-owner-watch-')
-                or not path.name.startswith(('keepwarm-ended-', 'keepwarm-owner-'))):
-            continue
-        try:
-            info = path.lstat()
-            if stat.S_ISREG(info.st_mode) and info.st_mtime < now - 14 * DAY:
-                path.unlink()
-                removed += 1
-                if removed == 200:
-                    break
-        except OSError:
-            continue
+    from itertools import chain
+    from .keepwarm_rearm import state_lock
+    with state_lock(facade.SNAPSHOT_DIR, 0) as held:
+        if not held:
+            return 0
+        for path in chain(facade.SNAPSHOT_DIR.iterdir(), (facade.SNAPSHOT_DIR / 'kw2-ends').glob('kw2-ended-*')):
+            if not path.name.startswith(('kw2-ended-', 'kw2-owner-', 'kw2-stop-')):
+                continue
+            try:
+                info = path.lstat()
+                if stat.S_ISREG(info.st_mode) and info.st_mtime < now - 14 * DAY:
+                    path.unlink()
+                    removed += 1
+                    if removed == 200:
+                        break
+            except OSError:
+                continue
     return removed
 
 
@@ -107,8 +111,28 @@ def _auto_rows(rows):
             and row.get('action') == 'warm' and row.get('auto') is True]
 
 
+def accounting_error(exc):
+    return 'ledger-locked' if getattr(exc, 'winerror', None) in (32, 33) else 'accounting-unavailable'
+
+
+def retry_accounting_read(read, *args):
+    """Windows share and byte-range conflicts can clear when another handle closes."""
+    import time
+    for attempt in range(3):
+        try:
+            return read(*args)
+        except OSError as exc:
+            if accounting_error(exc) != 'ledger-locked' or attempt == 2:
+                raise
+            time.sleep(.01)
+
+
 def read_ledger(path, *, strict=True):
     """An absent ledger is empty. Spending requires a complete, readable ledger."""
+    return retry_accounting_read(_read_ledger, path, strict)
+
+
+def _read_ledger(path, strict):
     rows = []
     try:
         stream = open(path, encoding='utf-8', errors='strict' if strict else 'replace')
@@ -232,7 +256,11 @@ def decide(facade, session_id, context_tokens, idle_seconds, model, lifetime,
             return stop('meters-unknown')
         if not math.isfinite(idle_seconds) or idle_seconds < 0:
             return out
-        rows = read_ledger(facade._keepwarm_ledger_path()) if rows is None else rows
+        if rows is None:
+            try:
+                rows = read_ledger(facade._keepwarm_ledger_path())
+            except (OSError, ValueError) as exc:
+                return stop(accounting_error(exc))
         for row in _auto_rows(rows):
             stamp = float(row['ts'])
             if not math.isfinite(stamp) or stamp > now:

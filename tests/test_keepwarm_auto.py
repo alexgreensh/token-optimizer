@@ -181,17 +181,17 @@ def test_history_refresh_writes_only_counts_once_daily(policy, monkeypatch):
 
 def test_prune_at_most_200_old_markers(policy):
     for index in range(207):
-        prefix = 'keepwarm-owner-' if index % 2 else 'keepwarm-ended-'
+        prefix = 'kw2-owner-' if index % 2 else 'kw2-ended-'
         path = policy.SNAPSHOT_DIR / f'{prefix}{index}'
         path.touch()
         os.utime(path, (NOW - 15 * auto.DAY,) * 2)
-    recent = policy.SNAPSHOT_DIR / 'keepwarm-ended-recent'
+    recent = policy.SNAPSHOT_DIR / 'kw2-ended-recent'
     recent.touch()
     os.utime(recent, (NOW - 13 * auto.DAY,) * 2)
-    preserve = policy.SNAPSHOT_DIR / 'keepwarm-ended-symlink'
+    preserve = policy.SNAPSHOT_DIR / 'kw2-ended-symlink'
     preserve.symlink_to(recent)
     assert auto.prune_markers(policy, NOW) == 200
-    assert len(list(policy.SNAPSHOT_DIR.glob('keepwarm-*'))) == 9
+    assert len(list(policy.SNAPSHOT_DIR.glob('kw2-*'))) == 9
     assert recent.exists() and preserve.is_symlink()
 
 
@@ -358,7 +358,7 @@ def test_transient_headless_error_keeps_receipt_without_stopping_install(m, monk
     rows = facade._keepwarm_load_ledger_rows()
     assert [row['status'] for row in rows] == ['firing', status]
     assert rows[-1]['cost_usd'] > 0
-    assert decide(facade, now=now + 1, headless=True, rows=rows)['reason'] == 'failed-proof'
+    assert decide(facade, now=facade.time.time(), headless=True, rows=rows)['reason'] == 'failed-proof'
     assert safety.headless_disabled(facade) is None
 
 

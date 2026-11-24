@@ -175,7 +175,7 @@ def test_late_receipt_keeps_new_pause_current(stops, monkeypatch):
     assert [entry['session_id'] for entry in result['decisions']] == [stops.sid]
 
 
-def test_worker_finishes_rearm_after_active_lease(stops, monkeypatch):
+def test_tick_recovers_rearm_after_busy_writer(stops, monkeypatch):
     first = stops.submit(1)
     lock = stops.mod._keepwarm_lock
     attempts = []
@@ -197,6 +197,9 @@ def test_worker_finishes_rearm_after_active_lease(stops, monkeypatch):
         if not attempts:
             holder.__exit__(None, None, None)
     assert attempts == [False]
+    from _measure import keepwarm_rearm
+    keepwarm_rearm.recover_pending(stops.mod, time.time())
+    safety.watch_armed_terminal(stops.mod, stops.sid)
     assert stops.observed == [first, second]
 
 

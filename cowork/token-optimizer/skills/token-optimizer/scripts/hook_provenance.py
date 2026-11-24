@@ -349,16 +349,17 @@ def _exclusive(lock_path, timeout=2.0):
         os.close(fd)
 
 
-def _acquire(lock_path, timeout):
-    """A descriptor holding the lock on ``lock_path``, or None."""
+def _acquire(lock_path, timeout, *, busy=None, nofollow=False):
+    """Return a locked fd, busy on contention, or None for unusable storage."""
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
     try:
         if os.path.lexists(str(lock_path)) and not stat.S_ISREG(os.stat(str(lock_path)).st_mode):
             return None
-        fd = os.open(str(lock_path), flags, 0o600)
+        fd = os.open(str(lock_path), flags | (getattr(os, "O_NOFOLLOW", 0) if nofollow else 0), 0o600)
     except OSError:
         return None
     try:
+        failure = None
         usable = stat.S_ISREG(os.fstat(fd).st_mode) and (fcntl is not None or msvcrt is not None)
         deadline = time.monotonic() + timeout
         while usable:
@@ -366,15 +367,16 @@ def _acquire(lock_path, timeout):
             if got:
                 return fd
             if got is None or time.monotonic() >= deadline:
+                failure = busy if got is False else None
                 break
             time.sleep(0.01)
     except OSError:
-        pass
+        failure = None
     except BaseException:
         os.close(fd)
         raise
     os.close(fd)
-    return None
+    return failure
 
 
 def _update(path, mutate):

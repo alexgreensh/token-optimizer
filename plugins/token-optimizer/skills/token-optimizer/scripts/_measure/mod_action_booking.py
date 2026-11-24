@@ -69,7 +69,10 @@ def _prepare(facade, event, sid, ident, when):
         if not acquired:
             return {'ok': False, 'reason': 'ledger-locked'}
         from . import keepwarm_auto, keepwarm_safety
-        rows = keepwarm_auto.read_ledger(facade._keepwarm_ledger_path())
+        try:
+            rows = keepwarm_auto.read_ledger(facade._keepwarm_ledger_path())
+        except (ValueError, OSError) as exc:
+            return {'ok': False, 'reason': keepwarm_auto.accounting_error(exc)}
         existing = [r for r in rows if r.get('action_id') == ident]
         if existing:
             return {'ok': False, 'reason': 'attempt-already-reserved' if _compatible(existing, sid) else 'identity-conflict'}
@@ -96,6 +99,8 @@ def _prepare(facade, event, sid, ident, when):
         _append(facade._keepwarm_ledger_path(), {'status': 'firing', 'source': 'claude-code-mod',
             'action': 'warm', 'action_id': ident, 'attempt_key': ident, 'session_id': sid,
             'ts': when, 'est_cost_usd': estimate, 'snapshot': snapshot, **flags})
+        from .keepwarm_rearm import verify_spend
+        verify_spend(acquired)
     return {'ok': True, 'duplicate': False}
 
 
@@ -165,8 +170,8 @@ def record(facade, event):
             return {'ok': False, 'reason': 'invalid-usage'}
         # Old callers can submit an already answered attempt; new mod calls reserve first.
         facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        with _lock(facade) as acquired:
-            if not acquired:
+        with _lock(facade) as acquired, facade._keepwarm_lock() as state:
+            if not acquired or not state:
                 return {'ok': False, 'reason': 'ledger-locked'}
             existing = [r for r in facade._keepwarm_load_ledger_rows() if r.get('action_id') == ident]
             if existing and not _compatible(existing, sid):

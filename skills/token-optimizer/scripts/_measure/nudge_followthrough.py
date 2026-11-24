@@ -159,35 +159,73 @@ def classify(rows, emitted, new_rows=None):
     return 'pending', None, []
 
 
-def _project_index(directory):
-    """Read each transcript once before the database write transaction."""
-    transcripts, failures = {}, []
+def _start(path):
+    """First timestamp of an append-only transcript, without reading the rest."""
+    with Path(path).open(encoding='utf-8', errors='replace') as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and not row.get('isSidechain'):
+                stamp = _epoch(row.get('timestamp'))
+                if stamp is not None:
+                    return stamp
+    return None
+
+
+def _project_index(directory, since):
+    """Start times of transcripts written after `since`.
+
+    Only these can follow a nudged session. Reading every transcript in full
+    held a whole project history in memory: 17 GB of logs grew past 11 GB.
+    """
+    starts, failures = {}, []
     for path in Path(directory).glob('*.jsonl'):
         if path.is_symlink():
             continue
         try:
-            rows = list(_rows(path))
-            stamps = [_epoch(row.get('timestamp')) for row in rows]
-            stamps = [stamp for stamp in stamps if stamp is not None]
-            if stamps:
-                transcripts[path] = (min(stamps), max(stamps), rows)
+            if path.stat().st_mtime < since:
+                continue
+            start = _start(path)
+            if start is not None:
+                starts[path] = start
         except Exception as exc:
             failures.append(exc)
-    return transcripts, failures
+    return starts, failures
 
 
-def _next_session(path, stamp, index):
+def _nudged_rows(path, stamp):
+    """Rows from the nudge on, plus the newest row, and the session's last timestamp."""
+    kept, end, newest = [], None, None
+    for row in _rows(Path(path)):
+        ts = _epoch(row.get('timestamp'))
+        if ts is None:
+            continue
+        if end is None or ts > end:
+            end, newest = ts, row
+        if ts >= stamp:
+            kept.append(row)
+    if newest is not None and (_epoch(newest.get('timestamp')) or 0) < stamp:
+        kept.append(newest)
+    return kept, end
+
+
+def _successor_rows(path):
+    """The opening rows of the next session, up to the requests classify prices."""
+    rows = []
+    for row in _rows(Path(path)):
+        rows.append(row)
+        if row.get('type') == 'assistant' and len(_requests(rows)) >= 50:
+            break
+    return rows
+
+
+def _next_session(path, stamp, end, starts):
     current = Path(path)
-    entry = index.get(current)
-    if not entry:
-        return None
-    end = entry[1]
-    choices = [(start, str(candidate), rows) for candidate, (start, _, rows) in index.items()
+    choices = [(start, str(candidate)) for candidate, start in starts.items()
                if candidate != current and start > end and start > stamp]
-    if not choices:
-        return None, None
-    _, candidate, rows = min(choices)
-    return candidate, rows
+    return str(min(choices)[1]) if choices else None
 
 
 def _session_ended(facade, sid, last_ts):
@@ -216,31 +254,51 @@ def resolve(facade, conn=None):
                 return
             _schema(conn)
             conn.commit()
-            events = conn.execute('SELECT id,session_uuid,ts,context_tokens,transcript_path,savings_event_id FROM nudge_events').fetchall()
-            projects = {Path(path).parent for _, _, _, _, path, _ in events if path}
-            indexes = {}
-            for project in projects:
+            events = conn.execute("SELECT id,session_uuid,ts,context_tokens,transcript_path,savings_event_id FROM nudge_events WHERE status='pending' AND savings_event_id IS NULL").fetchall()
+            events = [event for event in events if event[4] and _epoch(event[2]) is not None]
+            first_stamp = {}
+            for _, _, ts, _, path, _ in events:
+                first_stamp[path] = min(first_stamp.get(path, float('inf')), _epoch(ts))
+            nudged = {}
+            for path, stamp in first_stamp.items():
                 try:
-                    transcripts, failures = _project_index(project)
+                    rows, end = _nudged_rows(path, stamp)
+                    if end is not None:
+                        nudged[path] = rows, end
                 except Exception as exc:
-                    transcripts, failures = {}, [exc]
+                    _diagnostic(facade, exc)
+            indexes = {}
+            for project in {Path(path).parent for path in first_stamp}:
+                ends = [end for path, (_, end) in nudged.items() if Path(path).parent == project]
+                try:
+                    # A successor is written after the nudged session ends; allow clock skew.
+                    starts, failures = _project_index(project, min(ends, default=float('inf')) - 300)
+                except Exception as exc:
+                    starts, failures = {}, [exc]
                 for failure in failures:
                     _diagnostic(facade, failure)
-                indexes[project] = transcripts
+                indexes[project] = starts
+            successors = {}
             prepared = {}
             claimed_sessions = set()
             events.sort(key=lambda event: (_epoch(event[2]) or 0, event[0]), reverse=True)
             for ident, sid, ts, before, path, event_id in events:
-                if not path:
+                if path not in nudged:
                     continue
-                entry = indexes[Path(path).parent].get(Path(path))
-                if not entry:
-                    continue
-                rows = entry[2]
+                rows, end = nudged[path]
                 status, action, requests = classify(rows, ts)
                 if status == 'pending':
-                    next_path, next_rows = _next_session(path, _epoch(ts), indexes[Path(path).parent])
-                    if next_rows and _session_ended(facade, sid, entry[1]):
+                    next_path = _next_session(path, _epoch(ts), end, indexes[Path(path).parent])
+                    next_rows = None
+                    if next_path and _session_ended(facade, sid, end):
+                        if next_path not in successors:
+                            try:
+                                successors[next_path] = _successor_rows(next_path)
+                            except Exception as exc:
+                                _diagnostic(facade, exc)
+                                successors[next_path] = None
+                        next_rows = successors[next_path]
+                    if next_rows:
                         status, action, requests = classify(rows, ts, next_rows)
                         if status == 'followed':
                             if next_path in claimed_sessions:

@@ -146,7 +146,7 @@ def test_resolver_failure_is_logged_and_event_stays_pending(tmp_path, monkeypatc
     conn.commit()
     class Facade:
         SNAPSHOT_DIR = tmp_path
-    def fail(_):
+    def fail(*_):
         raise PermissionError('private transcript path')
     monkeypatch.setattr(nudge, '_project_index', fail)
     nudge.resolve(Facade(), conn)
@@ -396,3 +396,68 @@ def test_resolver_leaves_callers_open_transaction_untouched(tmp_path):
     assert conn.execute('SELECT COUNT(*) FROM caller_work').fetchone()[0] == 0
     assert 'RuntimeError' in (tmp_path / 'nudge-resolve.log').read_text()
     conn.close()
+
+
+def _opened(monkeypatch):
+    seen = []
+    real_rows, real_start = nudge._rows, nudge._start
+    def rows(path):
+        seen.append(Path(path).name)
+        return real_rows(path)
+    def start(path):
+        seen.append(Path(path).name)
+        return real_start(path)
+    monkeypatch.setattr(nudge, '_rows', rows)
+    monkeypatch.setattr(nudge, '_start', start)
+    return seen
+
+
+def test_resolver_never_opens_history_older_than_the_nudged_session(tmp_path, monkeypatch):
+    # Regression: every transcript in the project was parsed into memory; 17 GB grew past 11 GB.
+    import os
+    old = tmp_path / 'old.jsonl'
+    old.write_text(json.dumps(assistant(0)))
+    os.utime(old, (1, 1))
+    path = tmp_path / 'session.jsonl'
+    path.write_text(json.dumps(assistant(1)))
+    nxt = tmp_path / 'next.jsonl'
+    nxt.write_text(json.dumps(assistant(2)))
+    conn = sqlite3.connect(':memory:')
+    nudge._schema(conn)
+    conn.execute('INSERT INTO nudge_events(session_uuid,kind,ts,context_tokens,transcript_path) VALUES(?,?,?,?,?)', ('s', 'tip', '2026-01-01T00:00:00+00:00', 0, str(path)))
+    conn.commit()
+    seen = _opened(monkeypatch)
+    nudge.resolve(object(), conn)
+    assert 'old.jsonl' not in seen and 'next.jsonl' in seen
+    assert conn.execute('SELECT status FROM nudge_events').fetchone() == ('followed',)
+    conn.close()
+
+
+def test_settled_events_read_no_transcripts(tmp_path, monkeypatch):
+    path = tmp_path / 'session.jsonl'
+    path.write_text(json.dumps(assistant(1)))
+    conn = sqlite3.connect(':memory:')
+    nudge._schema(conn)
+    conn.execute("INSERT INTO nudge_events(session_uuid,kind,ts,transcript_path,status) VALUES(?,?,?,?,'followed')", ('s', 'tip', '2026-01-01T00:00:00+00:00', str(path)))
+    conn.commit()
+    seen = _opened(monkeypatch)
+    nudge.resolve(object(), conn)
+    assert seen == []
+    conn.close()
+
+
+def test_successor_is_read_only_up_to_the_priced_requests(tmp_path):
+    path = tmp_path / 'next.jsonl'
+    path.write_text('\n'.join(json.dumps(assistant(i)) for i in range(500)))
+    rows = nudge._successor_rows(path)
+    assert len(rows) == 50 and len(nudge._requests(rows)) == 50
+
+
+def test_nudged_rows_keep_only_rows_from_the_nudge_and_the_newest(tmp_path):
+    path = tmp_path / 'session.jsonl'
+    path.write_text('\n'.join(json.dumps(assistant(i)) for i in range(100)))
+    rows, end = nudge._nudged_rows(path, nudge._epoch(assistant(90)['timestamp']))
+    assert [r['uuid'] for r in rows] == [str(i) for i in range(90, 100)]
+    assert end == nudge._epoch(assistant(99)['timestamp'])
+    early, _ = nudge._nudged_rows(path, nudge._epoch('2027-01-01T00:00:00+00:00'))
+    assert [r['uuid'] for r in early] == ['99']

@@ -1,7 +1,6 @@
 """Lane B: compact-window advice."""
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-import math
 import os
 import statistics
 import json
@@ -297,6 +296,11 @@ def _median_compaction_cost(facade):
     return statistics.median(costs) if costs else None
 
 
+# Token Optimizer's recommended compact window for 1M-context models: past
+# about 300K tokens every turn re-reads a long history for little extra recall.
+RECOMMENDED_WINDOW = 300000
+
+
 def recommend(facade):
     """Recommend only when observed history and exact pricing support a net gain."""
     if getattr(facade, '_is_foreign_runtime', lambda: False)():
@@ -320,13 +324,12 @@ def recommend(facade):
         if (settings.get('env') or {}).get('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE') is not None:
             return {'blocked': 'env', 'text': 'The existing percentage override changes the effective compact window.'}
         current, _ = facade.effective_compact_window(model, env=os.environ, settings=settings)
-        if current <= 500000:
+        if current <= RECOMMENDED_WINDOW:
             return None
         peaks = [max(t['context'] for t in turns) for turns, _ in sessions]
         if sum(peak >= 300000 for peak in peaks) < 20:
             return None
-        p75 = sorted(peaks)[max(0, math.ceil(len(peaks) * .75) - 1)]
-        target = 400000 if p75 < 300000 else 500000 if p75 > 450000 else 450000
+        target = RECOMMENDED_WINDOW
         gross = 0.0
         crossings = 0
         happened = 0
@@ -374,7 +377,7 @@ def plan_item(facade, advice=None):
     if not advice or advice.get('blocked'):
         return None
     return dict(advice, id='autocompact_window', kind='autocompact_window',
-                label='Compact earlier' + (' for ' + advice['model'] if advice['per_model'] else ''),
+                label='Compact at 300K (recommended)' + (' for ' + advice['model'] if advice['per_model'] else ''),
                 tokens_per_request=0, basis=advice['text'], default_selected=True,
                 undo='measure.py apply-safe --undo <receipt_id>')
 
@@ -384,7 +387,7 @@ def apply_item(facade, item, before_write=None):
     if getattr(facade, '_is_foreign_runtime', lambda: False)():
         return {'ok': False}
     target, model = item.get('target'), item.get('model')
-    if target not in (400000, 450000, 500000) or not isinstance(model, str) or not model:
+    if target != RECOMMENDED_WINDOW or not isinstance(model, str) or not model:
         return {'ok': False}
     with facade._settings_lock(user_initiated=True) as acquired:
         if not acquired:

@@ -16,6 +16,9 @@ def claim(facade):
                 return False
             if facade._dashboard_selfheal_inflight():
                 return False
+            from . import selfheal_guard
+            if selfheal_guard.backoff_active(facade.SNAPSHOT_DIR):
+                return False
             marker = facade.SNAPSHOT_DIR / facade._DASHBOARD_HEAL_LOCK_NAME
             try:
                 fd = facade.os.open(str(marker), facade.os.O_CREAT | facade.os.O_EXCL | facade.os.O_WRONLY, 0o600)

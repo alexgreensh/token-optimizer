@@ -2726,7 +2726,13 @@ def _dispatch_dashboard(args):
             with lock as acquired:
                 if not acquired:
                     _measure_facade.sys.exit(0)
+                if _measure_facade.os.environ.get("TOKEN_OPTIMIZER_DASHBOARD_SELFHEAL") == "1":
+                    from . import selfheal_guard
+                    selfheal_guard.start(_measure_facade.SNAPSHOT_DIR)
                 out = _measure_facade.generate_standalone_dashboard(days=days, quiet=quiet, force=force)
+                if out and _measure_facade.os.environ.get("TOKEN_OPTIMIZER_DASHBOARD_SELFHEAL") == "1":
+                    from . import selfheal_guard
+                    selfheal_guard.clear_backoff(_measure_facade.SNAPSHOT_DIR)
         except _measure_facade._HookTimeout:
             out = None
             timed_out = True

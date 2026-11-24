@@ -31,7 +31,7 @@ def test_apply_and_undo_hold_lock_across_read_and_write():
         return True
     facade = SimpleNamespace(_settings_lock=lock, _read_settings_for_write=read,
                              _write_settings_atomic_locked=write)
-    receipt = autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': 450000})
+    receipt = autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': 300000})
     assert receipt['ok']
     assert autocompact_advice.undo_item(facade, receipt)
     assert state['settings'] == {'autoCompactWindow': 800000, 'other': 1}
@@ -42,11 +42,11 @@ def test_apply_uses_per_model_setting_and_preserves_other_values():
     writes = []
     facade = SimpleNamespace(_settings_lock=lambda **kw: nullcontext(True), _read_settings_for_write=lambda: (copy.deepcopy(original), True),
                              _write_settings_atomic_locked=lambda data, **kw: (writes.append(copy.deepcopy(data)) or True))
-    result = autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': 450000})
+    result = autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': 300000})
     assert result['ok']
     assert result['before'] == 700000
     assert writes[0]['autoCompactWindow'] == 800000
-    assert writes[0]['modelSettings']['model-full']['autoCompactWindow'] == 450000
+    assert writes[0]['modelSettings']['model-full']['autoCompactWindow'] == 300000
     assert 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE' not in str(writes[0])
 
 
@@ -54,7 +54,7 @@ def test_unreadable_settings_are_never_written():
     writes = []
     facade = SimpleNamespace(_settings_lock=lambda **kw: nullcontext(True), _read_settings_for_write=lambda: ({}, False),
                              _write_settings_atomic_locked=lambda data, **kw: writes.append(data))
-    assert not autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': 450000})['ok']
+    assert not autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': 300000})['ok']
     assert not writes
 
 
@@ -80,10 +80,16 @@ def test_environment_override_blocks_recommendation(monkeypatch):
     assert autocompact_advice.recommend(object())['blocked'] == 'env'
 
 
-def test_p75_selects_appropriate_window(monkeypatch):
-    for peaks, expected in [([250000] * 80 + [600000] * 20, 400000), ([400000] * 75 + [600000] * 25, 450000), ([600000] * 20, 500000)]:
+def test_recommends_the_official_300k_window(monkeypatch):
+    for peaks in ([250000] * 80 + [600000] * 20, [400000] * 75 + [600000] * 25, [600000] * 20):
         facade = _fixture(monkeypatch, peaks)
-        assert autocompact_advice.recommend(facade)['target'] == expected
+        assert autocompact_advice.recommend(facade)['target'] == 300000
+
+
+def test_apply_refuses_any_window_but_300k():
+    facade = SimpleNamespace(_settings_lock=lambda **kw: nullcontext(True))
+    for target in (250000, 400000, 450000, 500000):
+        assert not autocompact_advice.apply_item(facade, {'model': 'model-full', 'target': target})['ok']
 
 
 def test_undo_preserves_unrelated_settings_and_refuses_later_edits():
@@ -107,9 +113,9 @@ def test_recommendation_subtracts_compaction_cost(monkeypatch):
     monkeypatch.setattr(autocompact_advice, '_median_compaction_cost', lambda _: .2)
     monkeypatch.setattr(autocompact_advice.limit_units, '_resolve_card', lambda *a, **kw: {'cache_read': 1, 'cache_write_1h': 0})
     result = autocompact_advice.recommend(facade)
-    assert round(result['gross_usd_month'], 2) == 10
+    assert round(result['gross_usd_month'], 2) == 14
     assert round(result['own_cost_usd_month'], 2) == 4
-    assert round(result['net_usd_month'], 2) == 6
+    assert round(result['net_usd_month'], 2) == 10
     monkeypatch.setattr(autocompact_advice, '_median_compaction_cost', lambda _: 1)
     assert autocompact_advice.recommend(facade) is None
 

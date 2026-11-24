@@ -2,8 +2,10 @@
 
 ## [5.13.79] - 2026-11-24
 
-- Paused sessions can refresh close to cache expiry, even during an upgrade or while another session is saving.
-- Small sessions finish background work sooner when their transcript is long.
+- **No more runaway dashboard rebuilds.** The background rebuild after an update now runs at low priority, stops itself after 10 minutes or 1.5 GB of memory, and waits a day before trying again. Big histories no longer push your Mac into swap.
+- **Compact at 300K, our new recommendation.** On 1M-context models, `/token-optimizer:next` offers compacting at 300K tokens as a one-approval safe saving, with undo.
+- **Keep-warm refreshes on time.** Paused sessions refresh close to cache expiry, even during an upgrade or while another session is saving.
+- **Faster wrap-up on long transcripts.** Small sessions finish background work sooner.
 
 ## [5.13.78] - 2026-11-24
 

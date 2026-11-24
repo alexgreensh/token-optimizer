@@ -1,5 +1,9 @@
 # Changelog
 
+## [5.13.80] - 2026-11-24
+
+- **Dashboard stays light on big histories.** Rebuilding the dashboard no longer loads your whole transcript history into memory. On a 17 GB history it now peaks near 0.6 GB instead of running past 11 GB and filling swap.
+
 ## [5.13.79] - 2026-11-24
 
 - **No more runaway dashboard rebuilds.** The background rebuild after an update now runs at low priority, stops itself after 10 minutes or 1.5 GB of memory, and waits a day before trying again. Big histories no longer push your Mac into swap.

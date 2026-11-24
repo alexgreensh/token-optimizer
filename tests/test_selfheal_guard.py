@@ -92,3 +92,9 @@ def test_runaway_child_is_stopped_and_backs_off(tmp_path, cap_env, reason):
     assert time.monotonic() - started < 20
     marker = tmp_path / selfheal_guard.BACKOFF_NAME
     assert marker.read_text().startswith(reason)
+
+
+def test_backoff_written_a_moment_in_the_future_still_counts(tmp_path):
+    marker = tmp_path / selfheal_guard.BACKOFF_NAME
+    marker.write_text("time\n")
+    assert selfheal_guard.backoff_active(tmp_path, now=marker.stat().st_mtime - 0.5)

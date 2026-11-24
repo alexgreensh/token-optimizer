@@ -57,7 +57,8 @@ def backoff_active(snapshot_dir, now=None):
         age = (time.time() if now is None else now) - marker.stat().st_mtime
     except OSError:
         return False
-    return 0 <= age < backoff_seconds()
+    # File clocks can run a moment ahead of time.time() (seen on Windows).
+    return -60 <= age < backoff_seconds()
 
 
 def clear_backoff(snapshot_dir):

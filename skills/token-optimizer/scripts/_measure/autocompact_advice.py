@@ -299,6 +299,7 @@ def _median_compaction_cost(facade):
 # Token Optimizer's recommended compact window for 1M-context models: past
 # about 300K tokens every turn re-reads a long history for little extra recall.
 RECOMMENDED_WINDOW = 300000
+_SUMMARY_TOKENS = 20000
 
 
 def recommend(facade):
@@ -356,6 +357,10 @@ def recommend(facade):
         extra = max(0, crossings - happened)
         card = limit_units._resolve_card(facade, model, per_request=True, full_input=target)
         cost = _median_compaction_cost(facade) if extra else 0
+        if cost is None and card and card.get('cache_read') is not None and card.get('output') is not None:
+            # No measured compactions yet: price one summary call instead of
+            # dropping the advice. Reads the context once, writes ~20K tokens.
+            cost = (target * card['cache_read'] + _SUMMARY_TOKENS * card['output']) / 1000000
         write_rate = card.get('cache_write_1h', card.get('input') * 2 if card.get('input') is not None else None) if card else None
         if write_rate is None or cost is None:
             return None

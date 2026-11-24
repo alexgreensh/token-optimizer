@@ -86,6 +86,19 @@ def test_recommends_the_official_300k_window(monkeypatch):
         assert autocompact_advice.recommend(facade)['target'] == 300000
 
 
+def test_missing_compaction_history_is_priced_not_dropped(monkeypatch):
+    from datetime import datetime
+    facade = _fixture(monkeypatch, [1000000] * 20)
+    turns = [([{'stamp': datetime.now(), 'context': 1000000, 'model': 'model-full'}], []) for _ in range(20)]
+    monkeypatch.setattr(autocompact_advice, '_recent_sessions', lambda _: turns)
+    monkeypatch.setattr(autocompact_advice, '_median_compaction_cost', lambda _: None)
+    monkeypatch.setattr(autocompact_advice.limit_units, '_resolve_card', lambda *a, **kw: {'cache_read': 1, 'cache_write_1h': 0, 'output': 5})
+    result = autocompact_advice.recommend(facade)
+    # 20 extra compactions, each (300K * 1 + 20K * 5) / 1M = $0.40.
+    assert round(result['own_cost_usd_month'], 2) == 8
+    assert round(result['net_usd_month'], 2) == 6
+
+
 def test_apply_refuses_any_window_but_300k():
     facade = SimpleNamespace(_settings_lock=lambda **kw: nullcontext(True))
     for target in (250000, 400000, 450000, 500000):

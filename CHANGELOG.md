@@ -3,6 +3,7 @@
 ## [5.13.80] - 2026-11-24
 
 - **Dashboard stays light on big histories.** Rebuilding the dashboard no longer loads your whole transcript history into memory. On a 17 GB history it now peaks near 0.6 GB instead of running past 11 GB and filling swap.
+- **Background rebuild pauses reliably on Windows.** After a rebuild hits its limit, it now always waits before trying again.
 
 ## [5.13.79] - 2026-11-24
 

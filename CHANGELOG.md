@@ -2,8 +2,8 @@
 
 ## [5.13.78] - 2026-11-24
 
-- Paused sessions stay armed during upgrades. If the scheduler is busy, it picks up the waiting Stop on its next tick.
-- Keep-warm retries brief Windows file-sharing conflicts and skips the ping when it cannot verify spending.
+- **Keep-warm holds through upgrades.** Paused sessions stay warm while Token Optimizer updates, even with older sessions still open.
+- **Reliable on Windows.** Keep-warm rides out brief file locks, and still never refreshes unless it can confirm your spending limits.
 
 ## [5.13.77] - 2026-11-24
 

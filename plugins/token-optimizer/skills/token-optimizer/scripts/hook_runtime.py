@@ -259,6 +259,7 @@ class LeaseLock:
         reclaim_grace: float = 0.25,
         cohort_throttle: bool = True,
         reclaim_released: bool = False,
+        may_reclaim_active=None,
     ):
         # Preserve an already-materialized concrete path. This also lets tests
         # simulate Windows by changing os.name after pathlib created PosixPath
@@ -273,6 +274,7 @@ class LeaseLock:
         # herd the reservation exists to absorb) may take a RELEASED lease at
         # once; a lease still held is never taken early.
         self.reclaim_released = bool(reclaim_released)
+        self.may_reclaim_active = may_reclaim_active
         import secrets  # lazy: lease paths only
 
         self.nonce = secrets.token_hex(16)
@@ -280,6 +282,7 @@ class LeaseLock:
             f".{self.path.name}.candidate-{self.nonce}"
         )
         self.acquired = False
+        self.storage_error = False
 
     def _metadata(self):
         now = time.time()
@@ -504,6 +507,9 @@ class LeaseLock:
             reuse = float(owner.get("reuse_wall", created))
             if owner.get("pid") != os.getpid() and now <= reuse and not self.reclaim_released:
                 return False
+        elif self.may_reclaim_active is not None:
+            if not self.may_reclaim_active(owner):
+                return False
         elif now <= expires + self.reclaim_grace:
             return False
 
@@ -520,6 +526,7 @@ class LeaseLock:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
+            self.storage_error = True
             return False
         wait_for = self.acquire_timeout
         if self.deadline is not None:
@@ -539,12 +546,14 @@ class LeaseLock:
             if created is True:
                 return True
             if created is None:
+                self.storage_error = True
                 return False
             if self._reclaim_if_expired():
                 # Reclamation freed the pathname. Retry exclusive creation once
                 # even when acquire_timeout is zero.
                 created = self._try_create()
                 if created is not False:
+                    self.storage_error = created is None
                     return created is True
             if time.monotonic() >= stop:
                 return False

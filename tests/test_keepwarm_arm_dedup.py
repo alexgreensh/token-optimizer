@@ -199,6 +199,7 @@ def test_stop_worker_rejects_reused_wrapper_under_an_older_claude(m, tmp_path, m
                  123: {"ppid": 1, "start": owner_start, "command": "claude"},
                  124: {"ppid": 1, "start": owner_start, "command": "claude"}}
     monkeypatch.setenv(keepwarm_safety.HOOK_PARENT_PID_ENV, str(wrapper))
+    monkeypatch.setenv('TOKEN_OPTIMIZER_HOOK_PARENT_START', wrapper_start[wrapper])
     monkeypatch.setattr(keepwarm_safety, "process_start", wrapper_start.get, raising=False)
     monkeypatch.setattr(keepwarm_safety, "process_info", processes.get)
     monkeypatch.setattr(keepwarm_safety, "owner_eligible", lambda pid: True)
@@ -253,6 +254,7 @@ def test_stop_worker_arms_and_watches_only_eligible_sessions(m, tmp_path, monkey
     )
     transcript.write_text(json.dumps(turn) + "\n")
     monkeypatch.setenv(keepwarm_safety.HOOK_PARENT_PID_ENV, str(parent))
+    monkeypatch.setenv('TOKEN_OPTIMIZER_HOOK_PARENT_START', 'hook-parent')
     payload = {"session_id": sid, "transcript_path": str(transcript), "hook_event_name": "Stop"}
     if case == "subagent":
         payload["agent_id"] = "agent-1"

@@ -440,10 +440,10 @@ def _run_ping(facade, runner, command, cwd, env, context, fallback_cost):
     return row
 
 
-def _pending_attempt(rows, sid, now):
+def _pending_attempt(rows, sid, now, timeout=600):
     pending = {r.get('action_id') for r in rows if r.get('session_id') == sid
                and r.get('action_id') and r.get('status') == 'firing'
-               and float(r['ts']) > now - 600}
+               and now - timeout < float(r['ts']) <= now}
     finished = {r.get('action_id') for r in rows if r.get('session_id') == sid
                 and r.get('status') in ('ok', 'error', 'timeout', 'cancelled', 'unproved')}
     return bool(pending - finished)
@@ -452,6 +452,7 @@ def _pending_attempt(rows, sid, now):
 def fire_headless(facade, record, *, now, env=None, runner=None, live=None, meters=None):
     """Reserve once under the shared lock, then run one bounded fork and prove it."""
     from .mod_action_booking import _append, _lock
+    from .keepwarm_auto import read_ledger
 
     sid, model = record['session_id'], record['model']
     context = record['prefix_proxy']
@@ -472,7 +473,10 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
         now = facade.time.time()
         if meters is None:
             meters = _headless_meters(facade, now)
-        rows = facade._keepwarm_load_ledger_rows()
+        try:
+            rows = read_ledger(facade._keepwarm_ledger_path())
+        except (OSError, ValueError):
+            return {'fired': False, 'reason': 'accounting-unavailable'}
         decision = _headless_decision(facade, record, now, env, meters, rows)
         if decision['action'] != 'ping':
             return {'fired': False, 'reason': decision['reason']}
@@ -497,14 +501,12 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
                         '--permission-prompts', 'none', '--settings', settings,
                         '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'])
         try:
-            fd = os.open(str(latch), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            keepwarm_rearm.publish_exclusive(latch, f'pending {action_id} {os.getpid()}')
         except FileExistsError:
             return {'fired': False, 'reason': _headless_latch_reason(facade) or 'headless-busy'}
         except OSError:
             return {'fired': False, 'reason': 'accounting-unavailable'}
         try:
-            with os.fdopen(fd, 'w') as stream:
-                stream.write(f'pending {action_id} {os.getpid()}')
             _append(facade._keepwarm_ledger_path(), {**common, 'status': 'firing',
                     'ts': now, 'est_cost_usd': fallback})
             reason = _headless_preference_disabled(facade, env) if live() else 'session-changed'
@@ -597,6 +599,7 @@ def scheduler_tick(facade, now, dry_run, env, runner):
         if not held:
             return dict(summary, reason='tick-already-running')
         if not dry_run:
+            keepwarm_rearm.recover_pending(facade, now)
             booked = facade.keepwarm_detect_realized(now=now)
             facade.compact_keepwarm_sidecar(now=now)
         if allowed:
@@ -667,10 +670,12 @@ def desktop_headless_main(facade, args):
 HOOK_PARENT_PID_ENV = 'TOKEN_OPTIMIZER_HOOK_PARENT_PID'
 
 
-def _stop_parent(facade, pid):
+def _stop_parent(facade, pid, expected):
     # The host can run the hook under a shell that exits before the detached
     # worker imports measure. Pin the nearest Claude ancestor while it exists.
     original = pid, process_start(pid)
+    if not expected or original[1] != expected:
+        return pid, None
     chain = {}
     start = original[1]
     while start and pid > 1 and len(chain) < 16:
@@ -720,7 +725,7 @@ def stop_flush_args(facade, args, hook_input):
         # The existing worker checks the full turn before writing an arm.
         incomplete = usage is None and snapshot.st_size > _TAIL_BYTES
         if incomplete or (usage and facade._keepwarm_prefix_proxy(usage) >= MIN_CONTEXT):
-            parent_pid, parent_start = _stop_parent(facade, parent_pid)
+            parent_pid, parent_start = _stop_parent(facade, parent_pid, os.environ.get('TOKEN_OPTIMIZER_HOOK_PARENT_START'))
             if parent_start:
                 args += ['--keepwarm-parent-pid', str(parent_pid), '--keepwarm-parent-start', parent_start,
                          '--keepwarm-stop-at', str(now)]
@@ -793,10 +798,11 @@ def _watch_delay(facade, record, fd):
         return None
     if not owner_alive(record['owner']) or ended_since(facade.SNAPSHOT_DIR, record['session_id'], record['ts']):
         return None
-    if now - record['last_turn_ts'] > policy.CACHE_LIFETIME * policy.MAX_PER_PAUSE:
-        return None
     rows = facade._keepwarm_load_ledger_rows()
-    if _cache_age(record, now, rows) >= policy.CACHE_LIFETIME - 15:
+    if (now - record['last_turn_ts'] > policy.CACHE_LIFETIME * policy.MAX_PER_PAUSE
+            or _cache_age(record, now, rows) >= policy.CACHE_LIFETIME - 15):
+        if _pending_attempt(rows, record['session_id'], now, facade._KEEPWARM_PING_TIMEOUT_SECONDS):
+            return 5
         return None
     if now - os.fstat(fd).st_mtime > policy.DAY:
         os.utime(fd)

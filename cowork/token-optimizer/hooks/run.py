@@ -657,7 +657,20 @@ def main() -> int:
     if script_path.stem == "stop_runner" or script_args[:1] == ["session-end-flush"]:
         # module_runner's parent is this short-lived dispatcher. The detached
         # flush worker must start its lookup above it, at the hook's parent.
-        child_env["TOKEN_OPTIMIZER_HOOK_PARENT_PID"] = str(os.getppid())
+        pid = os.getppid()
+        child_env["TOKEN_OPTIMIZER_HOOK_PARENT_PID"] = str(pid)
+        child_env.pop("TOKEN_OPTIMIZER_HOOK_PARENT_START", None)
+        if os.name == "posix" and pid > 1:
+            try:
+                scripts = str(root_resolved / "skills" / "token-optimizer" / "scripts")
+                if scripts not in sys.path:
+                    sys.path.insert(0, scripts)
+                from process_identity import process_start
+                stamp = process_start(pid)
+                if stamp and os.getppid() == pid:
+                    child_env["TOKEN_OPTIMIZER_HOOK_PARENT_START"] = stamp
+            except Exception:
+                pass
     if stale_plugin_root:
         # The handler and everything it imports resolve paths from this too.
         child_env["CLAUDE_PLUGIN_ROOT"] = str(root_resolved)

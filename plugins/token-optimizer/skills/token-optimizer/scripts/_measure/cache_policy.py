@@ -625,44 +625,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
         }
         if turn is not None:
             record["terminal_turn"] = turn
-        # Dedup and append under one lock so duplicate Stop hooks share one ping cap.
-        try:
-            with keepwarm_rearm.arm_lock(_measure_facade, tp, turn) as acquired:
-                if not acquired or (turn is not None and keepwarm_safety.terminal_turn(tp) != turn):
-                    return None
-                for existing in reversed(_measure_facade.load_keepwarm_records()):
-                    if existing.get("session_id") != record["session_id"] or existing.get("owner") != owner:
-                        continue
-                    if keepwarm_safety.same_pause(existing, record):
-                        if turn is None or "terminal_turn" in existing:
-                            return existing
-                        # Supersede the legacy snapshot with the same pause and attempts.
-                        record = {**existing, "terminal_turn": turn}
-                        break
-                # The append body of _keepwarm_append_line, inlined so it runs
-                # inside this lock hold (same O_NOFOLLOW / 0600 semantics).
-                try:
-                    _measure_facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-                except OSError:
-                    return None
-                try:
-                    flags = _measure_facade.os.O_APPEND | _measure_facade.os.O_CREAT | _measure_facade.os.O_WRONLY
-                    if hasattr(_measure_facade.os, "O_NOFOLLOW"):
-                        flags |= _measure_facade.os.O_NOFOLLOW
-                    try:
-                        fd = _measure_facade.os.open(str(_measure_facade._keepwarm_sidecar_path()), flags, 0o600)
-                    except OSError:
-                        return None
-                    try:
-                        with _measure_facade.os.fdopen(fd, "a", encoding="utf-8") as fh:
-                            fh.write(_measure_facade.json.dumps(record) + "\n")
-                    except OSError:
-                        return None
-                except OSError:
-                    return None
-        except Exception:
-            return None
-        return record
+        return keepwarm_rearm.publish_arm(_measure_facade, record, tp, turn)
     except Exception:
         # Absolute backstop: nothing in the arm path may propagate to the hook.
         return None
@@ -676,10 +639,9 @@ def _valid_keepwarm_record(rec):
     if not isinstance(rec.get("session_id"), str) or not rec["session_id"] or not rec.get("transcript_path"):
         return False
     try:
-        float(rec.get("ts"))
-    except (TypeError, ValueError):
+        return _measure_facade.math.isfinite(float(rec.get("ts")))
+    except (TypeError, ValueError, OverflowError):
         return False
-    return True
 
 
 def load_keepwarm_records(path=None):
@@ -3163,28 +3125,14 @@ def _keepwarm_load_ledger_rows(path=None):
 
     Corrupt/blank lines are skipped. Missing file -> []. Read-only.
     """
+    from . import keepwarm_auto
     _measure_facade = _compat.facade()
     if path is None:
         path = _measure_facade._keepwarm_ledger_path()
-    rows = []
     try:
-        p = _measure_facade.Path(path)
-        if not p.exists():
-            return []
-        with open(p, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = _measure_facade.json.loads(line)
-                except (_measure_facade.json.JSONDecodeError, ValueError):
-                    continue
-                if isinstance(row, dict):
-                    rows.append(row)
+        return keepwarm_auto.read_ledger(path, strict=False)
     except OSError:
         return []
-    return rows
 
 
 def _keepwarm_compact_ledger(now=None, retain_days=None):

@@ -31,6 +31,7 @@ def stops(m, tmp_path, monkeypatch):
     spawned = []
     observed = []
     monkeypatch.setenv(safety.HOOK_PARENT_PID_ENV, str(os.getpid()))
+    monkeypatch.setenv('TOKEN_OPTIMIZER_HOOK_PARENT_START', process_start(os.getpid()))
     monkeypatch.setattr(mod, '_daemon_snapshot_sandboxed', lambda: False)
     monkeypatch.setattr(mod, '_read_stdin_hook_input', lambda: payload)
     monkeypatch.setattr(mod, 'spawn_detached', lambda cmd, **kw: spawned.append((cmd[2:], kw)) or True)
@@ -134,6 +135,7 @@ def test_stop_after_hook_wrapper_exits(stops, monkeypatch):
     with subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'],
                           stdin=subprocess.PIPE) as wrapper:
         monkeypatch.setenv(safety.HOOK_PARENT_PID_ENV, str(wrapper.pid))
+        monkeypatch.setenv('TOKEN_OPTIMIZER_HOOK_PARENT_START', process_start(wrapper.pid))
         second = stops.submit(2, before_worker=lambda: wrapper.communicate(timeout=5))
         assert wrapper.returncode == 0
     assert stops.observed == [first, second]
@@ -206,6 +208,7 @@ def test_detached_workers_share_one_live_watcher(m, tmp_path, monkeypatch):
     template = json.loads(transcript.read_text())
     payload = {'session_id': 'abc123', 'hook_event_name': 'Stop', 'transcript_path': str(transcript)}
     monkeypatch.setenv(safety.HOOK_PARENT_PID_ENV, str(os.getpid()))
+    monkeypatch.setenv('TOKEN_OPTIMIZER_HOOK_PARENT_START', process_start(os.getpid()))
     # Run the real worker CLI with a synthetic owner and a non-spending clock
     # callback. A ready file acknowledges the exact turn seen under flock.
     entry = tmp_path / 'fixture_worker.py'

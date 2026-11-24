@@ -404,9 +404,7 @@ def test_retained_bootstrap_stays_in_the_facade_before_the_bridge(copy_root):
 # ---------------------------------------------------------------- context managers
 
 @pytest.mark.parametrize('fail', [False, True])
-@pytest.mark.parametrize('name, lock_name', [('_keepwarm_lock', '_KEEPWARM_LOCK_NAME'),
-                                             ('_keepwarm_tripwire_lock', '_KEEPWARM_TRIPWIRE_LOCK_NAME')])
-def test_lease_context_managers_keep_wrapping_and_clean_up(m, monkeypatch, name, lock_name, fail):
+def test_tripwire_lease_keeps_wrapping_and_clean_up(m, monkeypatch, fail):
     events = []
 
     @contextmanager
@@ -418,9 +416,10 @@ def test_lease_context_managers_keep_wrapping_and_clean_up(m, monkeypatch, name,
             events.append('exit')
 
     monkeypatch.setattr(m, 'lease_lock', lease)
-    monkeypatch.setattr(m, 'current_deadline', lambda: 'fixture-deadline')
-    manager = getattr(m, name)
-    assert manager.__wrapped__.__name__ == name
+    deadline = SimpleNamespace(remaining=lambda: 0.01)
+    monkeypatch.setattr(m, 'current_deadline', lambda: deadline)
+    manager = m._keepwarm_tripwire_lock
+    assert manager.__wrapped__.__name__ == '_keepwarm_tripwire_lock'
     try:
         with manager() as acquired:
             assert acquired is True
@@ -429,8 +428,33 @@ def test_lease_context_managers_keep_wrapping_and_clean_up(m, monkeypatch, name,
     except ValueError:
         assert fail
     assert events[-1] == 'exit'
-    assert events[0][1] == (m.SNAPSHOT_DIR / f'{getattr(m, lock_name)}.lease',)
-    assert events[0][2] == {'deadline': 'fixture-deadline', 'acquire_timeout': 0.075}
+    assert events[0][1] == (m.SNAPSHOT_DIR / f'{m._KEEPWARM_TRIPWIRE_LOCK_NAME}.lease',)
+    assert events[0][2] == {'deadline': deadline, 'acquire_timeout': 0.075}
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_keepwarm_os_lock_releases_on_exit(m, monkeypatch, fail):
+    from _measure import keepwarm_rearm
+
+    deadline = SimpleNamespace(remaining=Mock(return_value=0.01))
+    monkeypatch.setattr(m, 'current_deadline', lambda: deadline)
+    manager = m._keepwarm_lock
+    assert manager.__wrapped__.__name__ == '_keepwarm_lock'
+    try:
+        with manager() as acquired:
+            assert acquired is True
+            assert (m.SNAPSHOT_DIR / m._KEEPWARM_LOCK_NAME).is_file()
+            with (m.SNAPSHOT_DIR / m._KEEPWARM_LOCK_NAME).open('r+b') as contender:
+                assert keepwarm_rearm._acquire_writer(contender.fileno(), 0) is False
+            if fail:
+                raise ValueError('fixture')
+    except ValueError:
+        assert fail
+    deadline.remaining.assert_called_once_with()
+    with (m.SNAPSHOT_DIR / m._KEEPWARM_LOCK_NAME).open('r+b') as independent:
+        assert keepwarm_rearm._acquire_writer(independent.fileno(), 0) is True
+    with manager() as successor:
+        assert successor is True
 
 
 @pytest.mark.parametrize('fail', [False, True])

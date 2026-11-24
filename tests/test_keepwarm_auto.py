@@ -41,6 +41,7 @@ def policy(tmp_path, monkeypatch):
         keepwarm_billing_mode=lambda **kw: 'subscription',
         _is_priced_model=lambda model: model == MODEL,
         _keepwarm_load_ledger_rows=lambda: [],
+        _keepwarm_ledger_path=lambda: tmp_path / 'ledger.jsonl',
         _keepwarm_ping_cost_est=lambda tokens, model: 1.0,
         _get_model_cost=lambda model, input, output, cache_read, write, **kw: 10.0 if write else 1.0,
         lease_lock=lambda path, **kw: nullcontext(True),

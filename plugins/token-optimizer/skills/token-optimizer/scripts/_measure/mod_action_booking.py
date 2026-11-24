@@ -68,11 +68,11 @@ def _prepare(facade, event, sid, ident, when):
     with _lock(facade) as acquired:
         if not acquired:
             return {'ok': False, 'reason': 'ledger-locked'}
-        rows = facade._keepwarm_load_ledger_rows()
+        from . import keepwarm_auto, keepwarm_safety
+        rows = keepwarm_auto.read_ledger(facade._keepwarm_ledger_path())
         existing = [r for r in rows if r.get('action_id') == ident]
         if existing:
             return {'ok': False, 'reason': 'attempt-already-reserved' if _compatible(existing, sid) else 'identity-conflict'}
-        from . import keepwarm_auto, keepwarm_safety
         if keepwarm_safety._pending_attempt(rows, sid, when):
             return {'ok': False, 'reason': 'attempt-in-progress'}
         flags = {key: event[key] for key in ('auto', 'proof') if key in event}

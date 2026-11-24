@@ -127,7 +127,7 @@ def test_reparented_wrapper_cannot_pin_unrelated_owner(monkeypatch):
     monkeypatch.setattr(safety, 'process_start', start)
     monkeypatch.setattr(safety, 'process_parent', parents.get)
     facade = SimpleNamespace(_posix_exe_path=lambda pid: 'claude' if pid == unrelated else 'sh')
-    _, stamp = safety._stop_parent(facade, wrapper)
+    _, stamp = safety._stop_parent(facade, wrapper, stamps[wrapper])
     assert stamp is None
 
 

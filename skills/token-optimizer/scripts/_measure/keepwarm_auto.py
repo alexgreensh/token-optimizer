@@ -69,7 +69,8 @@ def prune_markers(facade, now):
     if not facade.SNAPSHOT_DIR.is_dir():
         return removed
     for path in facade.SNAPSHOT_DIR.iterdir():
-        if not path.name.startswith(('keepwarm-ended-', 'keepwarm-owner-')):
+        if (path.name.startswith('keepwarm-owner-watch-')
+                or not path.name.startswith(('keepwarm-ended-', 'keepwarm-owner-'))):
             continue
         try:
             info = path.lstat()
@@ -104,6 +105,32 @@ def _caps(pause=0, session=0, day=0):
 def _auto_rows(rows):
     return [row for row in rows if row.get('source') in AUTO_SOURCES
             and row.get('action') == 'warm' and row.get('auto') is True]
+
+
+def read_ledger(path, *, strict=True):
+    """An absent ledger is empty. Spending requires a complete, readable ledger."""
+    rows = []
+    try:
+        stream = open(path, encoding='utf-8', errors='strict' if strict else 'replace')
+    except FileNotFoundError:
+        if strict and os.path.islink(path):
+            raise
+        return []
+    with stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                if strict:
+                    raise
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+            elif strict:
+                raise ValueError('invalid ledger row')
+    return rows
 
 
 def _attempt_id(row):
@@ -205,7 +232,11 @@ def decide(facade, session_id, context_tokens, idle_seconds, model, lifetime,
             return stop('meters-unknown')
         if not math.isfinite(idle_seconds) or idle_seconds < 0:
             return out
-        rows = facade._keepwarm_load_ledger_rows() if rows is None else rows
+        rows = read_ledger(facade._keepwarm_ledger_path()) if rows is None else rows
+        for row in _auto_rows(rows):
+            stamp = float(row['ts'])
+            if not math.isfinite(stamp) or stamp > now:
+                return stop('accounting-unavailable')
         out['caps'] = _cap_counts(rows, session_id, now - idle_seconds, now)
         for key, reason in zip(out['caps'], ('cap-pause', 'cap-session', 'cap-day')):
             if not out['caps'][key]:

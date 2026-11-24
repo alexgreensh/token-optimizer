@@ -3,6 +3,10 @@ from hook_provenance import _exclusive
 
 
 def claim(facade):
+    # Checked before any lock so no fail-open path below can skip it.
+    from . import selfheal_guard
+    if selfheal_guard.backoff_active(facade.SNAPSHOT_DIR):
+        return False
     try:
         facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         guard = facade.SNAPSHOT_DIR / "dashboard.heal.claim.guard"
@@ -15,9 +19,6 @@ def claim(facade):
                     return True
                 return False
             if facade._dashboard_selfheal_inflight():
-                return False
-            from . import selfheal_guard
-            if selfheal_guard.backoff_active(facade.SNAPSHOT_DIR):
                 return False
             marker = facade.SNAPSHOT_DIR / facade._DASHBOARD_HEAL_LOCK_NAME
             try:

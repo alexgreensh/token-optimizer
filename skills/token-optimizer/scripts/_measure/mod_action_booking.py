@@ -50,9 +50,8 @@ def _snapshot(facade, event, sid):
 
 
 def _lock(facade):
-    facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    path = facade.SNAPSHOT_DIR / (facade._KEEPWARM_LOCK_NAME + '.lease')
-    return facade.lease_lock(path, acquire_timeout=2.0, cohort_throttle=False, reclaim_released=True)
+    from .keepwarm_rearm import writer_lock
+    return writer_lock(facade, 2.0)
 
 
 def _compatible(rows, sid):
@@ -93,6 +92,7 @@ def _prepare(facade, event, sid, ident, when):
                 return {'ok': False, 'reason': decision['reason']}
             snapshot['proof_context'] = context
             estimate = max(estimate, decision['ping_cost_usd'])
+            when = now
         _append(facade._keepwarm_ledger_path(), {'status': 'firing', 'source': 'claude-code-mod',
             'action': 'warm', 'action_id': ident, 'attempt_key': ident, 'session_id': sid,
             'ts': when, 'est_cost_usd': estimate, 'snapshot': snapshot, **flags})
@@ -107,6 +107,7 @@ def _cancel(facade, event, sid, ident, when):
         if not rows or not _compatible(rows, sid) or any(r.get('status') == 'ok' for r in rows):
             return {'ok': False, 'reason': 'reservation-unavailable'}
         if not any(r.get('status') == 'cancelled' for r in rows):
+            when = max([when] + [r['ts'] for r in rows if r.get('status') == 'firing'])
             _append(facade._keepwarm_ledger_path(), {'status': 'cancelled', 'source': 'claude-code-mod',
                 'action': 'warm', 'action_id': ident, 'session_id': sid, 'ts': when,
                 **{key: event[key] for key in ('auto', 'proof') if key in event}})
@@ -181,6 +182,9 @@ def record(facade, event):
                 from .keepwarm_auto import proof_ok
                 if reservation is None or reservation.get('auto') is not True:
                     return {'ok': False, 'reason': 'reservation-unavailable'}
+                # Clients can echo the earlier request time. An outcome must
+                # settle its reservation or the spend summary charges it twice.
+                when = max(when, reservation['ts'])
                 flags = {'auto': True, 'proof': flags.get('proof') is True and proof_ok(
                     usage, snapshot.get('proof_context')) and not any(r.get('proof') is False for r in existing)}
             model, ttl = snapshot['model'], snapshot['ttl']

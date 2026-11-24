@@ -120,6 +120,7 @@ def owner_eligible(pid):
 def _find_claude_process(pid=None, lookup=None):
     pid = os.getppid() if pid is None else pid
     lookup = process_info if lookup is None else lookup
+    children = []
     for _ in range(16):
         if pid <= 1:
             break
@@ -127,7 +128,12 @@ def _find_claude_process(pid=None, lookup=None):
         if not info:
             break
         if is_claude_command(info['command']):
+            for child, start, parent in children:
+                current = lookup(child)
+                if not current or (current['start'], current['ppid']) != (start, parent):
+                    return None
             return {'pid': pid, 'start': info['start']}
+        children.append((pid, info['start'], info['ppid']))
         pid = info['ppid']
     return None
 
@@ -456,20 +462,24 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
         return {'fired': False, 'reason': 'launch-unavailable'}
     if live is None:
         live = lambda: facade.classify_keepwarm_record(record, now=now) == 'still_paused'
-    if meters is None:
-        meters = _headless_meters(facade, now)
     if env is None:
         env = facade.os.environ
     latch = _headless_latch(facade)
     with _lock(facade) as held:
         if not held:
-            return {'fired': False, 'reason': 'ledger-locked'}
+            return {'fired': False, 'reason': 'ledger-locked' if held is False else 'accounting-unavailable'}
+        # A different session can reserve the last slot while we wait.
+        now = facade.time.time()
+        if meters is None:
+            meters = _headless_meters(facade, now)
         rows = facade._keepwarm_load_ledger_rows()
         decision = _headless_decision(facade, record, now, env, meters, rows)
         if decision['action'] != 'ping':
             return {'fired': False, 'reason': decision['reason']}
-        if _pending_attempt(rows, sid, now) or not live():
-            return {'fired': False, 'reason': 'session-changed-or-busy'}
+        if _pending_attempt(rows, sid, now):
+            return {'fired': False, 'reason': 'attempt-in-progress'}
+        if not live():
+            return {'fired': False, 'reason': 'session-changed'}
         action_id = 'headless-' + os.urandom(16).hex()
         pause_key = facade._keepwarm_pause_key(sid, record['ts'])
         fallback = facade._get_model_cost(model, 1000, 0, 0, context,
@@ -488,8 +498,10 @@ def fire_headless(facade, record, *, now, env=None, runner=None, live=None, mete
                         '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'])
         try:
             fd = os.open(str(latch), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return {'fired': False, 'reason': _headless_latch_reason(facade) or 'headless-busy'}
         except OSError:
-            return {'fired': False, 'reason': 'headless-proof'}
+            return {'fired': False, 'reason': 'accounting-unavailable'}
         try:
             with os.fdopen(fd, 'w') as stream:
                 stream.write(f'pending {action_id} {os.getpid()}')
@@ -555,15 +567,19 @@ def _headless_meters(facade, now):
     return data['five_hour_pct'], data['seven_day_pct']
 
 
-def _headless_decision(facade, record, now, env, meters, rows):
-    from . import keepwarm_auto as policy
-
-    since_turn = now - record['last_turn_ts']
+def _cache_age(record, now, rows):
     last_ping = max((float(r['ts']) for r in rows if r.get('session_id') == record['session_id']
                      and r.get('action') == 'warm' and r.get('status') == 'ok'
                      and r.get('proof') is not False and record['last_turn_ts'] <= float(r['ts']) <= now),
                     default=record['last_turn_ts'])
-    since_cache = now - last_ping
+    return now - last_ping
+
+
+def _headless_decision(facade, record, now, env, meters, rows):
+    from . import keepwarm_auto as policy
+
+    since_turn = now - record['last_turn_ts']
+    since_cache = _cache_age(record, now, rows)
     if since_cache < policy.BUCKETS[0]:
         return {'action': 'stop', 'reason': 'not-due', 'due_in_s': policy.BUCKETS[0] - since_cache}
     if since_cache >= policy.CACHE_LIFETIME - 15:
@@ -658,15 +674,18 @@ def _stop_parent(facade, pid):
     chain = {}
     start = original[1]
     while start and pid > 1 and len(chain) < 16:
-        chain[pid] = start
         executable = facade._posix_exe_path(pid)
         if not executable:
             break
         if is_claude_command(executable):
-            if all(process_start(p) == stamp for p, stamp in chain.items()):
+            if (process_start(pid) == start and all(
+                    process_parent(child) == parent and process_start(child) == stamp
+                    for child, (stamp, parent) in chain.items())):
                 return pid, start
-            break
-        pid = process_parent(pid)
+            return pid, None
+        parent = process_parent(pid)
+        chain[pid] = start, parent
+        pid = parent
         start = process_start(pid) if pid and pid > 1 and pid not in chain else None
     return original
 
@@ -770,24 +789,31 @@ def _watch_delay(facade, record, fd):
 
     now = facade.time.time()
     disabled = headless_disabled(facade)
-    if disabled == 'headless-busy':
-        return 5
-    if disabled or not record:
+    if disabled not in (None, 'headless-busy') or not record:
         return None
     if not owner_alive(record['owner']) or ended_since(facade.SNAPSHOT_DIR, record['session_id'], record['ts']):
         return None
     if now - record['last_turn_ts'] > policy.CACHE_LIFETIME * policy.MAX_PER_PAUSE:
         return None
+    rows = facade._keepwarm_load_ledger_rows()
+    if _cache_age(record, now, rows) >= policy.CACHE_LIFETIME - 15:
+        return None
     if now - os.fstat(fd).st_mtime > policy.DAY:
         os.utime(fd)
     if facade.classify_keepwarm_record(record, now=now) != 'still_paused':
         return 30
-    decision = _headless_decision(facade, record, now, None, _headless_meters(facade, now),
-                                  facade._keepwarm_load_ledger_rows())
+    if disabled == 'headless-busy':
+        return 5
+    decision = _headless_decision(facade, record, now, None, _headless_meters(facade, now), rows)
     if decision['reason'] == 'not-due':
         return min(60, max(1, decision['due_in_s']))
-    if decision['action'] == 'ping' and fire_headless(facade, record, now=now).get('proof'):
-        return 0
+    if decision['action'] == 'ping':
+        decision = fire_headless(facade, record, now=now)
+        if decision.get('proof'):
+            return 0
+    retryable = ('headless-busy', 'ledger-locked', 'attempt-in-progress', 'not-due')
+    if not decision.get('fired') and decision['reason'] in retryable:
+        return 5
     return None
 
 

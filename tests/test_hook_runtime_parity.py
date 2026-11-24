@@ -507,6 +507,18 @@ def test_windows_simulation_uses_portable_config_and_tripwire_leases(
     when fcntl is unavailable. Each ``is True`` assertion fails if its site
     reverts to the old _HAS_FCNTL no-op guard (which yielded None, not True).
     """
+    # Supply a byte-lock stand-in on POSIX before hiding its native backend.
+    if os.name == 'posix':
+        import fcntl
+        from types import SimpleNamespace
+
+        def windows_lock(fd, mode, size):
+            assert (mode, size) == (2, 1)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise PermissionError(13, 'byte locked')
+
     # Simulate Windows: fcntl unavailable, SIGALRM absent.
     monkeypatch.setitem(sys.modules, "fcntl", None)
     monkeypatch.delattr(signal, "SIGALRM", raising=False)
@@ -560,10 +572,16 @@ def test_windows_simulation_uses_portable_config_and_tripwire_leases(
             pass
         assert acquired is True
 
-        # 6. _keepwarm_lock (migrated from fcntl)
-        with measure._keepwarm_lock() as acquired:
-            pass
-        assert acquired is True
+        # 6. Keep-warm uses a kernel-held lock on both platforms.
+        with monkeypatch.context() as backend:
+            if os.name == 'posix':
+                from _measure import keepwarm_rearm
+                backend.setitem(sys.modules, 'msvcrt', SimpleNamespace(LK_NBLCK=2, locking=windows_lock))
+                backend.setattr(keepwarm_rearm, 'os', SimpleNamespace(**{**vars(os), 'name': 'nt'}))
+            with measure._keepwarm_lock() as acquired:
+                assert acquired is True
+                with measure._keepwarm_lock() as contender:
+                    assert contender is False
 
         # 7. _keepwarm_tripwire_lock (migrated from fcntl)
         with measure._keepwarm_tripwire_lock() as acquired:

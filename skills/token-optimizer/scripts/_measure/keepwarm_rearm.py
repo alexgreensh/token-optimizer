@@ -1,32 +1,75 @@
 """Publish and watch successive pauses in the same terminal session."""
 from contextlib import contextmanager
+import errno
 import os
+import stat
 import time
+
+
+def _acquire_writer(fd, timeout):
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        return None
+    until = time.monotonic() + timeout
+    while True:
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as exc:
+            if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK) and not (
+                    os.name == 'nt' and exc.errno == errno.EACCES):
+                raise
+        remaining = until - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.01, remaining))
+
+
+@contextmanager
+def writer_lock(facade, timeout):
+    """True while locked, False on contention, None on a storage error."""
+    path = facade.SNAPSHOT_DIR / facade._KEEPWARM_LOCK_NAME
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), flags, 0o600)
+    except OSError:
+        yield None
+        return
+    try:
+        try:
+            held = _acquire_writer(fd, timeout)
+        except (OSError, ImportError):
+            held = None
+        yield held
+    finally:
+        # Keep the inode in place. Closing the descriptor releases the OS lock.
+        os.close(fd)
 
 
 @contextmanager
 def arm_lock(facade, transcript, turn):
     """A detached Stop can retry a busy writer while its own pause is current."""
-    with facade._keepwarm_lock() as held:
-        if held or turn is None or facade.current_deadline() is not None:
-            yield held
-            return
-
-    from hook_runtime import LeaseLock
     from .keepwarm_safety import terminal_turn
 
-    path = facade.SNAPSHOT_DIR / (facade._KEEPWARM_LOCK_NAME + '.lease')
-    retry = LeaseLock(path, cohort_throttle=False, reclaim_released=True)
-    # Give the current generation time to release or expire. Each acquisition
-    # keeps its normal short timeout, so a resumed turn can abandon the wait.
-    until = time.monotonic() + retry.lease_seconds + retry.reclaim_grace
-    while terminal_turn(transcript) == turn:
-        with retry as held:
-            if held:
-                yield True
+    until = time.monotonic() + 30
+    delay = 0.05
+    while True:
+        with facade._keepwarm_lock() as held:
+            if held is not False or turn is None or facade.current_deadline() is not None:
+                yield held
                 return
-        if time.monotonic() >= until or not path.is_file():
+        remaining = until - time.monotonic()
+        if remaining <= 0:
             break
+        time.sleep(min(delay, remaining))
+        if terminal_turn(transcript) != turn:
+            break
+        delay = min(1, delay * 2)
     yield False
 
 

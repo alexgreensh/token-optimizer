@@ -391,19 +391,12 @@ def _keepwarm_sidecar_path():
 
 
 def _keepwarm_lock():
-    """Bounded portable lease serializing keep-warm sidecar read-modify-writes.
-
-    Two Stop hooks from different sessions can append concurrently, and the tick
-    loop rewrites the whole file during compaction. Distinct mutations must
-    be able to acquire a released lease immediately.
-    """
+    """Serialize sidecar and ledger mutations until the writer releases its fd."""
+    from . import keepwarm_rearm
     _measure_facade = _compat.facade()
-    lock_path = _measure_facade.SNAPSHOT_DIR / f"{_measure_facade._KEEPWARM_LOCK_NAME}.lease"
-    with _measure_facade.lease_lock(
-        lock_path,
-        deadline=_measure_facade.current_deadline(),
-        acquire_timeout=0.075, cohort_throttle=False, reclaim_released=True,
-    ) as acquired:
+    deadline = _measure_facade.current_deadline()
+    timeout = min(0.075, deadline.remaining()) if deadline is not None else 0.075
+    with keepwarm_rearm.writer_lock(_measure_facade, timeout) as acquired:
         yield acquired
 
 
@@ -680,7 +673,7 @@ def _valid_keepwarm_record(rec):
     _measure_facade = _compat.facade()
     if not isinstance(rec, dict):
         return False
-    if not rec.get("session_id") or not rec.get("transcript_path"):
+    if not isinstance(rec.get("session_id"), str) or not rec["session_id"] or not rec.get("transcript_path"):
         return False
     try:
         float(rec.get("ts"))

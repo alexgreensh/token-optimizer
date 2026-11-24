@@ -254,6 +254,22 @@ def ended_since(directory, session_id, armed_at):
     return session_ended(directory, session_id, armed_at) is not False
 
 
+def usage_lines(facade, path):
+    """Read farther only if the byte suffix cannot answer the usage lookup."""
+    try:
+        with open(path, 'rb') as stream:
+            start = max(0, stream.seek(0, os.SEEK_END) - 65536)
+            stream.seek(start)
+            lines = stream.read(65536).splitlines()[bool(start):]
+    except (OSError, ValueError):
+        return
+    limit = facade._KEEPWARM_TAIL_LINES
+    for line in reversed(lines[-limit:]):
+        yield line.decode('utf-8', errors='replace')
+    if start and len(lines) < limit:
+        yield from reversed(facade._keepwarm_read_tail(path))
+
+
 def terminal_turn(path):
     """Return the last conversation row's identity from a bounded suffix."""
     try:
@@ -749,6 +765,7 @@ def flush_hook_args(facade, args):
 def run_flush_worker(facade, args):
     """Arm before the refresh throttle and watch after releasing the flush lock."""
     record = None
+    retry = []
     try:
         def value(flag):
             return next(v for k, v in reversed(list(zip(args, args[1:]))) if k == flag)
@@ -760,11 +777,16 @@ def run_flush_worker(facade, args):
             if parent_pid > 1 and parent_start:
                 record = facade.write_keepwarm_arm_record(
                     value('--session-id'), value('--transcript-path'),
-                    now=float(value('--keepwarm-stop-at')), parent_pid=parent_pid, parent_start=parent_start,
+                    now=float(value('--keepwarm-stop-at')), parent_pid=parent_pid, parent_start=parent_start, retry=retry,
                 )
     except Exception:
         pass
     facade._run_session_end_flush_worker(args)
+    if retry:
+        try:
+            record = keepwarm_rearm.retry_due_stop(facade, *retry[0])
+        except (OSError, ValueError):
+            pass  # The scheduler still owns the staged copy.
     if (record and not facade._daemon_snapshot_sandboxed() and record['ttl_kind'] == '1h'
             and headless_disabled(facade) in (None, 'headless-busy') and facade._is_priced_model(record['model'])):
         try:

@@ -1,5 +1,10 @@
 # Changelog
 
+## [5.13.79] - 2026-11-24
+
+- Paused sessions can refresh close to cache expiry, even during an upgrade or while another session is saving.
+- Small sessions finish background work sooner when their transcript is long.
+
 ## [5.13.78] - 2026-11-24
 
 - **Keep-warm holds through upgrades.** Paused sessions stay warm while Token Optimizer updates, even with older sessions still open.

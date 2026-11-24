@@ -121,11 +121,11 @@ def _commit_arm(facade, record):
 
 
 def _publish_stop(facade, record, path, now):
-    from .keepwarm_auto import CACHE_LIFETIME
     from .keepwarm_safety import session_ended, terminal_turn
 
     result = None
-    if now < record['last_turn_ts'] + CACHE_LIFETIME:
+    # Spending checks cache expiry against proved pings. Only expire the pause itself here.
+    if now - record['ts'] <= facade._KEEPWARM_MAX_AGE_SECONDS:
         turn = terminal_turn(facade.Path(record['transcript_path']))
         ended = session_ended(facade.SNAPSHOT_DIR, record['session_id'], record['ts'])
         if ended is None or (not ended and turn is None):
@@ -139,7 +139,7 @@ def _publish_stop(facade, record, path, now):
     return result
 
 
-def publish_arm(facade, record):
+def publish_arm(facade, record, retry=None):
     facade.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     pending = None
     if 'terminal_turn' in record:
@@ -152,26 +152,59 @@ def publish_arm(facade, record):
             if pending is not None:
                 return _publish_stop(facade, record, pending, facade.time.time())
             return _commit_arm(facade, record)
+        if held is False and pending is not None and retry is not None:
+            retry.append((record, pending))
+
+
+def retry_due_stop(facade, record, path):
+    from .keepwarm_auto import BUCKETS
+
+    if facade.time.time() - record['last_turn_ts'] >= BUCKETS[0]:
+        # Fresh pauses can wait for the scheduler. A due one may have less
+        # than a minute left, so let this worker claim it as the writer exits.
+        with state_lock(facade.SNAPSHOT_DIR, 60) as held:
+            if held:
+                return _publish_stop(facade, record, path, facade.time.time())
+
+
+def _import_legacy(facade, now):
+    from codex_io import atomic_write_json
+    from .mod_action_booking import _append
+
+    directory = facade.SNAPSHOT_DIR
+    marker = directory / '.kw2-imported'
+    try:
+        previous = {} if marker.is_symlink() else json.loads(marker.read_bytes())
+    except (FileNotFoundError, ValueError):
+        previous = {}  # 5.13.78 left an empty marker.
+    stamps = {}
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            legacy = entry.name == 'keepwarm_state.jsonl' or entry.name.startswith('keepwarm-pending-stop-')
+            if legacy and entry.is_file(follow_symlinks=False):
+                st = entry.stat(follow_symlinks=False)
+                stamps[entry.name] = [st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns]
+    if stamps == previous:
+        return
+    imported = {(r['session_id'], r['ts']) for r in facade.load_keepwarm_records(strict=True)}
+    for name, stamp in stamps.items():
+        if not isinstance(previous, dict) or stamp != previous.get(name):
+            rows = {(r['session_id'], r['ts']): r for r in facade.load_keepwarm_records(directory / name, strict=True)}
+            for key, row in rows.items():
+                if key not in imported and now - float(row['ts']) <= facade._KEEPWARM_MAX_AGE_SECONDS:
+                    _append(facade._keepwarm_sidecar_path(), row)
+                    imported.add(key)
+    atomic_write_json(marker, stamps, replace_symlink=True)
 
 
 def recover_pending(facade, now):
     with facade._keepwarm_lock() as held:
         if not held:
             return
-        marker = facade.SNAPSHOT_DIR / '.kw2-imported'
-        if not marker.exists():
-            legacy = facade.SNAPSHOT_DIR / 'keepwarm_state.jsonl'
-            from .mod_action_booking import _append
-            try:
-                imported = {(r['session_id'], r['ts']) for r in facade.load_keepwarm_records(strict=True)}
-                paths = [legacy, *(p for p in facade.SNAPSHOT_DIR.glob('keepwarm-pending-stop-*') if not p.is_symlink())]
-                rows = {(r['session_id'], r['ts']): r for p in paths for r in facade.load_keepwarm_records(p, strict=True)}
-                for key, row in rows.items():
-                    if key not in imported and now - float(row['ts']) <= facade._KEEPWARM_MAX_AGE_SECONDS:
-                        _append(facade._keepwarm_sidecar_path(), row)
-                marker.touch(mode=0o600)
-            except OSError:
-                pass  # Retry migration independently of current Stops.
+        try:
+            _import_legacy(facade, now)
+        except OSError:
+            pass  # Retry migration independently of current Stops.
         for path in facade.SNAPSHOT_DIR.glob('kw2-stop-*'):
             try:
                 if not path.is_symlink():

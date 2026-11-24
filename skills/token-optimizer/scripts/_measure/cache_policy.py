@@ -466,30 +466,17 @@ def _keepwarm_read_tail(filepath, max_lines=None):
 
 
 def _keepwarm_last_usage(filepath):
-    """Scan a transcript tail for the most recent assistant turn carrying usage.
-
-    Returns (usage_dict, model, ts_str) for the last record whose
-    message.usage is non-empty, or (None, None, None) if none found / unreadable.
-    Read-only. Used by the fast arm-writer to derive prefix_proxy + ttl_kind
-    without re-parsing the whole session.
-    """
+    """Find the last main-session assistant usage within the existing line limit."""
     _measure_facade = _compat.facade()
-    lines = _measure_facade._keepwarm_read_tail(filepath)
-    for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
+    from . import keepwarm_safety
+    for line in keepwarm_safety.usage_lines(_measure_facade, filepath):
         try:
             record = _measure_facade.json.loads(line)
-        except (_measure_facade.json.JSONDecodeError, ValueError):
+        except ValueError:
             continue
         if not isinstance(record, dict):
             continue
-        # Parser parity (integration M2): the realized-booking path
-        # (parse_session_turns) only reads type=="assistant" turns, so the arm
-        # writer must use the SAME definition of a usage turn. Arming off a
-        # non-assistant usage record would spend pings on a session whose resume
-        # turn the booker can never read -- structurally-impossible payback.
+        # Booking also requires main-session assistant usage.
         if record.get("type") != "assistant" or record.get("isSidechain") or record.get("agentId") or record.get("teamName"):
             continue
         msg = record.get("message", {})
@@ -497,9 +484,7 @@ def _keepwarm_last_usage(filepath):
             continue
         usage = msg.get("usage", {})
         if isinstance(usage, dict) and usage:
-            model = msg.get("model") or record.get("model")
-            ts = record.get("timestamp") or record.get("ts")
-            return usage, model, ts
+            return usage, msg.get("model") or record.get("model"), record.get("timestamp") or record.get("ts")
     return None, None, None
 
 
@@ -532,7 +517,7 @@ def _keepwarm_iso_to_epoch(ts):
         return None
 
 
-def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_pid=None, parent_start=None):
+def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_pid=None, parent_start=None, retry=None):
     """Record a paused terminal snapshot from the flush worker."""
     _measure_facade = _compat.facade()
     try:
@@ -600,7 +585,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
         }
         if turn is not None:
             record["terminal_turn"] = turn
-        return keepwarm_rearm.publish_arm(_measure_facade, record)
+        return keepwarm_rearm.publish_arm(_measure_facade, record, retry)
     except Exception:
         # Absolute backstop: nothing in the arm path may propagate to the hook.
         return None

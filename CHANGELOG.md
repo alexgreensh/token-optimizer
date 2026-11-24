@@ -1,5 +1,10 @@
 # Changelog
 
+## [5.13.77] - 2026-11-24
+
+- **Keep-warm covers every pause.** A big session stays cached after each reply, not only the first time it goes idle.
+- **Steadier under load.** Keep-warm arms reliably even when your Mac is busy or several hooks finish at once.
+
 ## [5.13.76] - 2026-11-23
 
 - **See what to do next.** `/token-optimizer:next` shows what you saved and your top actions, ranked by real monthly value.

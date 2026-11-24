@@ -394,16 +394,15 @@ def _keepwarm_lock():
     """Bounded portable lease serializing keep-warm sidecar read-modify-writes.
 
     Two Stop hooks from different sessions can append concurrently, and the tick
-    loop rewrites the whole file during compaction; without this an interleaved
-    append + rewrite could lose a record or leave a torn line. Contenders skip
-    the mutation after 75ms rather than blocking a hook.
+    loop rewrites the whole file during compaction. Distinct mutations must
+    be able to acquire a released lease immediately.
     """
     _measure_facade = _compat.facade()
     lock_path = _measure_facade.SNAPSHOT_DIR / f"{_measure_facade._KEEPWARM_LOCK_NAME}.lease"
     with _measure_facade.lease_lock(
         lock_path,
         deadline=_measure_facade.current_deadline(),
-        acquire_timeout=0.075,
+        acquire_timeout=0.075, cohort_throttle=False, reclaim_released=True,
     ) as acquired:
         yield acquired
 
@@ -526,7 +525,7 @@ def _keepwarm_last_usage(filepath):
         # writer must use the SAME definition of a usage turn. Arming off a
         # non-assistant usage record would spend pings on a session whose resume
         # turn the booker can never read -- structurally-impossible payback.
-        if record.get("type") != "assistant" or record.get("isSidechain") or record.get("agentId"):
+        if record.get("type") != "assistant" or record.get("isSidechain") or record.get("agentId") or record.get("teamName"):
             continue
         msg = record.get("message", {})
         if not isinstance(msg, dict) or msg.get("model") == "<synthetic>":
@@ -580,7 +579,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
             return None
         if _measure_facade.detect_runtime() != "claude":
             return None
-        from . import keepwarm_auto, keepwarm_safety
+        from . import keepwarm_auto, keepwarm_rearm, keepwarm_safety
         if keepwarm_safety.headless_disabled(_measure_facade) not in (None, "headless-busy"):
             return None
         tp = _measure_facade.Path(transcript_path)
@@ -635,7 +634,7 @@ def write_keepwarm_arm_record(session_id, transcript_path, now=None, *, parent_p
             record["terminal_turn"] = turn
         # Dedup and append under one lock so duplicate Stop hooks share one ping cap.
         try:
-            with _measure_facade._keepwarm_lock() as acquired:
+            with keepwarm_rearm.arm_lock(_measure_facade, tp, turn) as acquired:
                 if not acquired or (turn is not None and keepwarm_safety.terminal_turn(tp) != turn):
                     return None
                 for existing in reversed(_measure_facade.load_keepwarm_records()):

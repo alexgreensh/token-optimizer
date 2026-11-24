@@ -27624,6 +27624,7 @@
     "autocompact_advice",
     "cold_guard",
     "keepwarm_auto",
+    "keepwarm_rearm",
     "counted_headline",
     "counted_closes"
   ],

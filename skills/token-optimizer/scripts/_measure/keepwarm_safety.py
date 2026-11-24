@@ -11,7 +11,8 @@ import subprocess
 import sys
 import time
 
-from process_identity import process_start
+from process_identity import process_parent, process_start
+from . import keepwarm_rearm
 
 
 def process_info(pid):
@@ -583,8 +584,7 @@ def scheduler_tick(facade, now, dry_run, env, runner):
             booked = facade.keepwarm_detect_realized(now=now)
             facade.compact_keepwarm_sidecar(now=now)
         if allowed:
-            latest = {record['session_id']: record for record in facade.load_keepwarm_records()
-                      if record.get('owner')}
+            latest = keepwarm_rearm.latest_terminal_arms(facade)
             for sid, record in latest.items():
                 try:
                     at = now if dry_run or runner is not None else facade.time.time()
@@ -651,6 +651,26 @@ def desktop_headless_main(facade, args):
 HOOK_PARENT_PID_ENV = 'TOKEN_OPTIMIZER_HOOK_PARENT_PID'
 
 
+def _stop_parent(facade, pid):
+    # The host can run the hook under a shell that exits before the detached
+    # worker imports measure. Pin the nearest Claude ancestor while it exists.
+    original = pid, process_start(pid)
+    chain = {}
+    start = original[1]
+    while start and pid > 1 and len(chain) < 16:
+        chain[pid] = start
+        executable = facade._posix_exe_path(pid)
+        if not executable:
+            break
+        if is_claude_command(executable):
+            if all(process_start(p) == stamp for p, stamp in chain.items()):
+                return pid, start
+            break
+        pid = process_parent(pid)
+        start = process_start(pid) if pid and pid > 1 and pid not in chain else None
+    return original
+
+
 def stop_flush_args(facade, args, hook_input):
     """Forward the hook payload and opt the existing worker into eligible arms."""
     args = list(args)
@@ -670,14 +690,18 @@ def stop_flush_args(facade, args, hook_input):
             return args
         parent_pid = int(os.environ.get(HOOK_PARENT_PID_ENV, '0'))
         path = Path(transcript)
-        if parent_pid <= 1 or 'subagents' in path.parts or not stat.S_ISREG(path.stat().st_mode):
+        snapshot = path.stat()
+        if parent_pid <= 1 or 'subagents' in path.parts or not stat.S_ISREG(snapshot.st_mode):
             return args
-        from .cold_guard import _bounded_last_usage
+        from .cold_guard import _bounded_last_usage, _TAIL_BYTES
         from .keepwarm_auto import MIN_CONTEXT
 
         usage, _, _ = _bounded_last_usage(path)
-        if usage and facade._keepwarm_prefix_proxy(usage) >= MIN_CONTEXT:
-            parent_start = process_start(parent_pid)
+        # A large tool result can hide the usage row from this bounded read.
+        # The existing worker checks the full turn before writing an arm.
+        incomplete = usage is None and snapshot.st_size > _TAIL_BYTES
+        if incomplete or (usage and facade._keepwarm_prefix_proxy(usage) >= MIN_CONTEXT):
+            parent_pid, parent_start = _stop_parent(facade, parent_pid)
             if parent_start:
                 args += ['--keepwarm-parent-pid', str(parent_pid), '--keepwarm-parent-start', parent_start,
                          '--keepwarm-stop-at', str(now)]
@@ -718,7 +742,7 @@ def run_flush_worker(facade, args):
         pass
     facade._run_session_end_flush_worker(args)
     if (record and not facade._daemon_snapshot_sandboxed() and record['ttl_kind'] == '1h'
-            and not headless_disabled(facade) and facade._is_priced_model(record['model'])):
+            and headless_disabled(facade) in (None, 'headless-busy') and facade._is_priced_model(record['model'])):
         try:
             watch_armed_terminal(facade, record['session_id'])
         except OSError:
@@ -740,45 +764,32 @@ def watch_armed_terminal(facade, sid):
     watch_terminal(facade, sid, fd)
 
 
-def watch_terminal(facade, sid, fd):
-    """Use current arm and meter evidence at the deadline, then yield at the caps."""
+def _watch_delay(facade, record, fd):
+    """Seconds until the next check, or None when this pause is finished."""
     from . import keepwarm_auto as policy
-    if not facade._keepwarm_valid_arg(sid):
-        return 1
-    try:
-        os.fstat(fd)
-        while True:
-            now = facade.time.time()
-            disabled = headless_disabled(facade)
-            if disabled == 'headless-busy':
-                facade.time.sleep(5)
-                continue
-            if disabled:
-                return 0
-            records = [r for r in facade.load_keepwarm_records() if r.get('session_id') == sid and r.get('owner')]
-            if not records:
-                return 0
-            record = records[-1]
-            if not owner_alive(record['owner']) or ended_since(facade.SNAPSHOT_DIR, sid, record['ts']):
-                return 0
-            if now - record['last_turn_ts'] > policy.CACHE_LIFETIME * policy.MAX_PER_PAUSE:
-                return 0
-            if now - os.fstat(fd).st_mtime > policy.DAY:
-                os.utime(fd)
-            state = facade.classify_keepwarm_record(record, now=now)
-            if state != 'still_paused':
-                # A new turn is writing its transcript and will arm on Stop.
-                facade.time.sleep(30)
-                continue
-            rows = facade._keepwarm_load_ledger_rows()
-            decision = _headless_decision(facade, record, now, None, _headless_meters(facade, now), rows)
-            if decision['reason'] == 'not-due':
-                facade.time.sleep(min(60, max(1, decision['due_in_s'])))
-                continue
-            if decision['action'] != 'ping':
-                return 0
-            result = fire_headless(facade, record, now=now)
-            if not result.get('proof'):
-                return 0
-    finally:
-        os.close(fd)
+
+    now = facade.time.time()
+    disabled = headless_disabled(facade)
+    if disabled == 'headless-busy':
+        return 5
+    if disabled or not record:
+        return None
+    if not owner_alive(record['owner']) or ended_since(facade.SNAPSHOT_DIR, record['session_id'], record['ts']):
+        return None
+    if now - record['last_turn_ts'] > policy.CACHE_LIFETIME * policy.MAX_PER_PAUSE:
+        return None
+    if now - os.fstat(fd).st_mtime > policy.DAY:
+        os.utime(fd)
+    if facade.classify_keepwarm_record(record, now=now) != 'still_paused':
+        return 30
+    decision = _headless_decision(facade, record, now, None, _headless_meters(facade, now),
+                                  facade._keepwarm_load_ledger_rows())
+    if decision['reason'] == 'not-due':
+        return min(60, max(1, decision['due_in_s']))
+    if decision['action'] == 'ping' and fire_headless(facade, record, now=now).get('proof'):
+        return 0
+    return None
+
+
+def watch_terminal(facade, sid, fd):
+    return keepwarm_rearm.watch_terminal(facade, sid, fd, _watch_delay)

@@ -15,7 +15,9 @@ def process_start(pid):
             # The executable name can itself contain spaces and parentheses.
             return stat.rsplit(")", 1)[1].split()[19]
         if sys.platform == "darwin":
-            return _darwin_start(pid)
+            info = _darwin_info(pid)
+            if info is not None:
+                return f"{info.start_seconds}:{info.start_microseconds}"
         if sys.platform == "win32":
             return _windows_start(pid)
     except (OSError, ValueError, TypeError, IndexError):
@@ -23,12 +25,27 @@ def process_start(pid):
     return None
 
 
-def _darwin_start(pid):
+def process_parent(pid):
+    """Read the kernel's parent PID without starting ps in a Stop hook."""
+    try:
+        if sys.platform.startswith("linux"):
+            stat = Path(f"/proc/{int(pid)}/stat").read_text()
+            return int(stat.rsplit(")", 1)[1].split()[1])
+        if sys.platform == "darwin":
+            info = _darwin_info(int(pid))
+            return info.ppid if info is not None else None
+    except (OSError, ValueError, TypeError, IndexError):
+        pass
+    return None
+
+
+def _darwin_info(pid):
     import ctypes
 
     class ProcBSDInfo(ctypes.Structure):
         # sys/proc_info.h: the fixed-width fields preceding the start timeval.
-        _fields_ = [("prefix", ctypes.c_byte * 120),
+        _fields_ = [("prefix", ctypes.c_byte * 16), ("ppid", ctypes.c_uint32),
+                    ("remaining", ctypes.c_byte * 100),
                     ("start_seconds", ctypes.c_uint64), ("start_microseconds", ctypes.c_uint64)]
 
     proc_pidinfo = ctypes.CDLL("/usr/lib/libproc.dylib").proc_pidinfo
@@ -36,7 +53,7 @@ def _darwin_start(pid):
     info = ProcBSDInfo()
     size = ctypes.sizeof(info)
     if proc_pidinfo(pid, 3, 0, ctypes.byref(info), size) == size:  # PROC_PIDTBSDINFO
-        return f"{info.start_seconds}:{info.start_microseconds}"
+        return info
     return None
 
 

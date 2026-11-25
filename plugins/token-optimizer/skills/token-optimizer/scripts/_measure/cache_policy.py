@@ -174,61 +174,38 @@ def _get_cache_ttl_waste(days=None, collect_sessions=None):
     rebuild_ttl = {}      # provider key -> profile TTL, used when no split is logged
     candidate_floor = 300  # scan at the shortest TTL; the observed boundary filters later
 
+    from . import ttl_file_memo
     for filepath in files:
-        try:
-            turns = parse_fn(filepath)
-        except Exception:
-            continue
-        if not turns:
+        facts = ttl_file_memo.summary(_measure_facade, filepath, parse_fn, runtime, tier_data, candidate_floor)
+        if facts is None:
             continue
         scanned_sessions += 1
-
-        # Resolve the session's dominant model -> cache profile.
-        model = _measure_facade._dominant_turn_model(turns)
-        prof_key, profile = _measure_facade._resolve_cache_profile(model, runtime=runtime)
-        kind = profile["cache_kind"]
+        prof_key, profile, kind = facts["prof_key"], facts["profile"], facts["kind"]
         prov = _prov(prof_key, profile)
         prov["sessions"] += 1
-
-        # Track overall hit-rate across all scanned sessions (every cache_kind).
-        for turn in turns:
-            cr = int(turn.get("cache_read", 0) or 0)
-            cc = int(turn.get("cache_creation", 0) or 0)
-            total_cache_read += cr
-            total_full_input += cr + cc + int(turn.get("input_tokens", 0) or 0)
-
+        # Overall hit-rate across all scanned sessions (every cache_kind).
+        total_cache_read += facts["cache_read"]
+        total_full_input += facts["full_input"]
         if kind == "none":
             no_cache_sessions += 1
             continue
-
-        detail_out = {} if collect_sessions else None
         if kind == "explicit_ttl":
             split = ttl_split.setdefault(prof_key, [0, 0])
-            for turn in turns:
-                if cutoff_ts is not None:
-                    turn_ts = _measure_facade._keepwarm_iso_to_epoch(turn.get("timestamp"))
-                    if turn_ts is None or turn_ts < cutoff_ts:
-                        continue
-                split[0] += int(turn.get("cache_creation_1h", 0) or 0)
-                split[1] += int(turn.get("cache_creation_5m", 0) or 0)
-            # W5: pass the already-resolved dominant model. Candidates are kept
-            # at the shortest TTL; the user's observed TTL filters them below.
-            found = []
-            _measure_facade._detect_explicit_ttl(
-                turns, tier_data, profile, dominant_model=model,
-                boundary=min(candidate_floor, profile.get("effective_ttl_seconds") or candidate_floor),
-                cutoff_ts=cutoff_ts, events_out=found)
+            h1, m5 = ttl_file_memo.split_in_window(facts, cutoff_ts)
+            split[0] += h1
+            split[1] += m5
+            # Candidates are kept at the shortest TTL; the user's observed TTL
+            # filters them below.
+            found = ttl_file_memo.events_in_window(facts, cutoff_ts)
             rebuild_ttl.setdefault(prof_key, profile.get("effective_ttl_seconds") or 3600)
             for event in found:
                 event["session"] = str(filepath)
                 event["recoverable_kind"] = profile.get("recoverable_kind", "avoidable_behavioral")
             rebuild_events.setdefault(prof_key, []).extend(found)
             continue
-        else:  # automatic_discount or explicit_storage
-            # W2: pass the dominant model so turns missing their own `model` fall
-            # back to it for rate lookup instead of being dropped.
-            sw_tokens, sw_cost, recoverable, had = _measure_facade._detect_automatic_collapse(
-                turns, profile, dominant_model=model, detail_out=detail_out)
+        # automatic_discount or explicit_storage
+        sw_tokens, sw_cost, recoverable, had = facts["collapse"]
+        detail_out = {"max_gap": facts["max_gap"]}
 
         if had:
             prov["affected_sessions"] += 1

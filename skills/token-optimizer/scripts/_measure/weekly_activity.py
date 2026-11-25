@@ -24,11 +24,14 @@ def price(facade, conn, start, end, tier):
     paths = conn.execute(
         "SELECT jsonl_path, date, last_activity_day, cost_usd FROM session_log "
         "WHERE input_tokens IS NOT NULL AND COALESCE(is_sidechain,0)=0").fetchall()
-    known = {str(row[0]) for row in paths}
+    # Compare resolved paths: a file discovered under another spelling of a
+    # logged path (a symlinked config dir) is the same transcript.
+    known = {os.path.realpath(str(row[0])) for row in paths}
     for path, _mtime, _ in facade._find_all_jsonl_files(None):
-        if str(path) not in known:
+        real = os.path.realpath(str(path))
+        if real not in known:
             paths.append((str(path), '', None, None))
-            known.add(str(path))
+            known.add(real)
     rows, missing = [], 0
     costs, missing_cost, cost_complete = 0.0, 0.0, True
     request_ledger = {}

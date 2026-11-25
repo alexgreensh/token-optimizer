@@ -1,6 +1,6 @@
 """Definition-only implementations; mutable state belongs to measure."""
 from __future__ import annotations
-from . import _compat
+from . import _compat, project_md_walk
 
 
 def _read_codex_config() -> dict:
@@ -709,12 +709,11 @@ def measure_components():
             "lines": _measure_facade.count_lines(path),
         }
 
-    # Find project CLAUDE.md files in cwd and parents
-    # Claude Code loads from both <project>/CLAUDE.md and <project>/.claude/CLAUDE.md
-    cwd = _measure_facade.Path.cwd()
+    # Project CLAUDE.md files in cwd and parents: <project>/CLAUDE.md and <project>/.claude/CLAUDE.md
+    cwd, homes = _measure_facade.Path.cwd(), project_md_walk.homes(_measure_facade)
     for parent in [cwd] + list(cwd.parents)[:3]:
-        if parent == _measure_facade.HOME:
-            continue  # Already checked ~/CLAUDE.md
+        if project_md_walk.is_home(_measure_facade, parent, homes):
+            continue  # ~/CLAUDE.md is checked above; the real home is never walked
         candidates = [
             (f"claude_md_project_{parent.name}", parent / "CLAUDE.md"),
             (f"claude_md_project_{parent.name}_dotclaude", parent / ".claude" / "CLAUDE.md"),

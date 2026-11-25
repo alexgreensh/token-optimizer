@@ -1,0 +1,18 @@
+const fs = require('node:fs')
+const vm = require('node:vm')
+const path = require('node:path')
+const assert = require('node:assert/strict')
+const source = fs.readFileSync(path.join(__dirname, '../desktop-plugins/token-optimizer-bar/plugin.js'), 'utf8')
+const implementation = source.slice(source.indexOf('function cacheClock('), source.indexOf('\nfunction Bar('))
+assert.ok(implementation.startsWith('function cacheClock('))
+const sandbox = vm.createContext({})
+vm.runInContext(implementation, sandbox)
+const clock = sandbox.cacheClock
+assert.equal(clock(null, 0).value, '—')
+const event = { confidence: 'declared', guaranteed_until: 100, estimated_until: 200 }
+assert.equal(clock(event, 90_000).value, '10s')
+assert.equal(clock(event, 150_000).value, '≤50s')
+assert.equal(clock(event, 201_000).value, 'Fredda')
+assert.equal(clock({ ...event, confidence: 'assumed' }, 201_000).text, 'cache · stima')
+assert.equal(clock({ confidence: 'unknown' }, 0).value, '—')
+console.log('cache clock: 5 assertions passed')

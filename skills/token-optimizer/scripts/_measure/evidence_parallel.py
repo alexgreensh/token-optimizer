@@ -30,6 +30,28 @@ def watch_parent():
     threading.Thread(target=stop_with_parent, daemon=True).start()
 
 
+def _spawn_context():
+    """Start Windows workers with pythonw.exe so they open no console window.
+
+    The dashboard regeneration runs without a console, so every python.exe
+    worker would get a new visible one. pythonw.exe sits next to python.exe in
+    python.org, winget, install-manager and conda layouts. Store installs
+    (WindowsApps) are left alone, like python-launcher.sh does, and so are
+    venvs: the base pythonw.exe would start without the venv, and the venv's
+    own pythonw.exe is a redirector that multiprocessing cannot hand pipes to. When no usable
+    twin exists nothing changes, and a broken one only breaks the pool, which
+    batches() already falls back from to serial scanning.
+    """
+    ctx = multiprocessing.get_context('spawn')
+    if os.name == 'nt' and sys.prefix == sys.base_prefix:
+        from multiprocessing import spawn
+        exe = Path(spawn.get_executable() or sys.executable)
+        gui = exe.with_name('pythonw.exe')
+        if exe.name.lower() != 'pythonw.exe' and 'windowsapps' not in str(exe).lower() and gui.is_file():
+            ctx.set_executable(str(gui))
+    return ctx
+
+
 def _scan(path):
     from .session_effect import scan_transcript
     try:
@@ -58,7 +80,7 @@ def batches(items, deadline, max_bytes, worker=_scan):
     acquired = not multiprocessing.current_process().daemon and _POOL_GATE.acquire(blocking=False)
     try:
         if acquired:
-            pool = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context('spawn'), initializer=watch_parent)
+            pool = ProcessPoolExecutor(max_workers=workers, mp_context=_spawn_context(), initializer=watch_parent)
             while position < len(items) and (deadline is None or time.monotonic() <= deadline):
                 while next_submit < len(items) and len(futures) < 128:
                     indexes = []

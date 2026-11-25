@@ -73,3 +73,33 @@ def test_mixed_batch_preserves_large_and_small_results(tmp_path):
     items = [(str(path), path.stat()) for path in (small, large)]
     result = [value for batch in evidence_parallel.batches(items, None, 100) for _, value in batch]
     assert result == [session_effect.scan_transcript(str(path)) for path in (small, large)]
+
+
+def _spawn_executable_chosen(monkeypatch, tmp_path, os_name, exe_dir, twin=True, venv=False):
+    import multiprocessing
+    from multiprocessing import spawn
+    from _measure import evidence_parallel
+    exe_dir.mkdir(parents=True, exist_ok=True)
+    (exe_dir / 'python.exe').write_bytes(b'')
+    if twin:
+        (exe_dir / 'pythonw.exe').write_bytes(b'')
+    chosen = []
+    ctx = multiprocessing.get_context('spawn')
+    monkeypatch.setattr(ctx, 'set_executable', chosen.append)
+    monkeypatch.setattr(spawn, 'get_executable', lambda: str(exe_dir / 'python.exe'))
+    monkeypatch.setattr(evidence_parallel.os, 'name', os_name)
+    monkeypatch.setattr(evidence_parallel.sys, 'base_prefix', str(tmp_path / 'base') if venv else sys.prefix)
+    assert evidence_parallel._spawn_context() is ctx
+    return chosen
+
+
+def test_windows_workers_use_pythonw_so_no_console_opens(tmp_path, monkeypatch):
+    exe_dir = tmp_path / 'Python314'
+    assert _spawn_executable_chosen(monkeypatch, tmp_path, 'nt', exe_dir) == [str(exe_dir / 'pythonw.exe')]
+
+
+def test_worker_executable_unchanged_off_windows_and_where_pythonw_is_unsafe(tmp_path, monkeypatch):
+    assert _spawn_executable_chosen(monkeypatch, tmp_path, 'posix', tmp_path / 'posix') == []
+    assert _spawn_executable_chosen(monkeypatch, tmp_path, 'nt', tmp_path / 'notwin', twin=False) == []
+    assert _spawn_executable_chosen(monkeypatch, tmp_path, 'nt', tmp_path / 'WindowsApps' / 'store') == []
+    assert _spawn_executable_chosen(monkeypatch, tmp_path, 'nt', tmp_path / 'venv', venv=True) == []

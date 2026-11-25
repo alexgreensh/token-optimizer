@@ -1,5 +1,24 @@
 """Price a weekly activity window while reporting missing transcript coverage."""
 
+import os
+
+# Transcripts are append-only, so a file last modified before the window opened
+# holds no record stamped inside it. One day of slack covers clock adjustments.
+_SETTLED_SLACK_SECONDS = 86400
+
+
+def _settled_before(paths, start):
+    """True when every file was last written well before ``start``.
+
+    Such a transcript contributes nothing to the window, so it is not parsed.
+    Any stat failure answers False and the file is parsed as before.
+    """
+    cutoff = start.timestamp() - _SETTLED_SLACK_SECONDS
+    try:
+        return all(os.stat(p).st_mtime < cutoff for p in paths)
+    except (OSError, ValueError, OverflowError):
+        return False
+
 
 def price(facade, conn, start, end, tier):
     paths = conn.execute(
@@ -25,6 +44,8 @@ def price(facade, conn, start, end, tier):
                 missing_cost += max(0.0, float(recorded_cost))
             continue
         children = facade._find_subagent_jsonl_files(path)
+        if _settled_before([path, *children], start):
+            continue
         parsed = facade._parse_session_jsonl(path, window_start=start, window_end=end)
         if parsed and parsed.get('is_sidechain'):
             continue

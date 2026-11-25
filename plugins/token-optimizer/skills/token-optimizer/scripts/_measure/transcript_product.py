@@ -32,74 +32,129 @@ def _time(value):
         return None
 
 
+# Per-file events keyed by (path, mtime_ns, size). A dashboard build asks for
+# this check more than once; an unchanged transcript is read only the first
+# time, and a file that grew is read again on its own. Entries hold only the
+# small records the check needs (sizes, stamps, call ids), never transcript text.
+_EVENTS = {}
+_EVENTS_MAX = 20000
+_TAGS = ('"tool_use"', '"skill_listing"', '"deferred_tools_delta"', '"mcp_instructions_delta"')
+
+
+def _delta(kind, a):
+    """What one tools/instructions delta adds, as (error type, mismatch, adds)."""
+    names = a.get('addedNames') or []
+    values = a.get('addedLines' if kind == 'deferred_tools_delta' else 'addedBlocks') or []
+    try:
+        if kind == 'deferred_tools_delta':
+            adds = []
+            for value in values:
+                if isinstance(value, str):
+                    name = value.split(None, 1)[0] if value.strip() else ''
+                    if _server(name):
+                        adds.append((name, len(value)))
+            return None, False, adds
+        if len(names) == len(values):
+            return None, False, [(n, len(v)) for n, v in zip(names, values)
+                                 if isinstance(n, str) and isinstance(v, str)]
+        return None, True, []
+    except Exception as exc:  # replayed only when the delta is in the window
+        return type(exc), False, []
+
+
+def _read_events(source):
+    """One pass over a transcript: the records scan() weighs against `now`."""
+    ev = {'bad': False, 'error': False, 'listings': [], 'ops': [], 'calls': []}
+    try:
+        with source.open(encoding='utf-8', errors='replace') as stream:
+            for line in stream:
+                if not any(tag in line for tag in _TAGS):
+                    continue
+                try:
+                    record = json.loads(line)
+                except (ValueError, TypeError):
+                    ev['bad'] = True
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                a = record.get('attachment') or {}
+                if not isinstance(a, dict):
+                    continue
+                kind = a.get('type')
+                stamp = _time(record.get('timestamp'))
+                if kind == 'skill_listing' and a.get('isInitial') and isinstance(a.get('content'), str):
+                    ev['listings'].append((stamp, len(a['content']), a.get('skillCount')))
+                if kind in ('deferred_tools_delta', 'mcp_instructions_delta'):
+                    ev['ops'].append((stamp, kind, a.get('removedNames') or []) + _delta(kind, a))
+                if record.get('type') != 'assistant':
+                    continue
+                message = record.get('message') or {}
+                content = message.get('content') if isinstance(message, dict) else []
+                if not isinstance(content, list):
+                    continue
+                for item in content:
+                    if not isinstance(item, dict) or item.get('type') != 'tool_use':
+                        continue
+                    server = _server(item.get('name'))
+                    if server:
+                        ev['calls'].append((stamp, item.get('id'), _normalize(server)))
+    except OSError:
+        ev['error'] = True
+    return ev
+
+
+def _events(source):
+    try:
+        st = os.stat(source)
+        key = (str(source), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key is not None and key in _EVENTS:
+        return _EVENTS[key]
+    ev = _read_events(source)
+    if key is not None and not ev['error']:
+        if len(_EVENTS) >= _EVENTS_MAX:
+            _EVENTS.clear()
+        _EVENTS[key] = ev
+    return ev
+
+
 def scan(paths, budget=None, now=None, days=30):
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days)
+    week = now - timedelta(days=7)
     listing, samples, used, seen_calls = [], {}, set(), set()
     incomplete = False
     for path in paths:
         path = Path(path)
         tools, instructions = {}, {}
-        have_listing = False
         files = [path] + sorted((path.parent / path.stem / 'subagents').glob('*.jsonl'))
         for source in files:
-            try:
-                with source.open(encoding='utf-8', errors='replace') as stream:
-                    for line in stream:
-                        if not any(tag in line for tag in ('"tool_use"', '"skill_listing"', '"deferred_tools_delta"', '"mcp_instructions_delta"')):
-                            continue
-                        try:
-                            record = json.loads(line)
-                        except (ValueError, TypeError):
-                            incomplete = True
-                            continue
-                        if not isinstance(record, dict):
-                            continue
-                        a = record.get('attachment') or {}
-                        if not isinstance(a, dict):
-                            continue
-                        kind = a.get('type')
-                        stamp = _time(record.get('timestamp'))
-                        recent = stamp is not None and now - timedelta(days=7) <= stamp <= now
-                        if source == path and recent and not have_listing and kind == 'skill_listing' and a.get('isInitial') and isinstance(a.get('content'), str):
-                            listing.append((len(a['content']), a.get('skillCount')))
-                            have_listing = True
-                        if source == path and recent and kind in ('deferred_tools_delta', 'mcp_instructions_delta'):
-                            names = a.get('addedNames') or []
-                            values = a.get('addedLines' if kind == 'deferred_tools_delta' else 'addedBlocks') or []
-                            target = tools if kind == 'deferred_tools_delta' else instructions
-                            for name in a.get('removedNames') or []:
-                                target.pop(name, None)
-                            if kind == 'deferred_tools_delta':
-                                for value in values:
-                                    if isinstance(value, str):
-                                        name = value.split(None, 1)[0] if value.strip() else ''
-                                        if _server(name):
-                                            target[name] = len(value)
-                            elif len(names) == len(values):
-                                for name, value in zip(names, values):
-                                    if isinstance(name, str) and isinstance(value, str):
-                                        target[name] = len(value)
-                            else:
-                                incomplete = True
-                        if record.get('type') != 'assistant':
-                            continue
-                        message = record.get('message') or {}
-                        content = message.get('content') if isinstance(message, dict) else []
-                        if not isinstance(content, list):
-                            continue
-                        for item in content:
-                            if not isinstance(item, dict) or item.get('type') != 'tool_use':
-                                continue
-                            server = _server(item.get('name'))
-                            call_id = item.get('id')
-                            if server and (stamp is None or cutoff <= stamp <= now):
-                                if not call_id or call_id not in seen_calls:
-                                    used.add(_normalize(server))
-                                if call_id:
-                                    seen_calls.add(call_id)
-            except OSError:
-                incomplete = True
+            ev = _events(source)
+            incomplete = incomplete or ev['bad'] or ev['error']
+            if source == path:
+                for stamp, size, count in ev['listings']:
+                    if stamp is not None and week <= stamp <= now:
+                        listing.append((size, count))
+                        break
+                for stamp, kind, removed, error, mismatch, adds in ev['ops']:
+                    if stamp is None or not week <= stamp <= now:
+                        continue
+                    target = tools if kind == 'deferred_tools_delta' else instructions
+                    for name in removed:
+                        target.pop(name, None)
+                    if error is not None:
+                        raise error()
+                    if mismatch:
+                        incomplete = True
+                    for name, size in adds:
+                        target[name] = size
+            for stamp, call_id, server in ev['calls']:
+                if stamp is None or cutoff <= stamp <= now:
+                    if not call_id or call_id not in seen_calls:
+                        used.add(server)
+                    if call_id:
+                        seen_calls.add(call_id)
         session = {}
         for name, size in tools.items():
             server = _server(name)

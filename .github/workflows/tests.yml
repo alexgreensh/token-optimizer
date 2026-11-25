@@ -225,6 +225,7 @@ jobs:
           node --check hermes/desktop/desktop-plugins/token-optimizer-bar/plugin.js
           node hermes/desktop/tests/cache-clock.cjs
           node hermes/desktop/tests/mascot.cjs
+          node hermes/desktop/tests/chips.cjs
           node hermes/desktop/tests/actions.cjs
           node --experimental-vm-modules hermes/desktop/tests/renderer-integration.cjs
 

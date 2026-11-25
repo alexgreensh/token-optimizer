@@ -11,7 +11,7 @@ const assert = require('node:assert/strict')
   const sandbox = vm.createContext({ console, Number, Date, Math, Boolean, window: { matchMedia: () => ({ matches: true }), setInterval: () => 1, clearInterval: () => {} } })
   const module = new vm.SourceTextModule(code, { context: sandbox })
   const mocks = {
-    '@hermes/plugin-sdk': { COMPOSER_AREAS: { top: 'top' }, host, useValue: atom => atom.get(), useQuery: () => ({ data: {} }), gatewayActivationEpoch: () => 1 },
+    '@hermes/plugin-sdk': { COMPOSER_AREAS: { top: 'top' }, host, useValue: atom => atom.get(), useQuery: () => ({ data: {} }), gatewayActivationEpoch: () => 1, Popover: 'Popover', PopoverTrigger: 'PopoverTrigger', PopoverContent: 'PopoverContent' },
     react: { useState: initial => { const i = cursor++; if (!(i in state)) state[i] = typeof initial === 'function' ? initial() : initial; return [state[i], v => { state[i] = typeof v === 'function' ? v(state[i]) : v }] }, useEffect: () => {} },
     'react/jsx-runtime': { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) }
   }

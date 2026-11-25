@@ -2,7 +2,9 @@
 
 A desktop composer extension for the Hermes integration. It shows a context-quality score, context occupancy, Hermes's prompt-cache clock, cache-hit rate and optional subscription-window data; it includes a Hermes mascot that animates while the focused session is busy and a dashboard link. This is an **experimental** port, not the Claude Desktop plugin.
 
-The expanded view shows session age, Git branch, tool calls, and the runtime's compaction count when available. **Clean up** requires a second click to confirm and invokes Hermes's native session compression, which may use model quota and summarize away details. It refuses if the focused session, profile, gateway route or idle state changes before confirmation. **Start fresh**, checkpoint recovery and manual cache-warming are not implemented.
+Each metric is an accessible, compact chip that opens a popover with its explanation; the quality chip contains **Clean up**, and the `⋯` menu contains session details and the dashboard link. The single-row strip scrolls horizontally on narrow windows.
+
+The details menu shows session age, Git branch, tool calls, and the runtime's compaction count when available. **Clean up** requires a second click to confirm and invokes Hermes's native session compression, which may use model quota and summarize away details. It refuses if the focused session, profile, gateway route or idle state changes before confirmation. **Start fresh**, checkpoint recovery and manual cache-warming are not implemented.
 
 ## Installation (manual; not wired into `install.sh`)
 

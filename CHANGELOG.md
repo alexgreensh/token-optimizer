@@ -1,5 +1,11 @@
 # Changelog
 
+## [5.13.81] - 2026-11-25
+
+- **Antigravity shell commands work again.** Token Optimizer's hook no longer blocks `run_command` in Antigravity, on every platform and permission mode (#350).
+- **Antigravity doctor catches it.** `antigravity-doctor` now fails a hook reply Antigravity would treat as a block, instead of passing it.
+- **Faster dashboard builds.** Rebuilding the dashboard skips transcripts that can't change this week's numbers and reads each one only once per build. On a large history that cuts minutes off each rebuild, with identical results.
+
 ## [5.13.80] - 2026-11-24
 
 - **Dashboard stays light on big histories.** Rebuilding the dashboard no longer loads your whole transcript history into memory. On a 17 GB history it now peaks near 0.6 GB instead of running past 11 GB and filling swap.

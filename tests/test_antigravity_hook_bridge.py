@@ -163,11 +163,50 @@ def test_stop_skips_when_lease_held(ab, monkeypatch, tmp_path):
 # Consent gate + fail-open dispatcher
 # ---------------------------------------------------------------------------
 
-def test_main_no_consent_emits_empty_json(ab, monkeypatch, capsys, tmp_path):
+def test_main_no_consent_pre_tool_use_still_carries_a_decision(ab, monkeypatch, capsys, tmp_path):
+    # agy treats a PreToolUse reply without "decision" as deny (issue #350).
     _write_consent(tmp_path, False)
     monkeypatch.setattr(ab, "_read_payload", lambda: {})
     assert ab.main(["pre-tool-use"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"decision": "ask"}
+
+
+def test_main_no_consent_other_events_emit_empty_json(ab, monkeypatch, capsys, tmp_path):
+    _write_consent(tmp_path, False)
+    monkeypatch.setattr(ab, "_read_payload", lambda: {})
+    assert ab.main(["pre-invocation"]) == 0
     assert capsys.readouterr().out == "{}"
+
+
+@pytest.mark.parametrize("command", ["echo ok", "pwd && ls -la", "rm -rf build"])
+def test_main_unrewritten_command_is_never_denied(ab, monkeypatch, capsys, tmp_path, command):
+    _write_consent(tmp_path, True)
+    monkeypatch.setattr(
+        ab, "_read_payload",
+        lambda: {"toolCall": {"name": "run_command", "args": {"CommandLine": command}}},
+    )
+    assert ab.main(["pre-tool-use"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"decision": "ask"}
+
+
+def test_main_compression_off_still_carries_a_decision(ab, monkeypatch, capsys, tmp_path):
+    _write_consent(tmp_path, True)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_BASH_COMPRESS", "0")
+    monkeypatch.setattr(
+        ab, "_read_payload",
+        lambda: {"toolCall": {"name": "run_command", "args": {"CommandLine": "git status"}}},
+    )
+    assert ab.main(["pre-tool-use"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"decision": "ask"}
+
+
+def test_main_handler_noop_still_carries_a_decision(ab, monkeypatch, capsys, tmp_path):
+    # Covers the Windows early return and every other empty handler reply.
+    _write_consent(tmp_path, True)
+    monkeypatch.setattr(ab, "handle_pre_tool_use", lambda payload: {})
+    monkeypatch.setattr(ab, "_read_payload", lambda: {})
+    assert ab.main(["pre-tool-use"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"decision": "ask"}
 
 
 def test_main_consent_grants_rewrite(ab, monkeypatch, capsys, tmp_path):
@@ -178,12 +217,11 @@ def test_main_consent_grants_rewrite(ab, monkeypatch, capsys, tmp_path):
     )
     assert ab.main(["pre-tool-use"]) == 0
     out = json.loads(capsys.readouterr().out)
-    # POSIX-only rewrite; on Windows the bridge no-ops with an empty object
-    # (see test_pre_tool_use_rewrites_whitelisted_run_command).
-    if os.name == "nt":
-        assert out == {}
-        return
+    # The rewrite is POSIX-only, but the reply always carries a decision.
     assert out["decision"] == "ask"
+    if os.name == "nt":
+        return
+    assert "bash_compress.py" in out["overwrite"]["CommandLine"]
 
 
 def test_main_fails_open_on_internal_error(ab, monkeypatch, capsys, tmp_path):
@@ -195,6 +233,7 @@ def test_main_fails_open_on_internal_error(ab, monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(ab, "handle_pre_tool_use", boom)
     monkeypatch.setattr(ab, "_read_payload", lambda: {})
     assert ab.main(["pre-tool-use"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"decision": "ask"}
 
 
 # ---------------------------------------------------------------------------

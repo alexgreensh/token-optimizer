@@ -492,18 +492,27 @@ def _bridge_selftest_check() -> dict:
             _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
         )
     out = (proc.stdout or "").strip()
-    if out:
-        try:
-            json.loads(out)
-        except (json.JSONDecodeError, ValueError):
-            return _check(
-                "fail",
-                "bridge self-test",
-                f"stdout is not valid JSON; the host would read the hook as "
-                f"malformed (stdout: {out[:200]!r}).",
-                _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
-            )
-    return _check("ok", "bridge self-test", "exit 0, valid JSON output")
+    try:
+        reply = json.loads(out) if out else None
+    except (json.JSONDecodeError, ValueError):
+        return _check(
+            "fail",
+            "bridge self-test",
+            f"stdout is not valid JSON; the host would read the hook as "
+            f"malformed (stdout: {out[:200]!r}).",
+            _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
+        )
+    # agy denies a PreToolUse reply that has no "decision", so a bare {} or
+    # empty stdout blocks every shell command even though it is valid JSON.
+    if not (isinstance(reply, dict) and reply.get("decision")):
+        return _check(
+            "fail",
+            "bridge self-test",
+            f"PreToolUse reply has no decision; agy treats that as deny and "
+            f"blocks every run_command (stdout: {out[:200]!r}).",
+            _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
+        )
+    return _check("ok", "bridge self-test", "exit 0, PreToolUse reply carries a decision")
 
 
 def run_checks() -> list:

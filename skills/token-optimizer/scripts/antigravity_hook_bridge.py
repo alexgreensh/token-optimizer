@@ -98,6 +98,18 @@ def _read_payload() -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+# agy requires a PreToolUse reply to carry "decision" and treats a reply
+# without one as deny, which blocked every run_command. "ask" defers to the
+# user's own permission mode, so a no-op stays a no-op.
+_PRE_TOOL_PASS = {"decision": "ask"}
+
+
+def _pre_tool_reply(out) -> dict:
+    if isinstance(out, dict) and out.get("decision"):
+        return out
+    return dict(_PRE_TOOL_PASS)
+
+
 def _emit(obj: dict) -> None:
     """Write exactly one JSON object to stdout."""
     try:
@@ -485,21 +497,24 @@ def main(argv=None) -> int:
         event = sys.argv[1]
 
     payload = _read_payload() or {}
+    pre_tool = event == "pre-tool-use"
 
     try:
         from runtime_env import antigravity_home
     except Exception:
+        if pre_tool:
+            _emit(_pre_tool_reply({}))
         return 0
 
     try:
         if not _consent_ok(antigravity_home()):
-            _emit({})
+            _emit(_pre_tool_reply({}) if pre_tool else {})
             return 0
 
         if event == "pre-invocation":
             out = handle_pre_invocation(payload)
-        elif event == "pre-tool-use":
-            out = handle_pre_tool_use(payload)
+        elif pre_tool:
+            out = _pre_tool_reply(handle_pre_tool_use(payload))
         elif event == "stop":
             out = handle_stop(payload)
         else:
@@ -515,6 +530,8 @@ def main(argv=None) -> int:
             traceback.print_exc(file=sys.stderr)
         except Exception:
             pass
+        if pre_tool:
+            _emit(_pre_tool_reply({}))
         return 0
     return 0
 

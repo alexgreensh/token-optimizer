@@ -336,6 +336,16 @@ def test_bridge_selftest_fails_on_broken_payload(doctor, tmp_path, monkeypatch):
     assert check["status"] == "fail"
 
 
+def test_bridge_selftest_fails_when_reply_has_no_decision(doctor, tmp_path):
+    """A bare {} is valid JSON but agy reads it as deny (issue #350)."""
+    _install(doctor, tmp_path)
+    bridge = tmp_path / "config" / "plugins" / "token-optimizer" / "antigravity_hook_bridge.py"
+    bridge.write_text("import sys\nsys.stdout.write('{}')\n", encoding="utf-8")
+    check = doctor._bridge_selftest_check()
+    assert check["status"] == "fail"
+    assert "decision" in check["detail"]
+
+
 @pytest.fixture(autouse=True)
 def _pin_trusted_python(trusted_python):
     """Pin a gate-trusted interpreter for every install in this file (the

@@ -44,6 +44,19 @@ class StatusTests(unittest.TestCase):
         self.assertNotIn('private-value', json.dumps(result))
         self.assertIsNone(api.status({'session_id': 'session-1', 'model': 'other'})['provider'])
 
+    def test_focused_session_details_are_scoped_and_read_only(self):
+        import sqlite3
+        db = sqlite3.connect(api.HOME / 'state.db')
+        db.execute('CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL, tool_call_count INTEGER, git_branch TEXT)')
+        db.execute('INSERT INTO sessions VALUES (?, ?, ?, ?)', ('wanted', 123.0, 7, 'feature'))
+        db.execute('INSERT INTO sessions VALUES (?, ?, ?, ?)', ('other', 456.0, 99, 'private-branch'))
+        db.commit()
+        db.close()
+        result = api.status({'session_id': 'wanted'})
+        self.assertEqual(result['session_details'], {'started_at': 123.0, 'tool_calls': 7, 'branch': 'feature'})
+        self.assertNotIn('private-branch', json.dumps(result))
+        self.assertIsNone(api.status({'session_id': 'missing'})['session_details'])
+
     def test_malformed_collector(self):
         self.state.write_text('{')
         self.assertEqual(api.status({})['limits'], {})

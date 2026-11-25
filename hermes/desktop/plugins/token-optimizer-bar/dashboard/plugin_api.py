@@ -1,5 +1,7 @@
 """Read-only, minimal status for the local Token Optimizer desktop widget."""
+from contextlib import closing
 import json
+import sqlite3
 import os
 import sys
 import time
@@ -10,8 +12,17 @@ router = APIRouter()
 HOME = Path(os.environ.get('HERMES_HOME') or Path.home() / '.hermes')
 
 
-def status_data(context_used=None, context_max=None, model='', session_id=''):
-    out = {'quality': None, 'limits': {}, 'source': 'local-account-limits'}
+def status_data(context_used=None, context_max=None, model='', session_id='', stored_session_id=''):
+    out = {'quality': None, 'limits': {}, 'source': 'local-account-limits', 'session_details': None}
+    if stored_session_id or session_id:
+        try:
+            db_uri = (HOME / 'state.db').resolve().as_uri() + '?mode=ro'
+            with closing(sqlite3.connect(db_uri, uri=True, timeout=1)) as db:
+                row = db.execute('SELECT started_at, tool_call_count, git_branch FROM sessions WHERE id = ?', (stored_session_id or session_id,)).fetchone()
+            if row:
+                out['session_details'] = {'started_at': row[0], 'tool_calls': row[1], 'branch': row[2]}
+        except (sqlite3.Error, OSError):
+            pass
     if context_used and context_max and 0 < context_used <= 100_000_000 and 0 < context_max <= 100_000_000:
         scripts = HOME / 'token-optimizer' / 'skills' / 'token-optimizer' / 'scripts'
         if scripts.is_dir():
@@ -59,4 +70,5 @@ def status(body: dict):
     if not isinstance(maximum, (int, float)) or isinstance(maximum, bool): maximum = None
     model = str(body.get('model') or '')[:200]
     session_id = str(body.get('session_id') or '')[:200]
-    return status_data(used, maximum, model, session_id)
+    stored_session_id = str(body.get('stored_session_id') or '')[:200]
+    return status_data(used, maximum, model, session_id, stored_session_id)

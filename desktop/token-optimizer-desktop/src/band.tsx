@@ -9,11 +9,11 @@ import { cards, marks, row, savingsPill, type Card, type Mark, type MarkTone, ty
 import { slimSide } from './size.ts'
 
 export type Desktop = Elements['desktop']
-type Tones = { good: string; caution: string; bad: string; cold: string; ink: string; track: string; card: string; line: string; goodSoft: string }
+type Tones = { good: string; caution: string; bad: string; cold: string; ink: string; track: string; card: string; line: string }
 
 /** The design page's tone colours (light; each picture follows dark mode itself, see DARK_STYLE). */
 export function tonesFor(p: Palette): Tones {
-  return { good: '#2f9e55', goodSoft: '#e2f3e9', caution: '#c98a1b', bad: p.bad, cold: p.cold, ink: p.ink, track: '#d9d6cd', card: p.card, line: '#e2dfd6' }
+  return { good: '#2f9e55', caution: '#c98a1b', bad: p.bad, cold: p.cold, ink: p.ink, track: '#d9d6cd', card: p.card, line: '#e2dfd6' }
 }
 
 // ---- drawing ----
@@ -93,7 +93,7 @@ export type Handlers = { act: (id: ActionId) => void; dashboard: () => void; det
 function savingsChip(D: Desktop, pill: SavingsPill, t: Tones, on: Handlers) {
   const { Box, Button } = D
   return (
-    <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} paddingX={1} borderStyle="round" borderColor={t.good} backgroundColor={t.goodSoft}>
+    <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} paddingX={1} borderStyle="round" borderColor={t.good}>
       {icon(D, 'saved', t.good)}
       <Button key="savings-pill" plain label={`${pill.text} ↗`} onPress={() => on.dashboard()} />
     </Box>

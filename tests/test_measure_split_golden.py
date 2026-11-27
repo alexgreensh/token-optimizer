@@ -202,6 +202,10 @@ def test_real_capture_detects_planted_output_and_exit_changes(tmp_path, kind):
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     shutil.copytree(REPO / 'hooks', source / 'hooks',
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    # The payload must carry the checkout's manifest: the exit case asserts the
+    # copied tree reports this checkout's pinned release, and the bounded
+    # plugin-root probe (#357) deliberately does not walk to enclosing dirs.
+    shutil.copytree(REPO / '.claude-plugin', source / '.claude-plugin')
     cases = json.loads(golden.CASES.read_text())['cases']
     name = {'json': 'api-_collect_health_data-seeded-current',
             'dollar': 'api-_get_savings_summary-seeded-current', 'node': 'node-no-args',

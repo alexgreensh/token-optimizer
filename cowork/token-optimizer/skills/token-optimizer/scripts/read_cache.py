@@ -31,6 +31,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Optional
 
+import delta_serve
 from hook_io import read_stdin_hook_input
 from plugin_env import is_v5_flag_enabled, resolve_snapshot_dir
 from runtime_env import project_config_value, run_origin, runtime_home
@@ -1642,7 +1643,8 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                 break
 
     funnel.metadata(mtime_match, size_match, range_covered)
-    if not (mtime_match and size_match and range_covered):
+    # #361: the read after a delta deny must reach the host, which has no successful read of the file yet.
+    if not (mtime_match and size_match and range_covered) or delta_serve.delta_read_pending(entry, mtime_match, size_match):
         funnel.row["exit_reason"] = "metadata_or_range"
         # v5.0: Delta mode -- return diff instead of allowing full re-read
         delta_enabled = _is_v5_delta_enabled()
@@ -1700,76 +1702,16 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                             if delta_tokens >= old_tokens or delta_bytes >= new_bytes:
                                 delta_text = None  # diff too large, fall through
                         if delta_text is not None:
-                            entry["mtime_ns"] = current_stat.st_mtime_ns
-                            entry["size_bytes"] = current_stat.st_size
-                            entry["content_hash"] = new_hash
-                            entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
-                            entry["last_access"] = time.time()
-                            _reset_replacement_state(entry)
-                            if len(safe_new_content.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
-                                store.upsert_cached_content(file_path, safe_new_content, new_hash)
-                                cached = store.get_cached_content(file_path)
-                                if not cached or cached.get("content_hash") != new_hash:
-                                    entry["content_hash"] = None
-                                    store.delete_cached_content(file_path)
-                            else:
-                                entry["content_hash"] = None
-                                store.delete_cached_content(file_path)
-                            store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
-
-                            net_saved = max(0, old_tokens - delta_tokens)
-
-                            _log_decision(
-                                "block",
-                                file_path,
-                                f"delta_read_{entry['read_count']}",
-                                session_id,
-                                mode=mode,
-                                actual_substitution=True,
-                                eligible=True,
-                                language=language,
-                                reason_code="delta_diff",
-                                offset=offset,
-                                limit=limit,
-                                replacement_type="delta",
-                                file_tokens_est=old_tokens,
-                                replacement_tokens_est=delta_tokens,
-                                net_saved_tokens_est=net_saved,
-                                replacement_fingerprint=new_hash[:16],
-                                repeat_replacement_count=0,
-                                save_hook_additional_context_enabled=save_hook_context_enabled,
+                            delta_serve.serve_delta(
+                                file_path=file_path, entry=entry, store=store, reset_epoch=reset_epoch,
+                                session_id=session_id, mode=mode, language=language, offset=offset, limit=limit,
+                                quiet=quiet, save_hook_context_enabled=save_hook_context_enabled,
+                                current_stat=current_stat, new_hash=new_hash, safe_new_content=safe_new_content,
+                                delta_text=delta_text, delta_stats=delta_stats, old_tokens=old_tokens,
+                                delta_tokens=delta_tokens, max_cache_bytes=MAX_CONTENT_CACHE_BYTES,
+                                emit_fn=_emit_pretool_response, log_decision_fn=_log_decision,
+                                log_savings_fn=_log_savings_event, reset_fn=_reset_replacement_state,
                             )
-                            _log_savings_event("delta_read", net_saved, session_id,
-                                               f"{Path(file_path).name}:+{delta_stats['added']}/-{delta_stats['removed']}")
-                            # Log to compression_events for v5 telemetry
-                            try:
-                                sys.path.insert(0, str(Path(__file__).resolve().parent))
-                                from measure import _log_compression_event
-                                _log_compression_event(
-                                    feature="delta_read",
-                                    original_text=" " * (old_tokens * 4),  # proxy
-                                    compressed_text=delta_text,
-                                    session_id=session_id,
-                                    command_pattern=f"Read:{Path(file_path).name}",
-                                    quality_preserved=True,
-                                    verified=True,
-                                    tier="measured",  # realized: reaches headline explicitly
-                                    detail=f"+{delta_stats['added']}/-{delta_stats['removed']}",
-                                )
-                            except Exception:
-                                pass
-                            if not quiet:
-                                print(
-                                    f"[Read Cache] Delta mode: {file_path} "
-                                    f"(+{delta_stats['added']}/-{delta_stats['removed']}, saved~{net_saved:,})",
-                                    file=sys.stderr,
-                                )
-                            reason = (
-                                f"{Path(file_path).name} was edited; showing diff "
-                                f"(+{delta_stats['added']}/-{delta_stats['removed']} lines) "
-                                f"instead of full re-read."
-                            )
-                            _emit_pretool_response("deny", reason, delta_text)
                             return  # EXIT: delta handled, do NOT evaluate structure map
                     else:
                         # Hash unchanged despite mtime change (e.g., touch). Allow normal read.
@@ -1778,7 +1720,8 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                 pass  # Fail open: fall through to normal allow
 
         file_changed = not (mtime_match and size_match)
-        reason_code_allow = "file_modified" if file_changed else "new_range"
+        reason_code_allow = "file_modified" if file_changed else (
+            "post_delta_reread" if entry.get("last_replacement_type") == delta_serve.DELTA_SERVED else "new_range")
         entry["mtime_ns"] = current_stat.st_mtime_ns
         entry["size_bytes"] = current_stat.st_size
         if file_changed:

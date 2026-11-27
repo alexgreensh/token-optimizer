@@ -79,6 +79,7 @@ _ENGINE_SCRIPTS = (
     "context_intel.py",
     "read_cache.py",
     "big_noncode_read.py",
+    "delta_serve.py",
     "compact_markers.py",
     "process_identity.py",
     "session_store.py",

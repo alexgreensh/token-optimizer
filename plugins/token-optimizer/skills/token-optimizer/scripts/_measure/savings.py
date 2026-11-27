@@ -6890,7 +6890,9 @@ def validate_impact(strategy=None, days=None, as_json=None):
                 "input_tokens": total_input,
                 "output_tokens": parsed["total_output_tokens"],
                 "cache_hit_rate": chr_val,
-                "quality_score": sq["score"],
+                # Unmeasured sessions contribute no quality point, never the
+                # scorer's fallback (default 100) (#360).
+                "quality_score": sq["score"] if sq.get("measured") else None,
                 "cost_usd": cost,
                 "duration_minutes": parsed.get("duration_minutes", 0),
             })
@@ -6935,12 +6937,15 @@ def validate_impact(strategy=None, days=None, as_json=None):
         _measure_facade = _compat.facade()
         n = len(window)
         if n == 0:
-            return {"count": 0, "avg_tokens": 0, "avg_cost": 0, "avg_quality": 0, "avg_cache_hit": 0}
+            # Empty window: no measured quality signal, so None (never a
+            # phantom 0) - same contract as an all-unmeasured window (#360).
+            return {"count": 0, "avg_tokens": 0, "avg_cost": 0, "avg_quality": None, "avg_cache_hit": 0}
+        quality = [s["quality_score"] for s in window if s["quality_score"] is not None]
         return {
             "count": n,
             "avg_tokens": int(sum(s["input_tokens"] for s in window) / n),
             "avg_cost": round(sum(s["cost_usd"] for s in window) / n, 4),
-            "avg_quality": round(sum(s["quality_score"] for s in window) / n, 1),
+            "avg_quality": round(sum(quality) / len(quality), 1) if quality else None,
             "avg_cache_hit": round(sum(s["cache_hit_rate"] for s in window) / n, 3),
         }
 
@@ -6952,6 +6957,10 @@ def validate_impact(strategy=None, days=None, as_json=None):
         _measure_facade = _compat.facade()
         b = before_summary[metric]
         a = after_summary[metric]
+        # Unmeasured on either side (None) means the delta is unknown, not
+        # zero: return None and let the verdict ignore it (#360).
+        if a is None or b is None:
+            return None
         if b == 0:
             return 0
         raw_pct = ((a - b) / abs(b)) * 100
@@ -6965,8 +6974,8 @@ def validate_impact(strategy=None, days=None, as_json=None):
     }
 
     # Verdict: improved if at least 2 of 4 metrics show >10% improvement
-    improved_count = sum(1 for v in deltas.values() if v > 10)
-    regressed_count = sum(1 for v in deltas.values() if v < -10)
+    improved_count = sum(1 for v in deltas.values() if v is not None and v > 10)
+    regressed_count = sum(1 for v in deltas.values() if v is not None and v < -10)
 
     if improved_count >= 2:
         verdict = "improved"
@@ -6996,7 +7005,13 @@ def validate_impact(strategy=None, days=None, as_json=None):
         after_cost_str = f"${after_summary['avg_cost']:.4f}"
         print(f"  {'Avg tokens/session':<20s} {before_summary['avg_tokens']:>10,}  {after_summary['avg_tokens']:>10,}  {deltas['tokens_pct']:>+9.1f}%")
         print(f"  {'Avg cost/session':<20s} {before_cost_str:>10s}  {after_cost_str:>10s}  {deltas['cost_pct']:>+9.1f}%")
-        print(f"  {'Avg quality score':<20s} {before_summary['avg_quality']:>10.1f}  {after_summary['avg_quality']:>10.1f}  {deltas['quality_pct']:>+9.1f}%")
+        def _q(v):
+            return f"{v:>10.1f}" if v is not None else f"{'n/a':>10s}"
+
+        def _d(v):
+            return f"{v:>+9.1f}%" if v is not None else f"{'n/a':>9s} "
+
+        print(f"  {'Avg quality score':<20s} {_q(before_summary['avg_quality'])}  {_q(after_summary['avg_quality'])}  {_d(deltas['quality_pct'])}")
         print(f"  {'Avg cache hit rate':<20s} {before_summary['avg_cache_hit']:>10.3f}  {after_summary['avg_cache_hit']:>10.3f}  {deltas['cache_hit_pct']:>+9.1f}%")
 
         verdict_emoji = {"improved": "UP", "regressed": "DOWN", "no_change": "FLAT"}

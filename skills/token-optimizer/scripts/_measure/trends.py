@@ -890,6 +890,20 @@ def _init_trends_db():
         except _measure_facade.sqlite3.Error as _e:
             _measure_facade._log_migration_error(f"{_origin_table} origin column", _e)
     _measure_facade.ensure_activity_schema(conn)
+    # One-time data repair (#360): unmeasured sessions (grade '?') used to
+    # store the scorer's fallback score (last_measured_score, default 100),
+    # which then read as a perfect score in raw queries and any consumer that
+    # does not filter grade. Null those stored scores. daily_stats needs no
+    # forced rebuild here: its AVG skips grade '?' rows, so the next regular
+    # rebuild computes correct averages over both new and repaired rows.
+    try:
+        if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='unmeasured_quality_null_v1'").fetchone():
+            conn.execute(
+                "UPDATE session_log SET quality_score = NULL WHERE quality_grade = '?' AND quality_score IS NOT NULL")
+            conn.execute("INSERT OR IGNORE INTO schema_migrations (name) VALUES ('unmeasured_quality_null_v1')")
+            conn.commit()
+    except _measure_facade.sqlite3.Error as _e:
+        _measure_facade._log_migration_error("unmeasured quality scores", _e)
     # Backfill session_uuid from jsonl_path basename stem for existing rows,
     # then create an index so joins are O(log n) instead of full-table LIKE scans.
     try:
@@ -1270,7 +1284,10 @@ def _backfill_session_metrics(conn, days=None, limit=None):
                     OR avg_call_gap_seconds IS NULL
                     OR max_call_gap_seconds IS NULL
                     OR p95_call_gap_seconds IS NULL
-                    OR quality_score IS NULL
+                    -- quality_score IS NULL on an unmeasured ('?') row is the
+                    -- stored truth, not a gap: re-parsing it every flush is a
+                    -- perpetual latency tax that can never fill (#360).
+                    OR (quality_score IS NULL AND IFNULL(quality_grade, '') != '?')
                  )
                ORDER BY date DESC, collected_at DESC
                LIMIT ?""",
@@ -1301,7 +1318,7 @@ def _backfill_session_metrics(conn, days=None, limit=None):
             max_gap = parsed.get("max_call_gap_seconds")
             p95_gap = parsed.get("p95_call_gap_seconds")
             sq = _measure_facade.score_session_quality(parsed)
-            q_score = sq["score"]
+            q_score = sq["score"] if sq.get("measured") else None
             q_grade = sq["grade"]
         updates.append((ttl_1h, ttl_5m, avg_gap, max_gap, p95_gap, q_score, q_grade, str(jsonl_path)))
     

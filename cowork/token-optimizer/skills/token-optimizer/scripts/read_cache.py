@@ -1642,7 +1642,7 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                 break
 
     funnel.metadata(mtime_match, size_match, range_covered)
-    if not (mtime_match and size_match and range_covered):
+    if not (mtime_match and size_match and range_covered) or (mtime_match and size_match and entry.get("last_replacement_type") == "delta_served"):  # #361: pass the read after a delta deny through
         funnel.row["exit_reason"] = "metadata_or_range"
         # v5.0: Delta mode -- return diff instead of allowing full re-read
         delta_enabled = _is_v5_delta_enabled()
@@ -1705,7 +1705,7 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                             entry["content_hash"] = new_hash
                             entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
                             entry["last_access"] = time.time()
-                            _reset_replacement_state(entry)
+                            _reset_replacement_state(entry); entry["last_replacement_type"] = "delta_served"  # host saw no successful read
                             if len(safe_new_content.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
                                 store.upsert_cached_content(file_path, safe_new_content, new_hash)
                                 cached = store.get_cached_content(file_path)

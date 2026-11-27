@@ -2064,8 +2064,8 @@ def _read_plugin_version(default=None):
     The Codex marketplace artifact ships only ``.codex-plugin/plugin.json``
     (scripts/sync-codex-marketplace-plugin.sh stages skills/, hooks/ and
     .codex-plugin/), so a Codex install has no .claude-plugin manifest anywhere
-    in this walk and the version fell back to "0.0.0" (#357). Probe both
-    manifests at each level, preferring the active runtime's own.
+    in this probe and the version fell back to "0.0.0" (#357). Probe both
+    manifests at the plugin root, preferring the active runtime's own.
     """
     _measure_facade = _compat.facade()
     here = _measure_facade.Path(_measure_facade.__file__).resolve()
@@ -2074,16 +2074,27 @@ def _read_plugin_version(default=None):
     except Exception:
         runtime = ""
     manifest_dirs = (".codex-plugin", ".claude-plugin") if runtime == "codex" else (".claude-plugin", ".codex-plugin")
-    for base in here.parents:
-        for manifest_dir in manifest_dirs:
-            candidate = base / manifest_dir / "plugin.json"
-            try:
-                if candidate.is_file():
-                    value = _measure_facade.json.loads(candidate.read_text(encoding="utf-8")).get("version")
-                    if isinstance(value, str) and value.strip():
-                        return value.strip()
-            except (OSError, ValueError):
-                return default
+    # In every shipped layout (repo checkout, Codex marketplace mirror, Cowork
+    # committed tree, installed plugin) this script sits at
+    # <plugin root>/skills/token-optimizer/scripts/measure.py and the manifest
+    # lives at <plugin root>/<manifest dir>/plugin.json. Derive the plugin root
+    # from that fixed relative location instead of walking every ancestor: an
+    # unbounded walk stats real home directories (pytest tmp on Windows lives
+    # under the user profile, so tests/_home_guard.py flags it) and can select
+    # an unrelated parent project's manifest. Anything that does not match the
+    # shipped layout is a skill-only install and falls back to the default.
+    if here.parts[-4:] != ("skills", "token-optimizer", "scripts", "measure.py"):
+        return default
+    plugin_root = here.parents[3]
+    for manifest_dir in manifest_dirs:
+        candidate = plugin_root / manifest_dir / "plugin.json"
+        try:
+            if candidate.is_file():
+                value = _measure_facade.json.loads(candidate.read_text(encoding="utf-8")).get("version")
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        except (OSError, ValueError):
+            return default
     return default
 
 

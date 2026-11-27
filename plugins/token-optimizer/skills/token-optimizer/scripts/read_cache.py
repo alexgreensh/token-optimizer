@@ -1710,7 +1710,7 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                                 delta_text=delta_text, delta_stats=delta_stats, old_tokens=old_tokens,
                                 delta_tokens=delta_tokens, max_cache_bytes=MAX_CONTENT_CACHE_BYTES,
                                 emit_fn=_emit_pretool_response, log_decision_fn=_log_decision,
-                                log_savings_fn=_log_savings_event,
+                                log_savings_fn=_log_savings_event, reset_fn=_reset_replacement_state,
                             )
                             return  # EXIT: delta handled, do NOT evaluate structure map
                     else:

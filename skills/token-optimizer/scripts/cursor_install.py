@@ -50,6 +50,7 @@ _PAYLOAD_MODULES = (
     "structure_map_ts.py",
     "read_cache.py",
     "big_noncode_read.py",
+    "delta_serve.py",
     "compact_markers.py",
     "process_identity.py",
     "cursor_state.py",

@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from reset_epoch import _reset_replacement_state
 
 DELTA_SERVED = "delta_served"
 
@@ -49,6 +48,7 @@ def serve_delta(
     emit_fn: Callable[..., None],
     log_decision_fn: Callable[..., Any],
     log_savings_fn: Callable[..., Any],
+    reset_fn: Callable[[dict[str, Any]], Any],
 ) -> None:
     """Refresh the entry, log, and emit the delta deny."""
     entry["mtime_ns"] = current_stat.st_mtime_ns
@@ -56,7 +56,7 @@ def serve_delta(
     entry["content_hash"] = new_hash
     entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
     entry["last_access"] = time.time()
-    _reset_replacement_state(entry)
+    reset_fn(entry)
     entry["last_replacement_type"] = DELTA_SERVED
     if len(safe_new_content.encode("utf-8", errors="replace")) <= max_cache_bytes:
         store.upsert_cached_content(file_path, safe_new_content, new_hash)

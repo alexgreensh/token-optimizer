@@ -4,6 +4,8 @@ A desktop composer extension for the Hermes integration. It shows a context-qual
 
 Each metric is an accessible, compact chip that opens a popover with its explanation; the quality chip contains **Clean up**, and the `⋯` menu contains session details and the dashboard link. The single-row strip scrolls horizontally on narrow windows.
 
+When the focused session's reported cache window is cold, the cache chip explains the expected re-read and offers **Clean up first**. The context count is approximate, savings depend on the provider, and no keep-warm request is sent automatically.
+
 The details menu shows session age, Git branch, tool calls, and the runtime's compaction count when available. **Clean up** requires a second click to confirm and invokes Hermes's native session compression, which may use model quota and summarize away details. It refuses if the focused session, profile, gateway route or idle state changes before confirmation. **Start fresh**, checkpoint recovery and manual cache-warming are not implemented.
 
 ## Installation (manual; not wired into `install.sh`)

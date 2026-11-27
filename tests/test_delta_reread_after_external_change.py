@@ -129,3 +129,15 @@ def test_edit_after_delta_clears_marker(tmp_path):
     assert _run_read_cache(tmp_path, ["--invalidate", "--quiet"], inv).returncode == 0
     entry = _get_file_entry(tmp_path, SESSION, str(f))
     assert entry["last_replacement_type"] != "delta_served"
+
+
+def test_post_delta_reread_is_logged_with_its_own_reason(tmp_path):
+    f, lines = _make(tmp_path)
+    _read(tmp_path, f, 1)
+    lines[3] = "\n"
+    _bump(f, "".join(lines) + "# extra\n")
+    assert _read(tmp_path, f, 2).get("permissionDecision") == "deny"
+    assert _read(tmp_path, f, 3).get("permissionDecision") != "deny"
+    logs = list(tmp_path.rglob("*.jsonl"))
+    text = "\n".join(p.read_text(errors="replace") for p in logs)
+    assert "post_delta_reread" in text

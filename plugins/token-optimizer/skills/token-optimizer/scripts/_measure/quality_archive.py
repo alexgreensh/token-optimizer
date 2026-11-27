@@ -4387,25 +4387,27 @@ def _record_checkpoint_metadata(result, cache_path, trigger, checkpoint_path, *,
     if quality_score is not None:
         result["last_checkpoint_quality_score"] = round(quality_score, 1)
     _measure_facade._write_quality_cache(cache_path, result)
-    _measure_facade._append_checkpoint_event(
-        session_id=_measure_facade.Path(cache_path).stem.replace("quality-cache-", "", 1),
-        trigger=trigger,
-        checkpoint_path=checkpoint_path,
-        fill_pct=fill_pct,
-        quality_score=quality_score,
-    )
+    # No _append_checkpoint_event here: compact_capture now emits the telemetry
+    # event for every successful write, so emitting here too would double-count
+    # the progressive/quality/milestone captures that call both (#358).
 
 
-def _append_checkpoint_event(session_id, trigger, checkpoint_path, *, fill_pct=None, quality_score=None):
+def _append_checkpoint_event(session_id, trigger, checkpoint_path, *, fill_pct=None, quality_score=None, placeholder=False, quality_unmeasured=False):
     """Append a deterministic local checkpoint event for rollout telemetry."""
     _measure_facade = _compat.facade()
     if not _measure_facade._CHECKPOINT_TELEMETRY_ENABLED:
         return
     try:
         _measure_facade.CHECKPOINT_EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _runtime = _measure_facade.detect_runtime()
+        except Exception:
+            _runtime = "claude"
         event = {
             "timestamp": _measure_facade.datetime.now(_measure_facade.timezone.utc).isoformat(),
-            "platform": "claude-code",
+            # Keep the established "claude-code" label on Claude rows; other
+            # runtimes (codex, ...) were previously lumped under it (#358).
+            "platform": "claude-code" if _runtime == "claude" else _runtime,
             "session_id": _measure_facade.sanitize_session_id(session_id),
             "trigger": trigger,
             "checkpoint_path": str(checkpoint_path),
@@ -4414,6 +4416,16 @@ def _append_checkpoint_event(session_id, trigger, checkpoint_path, *, fill_pct=N
             event["fill_pct"] = round(fill_pct, 1)
         if quality_score is not None:
             event["quality_score"] = round(quality_score, 1)
+        if placeholder:
+            # A "No transcript data available" capture holds nothing a restore
+            # could use; count it, but never as a substantive checkpoint (#358).
+            event["placeholder"] = True
+        if quality_unmeasured:
+            # The session's quality was never measured; any score the caller
+            # saw was the scorer's fallback. The event omits quality_score and
+            # carries this marker instead, so checkpoint-stats never shows a
+            # phantom 100 as if it were measured (#360 class, review cycle 9).
+            event["quality_unmeasured"] = True
         fd = _measure_facade.os.open(str(_measure_facade.CHECKPOINT_EVENT_LOG), _measure_facade.os.O_WRONLY | _measure_facade.os.O_CREAT | _measure_facade.os.O_APPEND, 0o600)
         with _measure_facade.os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(_measure_facade.json.dumps(event) + "\n")
@@ -4466,12 +4478,17 @@ def checkpoint_stats(days=None, as_json=None):
             "quality_score": recent[0].get("quality_score"),
         }
 
+    placeholders_recent = sum(1 for e in recent if e.get("placeholder"))
+    unmeasured_quality_recent = sum(1 for e in recent if e.get("quality_unmeasured"))
+
     summary = {
         "enabled": _measure_facade._CHECKPOINT_TELEMETRY_ENABLED,
         "event_log": str(_measure_facade.CHECKPOINT_EVENT_LOG),
         "days": days,
         "total_events": len(events),
         "recent_events": len(recent),
+        "placeholder_events": placeholders_recent,
+        "unmeasured_quality_events": unmeasured_quality_recent,
         "by_trigger": dict(sorted(by_trigger.items())),
         "last_event": last_event,
     }
@@ -4485,6 +4502,10 @@ def checkpoint_stats(days=None, as_json=None):
         print(f"  Event log:     {summary['event_log']}")
         print(f"  Total events:  {summary['total_events']}")
         print(f"  Recent events: {summary['recent_events']}")
+        if summary["placeholder_events"]:
+            print(f"  Placeholder captures (no transcript data, unrestorable): {summary['placeholder_events']}")
+        if summary["unmeasured_quality_events"]:
+            print(f"  Unmeasured-quality captures (no quality score recorded): {summary['unmeasured_quality_events']}")
         if summary["by_trigger"]:
             print("  By trigger:")
             for trigger, count in summary["by_trigger"].items():

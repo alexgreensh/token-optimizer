@@ -96,7 +96,10 @@ def test_readable_source_backfills_metrics_including_genuine_zero(subject, tmp_p
     first = row(conn)
     assert first[3:6] == (3 * one_hour, 3 * five_min, 1)
     assert first[6:9] == (10, 10, 10)
-    assert first[9] == measure.score_session_quality(measure._parse_session_jsonl(str(path)))["score"]
+    # The stored score follows the scorer, but an UNMEASURED session stores
+    # NULL, never the scorer's fallback (default 100) (#360).
+    _sq = measure.score_session_quality(measure._parse_session_jsonl(str(path)))
+    assert first[9] == (_sq["score"] if _sq.get("measured") else None)
     assert not conn.in_transaction
     assert first[10:] == ("retained-grade", "keep")
     measure._read_path_upkeep(conn, 30)

@@ -40,6 +40,10 @@ DAEMON_PORT = 24847
 _VERSION_TIMEOUT_SECONDS = 5
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _check(status: str, name: str, detail: str, hint: str = "") -> dict:
     out = {"status": status, "name": name, "detail": detail}
     if hint:
@@ -194,7 +198,13 @@ def _plugin_checks() -> list:
             config = json.loads(hooks_path.read_text(encoding="utf-8"))
             group = config.get("token-optimizer") if isinstance(config, dict) else None
             events = sorted(group.keys()) if isinstance(group, dict) else []
-            expected = {"PreInvocation", "PreToolUse", "Stop"}
+            # PreToolUse is POSIX-only (the bash rewrite never runs on
+            # Windows). A Windows install that still carries it keeps working
+            # but is reported below so a reinstall removes it.
+            stale_windows_pre_tool = _is_windows() and "PreToolUse" in events
+            expected = {"PreInvocation", "Stop"} | (set() if _is_windows() else {"PreToolUse"})
+            if stale_windows_pre_tool:
+                expected.add("PreToolUse")
             if not expected <= set(events):
                 raise ValueError(f"missing events: {sorted(expected - set(events))}")
             # Every hook must call the bridge inside this plugin dir. Installs
@@ -208,11 +218,22 @@ def _plugin_checks() -> list:
                 cmds = [h.get("command", "") for h in handlers if isinstance(h, dict)]
                 if not any(isinstance(c, str) and any(s in c for s in spellings) for c in cmds):
                     raise ValueError(f"{name} hook does not call {bridge}")
-            checks.append(
-                _check(
-                    "ok", "plugin hooks", f"{hooks_path} (events: {', '.join(events)})"
+            if stale_windows_pre_tool:
+                checks.append(
+                    _check(
+                        "warn",
+                        "plugin hooks",
+                        f"{hooks_path} still registers PreToolUse, which is no "
+                        "longer installed on Windows.",
+                        _hint("Re-run `python3 measure.py antigravity-install` to remove it."),
+                    )
                 )
-            )
+            else:
+                checks.append(
+                    _check(
+                        "ok", "plugin hooks", f"{hooks_path} (events: {', '.join(events)})"
+                    )
+                )
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             checks.append(
                 _check(

@@ -48,7 +48,7 @@ structurally allow.
 | Hook power | Status | Token Optimizer feature |
 |---|---|---|
 | `PreInvocation` `injectSteps` | Works | Continuity restore (invocation 1) + context nudges |
-| `PreToolUse` `overwrite` on `run_command` | Works | Bash output compression (R13a wrapper re-validates argv) |
+| `PreToolUse` `overwrite` on `run_command` | Works on macOS/Linux | Bash output compression (R13a wrapper re-validates argv). Not registered on native Windows. Existing Windows installs keep the registration until `antigravity-install` is run again |
 | `Stop` | Works | Detached, lease-debounced rollup + dashboard regeneration |
 | `PreCompact` | Not exposed | Compaction steering — unavailable |
 | `PostToolUse` output rewrite | Not exposed | Read-interception (Delta/Structure Map) — unavailable |

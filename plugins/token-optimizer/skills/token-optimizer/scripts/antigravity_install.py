@@ -139,6 +139,10 @@ def data_dir(home: Path) -> Path:
     return home / "token-optimizer"
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _hooks_config(bridge_path: Path) -> dict:
     """hooks.json per the Antigravity hooks contract (builtin agy-customizations
     docs): a JSON object keyed by hook NAME; PreToolUse uses a matcher group,
@@ -157,18 +161,23 @@ def _hooks_config(bridge_path: Path) -> dict:
             "timeout": timeout,
         }
 
-    pre_tool = cmd("pre-tool-use", PRE_TIMEOUT_SEC)
-    return {
-        HOOK_NAME: {
-            "PreToolUse": [
-                # Only the run_command tool is rewritten; the matcher keeps every
-                # other tool call out of the bridge's hot path entirely.
-                {"matcher": "run_command", "hooks": [pre_tool]},
-            ],
-            "PreInvocation": [cmd("pre-invocation", PRE_TIMEOUT_SEC)],
-            "Stop": [cmd("stop", STOP_TIMEOUT_SEC)],
-        }
+    hooks = {
+        "PreInvocation": [cmd("pre-invocation", PRE_TIMEOUT_SEC)],
+        "Stop": [cmd("stop", STOP_TIMEOUT_SEC)],
     }
+    if not _is_windows():
+        # Only the run_command tool is rewritten; the matcher keeps every
+        # other tool call out of the bridge's hot path entirely. Windows is
+        # not registered at all: the bridge never rewrites there, so the hook
+        # would only add a Python launch (and a chance to fail) to every
+        # shell command for nothing.
+        hooks = {
+            "PreToolUse": [
+                {"matcher": "run_command", "hooks": [cmd("pre-tool-use", PRE_TIMEOUT_SEC)]},
+            ],
+            **hooks,
+        }
+    return {HOOK_NAME: hooks}
 
 
 def _ensure_config_dir_permissions(path: Path) -> None:

@@ -22,6 +22,7 @@ def _install_as_windows(tmp_path, monkeypatch):
     # is switched to Windows; install() itself has no Windows-specific branch.
     import adapter_hook_command
     monkeypatch.setattr(adapter_hook_command, "_is_windows", lambda _w: True)
+    monkeypatch.setattr(ai, "_is_windows", lambda: True, raising=False)
     ai.install(home=tmp_path)
     return ai
 
@@ -32,9 +33,10 @@ def test_windows_install_writes_shell_neutral_commands(tmp_path, monkeypatch):
     config = json.loads((pdir / "hooks.json").read_text(encoding="utf-8"))
     group = config["token-optimizer"]
     commands = [h["command"] for h in group["PreInvocation"] + group["Stop"]]
-    commands += [h["command"] for g in group["PreToolUse"] for h in g["hooks"]]
+    # PreToolUse is not registered on Windows (issue #350).
+    assert "PreToolUse" not in group
     bridge = str(pdir / "antigravity_hook_bridge.py")
-    assert len(commands) == 3
+    assert len(commands) == 2
     for cmd in commands:
         assert "TOKEN_OPTIMIZER_RUNTIME=" not in cmd
         assert not cmd.startswith(('"', "'", "&"))

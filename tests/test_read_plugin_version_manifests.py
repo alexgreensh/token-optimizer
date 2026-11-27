@@ -82,6 +82,31 @@ def test_no_manifest_falls_back_to_default(measure, monkeypatch, tmp_path):
     assert daemon._read_plugin_version(default="0.0.0") == "0.0.0"
 
 
+def test_parent_project_manifest_is_not_picked_up(measure, monkeypatch, tmp_path):
+    # A manifest above the plugin root - a parent project, or ~/.codex-plugin
+    # when pytest tmp lives under the user profile - must never be selected.
+    # Only the plugin root of the shipped layout counts.
+    outer = tmp_path / ".codex-plugin"
+    outer.mkdir()
+    (outer / "plugin.json").write_text(json.dumps({"version": "9.9.9"}), encoding="utf-8")
+    fake = _fake_layout(tmp_path / "nested" / "deeper")
+    monkeypatch.setattr(measure, "__file__", str(fake))
+    assert daemon._read_plugin_version(default="0.0.0") == "0.0.0"
+
+
+def test_non_shipped_layout_falls_back_without_probing(measure, monkeypatch, tmp_path):
+    # A measure.py outside <root>/skills/token-optimizer/scripts/ is a
+    # skill-only install: fall back without probing its directories at all.
+    d = tmp_path / ".codex-plugin"
+    d.mkdir()
+    (d / "plugin.json").write_text(json.dumps({"version": "9.9.9"}), encoding="utf-8")
+    fake = tmp_path / "random" / "measure.py"
+    fake.parent.mkdir()
+    fake.write_text("", encoding="utf-8")
+    monkeypatch.setattr(measure, "__file__", str(fake))
+    assert daemon._read_plugin_version(default="0.0.0") == "0.0.0"
+
+
 def test_unparseable_manifest_falls_back(measure, monkeypatch, tmp_path):
     root = tmp_path / "plugin"
     d = root / ".codex-plugin"

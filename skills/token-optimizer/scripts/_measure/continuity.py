@@ -814,6 +814,10 @@ def compact_capture(transcript_path=None, session_id=None, trigger=None, cwd=Non
         )
         if not _measure_facade._write_checkpoint_atomic(checkpoint_path, content):
             return None
+        _measure_facade._append_checkpoint_event(
+            session_id=sid, trigger=trigger or "auto",
+            checkpoint_path=checkpoint_path, fill_pct=fill_pct,
+            quality_score=quality_score, placeholder=True)
         return str(checkpoint_path)
 
     try:
@@ -862,6 +866,12 @@ def compact_capture(transcript_path=None, session_id=None, trigger=None, cwd=Non
     # Generate checkpoint markdown
     sid = _measure_facade.sanitize_session_id(session_id) if session_id else _measure_facade.sanitize_session_id(filepath.stem)
     quality_summary = None
+    # An unmeasured session (grade '?') still carries the scorer's fallback
+    # score (last_measured_score, default 100). That number is honest in the
+    # checkpoint sidecar (restore metadata), but the telemetry event must not
+    # present it as a measurement: checkpoint-stats readers would see a
+    # phantom 100 for a session that was never measured (#360 class).
+    quality_measured = True
     try:
         if _trusted_transcript is not None:
             # A translated transcript carries no usage data, so scoring it
@@ -894,6 +904,10 @@ def compact_capture(transcript_path=None, session_id=None, trigger=None, cwd=Non
             if fill_pct is None:
                 cfd = quality_summary.get("breakdown", {}).get("context_fill_degradation", {})
                 fill_pct = cfd.get("fill_pct")
+            # compute_quality_score returns measured=False for unmeasured
+            # sessions; a cache blob old enough to lack the key is treated as
+            # measured (we cannot prove otherwise).
+            quality_measured = quality_summary.get("measured") is not False
     except Exception:
         quality_summary = None
     if quality_summary:
@@ -1011,6 +1025,16 @@ def compact_capture(transcript_path=None, session_id=None, trigger=None, cwd=Non
     _measure_facade._cleanup_checkpoints()
     _measure_facade._cleanup_quality_cache()
     _measure_facade._rotate_checkpoint_events()
+
+    # Every successful checkpoint write is recorded here, at the single choke
+    # point all capture paths (PreCompact/Stop/SessionEnd/progressive/quality/
+    # milestone) funnel through. Recording only in the progressive/quality
+    # callers left real Stop checkpoints invisible to checkpoint-stats (#358).
+    _measure_facade._append_checkpoint_event(
+        session_id=sid, trigger=trigger or "auto",
+        checkpoint_path=checkpoint_path, fill_pct=fill_pct,
+        quality_score=quality_score if quality_measured else None,
+        quality_unmeasured=not quality_measured)
 
     return str(checkpoint_path)
 
@@ -1969,11 +1993,14 @@ def compact_restore(session_id=None, cwd=None, is_compact=None, new_session_only
             _print_intel_digest(sid_safe)
             # Only the estimated avoided working set is a credit. The injected
             # checkpoint itself adds context and is never a savings floor.
+            # The event is logged even at zero credit so a successful restore
+            # stays auditable when the working set was empty (#358).
             try:
                 est_tokens_recovered = _measure_facade._checkpoint_restore_recovery_tokens(sid_safe, 0)
-                if est_tokens_recovered > 0:
-                    _measure_facade._log_savings_event("checkpoint_restore", est_tokens_recovered,
-                                       session_id=sid_safe, detail=f"restored from {trigger_label}")
+                _measure_facade._log_savings_event("checkpoint_restore", est_tokens_recovered,
+                                   session_id=sid_safe,
+                                   detail=f"restored from {trigger_label}" if est_tokens_recovered > 0
+                                   else f"restored from {trigger_label} (no working-set credit)")
             except (OSError, KeyError):
                 pass
             return

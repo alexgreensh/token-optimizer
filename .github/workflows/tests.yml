@@ -206,6 +206,29 @@ jobs:
       - name: Test desktop mod pure modules
         run: npm test --prefix desktop/token-optimizer-desktop
 
+  hermes-desktop-bar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install backend dependency
+        run: python -m pip install 'fastapi>=0.115,<1'
+      - name: Test status backend
+        run: python -m unittest discover -s hermes/desktop/tests -p 'test_*.py' -v
+      - name: Test desktop bar behavior
+        run: |
+          node --check hermes/desktop/desktop-plugins/token-optimizer-bar/plugin.js
+          node hermes/desktop/tests/cache-clock.cjs
+          node hermes/desktop/tests/mascot.cjs
+          node hermes/desktop/tests/chips.cjs
+          node hermes/desktop/tests/actions.cjs
+          node --experimental-vm-modules hermes/desktop/tests/renderer-integration.cjs
+
   # Every bug that has shipped before is re-introduced into a throwaway copy
   # and the guard tests must fail on it. A guard that passes on broken code is
   # decoration; this job turns red the moment one stops guarding.

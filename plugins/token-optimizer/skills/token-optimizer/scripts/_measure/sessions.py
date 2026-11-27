@@ -1513,7 +1513,9 @@ def _rebuild_aggregate_tables(conn):
                   COALESCE(SUM(output_tokens), 0),
                   COALESCE(SUM(duration_minutes), 0),
                   COALESCE(AVG(cache_hit_rate), 0),
-                  COALESCE(AVG(quality_score), 0),
+                  -- NULL, never 0, when no session that day was measured: an
+                  -- all-'?' day has no quality signal, not a zero score (#360).
+                  AVG(CASE WHEN quality_grade = '?' THEN NULL ELSE quality_score END),
                   SUBSTR('FDCBAS', MIN(NULLIF(INSTR('FDCBAS', quality_grade),0)),1)
            FROM session_activity
            GROUP BY date"""
@@ -4412,7 +4414,10 @@ def collect_sessions(days=None, quiet=None, rebuild=None):
                 parsed.get("slug"),
                 parsed.get("topic"),
                 collection_started,
-                sq["score"],
+                # Unmeasured sessions (grade "?") store NULL, never the
+                # scorer's fallback (last_measured_score, default 100): a
+                # stored 100 read as a perfect score in every average (#360).
+                sq["score"] if sq.get("measured") else None,
                 sq["grade"],
                 int(stale_waste or 0),
                 1 if parsed.get("is_sidechain") else 0,

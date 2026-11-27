@@ -2060,18 +2060,30 @@ def _read_plugin_version(default=None):
     Falls back to the default when the manifest is absent, which is the case for
     a skill-only install with no plugin directory. Never raises: a version
     string is cosmetic and must not prevent the tool from running.
+
+    The Codex marketplace artifact ships only ``.codex-plugin/plugin.json``
+    (scripts/sync-codex-marketplace-plugin.sh stages skills/, hooks/ and
+    .codex-plugin/), so a Codex install has no .claude-plugin manifest anywhere
+    in this walk and the version fell back to "0.0.0" (#357). Probe both
+    manifests at each level, preferring the active runtime's own.
     """
     _measure_facade = _compat.facade()
     here = _measure_facade.Path(_measure_facade.__file__).resolve()
+    try:
+        runtime = (_measure_facade.os.environ.get("TOKEN_OPTIMIZER_RUNTIME") or "").strip().lower()
+    except Exception:
+        runtime = ""
+    manifest_dirs = (".codex-plugin", ".claude-plugin") if runtime == "codex" else (".claude-plugin", ".codex-plugin")
     for base in here.parents:
-        candidate = base / ".claude-plugin" / "plugin.json"
-        try:
-            if candidate.is_file():
-                value = _measure_facade.json.loads(candidate.read_text(encoding="utf-8")).get("version")
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-        except (OSError, ValueError):
-            return default
+        for manifest_dir in manifest_dirs:
+            candidate = base / manifest_dir / "plugin.json"
+            try:
+                if candidate.is_file():
+                    value = _measure_facade.json.loads(candidate.read_text(encoding="utf-8")).get("version")
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            except (OSError, ValueError):
+                return default
     return default
 
 

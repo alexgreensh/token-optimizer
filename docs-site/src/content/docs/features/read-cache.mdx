@@ -67,6 +67,10 @@ python3 measure.py v5 disable delta_mode
 
 All of these variables and their defaults live in the [configuration reference](/reference/configuration/). They are defined there once to avoid drift; this page links rather than restates them.
 
+## Changed files and the host's read check
+
+When a file changes outside Edit and Write (a shell command, a formatter, your editor), the first re-read returns the diff. Claude Code only lets Edit run after a Read of that file succeeds, and a diff answer does not count as one, so the next read of the same file goes through as a normal full read. Unchanged files still get the structure map.
+
 ## Before and after
 
 ![Delta mode: re-reads of changed files return only the diff](/images/delta-mode.svg)

@@ -107,10 +107,6 @@ def _read_text_with_stat(file_path: str) -> tuple[str, os.stat_result]:
     return content, stat
 
 
-# Stored in last_replacement_type after a delta answer; consumed by the next read.
-_DELTA_SERVED_MARKER = "delta_served"
-
-
 def _is_v5_delta_enabled():
     """Check if delta mode is enabled. Default ON in v5.1."""
     return is_v5_flag_enabled("v5_delta_mode", "TOKEN_OPTIMIZER_READ_CACHE_DELTA", default=True)
@@ -1645,48 +1641,8 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                 range_covered = True
                 break
 
-    if (
-        mtime_match
-        and size_match
-        and entry.get("last_replacement_type") == _DELTA_SERVED_MARKER
-    ):
-        # #361: the previous Read of this file was answered with a diff (a deny),
-        # so the host has no successful read of the changed file. Hosts such as
-        # Claude Code refuse Edit until one succeeds, so let this read through.
-        funnel.row["exit_reason"] = "post_delta_reread"
-        if offset == 0 and limit == 0:
-            entry["ranges_seen"] = [[0, 0]]
-        else:
-            entry["ranges_seen"] = [[offset, limit]]
-        entry["tokens_est"] = estimate_tokens_from_bytes(current_stat.st_size)
-        entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
-        entry["last_access"] = time.time()
-        _reset_replacement_state(entry)
-        store.upsert_file_entry(file_path, entry, expected_reset_epoch=reset_epoch)
-        _log_decision(
-            "allow",
-            file_path,
-            "post_delta_reread",
-            session_id,
-            mode=mode,
-            actual_substitution=False,
-            eligible=False,
-            language=language,
-            reason_code="post_delta_reread",
-            offset=offset,
-            limit=limit,
-            replacement_type=None,
-            file_tokens_est=entry.get("tokens_est", 0),
-            replacement_tokens_est=0,
-            net_saved_tokens_est=0,
-            replacement_fingerprint=None,
-            repeat_replacement_count=0,
-            save_hook_additional_context_enabled=save_hook_context_enabled,
-        )
-        return
-
     funnel.metadata(mtime_match, size_match, range_covered)
-    if not (mtime_match and size_match and range_covered):
+    if not (mtime_match and size_match and range_covered) or (mtime_match and size_match and entry.get("last_replacement_type") == "delta_served"):  # #361: pass the read after a delta deny through
         funnel.row["exit_reason"] = "metadata_or_range"
         # v5.0: Delta mode -- return diff instead of allowing full re-read
         delta_enabled = _is_v5_delta_enabled()
@@ -1749,10 +1705,7 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                             entry["content_hash"] = new_hash
                             entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
                             entry["last_access"] = time.time()
-                            _reset_replacement_state(entry)
-                            # The host never saw this Read succeed. Remember that the
-                            # next read of this file must reach the host (#361).
-                            entry["last_replacement_type"] = _DELTA_SERVED_MARKER
+                            _reset_replacement_state(entry); entry["last_replacement_type"] = "delta_served"  # host saw no successful read
                             if len(safe_new_content.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
                                 store.upsert_cached_content(file_path, safe_new_content, new_hash)
                                 cached = store.get_cached_content(file_path)
@@ -1814,8 +1767,7 @@ def _handle_read_impl(hook_input: dict[str, Any], mode: str, quiet: bool, funnel
                             reason = (
                                 f"{Path(file_path).name} was edited; showing diff "
                                 f"(+{delta_stats['added']}/-{delta_stats['removed']} lines) "
-                                f"instead of full re-read. Read the file again if you "
-                                f"need it in full or the host asks for a fresh read."
+                                f"instead of full re-read."
                             )
                             _emit_pretool_response("deny", reason, delta_text)
                             return  # EXIT: delta handled, do NOT evaluate structure map

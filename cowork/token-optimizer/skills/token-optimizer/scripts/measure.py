@@ -6321,7 +6321,7 @@ _checkpoint_cooldown_remaining = _measure_compat.bind(_measure_providers['qualit
 _record_checkpoint_metadata = _measure_compat.bind(_measure_providers['quality_archive']._record_checkpoint_metadata, __name__, kwdefaults={'fill_pct': None, 'quality_score': None})
 
 
-_append_checkpoint_event = _measure_compat.bind(_measure_providers['quality_archive']._append_checkpoint_event, __name__, kwdefaults={'fill_pct': None, 'quality_score': None})
+_append_checkpoint_event = _measure_compat.bind(_measure_providers['quality_archive']._append_checkpoint_event, __name__, kwdefaults={'fill_pct': None, 'quality_score': None, 'placeholder': False, 'quality_unmeasured': False})
 
 
 checkpoint_stats = _measure_compat.bind(_measure_providers['quality_archive'].checkpoint_stats, __name__, defaults=(7, False,))

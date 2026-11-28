@@ -231,22 +231,24 @@ test('a mark label is cut on one line in a narrow window, never wrapped (#367)',
   }
 })
 
-test('a hover card is always light, so its words carry the dark ink (#367)', async ($, on) => {
+test('every hover card word carries the palette ink, or the bad tone for a loss (#367)', async ($, on) => {
   const w = stub(on)
   await $.session.start(START)
   await w.clock.settle()
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  const card = await ui.find({ type: 'Box', key: 'mark-cache' })
-  const abs: Array<{ type?: string; props?: Record<string, unknown>; children?: unknown[] }> = []
-  const walk = (n: unknown, inCard: boolean): void => {
-    if (!n || typeof n === 'string') return
-    const e = n as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
-    const here = inCard || e.props?.position === 'absolute'
-    if (here && e.type === 'Text') abs.push(e)
-    for (const c of e.children ?? []) walk(c, here)
+  const allowed = new Set(['#1f1e1d', '#d6453d']) // clawd.ts LIGHT.ink, LIGHT.bad
+  for (const id of ['quality', 'context', 'cache', 'fiveHour', 'week']) {
+    const mark = await ui.find({ key: `mark-${id}` })
+    const texts: Array<{ props?: Record<string, unknown> }> = []
+    const walk = (n: unknown, inCard: boolean): void => {
+      if (!n || typeof n === 'string') return
+      const e = n as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+      const here = inCard || e.props?.position === 'absolute'
+      if (here && e.type === 'Text') texts.push(e)
+      for (const c of e.children ?? []) walk(c, here)
+    }
+    walk(mark, false)
+    expect(texts.length).toBeGreaterThan(0)
+    for (const t of texts) expect(allowed.has(t.props?.color as string)).toBe(true)
   }
-  walk(card, false)
-  expect(abs.length).toBeGreaterThan(0)
-  for (const t of abs) expect(t.props?.color).toBe('#1f1e1d')
-}
-)
+})

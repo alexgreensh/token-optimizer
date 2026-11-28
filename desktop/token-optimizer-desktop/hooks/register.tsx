@@ -83,6 +83,8 @@ const frameAtom = atom({ plugin: 'token-optimizer', key: 'frame' } as const, 0)
 
 let enabled = true
 let animate = true
+/** Hover cards on the marks; TOKEN_OPTIMIZER_STATUS_BAR_CARDS=0 turns them off (#367). */
+let hoverCards = true
 let active = false
 /** Whether the TOKEN_OPTIMIZER_STATUS_BAR switches have been read in this environment. */
 let switchesRead = false
@@ -1122,6 +1124,7 @@ async function readSwitches($: EngineInterface): Promise<void> {
   switchesRead = true
   if (switchedOff(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR'), undefined))) enabled = false
   if (switchedOff(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR_ANIMATE'), undefined))) animate = false
+  if (switchedOff(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR_CARDS'), undefined))) hoverCards = false
   sizeEnvDefault = envSize(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR_SIZE'), undefined))
   timeOpts = timeOptions(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR_TIME_FORMAT'), undefined))
 }
@@ -1145,6 +1148,7 @@ async function applySwitches($: EngineInterface): Promise<void> {
 export const register: Register = on => {
   enabled = true
   animate = true
+  hoverCards = true
   // The store is re-read (the durable choice survives); the env default stays as read.
   sizeClicked = null
   sizeRead = false
@@ -1424,6 +1428,7 @@ export const register: Register = on => {
       snap,
       tones: tonesFor(palette),
       sheetOpen: s?.sheetOpen ?? false,
+      hoverCards,
       savingsReason: s?.savingsReason ?? null,
       keepwarmNote: s?.keepwarmNote ?? null,
       savingsComputedAt: s?.savingsComputedAt ?? null,

@@ -295,6 +295,8 @@ export function drawSlim(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
     // Keyed like the full band: the same one hover zone, so pointing still wakes Clawd's look.
     <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
     <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+      {/* Clawd, the buttons and the marks are one unshrinkable group: in a narrow window it is the chip that drops to a second line, never the marks (a marks row on its own line would put its hover cards over the buttons above). */}
+      <Box flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} flexShrink={0}>
       {/* The same layered pictures as the full band (same poses, fades, gaze layers), just small. */}
       <Box position="relative" flexShrink={0}>
         {m.clawd.map((c, i) => (
@@ -313,9 +315,9 @@ export function drawSlim(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
         <Button key="details" label={m.sheetOpen ? '▴' : '▾'} onPress={() => on.details()} />
         <Button key="size" label="+" onPress={() => on.size()} />
       </Box>
-      {/* flexShrink 0: a shrinkable box is squeezed before the line wraps, so the chip would stay beside it and clip; unshrunk, the chip drops to a second line in a narrow window. */}
       <Box flexGrow={1} flexShrink={0}>
         {markRow(D, marks(snap, timeOpts), m.hoverCards === false ? [] : cards(snap, timeOpts), t, on, (snap.busy === 'warming' ? 'Keeping the cache warm.' : dashboardStatus(snap.busy, snap.note)))}
+      </Box>
       </Box>
       {side.kind === 'action' ? (
         <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>

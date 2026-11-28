@@ -58,9 +58,9 @@ function toneColor(tone: MarkTone, t: Tones): string {
   return tone === 'none' ? t.track : t[tone]
 }
 
-function runsOf(D: Desktop, runs: Run[], t: Tones) {
+function runsOf(D: Desktop, runs: Run[], t: Tones, ink?: string) {
   const { Text } = D
-  return runs.map(r => (r.lose ? <Text bold color={t.bad}>{r.text}</Text> : r.strong ? <Text bold>{r.text}</Text> : r.text))
+  return runs.map(r => (r.lose ? <Text bold color={t.bad}>{r.text}</Text> : r.strong ? <Text bold color={ink}>{r.text}</Text> : r.text))
 }
 
 function icon(D: Desktop, name: IconName, color: string, alt?: string) {
@@ -74,6 +74,8 @@ export type Model = {
   snap: Snapshot
   tones: Tones
   sheetOpen: boolean
+  /** The marks' hover cards; off, the marks are plain (the engine has no hover delay, so this is the only way to quiet them). */
+  hoverCards?: boolean
   savingsReason: string | null
   keepwarmNote: string | null
   savingsComputedAt: number | null
@@ -149,14 +151,15 @@ function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) 
       borderColor={t.line}
       backgroundColor={t.card}
     >
-      <Text bold>{card.title}</Text>
-      <Text wrap="wrap">
-        <Text bold>What it means: </Text>
-        {runsOf(D, card.means, t)}
+      {/* The card is always light (it keeps LIGHT's white), so its words carry the light palette's ink: left to the app's default they turn white on dark themes, white on white. */}
+      <Text bold color={t.ink}>{card.title}</Text>
+      <Text wrap="wrap" color={t.ink}>
+        <Text bold color={t.ink}>What it means: </Text>
+        {runsOf(D, card.means, t, t.ink)}
       </Text>
-      <Text wrap="wrap">
-        <Text bold>What to do: </Text>
-        {runsOf(D, card.todo, t)}
+      <Text wrap="wrap" color={t.ink}>
+        <Text bold color={t.ink}>What to do: </Text>
+        {runsOf(D, card.todo, t, t.ink)}
       </Text>
       {card.actions.length > 0 ? (
         <Box flexDirection="row" columnGap={1} marginTop={1}>
@@ -224,7 +227,7 @@ export function drawBand(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
   const { snap, tones: t } = m
   const say = sentence(snap, timeOpts)
   const markList = marks(snap, timeOpts)
-  const cardList = cards(snap, timeOpts)
+  const cardList = m.hoverCards === false ? [] : cards(snap, timeOpts)
   const pill = savingsPill(snap, say, 'full')
   // The artifact's layout: Clawd and his arrow beside the sentence and the marks; the
   // unfolded row under all of it, from Clawd's left edge.
@@ -312,7 +315,7 @@ export function drawSlim(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
         <Button key="size" label="+" onPress={() => on.size()} />
       </Box>
       <Box flexGrow={1} flexShrink={1}>
-        {markRow(D, marks(snap, timeOpts), cards(snap, timeOpts), t, on, (snap.busy === 'warming' ? 'Keeping the cache warm.' : dashboardStatus(snap.busy, snap.note)))}
+        {markRow(D, marks(snap, timeOpts), m.hoverCards === false ? [] : cards(snap, timeOpts), t, on, (snap.busy === 'warming' ? 'Keeping the cache warm.' : dashboardStatus(snap.busy, snap.note)))}
       </Box>
       {side.kind === 'action' ? (
         <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>

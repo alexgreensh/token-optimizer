@@ -187,3 +187,46 @@ test('the slim line keeps the hover cards on its marks', async ($, on) => {
   // The cache card's title text is drawn (hidden until hovered, as in full mode).
   expect(await ui.find({ type: 'Text', text: /^Warm for / })).toBeDefined()
 })
+
+test('TOKEN_OPTIMIZER_STATUS_BAR_CARDS=0 draws no hover cards, in either size (#367)', async ($, on) => {
+  const w = stub(on, { env: { TOKEN_OPTIMIZER_STATUS_BAR_CARDS: '0' } })
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Warm for / })).toBeUndefined()
+  // The marks themselves are still there.
+  expect(await ui.find({ key: 'mark-cache' })).toBeDefined()
+  await ui.press({ key: 'size' })
+  expect(await ui.find({ type: 'Text', text: /^Warm for / })).toBeUndefined()
+  expect(await ui.find({ key: 'mark-cache' })).toBeDefined()
+})
+
+test('hover cards stay on by default (#367)', async ($, on) => {
+  const w = stub(on)
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Warm for / })).toBeDefined()
+})
+
+test('every hover card word carries the palette ink, or the bad tone for a loss (#367)', async ($, on) => {
+  const w = stub(on)
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const allowed = new Set(['#1f1e1d', '#d6453d']) // clawd.ts LIGHT.ink, LIGHT.bad
+  for (const id of ['quality', 'context', 'cache', 'fiveHour', 'week']) {
+    const mark = await ui.find({ key: `mark-${id}` })
+    const texts: Array<{ props?: Record<string, unknown> }> = []
+    const walk = (n: unknown, inCard: boolean): void => {
+      if (!n || typeof n === 'string') return
+      const e = n as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+      const here = inCard || e.props?.position === 'absolute'
+      if (here && e.type === 'Text') texts.push(e)
+      for (const c of e.children ?? []) walk(c, here)
+    }
+    walk(mark, false)
+    expect(texts.length).toBeGreaterThan(0)
+    for (const t of texts) expect(allowed.has(t.props?.color as string)).toBe(true)
+  }
+})

@@ -209,15 +209,24 @@ test('hover cards stay on by default (#367)', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /^Warm for / })).toBeDefined()
 })
 
-test('a mark never shrinks, so a narrow window cannot wrap its label ("5 hours") (#367)', async ($, on) => {
+test('a mark label is cut on one line in a narrow window, never wrapped (#367)', async ($, on) => {
   const w = stub(on)
   await $.session.start(START)
   await w.clock.settle()
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   for (const size of ['full', 'slim']) {
     if (size === 'slim') await ui.press({ key: 'size' })
-    for (const id of ['quality', 'context', 'cache', 'fiveHour', 'week']) {
-      expect((await ui.find({ key: `mark-${id}` }))?.props.flexShrink).toBe(0)
+    const mark = await ui.find({ key: 'mark-fiveHour' })
+    const texts: Array<{ props: { wrap?: string }; children?: unknown[] }> = []
+    const walk = (n: unknown): void => {
+      if (!n || typeof n === 'string') return
+      const e = n as { type?: string; props?: { wrap?: string; position?: string }; children?: unknown[] }
+      if (e.props?.position === 'absolute') return
+      if (e.type === 'Text' && e.children?.includes('5 hours')) texts.push(e as never)
+      for (const c of e.children ?? []) walk(c)
     }
+    walk(mark)
+    expect(texts.length).toBe(1)
+    expect(texts[0].props.wrap).toBe('truncate-end')
   }
 })

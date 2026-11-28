@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Token Optimizer — Google Antigravity hook bridge.
 
-One fast, fail-open entry point for the three wired Antigravity lifecycle
+One fast, fail-open entry point for the four wired Antigravity lifecycle
 events, registered via ``~/.gemini/config/plugins/token-optimizer/hooks.json``:
 
-  pre-invocation  -> continuity restore (invocationNum 1) or context nudge
+  session-start   -> continuity restore
+  pre-invocation  -> context nudge
   pre-tool-use    -> bash output compression (run_command only)
   stop            -> detached rollup + dashboard regeneration
 
@@ -120,7 +121,7 @@ def _emit(obj: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PreInvocation
+# SessionStart and PreInvocation
 # ---------------------------------------------------------------------------
 
 
@@ -142,21 +143,100 @@ def _restore_message(home: Path) -> str | None:
     return cleaned.strip() or None
 
 
-def _surface_dir_for_transcript(home: Path, transcript_path) -> Path | None:
-    """Resolve the surface directory from transcriptPath's parent basename.
+def _inject_system_message(message: str) -> dict:
+    return {
+        "injectSteps": [
+            {"systemMessage": {"systemMessage": message}},
+        ]
+    }
 
-    The Antigravity hook contract names the surface as the immediate parent
-    directory of the transcript (e.g. ``.../.gemini/antigravity-cli/transcript.jsonl``).
-    Anything else is rejected (no file access), the KTD6 exact-parent match.
-    """
-    try:
-        parent = Path(str(transcript_path)).parent
-        if parent.name not in _SURFACES:
-            return None
-        surf = home / parent.name
-        return surf if (surf.is_dir() and not surf.is_symlink()) else None
-    except (OSError, ValueError):
+
+def _norm_workspace_path(raw_path: str) -> Path | None:
+    text = str(raw_path or "").strip()
+    if not text:
         return None
+    if text.startswith("file://"):
+        text = text[len("file://") :]
+    if os.name == "nt" and len(text) >= 3 and text[0] in ("/", "\\") and text[2] == ":":
+        text = text[1:]
+    try:
+        resolved = Path(text).resolve(strict=False)
+        return Path(os.path.normcase(str(resolved)))
+    except (OSError, RuntimeError, ValueError):
+        return Path(os.path.normcase(os.path.normpath(text)))
+
+
+def _restore_matches_workspace(message: str, payload: dict) -> bool:
+    """Fail closed: only inject restore context when workspace matches."""
+    restore_wd = None
+    for line in message.splitlines():
+        if line.startswith("- Working dir:"):
+            restore_wd = _norm_workspace_path(line[len("- Working dir:") :].strip())
+            break
+    if restore_wd is None:
+        return False
+
+    candidates: list[Path] = []
+    if isinstance(payload, dict):
+        cwd = payload.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            norm = _norm_workspace_path(cwd)
+            if norm is not None:
+                candidates.append(norm)
+        ws_paths = payload.get("workspacePaths")
+        if isinstance(ws_paths, list):
+            for entry in ws_paths:
+                if isinstance(entry, str) and entry.strip():
+                    norm = _norm_workspace_path(entry)
+                    if norm is not None:
+                        candidates.append(norm)
+    if not candidates:
+        return False
+
+    for cand in candidates:
+        if restore_wd == cand:
+            return True
+        try:
+            if restore_wd.is_relative_to(cand) or cand.is_relative_to(restore_wd):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def handle_session_start(payload: dict) -> dict:
+    try:
+        from runtime_env import antigravity_home
+    except Exception:
+        return {}
+    message = _restore_message(antigravity_home())
+    if not message or not _restore_matches_workspace(message, payload):
+        return {}
+    return _inject_system_message(message)
+
+
+def _surface_dir_for_transcript(home: Path, transcript_path) -> Path | None:
+    """Resolve the surface directory containing Antigravity's nested transcript."""
+    try:
+        transcript = Path(str(transcript_path))
+        if not transcript.is_absolute():
+            return None
+        root = home.resolve(strict=False)
+        transcript = transcript.resolve(strict=False)
+        for surface in _SURFACES:
+            surf = root / surface
+            if not surf.is_dir() or surf.is_symlink():
+                continue
+            resolved_surface = surf.resolve(strict=False)
+            try:
+                resolved_surface.relative_to(root)
+                transcript.relative_to(resolved_surface)
+            except ValueError:
+                continue
+            return surf
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
 
 
 def _live_fill(surface_dir: Path, conversation_id: str) -> float | None:
@@ -271,21 +351,6 @@ def handle_pre_invocation(payload: dict) -> dict:
         return {}
     home = antigravity_home()
 
-    invocation_num = payload.get("invocationNum")
-    try:
-        invocation_num = int(invocation_num)
-    except (TypeError, ValueError):
-        invocation_num = 0
-
-    if invocation_num == 1:
-        message = _restore_message(home)
-        if message:
-            return {"injectSteps": [{"ephemeralMessage": message}]}
-        return {}
-
-    if invocation_num <= 1:
-        return {}
-
     fill = _current_fill_from_payload(home, payload)
     try:
         if fill is None or not (0.0 <= fill <= 1.0):
@@ -299,29 +364,17 @@ def handle_pre_invocation(payload: dict) -> dict:
         if _nudge_already_sent(home, conversation_id, "85"):
             return {}
         _record_nudge(home, conversation_id, "85")
-        return {
-            "injectSteps": [
-                {
-                    "ephemeralMessage": (
-                        "[Token Optimizer] Context is above 85% full. Prefer small, focused "
-                        "changes; start a fresh conversation soon to avoid truncation."
-                    )
-                }
-            ]
-        }
+        return _inject_system_message(
+            "[Token Optimizer] Context is above 85% full. Prefer small, focused "
+            "changes; start a fresh conversation soon to avoid truncation."
+        )
     if fill >= 0.70:
         if _nudge_already_sent(home, conversation_id, "70"):
             return {}
         _record_nudge(home, conversation_id, "70")
-        return {
-            "injectSteps": [
-                {
-                    "ephemeralMessage": (
-                        "[Token Optimizer] Context is above 70% full. Keep prompts tight."
-                    )
-                }
-            ]
-        }
+        return _inject_system_message(
+            "[Token Optimizer] Context is above 70% full. Keep prompts tight."
+        )
     return {}
 
 
@@ -513,6 +566,8 @@ def main(argv=None) -> int:
 
         if event == "pre-invocation":
             out = handle_pre_invocation(payload)
+        elif event == "session-start":
+            out = handle_session_start(payload)
         elif pre_tool:
             out = _pre_tool_reply(handle_pre_tool_use(payload))
         elif event == "stop":

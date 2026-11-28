@@ -95,28 +95,119 @@ def test_pre_tool_use_skips_missing_or_malformed_tool_call(ab):
 
 
 # ---------------------------------------------------------------------------
+# SessionStart
+# ---------------------------------------------------------------------------
+
+def test_session_start_restore_uses_system_message(ab, tmp_path):
+    _write_consent(tmp_path, True)
+    restore = tmp_path / "token-optimizer" / "restore-context.md"
+    proj = tmp_path / "proj"
+    restore.write_text(f"hello world\n\n- Working dir: {proj}\n")
+    out = ab.handle_session_start({"cwd": str(proj)})
+    assert out == {
+        "injectSteps": [
+            {"systemMessage": {"systemMessage": f"hello world\n\n- Working dir: {proj}"}}
+        ]
+    }
+
+
+def test_session_start_without_restore_is_empty(ab, tmp_path):
+    _write_consent(tmp_path, True)
+    assert ab.handle_session_start({}) == {}
+
+
+def test_session_start_skips_unrelated_workspace(ab, tmp_path):
+    _write_consent(tmp_path, True)
+    restore = tmp_path / "token-optimizer" / "restore-context.md"
+    proj_a = tmp_path / "proj-a"
+    proj_b = tmp_path / "proj-b"
+    restore.write_text(f"- Topic: A\n- Working dir: {proj_a}\n")
+    assert ab.handle_session_start({"cwd": str(proj_b)}) == {}
+    assert ab.handle_session_start({}) == {}
+    out = ab.handle_session_start({"cwd": str(proj_a)})
+    assert "injectSteps" in out
+    sub = ab.handle_session_start({"cwd": str(proj_a / "sub")})
+    assert "injectSteps" in sub
+
+
+def test_session_start_fails_closed_without_working_dir(ab, tmp_path):
+    _write_consent(tmp_path, True)
+    restore = tmp_path / "token-optimizer" / "restore-context.md"
+    restore.write_text("- Topic: A\n")
+    assert ab.handle_session_start({"cwd": str(tmp_path)}) == {}
+
+
+def test_norm_workspace_path_handles_file_uri(ab):
+    if os.name == "nt":
+        uri = ab._norm_workspace_path("file:///C:/Users/example/project")
+        local = ab._norm_workspace_path(r"C:\Users\example\project")
+        assert uri == local
+    else:
+        uri = ab._norm_workspace_path("file:///home/example/project")
+        local = ab._norm_workspace_path("/home/example/project")
+        assert uri == local
+
+
+def test_main_dispatches_session_start(ab, monkeypatch, capsys, tmp_path):
+    _write_consent(tmp_path, True)
+    restore = tmp_path / "token-optimizer" / "restore-context.md"
+    proj = tmp_path / "proj"
+    restore.write_text(f"handoff\n- Working dir: {proj}\n")
+    monkeypatch.setattr(ab, "_read_payload", lambda: {"cwd": str(proj)})
+    assert ab.main(["session-start"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "injectSteps": [
+            {"systemMessage": {"systemMessage": f"handoff\n- Working dir: {proj}"}}
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Transcript path resolution
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("surface", ["antigravity-cli", "antigravity", "antigravity-ide"])
+def test_surface_dir_resolves_nested_transcript_path(ab, tmp_path, surface):
+    surface_dir = tmp_path / surface
+    surface_dir.mkdir()
+    transcript = (
+        surface_dir
+        / "brain"
+        / ("a" * 32)
+        / ".system_generated"
+        / "logs"
+        / "transcript.jsonl"
+    )
+    assert ab._surface_dir_for_transcript(tmp_path, transcript) == surface_dir
+
+
+def test_surface_dir_rejects_transcript_outside_home(ab, tmp_path):
+    home = tmp_path / "home"
+    (home / "antigravity-cli").mkdir(parents=True)
+    transcript = (
+        tmp_path
+        / "antigravity-cli"
+        / "brain"
+        / ("a" * 32)
+        / ".system_generated"
+        / "logs"
+        / "transcript.jsonl"
+    )
+    transcript.parent.mkdir(parents=True)
+    assert ab._surface_dir_for_transcript(home, transcript) is None
+
+
+# ---------------------------------------------------------------------------
 # PreInvocation
 # ---------------------------------------------------------------------------
 
-def test_restore_message_clean(ab, tmp_path):
-    _write_consent(tmp_path, True)
-    restore = tmp_path / "token-optimizer" / "restore-context.md"
-    restore.write_text("hello world\n\nline two\n")
-    out = ab.handle_pre_invocation({"invocationNum": "1"})
-    assert "hello world" in out["injectSteps"][0]["ephemeralMessage"]
-
-
-def test_pre_invocation_without_restore_is_empty(ab, tmp_path):
-    _write_consent(tmp_path, True)
-    assert ab.handle_pre_invocation({"invocationNum": "1"}) == {}
-
-
 def test_nudge_at_85_sent_once(ab, monkeypatch, tmp_path):
     _write_consent(tmp_path, True)
-    payload = {"invocationNum": "2", "conversationId": "a" * 32}
+    payload = {"invocationNum": "0", "conversationId": "a" * 32}
     monkeypatch.setattr(ab, "_current_fill_from_payload", lambda home, p: 0.9)
     out = ab.handle_pre_invocation(payload)
-    assert "85%" in out["injectSteps"][0]["ephemeralMessage"]
+    assert "85%" in out["injectSteps"][0]["systemMessage"]["systemMessage"]
+    assert "ephemeralMessage" not in out["injectSteps"][0]
     # Second call: same threshold was recorded -> no repeat nudge.
     assert ab.handle_pre_invocation(payload) == {}
 
@@ -124,7 +215,7 @@ def test_nudge_at_85_sent_once(ab, monkeypatch, tmp_path):
 def test_nudge_skipped_when_fill_unknown(ab, monkeypatch, tmp_path):
     _write_consent(tmp_path, True)
     monkeypatch.setattr(ab, "_current_fill_from_payload", lambda home, p: None)
-    assert ab.handle_pre_invocation({"invocationNum": "2", "conversationId": "a"}) == {}
+    assert ab.handle_pre_invocation({"invocationNum": "0", "conversationId": "a"}) == {}
 
 
 # ---------------------------------------------------------------------------

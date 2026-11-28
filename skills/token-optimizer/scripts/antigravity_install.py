@@ -142,7 +142,7 @@ def data_dir(home: Path) -> Path:
 def _hooks_config(bridge_path: Path) -> dict:
     """hooks.json per the Antigravity hooks contract (builtin agy-customizations
     docs): a JSON object keyed by hook NAME; PreToolUse uses a matcher group,
-    PreInvocation/Stop are flat handler lists."""
+    SessionStart/PreInvocation/Stop are flat handler lists."""
     py = _resolve_safe_python()
 
     def cmd(event: str, timeout: int) -> dict:
@@ -160,6 +160,7 @@ def _hooks_config(bridge_path: Path) -> dict:
     pre_tool = cmd("pre-tool-use", PRE_TIMEOUT_SEC)
     return {
         HOOK_NAME: {
+            "SessionStart": [cmd("session-start", PRE_TIMEOUT_SEC)],
             "PreToolUse": [
                 # Only the run_command tool is rewritten; the matcher keeps every
                 # other tool call out of the bridge's hot path entirely.

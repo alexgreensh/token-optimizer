@@ -102,12 +102,13 @@ Yes, by design. Several hooks inject content into the conversation via stdout (c
 ## Antigravity hooks
 
 The Google Antigravity adapter (`agy` CLI, Antigravity 2.0 app, IDE) registers
-a user-level plugin at `~/.gemini/config/plugins/token-optimizer/` with three
+a user-level plugin at `~/.gemini/config/plugins/token-optimizer/` with four
 events:
 
 | Event | Handler | Purpose |
 |-------|---------|---------|
-| `PreInvocation` | `antigravity_hook_bridge.py pre-invocation` | Continuity restore (invocation 1) or context nudge |
+| `SessionStart` | `antigravity_hook_bridge.py session-start` | Continuity restore via `systemMessage` |
+| `PreInvocation` | `antigravity_hook_bridge.py pre-invocation` | Context nudge via `systemMessage`, deduplicated per conversation and threshold |
 | `PreToolUse[run_command]` | `antigravity_hook_bridge.py pre-tool-use` | Bash output compression via `bash_compress.py` (R13a re-validates argv) |
 | `Stop` | `antigravity_hook_bridge.py stop` | Detached, lease-debounced rollup + dashboard regeneration |
 
@@ -118,7 +119,7 @@ Two disclosures specific to this adapter:
   itself; every handler no-ops to `{}` until the installer records
   `antigravity_consent: true` (R20). It fails open and never blocks a turn.
 - **Injected continuity text derives from conversation titles.** The
-  `PreInvocation` restore summarizes the previous session's model, token totals,
+  `SessionStart` restore summarizes the previous session's model, token totals,
   topic, and workspace; topic/workspace strings originate from Antigravity's
   `conversation_summaries.db` and are treated as untrusted, filtered to
   printable characters, and capped at 200 characters per field (R22).

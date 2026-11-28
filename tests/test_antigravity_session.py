@@ -146,3 +146,22 @@ def test_model_breakdown_uses_each_generation_and_preserves_unknown():
     assert s['model_usage_breakdown']['gemini-3.5-flash']['fresh_input'] == 100
     assert s['model_usage_breakdown']['gemini-3.6-flash']['cache_read'] == 40
     assert s['model_usage_breakdown']['Future model']['output'] == 50
+
+
+def test_normalize_preserves_tool_breakdown_errors_response_and_gaps():
+    s = normalize_session(
+        _raw(
+            response_tokens=20,
+            tool_call_count=4,
+            tool_calls_by_name={"read_file": 3, "run_command": 1, "total": 999},
+            tool_error_count=1,
+            call_gaps_seconds=[1.0, 2.0, 10.0, 20.0],
+        )
+    )
+    assert s is not None
+    assert s["response_tokens"] == 20
+    assert s["tool_calls"] == {"total": 4, "read_file": 3, "run_command": 1}
+    assert s["tool_error_count"] == 1
+    assert s["avg_call_gap_seconds"] == 8.25
+    assert s["max_call_gap_seconds"] == 20.0
+    assert s["p95_call_gap_seconds"] == 20.0

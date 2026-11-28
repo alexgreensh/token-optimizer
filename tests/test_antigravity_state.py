@@ -123,10 +123,49 @@ def test_one_session_with_summed_tokens(tmp_path):
     assert s["output_tokens"] == 120
     assert s["cache_read_tokens"] == 15
     assert s["thinking_tokens"] == 50
+    assert s["response_tokens"] == 70
     assert s["tool_call_count"] == 2
+    assert s["tool_calls_by_name"] == {"run_command": 1, "view_file": 1}
+    assert s["tool_error_count"] == 0
     assert s["user_input_count"] == 1
+    assert s["call_gaps_seconds"] == [10.0]
     assert s["start_time"] == 1000
     assert s["end_time"] == 1020
+
+
+def test_tool_errors_and_status_counted_without_reading_error_text(tmp_path):
+    db = tmp_path / "err.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE gen_metadata (idx INTEGER, data BLOB, size INTEGER)")
+    con.execute("INSERT INTO gen_metadata VALUES (0, ?, 0)", (_gen_blob(10, 10),))
+    con.execute(
+        "CREATE TABLE steps (idx INTEGER, step_type INTEGER, metadata BLOB, status INTEGER, error_details TEXT, step_payload BLOB)"
+    )
+    con.execute(
+        "INSERT INTO steps VALUES (0, 132, ?, 3, NULL, ?)",
+        (_step_blob(100, "read_file"), b"SECRET_PAYLOAD"),
+    )
+    con.execute(
+        "INSERT INTO steps VALUES (1, 132, ?, 7, 'SECRET_ERROR_TEXT', ?)",
+        (_step_blob(105, "run_command"), b"SECRET_PAYLOAD"),
+    )
+    con.execute(
+        "INSERT INTO steps VALUES (2, 132, ?, 6, NULL, ?)",
+        (_step_blob(120, "edit_file"), b"SECRET_PAYLOAD"),
+    )
+    con.commit()
+    con.close()
+
+    s = read_conversation(db, surface="antigravity-cli")
+    assert s is not None
+    assert s["tool_call_count"] == 3
+    assert s["tool_calls_by_name"] == {"read_file": 1, "run_command": 1, "edit_file": 1}
+    assert s["tool_error_count"] == 2
+    assert s["call_gaps_seconds"] == [5.0, 15.0]
+    joined = json.dumps(s, default=str)
+    assert "SECRET_ERROR_TEXT" not in joined
+    assert "SECRET_PAYLOAD" not in joined
 
 
 def test_same_id_two_surfaces_not_merged(tmp_path):

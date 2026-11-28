@@ -6,9 +6,9 @@ description: "Install Token Optimizer for Google Antigravity (agy CLI, 2.0 app, 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Antigravity support is in beta. The adapter installs a user-level plugin at
-`~/.gemini/config/plugins/token-optimizer/`, wires PreInvocation / PreToolUse /
-Stop hooks, and records the R20 consent flag. Data collection stays off until that
-consent record exists.
+`~/.gemini/config/plugins/token-optimizer/`, wires SessionStart / PreInvocation /
+PreToolUse / Stop hooks, and records the R20 consent flag. Data collection stays
+off until that consent record exists.
 
 ## Prerequisites
 

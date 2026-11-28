@@ -31,10 +31,11 @@ def test_windows_install_writes_shell_neutral_commands(tmp_path, monkeypatch):
     pdir = ai.plugin_dir(tmp_path)
     config = json.loads((pdir / "hooks.json").read_text(encoding="utf-8"))
     group = config["token-optimizer"]
-    commands = [h["command"] for h in group["PreInvocation"] + group["Stop"]]
+    commands = [h["command"] for h in group["SessionStart"] + group["PreInvocation"] + group["Stop"]]
     commands += [h["command"] for g in group["PreToolUse"] for h in g["hooks"]]
     bridge = str(pdir / "antigravity_hook_bridge.py")
-    assert len(commands) == 3
+    assert len(commands) == 4
+    assert "session-start" in commands[0]
     for cmd in commands:
         assert "TOKEN_OPTIMIZER_RUNTIME=" not in cmd
         assert not cmd.startswith(('"', "'", "&"))

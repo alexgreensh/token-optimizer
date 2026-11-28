@@ -10,7 +10,7 @@ Antigravity is subscription/credit-metered; nothing in the product answers "what
 
 | Surface | Storage | Hooks |
 |---|---|---|
-| **`agy` CLI** | `~/.gemini/antigravity-cli/conversations/*.db` | PreInvocation, PreToolUse, Stop |
+| **`agy` CLI** | `~/.gemini/antigravity-cli/conversations/*.db` | SessionStart, PreInvocation, PreToolUse, Stop |
 | **Antigravity 2.0 app** | `~/.gemini/antigravity/conversations/*.db` | same hooks.json |
 | **Antigravity IDE** | `~/.gemini/antigravity-ide/conversations/*.db` | same hooks.json |
 
@@ -23,7 +23,7 @@ session is tagged with its surface.
 - **Context fill + model.** Estimated tokens used vs. max context and the model for each session.
 - **Context-quality scoring.** S/A/B/C/D/F grades from the same three-signal subset the Hermes and Copilot adapters use.
 - **Bash output compression.** The `run_command` hook rewrites whitelisted commands through `bash_compress.py`, and that wrapper re-validates its argv itself (R13a), so a cached "always allow" can never turn it into an unguarded runner.
-- **Continuity restore.** The `PreInvocation #1` hook injects a one-line summary of your previous session; titles and workspace paths are filtered through the same printable-only, length-capped `R22` filter as every other adapter.
+- **Continuity restore.** The `SessionStart` hook injects a capped summary of your previous session; titles and workspace paths are filtered through the same printable-only, length-capped `R22` filter as every other adapter.
 - **Stop-time rollup + dashboard.** Sessions flow into the local trends DB on Stop; the dashboard daemon runs on port **24847**.
 
 ## Install
@@ -80,7 +80,7 @@ Run them with `TOKEN_OPTIMIZER_RUNTIME=antigravity` set (the installer and hooks
 ## Honest beta limits
 
 Antigravity's hook contract is synchronous and command-only, with no
-`PreCompact`, no `SessionStart`/`SessionEnd`, and no payload token counts. The
+`PreCompact`/`SessionEnd` and no payload token counts. The
 full feature-by-feature status lives in [`docs/antigravity.md`](../docs/antigravity.md):
 
 - **green** — token/cache/thinking totals, model, duration, tool-call counts, context fill, quality grade, trends + dashboard, continuity restore, bash compression, stop-time rollup, doctor, install/uninstall.

@@ -7,7 +7,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Beta">
 The Antigravity adapter is in beta. It reads Antigravity's own conversation store
-read-only and wires three hook events; every cost figure is either Antigravity's own
+read-only and wires four hook events; every cost figure is either Antigravity's own
 credit figure or a list-price estimate, never presented as a measured bill.
 </Aside>
 
@@ -47,11 +47,12 @@ structurally allow.
 
 | Hook power | Status | Token Optimizer feature |
 |---|---|---|
-| `PreInvocation` `injectSteps` | Works | Continuity restore (invocation 1) + context nudges |
+| `SessionStart` `injectSteps` | Works | Continuity restore |
+| `PreInvocation` `injectSteps` | Works | Context nudges, deduplicated per conversation and threshold |
 | `PreToolUse` `overwrite` on `run_command` | Works | Bash output compression (R13a wrapper re-validates argv) |
 | `Stop` | Works | Detached, lease-debounced rollup + dashboard regeneration |
 | `PreCompact` | Not exposed | Compaction steering — unavailable |
-| `PostToolUse` output rewrite | Not exposed | Read-interception (Delta/Structure Map) — unavailable |
+| `PostToolUse` reply | `{}` only | Cannot rewrite tool output; read-interception unavailable |
 | status line | Not exposed | Status line quality bar — unavailable |
 
 Every hook handler is fail-open: it exits 0 and emits valid JSON or nothing on any

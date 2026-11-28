@@ -58,7 +58,8 @@ def test_hooks_config_uses_pre_tool_matcher_and_flat_lifecycle(ai, tmp_path):
     assert len(h["PreToolUse"]) == 1
     assert h["PreToolUse"][0]["matcher"] == "run_command"
     assert h["PreToolUse"][0]["hooks"]
-    # PreInvocation / Stop: flat command handler lists (no matcher).
+    # SessionStart / PreInvocation / Stop: flat handler lists (no matcher).
+    assert isinstance(h["SessionStart"], list) and h["SessionStart"][0]["type"] == "command"
     assert isinstance(h["PreInvocation"], list) and h["PreInvocation"][0]["type"] == "command"
     assert isinstance(h["Stop"], list) and h["Stop"][0]["type"] == "command"
     # The persisted command must bake an absolute trusted python and the
@@ -104,7 +105,7 @@ def test_installed_hooks_call_the_installed_bridge(ai, tmp_path):
     ai.install(home=tmp_path)
     pdir = ai.plugin_dir(tmp_path)
     group = json.loads((pdir / "hooks.json").read_text(encoding="utf-8"))["token-optimizer"]
-    cmds = [h["command"] for h in group["PreInvocation"] + group["Stop"]]
+    cmds = [h["command"] for h in group["SessionStart"] + group["PreInvocation"] + group["Stop"]]
     cmds += [h["command"] for g in group["PreToolUse"] for h in g["hooks"]]
     bridge = pdir / "antigravity_hook_bridge.py"
     assert bridge.is_file()

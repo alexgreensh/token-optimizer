@@ -24,6 +24,7 @@ normalizer only classifies: it returns ``model_id`` (or None) and ``credits``
 from __future__ import annotations
 
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -230,8 +231,44 @@ def normalize_session(raw: dict) -> Optional[dict]:
     output_tokens = max(0, _safe_int(raw.get("output_tokens")))
     cache_read = max(0, _safe_int(raw.get("cache_read_tokens")))
     thinking_tokens = max(0, _safe_int(raw.get("thinking_tokens")))
+    if "response_tokens" in raw and raw.get("response_tokens") is not None:
+        response_tokens = max(0, _safe_int(raw.get("response_tokens")))
+    else:
+        response_tokens = sum(
+            max(0, _safe_int(g.get("response_tokens")))
+            for g in (raw.get("generations") or [])
+            if isinstance(g, dict)
+        )
     user_inputs = max(0, _safe_int(raw.get("user_input_count")))
     tool_calls = max(0, _safe_int(raw.get("tool_call_count")))
+    tool_calls_dict: dict[str, int] = {"total": tool_calls}
+    raw_by_name = raw.get("tool_calls_by_name")
+    if isinstance(raw_by_name, dict):
+        for name, count in raw_by_name.items():
+            key = str(name or "").strip()
+            cnt = max(0, _safe_int(count))
+            if key and key != "total" and cnt > 0:
+                tool_calls_dict[key] = cnt
+    tool_error_count = max(0, _safe_int(raw.get("tool_error_count")))
+
+    raw_gaps = raw.get("call_gaps_seconds")
+    gaps: list[float] = []
+    if isinstance(raw_gaps, list):
+        for g in raw_gaps:
+            try:
+                val = float(g)
+                if math.isfinite(val) and val >= 0.0:
+                    gaps.append(val)
+            except (TypeError, ValueError):
+                continue
+    if gaps:
+        sorted_gaps = sorted(gaps)
+        avg_gap = round(sum(sorted_gaps) / len(sorted_gaps), 2)
+        max_gap = round(sorted_gaps[-1], 2)
+        p95_idx = min(len(sorted_gaps) - 1, max(0, math.ceil(0.95 * len(sorted_gaps)) - 1))
+        p95_gap = round(sorted_gaps[p95_idx], 2)
+    else:
+        avg_gap = max_gap = p95_gap = None
     generations = (
         raw.get("generations") if isinstance(raw.get("generations"), list) else []
     )
@@ -353,7 +390,8 @@ def normalize_session(raw: dict) -> Optional[dict]:
             "generation_details_complete": complete_generations,
             "message_count": user_inputs,
             "api_calls": len(generations),
-            "tool_calls": {"total": tool_calls},
+            "tool_calls": tool_calls_dict,
+            "tool_error_count": tool_error_count,
             "estimated": cost_source == "antigravity_list_price_estimate"
             or cost_source == "antigravity_credits",
             "cwd": raw.get("workspace"),
@@ -362,6 +400,10 @@ def normalize_session(raw: dict) -> Optional[dict]:
             "surface": surface,
             "dedup_key": dedup_key,
             "thinking_tokens": thinking_tokens,
+            "response_tokens": response_tokens,
+            "avg_call_gap_seconds": avg_gap,
+            "max_call_gap_seconds": max_gap,
+            "p95_call_gap_seconds": p95_gap,
             "quality": quality,
             "quality_score": quality.get("score"),
             "quality_grade": quality.get("grade"),

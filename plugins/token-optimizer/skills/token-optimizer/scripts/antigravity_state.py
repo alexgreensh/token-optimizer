@@ -59,6 +59,11 @@ _IDLE_SECONDS = 60.0
 # name, not a fixed step_type list, because the tool step-type enum is large
 # and has shifted between releases (e.g. run_command=21, view_file=8).
 _USER_INPUT_STEP_TYPE = 14
+# Step status enum codes observed with non-null error_details across local DBs
+# (4 = rejected/aborted, 6 = canceled/timed-out, 7 = failed). Used as a
+# metadata-only fallback alongside ``error_details IS NOT NULL`` without ever
+# selecting error text (R21).
+_ERROR_STEP_STATUSES = frozenset({4, 6, 7})
 
 # Summaries columns we read (R21); nothing else from that table.
 _SUMMARY_COLUMNS = (
@@ -232,6 +237,7 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
         "output_tokens": 0,
         "cache_read_tokens": 0,
         "thinking_tokens": 0,
+        "response_tokens": 0,
     }
     credit_cost = 0
     consumed_credits = 0
@@ -241,7 +247,10 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
     last_max_context: Optional[int] = None
 
     tool_call_count = 0
+    tool_calls_by_name: dict[str, int] = {}
+    tool_error_count = 0
     user_input_count = 0
+    step_timestamps: list[float] = []
     start_time: Optional[float] = None
     end_time: Optional[float] = None
 
@@ -285,6 +294,7 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
             totals["output_tokens"] += rec["output_tokens"]
             totals["cache_read_tokens"] += rec["cache_read_tokens"]
             totals["thinking_tokens"] += rec["thinking_tokens"]
+            totals["response_tokens"] += rec.get("response_tokens", 0)
             credit_cost += rec.get("credit_cost", 0)
             consumed_credits += rec.get("consumed_credits", 0)
             model = rec.get("model_display_name") or "unknown"
@@ -295,23 +305,55 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
 
         if "steps" in tables:
             try:
+                step_cols = {
+                    str(r[1]) for r in conn.execute("PRAGMA table_info(steps)")
+                }
+            except sqlite3.Error:
+                step_cols = set()
+            has_status_col = "status" in step_cols
+            has_err_col = "error_details" in step_cols
+            select_exprs = ["step_type", "metadata"]
+            if has_status_col:
+                select_exprs.append("status")
+            if has_err_col:
+                # Boolean presence only — never read error_details text (R21).
+                select_exprs.append("error_details IS NOT NULL")
+            try:
                 step_rows = conn.execute(
-                    "SELECT step_type, metadata FROM steps ORDER BY idx"
+                    f"SELECT {', '.join(select_exprs)} FROM steps ORDER BY idx"
                 ).fetchall()
             except sqlite3.Error:
                 step_rows = []
-            for step_type, metadata in step_rows:
+            for row in step_rows:
+                step_type = row[0]
+                metadata = row[1]
+                pos = 2
+                step_status = None
+                has_error = False
+                if has_status_col:
+                    step_status = row[pos]
+                    pos += 1
+                if has_err_col:
+                    has_error = bool(row[pos])
+
                 if step_type == _USER_INPUT_STEP_TYPE:
                     user_input_count += 1
                 step_meta = decode_step_metadata(metadata) if metadata else None
-                if step_meta and step_meta["tool_name"]:
+                tname = step_meta["tool_name"] if step_meta else ""
+                if tname:
                     tool_call_count += 1
+                    tool_calls_by_name[tname] = tool_calls_by_name.get(tname, 0) + 1
+                    if has_error or step_status in _ERROR_STEP_STATUSES:
+                        tool_error_count += 1
                 ts = step_meta["timestamp"] if step_meta else None
                 if ts is not None:
-                    if start_time is None or ts < start_time:
-                        start_time = ts
-                    if end_time is None or ts > end_time:
-                        end_time = ts
+                    ts_f = float(ts)
+                    if tname:
+                        step_timestamps.append(ts_f)
+                    if start_time is None or ts_f < start_time:
+                        start_time = ts_f
+                    if end_time is None or ts_f > end_time:
+                        end_time = ts_f
     finally:
         conn.close()
 
@@ -326,6 +368,12 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
     if model_volumes:
         model_display_name = max(model_volumes, key=model_volumes.get)  # type: ignore[arg-type]
 
+    call_gaps_seconds = [
+        round(b - a, 3)
+        for a, b in zip(step_timestamps, step_timestamps[1:])
+        if b >= a
+    ]
+
     return {
         "conversation_id": conversation_id,
         "surface": surface,
@@ -335,6 +383,7 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
         "output_tokens": totals["output_tokens"],
         "cache_read_tokens": totals["cache_read_tokens"],
         "thinking_tokens": totals["thinking_tokens"],
+        "response_tokens": totals["response_tokens"],
         "credit_cost": credit_cost,
         "consumed_credits": consumed_credits,
         "last_fill": last_fill,
@@ -342,7 +391,10 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
         "model_display_name": model_display_name,
         "undecodable_rows": undecodable_rows,
         "tool_call_count": tool_call_count,
+        "tool_calls_by_name": tool_calls_by_name,
+        "tool_error_count": tool_error_count,
         "user_input_count": user_input_count,
+        "call_gaps_seconds": call_gaps_seconds,
         "start_time": start_time,
         "end_time": end_time,
     }

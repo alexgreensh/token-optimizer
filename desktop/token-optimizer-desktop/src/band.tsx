@@ -74,6 +74,8 @@ export type Model = {
   snap: Snapshot
   tones: Tones
   sheetOpen: boolean
+  /** The marks' hover cards; off, the marks are plain (the engine has no hover delay, so this is the only way to quiet them). */
+  hoverCards?: boolean
   savingsReason: string | null
   keepwarmNote: string | null
   savingsComputedAt: number | null
@@ -106,7 +108,7 @@ function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: H
   return (
     <Box flexDirection="row" flexWrap="nowrap" columnGap={3}>
       {markList.map((mark, i) => (
-        <Box key={`mark-${mark.id}`} position="relative" flexDirection="row" alignItems="center" columnGap={1}>
+        <Box key={`mark-${mark.id}`} position="relative" flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
           <Svg source={markSvg(mark, t)} alt={mark.alt} width={20} height={20} />
           <Text bold>{mark.value}</Text>
           {/* Always labelled: without the word, nobody knows which number is which. */}
@@ -224,7 +226,7 @@ export function drawBand(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
   const { snap, tones: t } = m
   const say = sentence(snap, timeOpts)
   const markList = marks(snap, timeOpts)
-  const cardList = cards(snap, timeOpts)
+  const cardList = m.hoverCards === false ? [] : cards(snap, timeOpts)
   const pill = savingsPill(snap, say, 'full')
   // The artifact's layout: Clawd and his arrow beside the sentence and the marks; the
   // unfolded row under all of it, from Clawd's left edge.
@@ -265,7 +267,7 @@ export function drawBand(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
         </Box>
         <Box flexDirection="column" flexGrow={1} flexShrink={1} rowGap={1}>
           <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2}>
-            <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={1}>
+            <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1} flexShrink={1}>
               <Text bold>Token Optimizer</Text>
               {icon(D, say.icon, toneColor(say.tone, t))}
               <Text wrap="wrap">{runsOf(D, say.runs, t)}</Text>
@@ -292,7 +294,7 @@ export function drawSlim(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
   return (
     // Keyed like the full band: the same one hover zone, so pointing still wakes Clawd's look.
     <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
-    <Box flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={2}>
+    <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
       {/* The same layered pictures as the full band (same poses, fades, gaze layers), just small. */}
       <Box position="relative" flexShrink={0}>
         {m.clawd.map((c, i) => (
@@ -311,8 +313,9 @@ export function drawSlim(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
         <Button key="details" label={m.sheetOpen ? '▴' : '▾'} onPress={() => on.details()} />
         <Button key="size" label="+" onPress={() => on.size()} />
       </Box>
-      <Box flexGrow={1} flexShrink={1}>
-        {markRow(D, marks(snap, timeOpts), cards(snap, timeOpts), t, on, (snap.busy === 'warming' ? 'Keeping the cache warm.' : dashboardStatus(snap.busy, snap.note)))}
+      {/* flexShrink 0: a shrinkable box is squeezed before the line wraps, so the chip would stay beside it and clip; unshrunk, the chip drops to a second line in a narrow window. */}
+      <Box flexGrow={1} flexShrink={0}>
+        {markRow(D, marks(snap, timeOpts), m.hoverCards === false ? [] : cards(snap, timeOpts), t, on, (snap.busy === 'warming' ? 'Keeping the cache warm.' : dashboardStatus(snap.busy, snap.note)))}
       </Box>
       {side.kind === 'action' ? (
         <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>

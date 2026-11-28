@@ -67,6 +67,13 @@ export type Handoff = {
   pendingSince?: number
 }
 
+/** Whether a stored value has the shape of a pending hand-off. */
+export function isHandoff(v: unknown): v is Handoff {
+  if (!v || typeof v !== 'object') return false
+  const h = v as Record<string, unknown>
+  return typeof h.fromSessionId === 'string' && typeof h.cwd === 'string' && typeof h.text === 'string' && h.text !== '' && typeof h.checkpointPath === 'string' && typeof h.createdAt === 'number'
+}
+
 /** A hand-off still being stamped this long after its press was cut off by a crash. */
 const PENDING_MAX_MS = 60_000
 

@@ -230,3 +230,23 @@ test('a mark label is cut on one line in a narrow window, never wrapped (#367)',
     expect(texts[0].props.wrap).toBe('truncate-end')
   }
 })
+
+test('a hover card is always light, so its words carry the dark ink (#367)', async ($, on) => {
+  const w = stub(on)
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const card = await ui.find({ type: 'Box', key: 'mark-cache' })
+  const abs: Array<{ type?: string; props?: Record<string, unknown>; children?: unknown[] }> = []
+  const walk = (n: unknown, inCard: boolean): void => {
+    if (!n || typeof n === 'string') return
+    const e = n as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+    const here = inCard || e.props?.position === 'absolute'
+    if (here && e.type === 'Text') abs.push(e)
+    for (const c of e.children ?? []) walk(c, here)
+  }
+  walk(card, false)
+  expect(abs.length).toBeGreaterThan(0)
+  for (const t of abs) expect(t.props?.color).toBe('#1f1e1d')
+}
+)

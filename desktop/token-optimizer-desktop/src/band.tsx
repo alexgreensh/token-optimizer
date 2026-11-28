@@ -106,7 +106,7 @@ function savingsChip(D: Desktop, pill: SavingsPill, t: Tones, on: Handlers) {
 function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: Handlers, status: string | null = null) {
   const { Box, Text, Svg, Button } = D
   return (
-    <Box flexDirection="row" flexWrap="nowrap" columnGap={3} flexShrink={1} minWidth={80}>
+    <Box flexDirection="row" flexWrap="nowrap" columnGap={3} flexShrink={1}>
       {markList.map((mark, i) => (
         <Box key={`mark-${mark.id}`} position="relative" flexDirection="row" alignItems="center" columnGap={1} flexShrink={1}>
           <Svg source={markSvg(mark, t)} alt={mark.alt} width={20} height={20} />
@@ -114,7 +114,7 @@ function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: H
             <Text bold>{mark.value}</Text>
           </Box>
           {/* Always labelled: without the word, nobody knows which number is which. In a window too narrow for every label the word is cut with an ellipsis on one line; it never wraps under its value. */}
-          <Box flexShrink={1} minWidth={5}>
+          <Box flexShrink={1} minWidth={3}>
             <Text wrap="truncate-end">{mark.label}</Text>
           </Box>
           {(() => {
@@ -301,7 +301,7 @@ export function drawSlim(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
     <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
     <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
       {/* Clawd, the buttons and the marks are one group that fills the line: in a narrow window the chip drops to a second line and the marks stay beside the buttons, cutting their labels short if they must (a marks row on its own line would put its hover cards over the buttons above). */}
-      <Box flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} flexShrink={1} minWidth={94}>
+      <Box flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} flexShrink={1} minWidth={60}>
       {/* The same layered pictures as the full band (same poses, fades, gaze layers), just small. */}
       <Box position="relative" flexShrink={0}>
         {m.clawd.map((c, i) => (

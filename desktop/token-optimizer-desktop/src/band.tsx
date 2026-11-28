@@ -58,9 +58,9 @@ function toneColor(tone: MarkTone, t: Tones): string {
   return tone === 'none' ? t.track : t[tone]
 }
 
-function runsOf(D: Desktop, runs: Run[], t: Tones) {
+function runsOf(D: Desktop, runs: Run[], t: Tones, ink?: string) {
   const { Text } = D
-  return runs.map(r => (r.lose ? <Text bold color={t.bad}>{r.text}</Text> : r.strong ? <Text bold>{r.text}</Text> : r.text))
+  return runs.map(r => (r.lose ? <Text bold color={t.bad}>{r.text}</Text> : r.strong ? <Text bold color={ink}>{r.text}</Text> : r.text))
 }
 
 function icon(D: Desktop, name: IconName, color: string, alt?: string) {
@@ -106,7 +106,7 @@ function savingsChip(D: Desktop, pill: SavingsPill, t: Tones, on: Handlers) {
 function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: Handlers, status: string | null = null) {
   const { Box, Text, Svg, Button } = D
   return (
-    <Box flexDirection="row" flexWrap="nowrap" columnGap={3} flexShrink={1}>
+    <Box flexDirection="row" flexWrap="nowrap" columnGap={3} flexShrink={1} minWidth={80}>
       {markList.map((mark, i) => (
         <Box key={`mark-${mark.id}`} position="relative" flexDirection="row" alignItems="center" columnGap={1} flexShrink={1}>
           <Svg source={markSvg(mark, t)} alt={mark.alt} width={20} height={20} />
@@ -114,7 +114,7 @@ function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: H
             <Text bold>{mark.value}</Text>
           </Box>
           {/* Always labelled: without the word, nobody knows which number is which. In a window too narrow for every label the word is cut with an ellipsis on one line; it never wraps under its value. */}
-          <Box flexShrink={1} minWidth={3}>
+          <Box flexShrink={1} minWidth={5}>
             <Text wrap="truncate-end">{mark.label}</Text>
           </Box>
           {(() => {
@@ -155,14 +155,15 @@ function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) 
       borderColor={t.line}
       backgroundColor={t.card}
     >
-      <Text bold>{card.title}</Text>
-      <Text wrap="wrap">
-        <Text bold>What it means: </Text>
-        {runsOf(D, card.means, t)}
+      {/* The card is always light (it keeps LIGHT's white), so its words carry the light palette's ink: left to the app's default they turn white on dark themes, white on white. */}
+      <Text bold color={t.ink}>{card.title}</Text>
+      <Text wrap="wrap" color={t.ink}>
+        <Text bold color={t.ink}>What it means: </Text>
+        {runsOf(D, card.means, t, t.ink)}
       </Text>
-      <Text wrap="wrap">
-        <Text bold>What to do: </Text>
-        {runsOf(D, card.todo, t)}
+      <Text wrap="wrap" color={t.ink}>
+        <Text bold color={t.ink}>What to do: </Text>
+        {runsOf(D, card.todo, t, t.ink)}
       </Text>
       {card.actions.length > 0 ? (
         <Box flexDirection="row" columnGap={1} marginTop={1}>
@@ -300,7 +301,7 @@ export function drawSlim(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
     <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
     <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
       {/* Clawd, the buttons and the marks are one group that fills the line: in a narrow window the chip drops to a second line and the marks stay beside the buttons, cutting their labels short if they must (a marks row on its own line would put its hover cards over the buttons above). */}
-      <Box flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} flexShrink={1} minWidth={60}>
+      <Box flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} flexShrink={1} minWidth={94}>
       {/* The same layered pictures as the full band (same poses, fades, gaze layers), just small. */}
       <Box position="relative" flexShrink={0}>
         {m.clawd.map((c, i) => (

@@ -106,13 +106,17 @@ function savingsChip(D: Desktop, pill: SavingsPill, t: Tones, on: Handlers) {
 function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: Handlers, status: string | null = null) {
   const { Box, Text, Svg, Button } = D
   return (
-    <Box flexDirection="row" flexWrap="nowrap" columnGap={3}>
+    <Box flexDirection="row" flexWrap="nowrap" columnGap={3} flexShrink={1}>
       {markList.map((mark, i) => (
-        <Box key={`mark-${mark.id}`} position="relative" flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+        <Box key={`mark-${mark.id}`} position="relative" flexDirection="row" alignItems="center" columnGap={1} flexShrink={1}>
           <Svg source={markSvg(mark, t)} alt={mark.alt} width={20} height={20} />
-          <Text bold>{mark.value}</Text>
-          {/* Always labelled: without the word, nobody knows which number is which. */}
-          <Text>{mark.label}</Text>
+          <Box flexShrink={0}>
+            <Text bold>{mark.value}</Text>
+          </Box>
+          {/* Always labelled: without the word, nobody knows which number is which. In a window too narrow for every label the word is cut with an ellipsis on one line; it never wraps under its value. */}
+          <Box flexShrink={1} minWidth={3}>
+            <Text wrap="truncate-end">{mark.label}</Text>
+          </Box>
           {(() => {
             // Matched by id, not position: a missing limit never shifts a card under the wrong mark.
             const card = cardList.find(c => c.id === mark.id)
@@ -295,8 +299,8 @@ export function drawSlim(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
     // Keyed like the full band: the same one hover zone, so pointing still wakes Clawd's look.
     <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
     <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
-      {/* Clawd, the buttons and the marks are one unshrinkable group: in a narrow window it is the chip that drops to a second line, never the marks (a marks row on its own line would put its hover cards over the buttons above). */}
-      <Box flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} flexShrink={0}>
+      {/* Clawd, the buttons and the marks are one group that fills the line: in a narrow window the chip drops to a second line and the marks stay beside the buttons, cutting their labels short if they must (a marks row on its own line would put its hover cards over the buttons above). */}
+      <Box flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} flexShrink={1} minWidth={60}>
       {/* The same layered pictures as the full band (same poses, fades, gaze layers), just small. */}
       <Box position="relative" flexShrink={0}>
         {m.clawd.map((c, i) => (
@@ -315,7 +319,7 @@ export function drawSlim(D: Desktop, m: Model, on: Handlers, timeOpts: FormatOpt
         <Button key="details" label={m.sheetOpen ? '▴' : '▾'} onPress={() => on.details()} />
         <Button key="size" label="+" onPress={() => on.size()} />
       </Box>
-      <Box flexGrow={1} flexShrink={0}>
+      <Box flexGrow={1} flexShrink={1}>
         {markRow(D, marks(snap, timeOpts), m.hoverCards === false ? [] : cards(snap, timeOpts), t, on, (snap.busy === 'warming' ? 'Keeping the cache warm.' : dashboardStatus(snap.busy, snap.note)))}
       </Box>
       </Box>

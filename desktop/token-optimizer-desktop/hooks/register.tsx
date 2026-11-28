@@ -31,6 +31,7 @@ import {
   handoffFate,
   initialUi,
   isArmed,
+  isHandoff,
   lifetimeFromUsage,
   liveTokens,
   noteNow,
@@ -390,12 +391,6 @@ async function start($: EngineInterface): Promise<void> {
   await attempt(() => refresh($), undefined)
   await later($, () => refresh($, { savings: true }))
   startCadence($)
-}
-
-function isHandoff(v: unknown): v is Handoff {
-  if (!v || typeof v !== 'object') return false
-  const h = v as Record<string, unknown>
-  return typeof h.fromSessionId === 'string' && typeof h.cwd === 'string' && typeof h.text === 'string' && h.text !== '' && typeof h.checkpointPath === 'string' && typeof h.createdAt === 'number'
 }
 
 /**

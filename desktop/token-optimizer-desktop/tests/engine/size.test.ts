@@ -187,3 +187,37 @@ test('the slim line keeps the hover cards on its marks', async ($, on) => {
   // The cache card's title text is drawn (hidden until hovered, as in full mode).
   expect(await ui.find({ type: 'Text', text: /^Warm for / })).toBeDefined()
 })
+
+test('TOKEN_OPTIMIZER_STATUS_BAR_CARDS=0 draws no hover cards, in either size (#367)', async ($, on) => {
+  const w = stub(on, { env: { TOKEN_OPTIMIZER_STATUS_BAR_CARDS: '0' } })
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Warm for / })).toBeUndefined()
+  // The marks themselves are still there.
+  expect(await ui.find({ key: 'mark-cache' })).toBeDefined()
+  await ui.press({ key: 'size' })
+  expect(await ui.find({ type: 'Text', text: /^Warm for / })).toBeUndefined()
+  expect(await ui.find({ key: 'mark-cache' })).toBeDefined()
+})
+
+test('hover cards stay on by default (#367)', async ($, on) => {
+  const w = stub(on)
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Warm for / })).toBeDefined()
+})
+
+test('a mark never shrinks, so a narrow window cannot wrap its label ("5 hours") (#367)', async ($, on) => {
+  const w = stub(on)
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  for (const size of ['full', 'slim']) {
+    if (size === 'slim') await ui.press({ key: 'size' })
+    for (const id of ['quality', 'context', 'cache', 'fiveHour', 'week']) {
+      expect((await ui.find({ key: `mark-${id}` }))?.props.flexShrink).toBe(0)
+    }
+  }
+})
